@@ -844,8 +844,9 @@ IS-RESTART is t when called from a crash-triggered restart timer."
                                   ;; Track oneshot completion with exit code
                                   (when (eq type 'oneshot)
                                     (puthash name exit-code supervisor--oneshot-completed)
-                                    (when (> exit-code 0)
-                                      (supervisor--log 'warning "oneshot %s failed with exit code %d" name exit-code))
+                                    (if (> exit-code 0)
+                                        (supervisor--log 'warning "oneshot %s failed with exit code %d" name exit-code)
+                                      (supervisor--log 'info "oneshot %s completed" name))
                                     ;; Notify DAG scheduler
                                     (supervisor--dag-mark-ready name))
                                   (supervisor--refresh-dashboard)
