@@ -1366,13 +1366,51 @@ ALL-IDS is the list of all valid entry IDs for cross-stage validation."
          (supervisor--start-stages-async rest all-ids))))))
 
 ;;;###autoload
+(defun supervisor-stop-now ()
+  "Stop all supervised processes immediately with SIGKILL.
+This is a synchronous function suitable for `kill-emacs-hook'.
+Unlike `supervisor-stop', it sends SIGKILL immediately and waits
+briefly for processes to terminate, ensuring a clean exit."
+  (interactive)
+  (setq supervisor--shutting-down t)
+  ;; Cancel all timers
+  (dolist (timer supervisor--timers)
+    (when (timerp timer)
+      (cancel-timer timer)))
+  (setq supervisor--timers nil)
+  (maphash (lambda (_id timer)
+             (when (timerp timer)
+               (cancel-timer timer)))
+           supervisor--restart-timers)
+  (clrhash supervisor--restart-timers)
+  (supervisor--dag-cleanup)
+  (run-hooks 'supervisor-cleanup-hook)
+  ;; Send SIGKILL to all processes immediately
+  (maphash (lambda (_name proc)
+             (when (process-live-p proc)
+               (signal-process proc 'SIGKILL)))
+           supervisor--processes)
+  ;; Brief wait for processes to die (max 0.5s)
+  (let ((deadline (+ (float-time) 0.5)))
+    (while (and (< (float-time) deadline)
+                (cl-some #'process-live-p
+                         (hash-table-values supervisor--processes)))
+      (sleep-for 0.05)))
+  ;; Clean up state
+  (clrhash supervisor--processes)
+  (setq supervisor--shutdown-complete-flag t
+        supervisor--shutting-down nil))
+
+;;;###autoload
 (defun supervisor-stop (&optional callback)
   "Stop all supervised processes gracefully (async).
 Sends SIGTERM immediately and returns.  A timer handles the graceful
 shutdown period: after `supervisor-shutdown-timeout' seconds, any
 survivors receive SIGKILL.  Optional CALLBACK is called with no
 arguments when shutdown completes.  Check `supervisor--shutdown-complete-flag'
-to poll completion status if needed."
+to poll completion status if needed.
+
+For `kill-emacs-hook', use `supervisor-stop-now' instead."
   (interactive)
   (setq supervisor--shutting-down t)
   ;; Cancel any pending delayed starts
