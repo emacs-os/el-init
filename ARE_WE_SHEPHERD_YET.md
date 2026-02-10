@@ -179,28 +179,66 @@ Retries and resilience:
 - Pass `package-lint`, `checkdoc`, and `byte-compile` with no warnings.
 - Provide feature matching filename and end with `;;; supervisor.el ends here`.
 
-## Roadmap (Concrete Phases)
+## Roadmap (Required Sequence)
 
-1. Control plane: implement `supervisorctl` with human and JSON output.
-2. Service definition layer: formal schema and persistent overrides.
-3. PID 1 engineering: reaping, signal handling, safe shutdown, crash safety.
-4. Security hardening: restrict control channel and document threat model.
-5. Parity and beyond: timers, socket activation, advanced readiness.
-6. Scheduler hardening: move fully to event-driven completion for shutdown and
-   oneshots, eliminating periodic polling timers.
+All items below are mandatory. There are no optional phases. Do them in order.
 
-## Scheduler Hardening Details (Future)
+1. Deep codebase review and refactor against `CLAUDE.md` and `STANDARDS.md`.
+   Fix all violations and run `make check` until clean.
+2. Declarative/data-driven review and refactor based on
+   `DATA_DRIVEN_DECLARATIVE.md`. Convert the research into concrete design
+   targets and incremental refactors.
+3. Control plane implementation: ship `supervisorctl` and the POSIX wrappers
+   planned in `sbin/README.md`, with human + JSON output, stable schema, exit
+   codes, and tests.
+4. Service definition layer: formal schema, versioning, persistent overrides,
+   migration plan, and validation coverage.
+5. PID 1 engineering: child reaping, signal handling, safe shutdown semantics,
+   crash safety, and tests.
+6. Security hardening: restricted control channel, explicit auth model, and a
+   documented threat model.
+7. Parity and expansion: timers, socket activation, advanced readiness, and
+   remaining capability additions.
 
-- Shutdown: track a live-process counter, decrement in sentinels, and complete
-  when the counter reaches zero.
-- Shutdown timeout: use a single one-shot timer to SIGKILL survivors, then
-  complete.
-- Oneshot completion: rely on process sentinels for success/failure, with a
-  single one-shot timeout timer as a fallback.
-- Remove repeating timer checks that poll process state; prefer sentinels plus
-  one-shot timers only.
-- Ensure completion callbacks fire exactly once, including when no processes
-  are running at shutdown start.
+**Roadmap Requirements (Detailed)**
+
+**1. Coding Standards Review and Refactor**
+- Audit all Elisp against `CLAUDE.md` and `STANDARDS.md`.
+- Fix all violations (naming, docstrings, autoloads, conventions, hooks).
+- Ensure `make check` passes cleanly after refactor.
+
+**2. Declarative/Data-Driven Review and Refactor**
+- Translate `DATA_DRIVEN_DECLARATIVE.md` into concrete design targets.
+- Define the minimal plan/state data structures and pure functions needed.
+- Implement incremental refactors that reduce implicit state and side effects.
+
+**3. Control Plane (CLI + POSIX Wrappers)**
+- Implement `supervisorctl` with human-readable defaults and `--json`.
+- Define a stable JSON schema and exit codes; add tests for all outputs.
+- Use `emacsclient --eval` with explicit server selection flags (`-s`/`-f`).
+- Treat server access as privileged; document socket and auth handling.
+
+**4. Service Definition Layer**
+- Define a versioned schema for entries and overrides.
+- Separate requirement dependencies from ordering dependencies (systemd-style).
+- Provide a migration strategy for existing configs.
+- Ensure validation errors are explicit and test-covered.
+
+**5. PID 1 Engineering**
+- Implement child reaping and SIGCHLD handling.
+- Define explicit signal handling for shutdown and reboot flows.
+- Ensure safe shutdown order and crash safety under PID 1 semantics.
+- Add tests where possible and document any untestable behaviors.
+
+**6. Security Hardening**
+- Lock down control channels (local socket by default).
+- If TCP is enabled, require strong auth and protect server files.
+- Document the threat model and safe deployment guidance.
+
+**7. Parity and Expansion**
+- Add timers and socket activation.
+- Add advanced readiness semantics as needed.
+- Keep CLI parity with the interactive UI.
 
 ## Definition of Done
 
@@ -219,3 +257,5 @@ We are "Shepherd yet" when:
 - https://www.gnu.org/software/emacs/manual/html_node/emacs/emacsclient-Options.html
 - https://man7.org/linux/man-pages/man1/systemd-nspawn.1.html
 - https://man7.org/linux/man-pages/man5/systemd.unit.5.html
+- https://man7.org/linux/man-pages/man2/waitpid.2.html
+- https://man7.org/linux/man-pages/man7/signal.7.html
