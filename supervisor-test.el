@@ -294,6 +294,302 @@
     ;; Valid entry should not be in invalid
     (should (null (gethash "valid" supervisor--invalid)))))
 
+;;; DAG scheduler tests
+
+(ert-deftest supervisor-test-topo-sort-stable-ordering ()
+  "Unconstrained nodes maintain original list order."
+  (let* ((entries '(("a" "cmd" 0 t t t simple session nil t 30)
+                    ("b" "cmd" 0 t t t simple session nil t 30)
+                    ("c" "cmd" 0 t t t simple session nil t 30)))
+         (sorted (supervisor--stable-topo-sort entries)))
+    ;; With no dependencies, order should be preserved
+    (should (equal (mapcar #'car sorted) '("a" "b" "c")))))
+
+(ert-deftest supervisor-test-topo-sort-respects-after ()
+  "Entries with :after come after their dependencies."
+  (let* ((entries '(("c" "cmd" 0 t t t simple session ("a") t 30)
+                    ("a" "cmd" 0 t t t simple session nil t 30)
+                    ("b" "cmd" 0 t t t simple session nil t 30)))
+         (sorted (supervisor--stable-topo-sort entries))
+         (order (mapcar #'car sorted)))
+    ;; "a" must come before "c" (dependency constraint)
+    (should (< (cl-position "a" order :test #'equal)
+               (cl-position "c" order :test #'equal)))
+    ;; Stable sort: after "a" emits, both "c" (idx 0) and "b" (idx 2) are ready
+    ;; "c" comes first because it has lower original index
+    (should (equal order '("a" "c" "b")))))
+
+(ert-deftest supervisor-test-topo-sort-cycle-fallback ()
+  "Cycle detection returns list order with :after cleared."
+  (let* ((entries '(("a" "cmd" 0 t t t simple session ("b") t 30)
+                    ("b" "cmd" 0 t t t simple session ("a") t 30)))
+         (sorted (supervisor--stable-topo-sort entries)))
+    ;; Should return in original order
+    (should (equal (mapcar #'car sorted) '("a" "b")))
+    ;; :after (index 8) should be nil for all entries
+    (should (null (nth 8 (car sorted))))
+    (should (null (nth 8 (cadr sorted))))))
+
+(ert-deftest supervisor-test-topo-sort-complex-dag ()
+  "Complex DAG with multiple dependencies."
+  ;; d depends on b and c, b depends on a
+  (let* ((entries '(("a" "cmd" 0 t t t simple session nil t 30)
+                    ("b" "cmd" 0 t t t simple session ("a") t 30)
+                    ("c" "cmd" 0 t t t simple session nil t 30)
+                    ("d" "cmd" 0 t t t simple session ("b" "c") t 30)))
+         (sorted (supervisor--stable-topo-sort entries))
+         (order (mapcar #'car sorted)))
+    ;; a must come before b
+    (should (< (cl-position "a" order :test #'equal)
+               (cl-position "b" order :test #'equal)))
+    ;; b and c must come before d
+    (should (< (cl-position "b" order :test #'equal)
+               (cl-position "d" order :test #'equal)))
+    (should (< (cl-position "c" order :test #'equal)
+               (cl-position "d" order :test #'equal)))))
+
+(ert-deftest supervisor-test-dag-init-blocking-oneshot ()
+  "Blocking oneshots are tracked in supervisor--dag-blocking."
+  (let ((supervisor--dag-blocking nil)
+        (supervisor--dag-in-degree nil)
+        (supervisor--dag-dependents nil)
+        (supervisor--dag-entries nil)
+        (supervisor--dag-started nil)
+        (supervisor--dag-ready nil)
+        (supervisor--dag-timeout-timers nil)
+        (supervisor--dag-delay-timers nil)
+        (supervisor--dag-id-to-index nil))
+    ;; Entry: (id cmd delay enabled-p restart-p logging-p type stage after oneshot-wait oneshot-timeout)
+    (let ((entries '(("blocking" "cmd" 0 t t t oneshot session nil t 30)
+                     ("non-blocking" "cmd" 0 t t t oneshot session nil nil 30)
+                     ("simple" "cmd" 0 t t t simple session nil t 30))))
+      (supervisor--dag-init entries)
+      ;; Blocking oneshot should be in blocking set
+      (should (gethash "blocking" supervisor--dag-blocking))
+      ;; Non-blocking oneshot should NOT be in blocking set
+      (should-not (gethash "non-blocking" supervisor--dag-blocking))
+      ;; Simple process should NOT be in blocking set
+      (should-not (gethash "simple" supervisor--dag-blocking)))))
+
+(ert-deftest supervisor-test-dag-init-in-degree ()
+  "DAG init correctly calculates in-degree from :after."
+  (let ((supervisor--dag-blocking nil)
+        (supervisor--dag-in-degree nil)
+        (supervisor--dag-dependents nil)
+        (supervisor--dag-entries nil)
+        (supervisor--dag-started nil)
+        (supervisor--dag-ready nil)
+        (supervisor--dag-timeout-timers nil)
+        (supervisor--dag-delay-timers nil)
+        (supervisor--dag-id-to-index nil))
+    (let ((entries '(("a" "cmd" 0 t t t simple session nil t 30)
+                     ("b" "cmd" 0 t t t simple session ("a") t 30)
+                     ("c" "cmd" 0 t t t simple session ("a" "b") t 30))))
+      (supervisor--dag-init entries)
+      ;; a has no dependencies
+      (should (= (gethash "a" supervisor--dag-in-degree) 0))
+      ;; b depends on a
+      (should (= (gethash "b" supervisor--dag-in-degree) 1))
+      ;; c depends on a and b
+      (should (= (gethash "c" supervisor--dag-in-degree) 2)))))
+
+(ert-deftest supervisor-test-dag-init-dependents ()
+  "DAG init correctly builds dependents graph."
+  (let ((supervisor--dag-blocking nil)
+        (supervisor--dag-in-degree nil)
+        (supervisor--dag-dependents nil)
+        (supervisor--dag-entries nil)
+        (supervisor--dag-started nil)
+        (supervisor--dag-ready nil)
+        (supervisor--dag-timeout-timers nil)
+        (supervisor--dag-delay-timers nil)
+        (supervisor--dag-id-to-index nil))
+    (let ((entries '(("a" "cmd" 0 t t t simple session nil t 30)
+                     ("b" "cmd" 0 t t t simple session ("a") t 30)
+                     ("c" "cmd" 0 t t t simple session ("a") t 30))))
+      (supervisor--dag-init entries)
+      ;; a should have b and c as dependents
+      (let ((deps (gethash "a" supervisor--dag-dependents)))
+        (should (member "b" deps))
+        (should (member "c" deps))))))
+
+(ert-deftest supervisor-test-async-oneshot-not-blocking ()
+  "Async oneshots (oneshot-wait nil) do not block stage completion."
+  (let ((supervisor--dag-blocking nil)
+        (supervisor--dag-in-degree nil)
+        (supervisor--dag-dependents nil)
+        (supervisor--dag-entries nil)
+        (supervisor--dag-started nil)
+        (supervisor--dag-ready nil)
+        (supervisor--dag-timeout-timers nil)
+        (supervisor--dag-delay-timers nil)
+        (supervisor--dag-id-to-index nil))
+    ;; Entry with :async t means oneshot-wait = nil
+    (let ((entries '(("async-oneshot" "cmd" 0 t t t oneshot session nil nil 30))))
+      (supervisor--dag-init entries)
+      ;; Async oneshot should NOT be in blocking set
+      (should-not (gethash "async-oneshot" supervisor--dag-blocking)))))
+
+(ert-deftest supervisor-test-stage-complete-blocked-by-delay ()
+  "Delayed entries prevent stage completion until they start."
+  (let ((supervisor--dag-blocking (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-entries (make-hash-table :test 'equal))
+        (supervisor--dag-started (make-hash-table :test 'equal))
+        (supervisor--dag-ready (make-hash-table :test 'equal))
+        (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+        (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+        (supervisor--dag-id-to-index (make-hash-table :test 'equal))
+        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--shutting-down nil)
+        (callback-called nil))
+    ;; Entry with delay
+    (puthash "delayed" '("delayed" "echo hi" 5 t t t simple session nil t 30) supervisor--dag-entries)
+    (puthash "delayed" 0 supervisor--dag-in-degree)
+    (puthash "delayed" 0 supervisor--dag-id-to-index)
+    (puthash "delayed" nil supervisor--dag-dependents)
+    (setq supervisor--dag-stage-complete-callback (lambda () (setq callback-called t)))
+    ;; Simulate starting the delayed entry - adds to delay-timers
+    (puthash "delayed" 'mock-timer supervisor--dag-delay-timers)
+    ;; Mark as "started" from scheduler's perspective
+    (puthash "delayed" t supervisor--dag-started)
+    ;; Try to complete stage - should NOT call callback because delay timer exists
+    (supervisor--dag-check-stage-complete)
+    (should-not callback-called)))
+
+(ert-deftest supervisor-test-stage-complete-blocked-by-blocking-oneshot ()
+  "Blocking oneshots prevent stage completion until they exit."
+  (let ((supervisor--dag-blocking (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-entries (make-hash-table :test 'equal))
+        (supervisor--dag-started (make-hash-table :test 'equal))
+        (supervisor--dag-ready (make-hash-table :test 'equal))
+        (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+        (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+        (supervisor--dag-id-to-index (make-hash-table :test 'equal))
+        (supervisor--dag-stage-complete-callback nil)
+        (callback-called nil))
+    ;; Blocking oneshot entry
+    (puthash "blocking" '("blocking" "sleep 10" 0 t t t oneshot session nil t 30) supervisor--dag-entries)
+    (puthash "blocking" 0 supervisor--dag-in-degree)
+    (puthash "blocking" t supervisor--dag-started)
+    ;; Oneshot is blocking
+    (puthash "blocking" t supervisor--dag-blocking)
+    (setq supervisor--dag-stage-complete-callback (lambda () (setq callback-called t)))
+    ;; Try to complete stage - should NOT call callback because blocking oneshot exists
+    (supervisor--dag-check-stage-complete)
+    (should-not callback-called)))
+
+(ert-deftest supervisor-test-mark-ready-removes-from-blocking ()
+  "supervisor--dag-mark-ready removes entry from blocking set."
+  (let ((supervisor--dag-blocking (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-entries (make-hash-table :test 'equal))
+        (supervisor--dag-started (make-hash-table :test 'equal))
+        (supervisor--dag-ready (make-hash-table :test 'equal))
+        (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+        (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+        (supervisor--dag-id-to-index (make-hash-table :test 'equal))
+        (supervisor--dag-stage-complete-callback nil)
+        (supervisor-verbose nil))
+    ;; Set up blocking oneshot
+    (puthash "oneshot" '("oneshot" "cmd" 0 t t t oneshot session nil t 30) supervisor--dag-entries)
+    (puthash "oneshot" 0 supervisor--dag-in-degree)
+    (puthash "oneshot" t supervisor--dag-started)
+    (puthash "oneshot" t supervisor--dag-blocking)
+    (puthash "oneshot" nil supervisor--dag-dependents)
+    ;; Mark ready
+    (supervisor--dag-mark-ready "oneshot")
+    ;; Should be removed from blocking
+    (should-not (gethash "oneshot" supervisor--dag-blocking))
+    ;; Should be in ready set
+    (should (gethash "oneshot" supervisor--dag-ready))))
+
+(ert-deftest supervisor-test-mark-ready-unlocks-dependents ()
+  "supervisor--dag-mark-ready decrements in-degree for dependents."
+  (let ((supervisor--dag-blocking (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-entries (make-hash-table :test 'equal))
+        (supervisor--dag-started (make-hash-table :test 'equal))
+        (supervisor--dag-ready (make-hash-table :test 'equal))
+        (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+        (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+        (supervisor--dag-id-to-index (make-hash-table :test 'equal))
+        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--shutting-down nil)
+        (supervisor-verbose nil)
+        (started-ids nil))
+    ;; Stub start function to prevent actual process spawning
+    (cl-letf (((symbol-function 'supervisor--dag-start-entry-async)
+               (lambda (entry) (push (car entry) started-ids))))
+      ;; Set up: b depends on a
+      (puthash "a" '("a" "cmd" 0 t t t simple session nil t 30) supervisor--dag-entries)
+      (puthash "b" '("b" "cmd" 0 t t t simple session ("a") t 30) supervisor--dag-entries)
+      (puthash "a" 0 supervisor--dag-in-degree)
+      (puthash "b" 1 supervisor--dag-in-degree)
+      (puthash "a" t supervisor--dag-started)
+      (puthash "b" nil supervisor--dag-started)
+      (puthash "a" '("b") supervisor--dag-dependents)
+      (puthash "b" nil supervisor--dag-dependents)
+      (puthash "a" 0 supervisor--dag-id-to-index)
+      (puthash "b" 1 supervisor--dag-id-to-index)
+      ;; Mark a as ready
+      (supervisor--dag-mark-ready "a")
+      ;; b's in-degree should now be 0
+      (should (= 0 (gethash "b" supervisor--dag-in-degree)))
+      ;; b should have been triggered to start
+      (should (member "b" started-ids)))))
+
+(ert-deftest supervisor-test-oneshot-timeout-unlocks-dependents ()
+  "Oneshot timeout calls mark-ready which unlocks dependents and stage."
+  (let ((supervisor--dag-blocking (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-entries (make-hash-table :test 'equal))
+        (supervisor--dag-started (make-hash-table :test 'equal))
+        (supervisor--dag-ready (make-hash-table :test 'equal))
+        (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+        (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+        (supervisor--dag-id-to-index (make-hash-table :test 'equal))
+        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--shutting-down nil)
+        (supervisor-verbose nil)
+        (stage-complete nil)
+        (started-ids nil))
+    ;; Stub start function
+    (cl-letf (((symbol-function 'supervisor--dag-start-entry-async)
+               (lambda (entry) (push (car entry) started-ids))))
+      ;; Set up: blocking oneshot "slow" with dependent "after-slow"
+      (puthash "slow" '("slow" "sleep 999" 0 t t t oneshot session nil t 5) supervisor--dag-entries)
+      (puthash "after-slow" '("after-slow" "echo done" 0 t t t simple session ("slow") t 30) supervisor--dag-entries)
+      (puthash "slow" 0 supervisor--dag-in-degree)
+      (puthash "after-slow" 1 supervisor--dag-in-degree)
+      (puthash "slow" t supervisor--dag-started)
+      (puthash "after-slow" nil supervisor--dag-started)
+      (puthash "slow" t supervisor--dag-blocking)  ; blocking oneshot
+      (puthash "slow" '("after-slow") supervisor--dag-dependents)
+      (puthash "after-slow" nil supervisor--dag-dependents)
+      (puthash "slow" 0 supervisor--dag-id-to-index)
+      (puthash "after-slow" 1 supervisor--dag-id-to-index)
+      ;; Set up a mock timeout timer
+      (puthash "slow" 'mock-timer supervisor--dag-timeout-timers)
+      ;; Stage completion callback
+      (setq supervisor--dag-stage-complete-callback
+            (lambda () (setq stage-complete t)))
+      ;; Simulate timeout firing: this is what the timeout timer does
+      (supervisor--dag-mark-ready "slow")
+      ;; Blocking oneshot should be removed from blocking set
+      (should-not (gethash "slow" supervisor--dag-blocking))
+      ;; Dependent should have been unlocked and triggered
+      (should (= 0 (gethash "after-slow" supervisor--dag-in-degree)))
+      (should (member "after-slow" started-ids))
+      ;; Timeout timer should be removed
+      (should-not (gethash "slow" supervisor--dag-timeout-timers)))))
+
 ;;; Global minor mode tests
 
 (ert-deftest supervisor-test-mode-defined ()
