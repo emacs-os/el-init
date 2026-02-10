@@ -383,7 +383,8 @@ so the dashboard reflects validation state."
 
 (defvar supervisor--entry-state (make-hash-table :test 'equal)
   "Hash table of ID -> state symbol for detailed status.
-States: waiting-deps, delayed, disabled, stage-pending, failed-spawn, started.")
+States: waiting-on-deps, delayed, disabled, stage-not-started,
+failed-to-spawn, started.")
 
 (defvar supervisor-cleanup-hook nil
   "Hook run during cleanup, before killing processes.")
@@ -666,7 +667,7 @@ Called once at supervisor startup."
         (when (and (eq type 'oneshot) oneshot-wait)
           (puthash id t supervisor--dag-blocking))
         ;; Set initial state based on dependencies
-        (puthash id (if (> (length after) 0) 'waiting-deps 'stage-pending)
+        (puthash id (if (> (length after) 0) 'waiting-on-deps 'stage-not-started)
                  supervisor--entry-state))))
   ;; Build dependents graph
   (dolist (entry entries)
@@ -757,7 +758,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
     (if (not (executable-find (car args)))
         (progn
           (supervisor--log 'warning "executable not found for %s: %s" id (car args))
-          (puthash id 'failed-spawn supervisor--entry-state)
+          (puthash id 'failed-to-spawn supervisor--entry-state)
           ;; Mark ready anyway so dependents can proceed
           (supervisor--dag-mark-ready id))
       ;; Start the process
@@ -765,7 +766,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
         (if (not proc)
             ;; Failed to start, mark ready so stage can proceed
             (progn
-              (puthash id 'failed-spawn supervisor--entry-state)
+              (puthash id 'failed-to-spawn supervisor--entry-state)
               (supervisor--dag-mark-ready id))
           ;; Started successfully
           (puthash id 'started supervisor--entry-state)
@@ -915,12 +916,11 @@ IS-RESTART is t when called from a crash-triggered restart timer."
 
 (defun supervisor--wait-for-oneshot (id &optional timeout callback)
   "Wait for oneshot ID to complete asynchronously.
-TIMEOUT is seconds; nil means use `supervisor-oneshot-timeout'.
-CALLBACK is called with t on completion, nil on timeout.
+TIMEOUT is seconds; nil means wait indefinitely.
+CALLBACK is called with t on completion, nil on timeout/shutdown.
 If CALLBACK is nil, returns immediately (fire-and-forget)."
   (when callback
-    (let* ((actual-timeout (or timeout supervisor-oneshot-timeout 30))
-           (deadline (+ (float-time) actual-timeout))
+    (let* ((deadline (when timeout (+ (float-time) timeout)))
            (timer nil))
       (setq timer
             (run-with-timer
@@ -935,8 +935,8 @@ If CALLBACK is nil, returns immediately (fire-and-forget)."
                 (supervisor--shutting-down
                  (when timer (cancel-timer timer))
                  (funcall callback nil))
-                ;; Timeout
-                ((>= (float-time) deadline)
+                ;; Timeout (only if deadline set)
+                ((and deadline (>= (float-time) deadline))
                  (when timer (cancel-timer timer))
                  (funcall callback nil)))))))))
 
@@ -973,7 +973,7 @@ CALLBACK is called with t on success, nil on error."
                        (if completed
                            (supervisor--log 'info "oneshot %s completed" id)
                          (supervisor--log 'warning "oneshot %s timed out" id))
-                       (funcall callback t))))
+                       (funcall callback completed))))
                 ;; Simple process: spawned immediately
                 (supervisor--log 'info "started %s" id)
                 (funcall callback t)))))))))
@@ -1052,9 +1052,9 @@ Ready semantics (when dependents are unblocked):
   (let* ((all-entries (supervisor--all-parsed-entries))
          (all-ids (mapcar #'car all-entries))
          (by-stage (supervisor--partition-by-stage all-entries)))
-    ;; Initialize all entry states to stage-pending
+    ;; Initialize all entry states to stage-not-started
     (dolist (entry all-entries)
-      (puthash (car entry) 'stage-pending supervisor--entry-state))
+      (puthash (car entry) 'stage-not-started supervisor--entry-state))
     ;; Process stages asynchronously with continuation
     (supervisor--start-stages-async by-stage all-ids)))
 
@@ -1087,9 +1087,11 @@ ALL-IDS is the list of all valid entry IDs for cross-stage validation."
 
 ;;;###autoload
 (defun supervisor-stop ()
-  "Stop all supervised processes gracefully.
-Sends SIGTERM, waits up to `supervisor-shutdown-timeout' seconds,
-then SIGKILL any survivors."
+  "Stop all supervised processes gracefully (async).
+Sends SIGTERM immediately and returns.  A timer handles the graceful
+shutdown period: after `supervisor-shutdown-timeout' seconds, any
+survivors receive SIGKILL.  Check `supervisor--shutdown-complete-flag'
+or use `supervisor-stop-wait' if you need to block until complete."
   (interactive)
   (setq supervisor--shutting-down t)
   ;; Cancel any pending delayed starts
@@ -1111,11 +1113,13 @@ then SIGKILL any survivors."
              (when (process-live-p proc)
                (signal-process proc 'SIGTERM)))
            supervisor--processes)
-  ;; Wait for graceful exit using timer-driven completion (no polling)
-  (when (cl-some #'process-live-p (hash-table-values supervisor--processes))
+  ;; Set up async timer for graceful exit / SIGKILL (pure timer, no blocking)
+  (if (not (cl-some #'process-live-p (hash-table-values supervisor--processes)))
+      ;; No live processes, cleanup immediately
+      (clrhash supervisor--processes)
+    ;; Set up timer to check completion and SIGKILL on timeout
     (setq supervisor--shutdown-complete-flag nil)
     (let ((deadline (+ (float-time) supervisor-shutdown-timeout)))
-      ;; Set up timer to check completion and SIGKILL on timeout
       (setq supervisor--shutdown-timer
             (run-with-timer
              0.1 0.1
@@ -1127,6 +1131,7 @@ then SIGKILL any survivors."
                  (when supervisor--shutdown-timer
                    (cancel-timer supervisor--shutdown-timer)
                    (setq supervisor--shutdown-timer nil))
+                 (clrhash supervisor--processes)
                  (setq supervisor--shutdown-complete-flag t))
                 ;; Timeout - SIGKILL and done
                 ((>= (float-time) deadline)
@@ -1137,11 +1142,17 @@ then SIGKILL any survivors."
                             (when (process-live-p proc)
                               (signal-process proc 'SIGKILL)))
                           supervisor--processes)
-                 (setq supervisor--shutdown-complete-flag t))))))
-      ;; Yield to event loop until shutdown completes (timer-driven, not polling)
-      (while (not supervisor--shutdown-complete-flag)
-        (sit-for 0.05 t))))  ; t = don't redisplay, just process events
-  (clrhash supervisor--processes))
+                 (clrhash supervisor--processes)
+                 (setq supervisor--shutdown-complete-flag t)))))))))
+
+(defun supervisor-stop-wait ()
+  "Stop all processes and wait for completion (blocking).
+Calls `supervisor-stop' then waits for shutdown to complete.
+Use this in `kill-emacs-hook' if you need synchronous cleanup."
+  (interactive)
+  (supervisor-stop)
+  (while (not supervisor--shutdown-complete-flag)
+    (sit-for 0.05 t)))
 
 ;;; Dashboard
 
@@ -1249,9 +1260,9 @@ Skips invalid/malformed entries to avoid parse errors."
                               ((and oneshot-p oneshot-done) "")
                               ((eq entry-state 'disabled) "disabled")
                               ((eq entry-state 'delayed) "delayed")
-                              ((eq entry-state 'waiting-deps) "waiting-deps")
-                              ((eq entry-state 'stage-pending) "stage-pending")
-                              ((eq entry-state 'failed-spawn) "failed-spawn")
+                              ((eq entry-state 'waiting-on-deps) "waiting-on-deps")
+                              ((eq entry-state 'stage-not-started) "stage-not-started")
+                              ((eq entry-state 'failed-to-spawn) "failed-to-spawn")
                               (failed "crash-loop")
                               (t ""))))
                 (push (list id
