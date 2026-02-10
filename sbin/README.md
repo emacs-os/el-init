@@ -1,8 +1,10 @@
-# CLI Wrapper Plan (POSIX shell)
+# CLI Control Plane Plan (Minimal Wrapper + Pure Elisp)
 
-This folder will hold small POSIX shell wrappers that control `supervisor.el`
-via `emacsclient`. The goal is a systemctl-like UX that covers all supervisor
-features so the interactive dashboard (`M-x supervisor`) remains optional.
+This folder will hold a single minimal CLI shim that controls `supervisor.el`
+via `emacsclient`. All command parsing, dispatch, output formatting, and
+policy live in Elisp. The goal is a systemctl-like UX that covers all
+supervisor features so the interactive dashboard (`M-x supervisor`) remains
+optional.
 
 Status: design plan only, not yet implemented.
 
@@ -10,14 +12,17 @@ Status: design plan only, not yet implemented.
 
 - Human-readable output by default.
 - `--json` returns machine-friendly output.
-- No extra dependencies beyond POSIX shell and `emacsclient`.
+- Prefer a single minimal shim (`supervisorctl`), not multiple wrappers.
+- Keep all logic in Elisp; the shim only transports argv and prints output.
 - Fail fast with clear errors if the Emacs server is unavailable.
-- Transport stays simple: `emacsclient --eval`.
 - The CLI must expose the same operations as the dashboard.
 
 ## Primary Command
 
-- `sbin/supervisorctl` (POSIX sh)
+- `sbin/supervisorctl` (tiny shim; no per-command scripts)
+
+If shell scripts are to be avoided entirely, this shim can be a tiny compiled
+launcher instead (C/Rust/Go), but it must remain a thin transport layer only.
 
 ## Command Surface (systemctl-style)
 
@@ -184,12 +189,18 @@ Prefer a single dispatcher plus small helpers.
 
 ## Transport
 
-Each CLI command invokes Emacs via:
+The shim encodes argv and invokes a single Elisp dispatcher:
 
 ```
-emacsclient --eval "(supervisor-cli-status)"
+emacsclient --eval "(supervisorctl--dispatch \"<encoded-argv>\")"
 ```
 
+The dispatcher returns a structured payload containing:
+- `exit` (integer)
+- `format` (`human` or `json`)
+- `output` (string)
+
+The shim prints `output` and exits with `exit`.
 If needed, pass `-s NAME` or `--server-file PATH` for server selection.
 
 ## Exit Codes
