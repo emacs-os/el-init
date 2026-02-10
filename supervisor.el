@@ -45,7 +45,7 @@
 (defcustom supervisor-programs nil
   "List of programs to supervise.
 Each entry is either a command string or (COMMAND . PLIST).
-See README.org for available keywords."
+See README.md for available keywords."
   :type '(repeat (choice string (list string &rest plist)))
   :group 'supervisor)
 
