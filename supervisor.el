@@ -605,9 +605,12 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
       (if (= (length result) (length entries))
           (nreverse result)
         (supervisor--log 'warning "cycle detected in :after dependencies, using list order")
-        ;; Mark all entries in this stage as having cycle fallback
+        ;; Mark all entries in this stage as having cycle fallback and clear
+        ;; computed deps to reflect post-fallback state (no edges)
         (dolist (entry entries)
-          (puthash (car entry) t supervisor--cycle-fallback-ids))
+          (let ((id (car entry)))
+            (puthash id t supervisor--cycle-fallback-ids)
+            (puthash id nil supervisor--computed-deps)))
         ;; Return entries with :after stripped to break the cycle
         (mapcar (lambda (entry)
                   (append (cl-subseq entry 0 8) (list nil) (cl-subseq entry 9)))
@@ -1086,12 +1089,13 @@ ALL-IDS is the list of all valid entry IDs for cross-stage validation."
          (supervisor--start-stages-async rest all-ids))))))
 
 ;;;###autoload
-(defun supervisor-stop ()
+(defun supervisor-stop (&optional callback)
   "Stop all supervised processes gracefully (async).
 Sends SIGTERM immediately and returns.  A timer handles the graceful
 shutdown period: after `supervisor-shutdown-timeout' seconds, any
-survivors receive SIGKILL.  Check `supervisor--shutdown-complete-flag'
-or use `supervisor-stop-wait' if you need to block until complete."
+survivors receive SIGKILL.  Optional CALLBACK is called with no
+arguments when shutdown completes.  Check `supervisor--shutdown-complete-flag'
+to poll completion status if needed."
   (interactive)
   (setq supervisor--shutting-down t)
   ;; Cancel any pending delayed starts
@@ -1116,10 +1120,14 @@ or use `supervisor-stop-wait' if you need to block until complete."
   ;; Set up async timer for graceful exit / SIGKILL (pure timer, no blocking)
   (if (not (cl-some #'process-live-p (hash-table-values supervisor--processes)))
       ;; No live processes, cleanup immediately
-      (clrhash supervisor--processes)
+      (progn
+        (clrhash supervisor--processes)
+        (setq supervisor--shutdown-complete-flag t)
+        (when callback (funcall callback)))
     ;; Set up timer to check completion and SIGKILL on timeout
     (setq supervisor--shutdown-complete-flag nil)
-    (let ((deadline (+ (float-time) supervisor-shutdown-timeout)))
+    (let ((deadline (+ (float-time) supervisor-shutdown-timeout))
+          (cb callback))
       (setq supervisor--shutdown-timer
             (run-with-timer
              0.1 0.1
@@ -1132,7 +1140,8 @@ or use `supervisor-stop-wait' if you need to block until complete."
                    (cancel-timer supervisor--shutdown-timer)
                    (setq supervisor--shutdown-timer nil))
                  (clrhash supervisor--processes)
-                 (setq supervisor--shutdown-complete-flag t))
+                 (setq supervisor--shutdown-complete-flag t)
+                 (when cb (funcall cb)))
                 ;; Timeout - SIGKILL and done
                 ((>= (float-time) deadline)
                  (when supervisor--shutdown-timer
@@ -1143,16 +1152,9 @@ or use `supervisor-stop-wait' if you need to block until complete."
                               (signal-process proc 'SIGKILL)))
                           supervisor--processes)
                  (clrhash supervisor--processes)
-                 (setq supervisor--shutdown-complete-flag t)))))))))
+                 (setq supervisor--shutdown-complete-flag t)
+                 (when cb (funcall cb))))))))))
 
-(defun supervisor-stop-wait ()
-  "Stop all processes and wait for completion (blocking).
-Calls `supervisor-stop' then waits for shutdown to complete.
-Use this in `kill-emacs-hook' if you need synchronous cleanup."
-  (interactive)
-  (supervisor-stop)
-  (while (not supervisor--shutdown-complete-flag)
-    (sit-for 0.05 t)))
 
 ;;; Dashboard
 
