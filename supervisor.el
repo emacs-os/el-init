@@ -940,47 +940,43 @@ If CALLBACK is nil, returns immediately (fire-and-forget)."
                  (when timer (cancel-timer timer))
                  (funcall callback nil)))))))))
 
-(defun supervisor--wait-for-oneshot-sync (id &optional timeout)
-  "Wait synchronously for oneshot ID using `accept-process-output'.
-TIMEOUT is seconds; nil means use `supervisor-oneshot-timeout'.
-Returns t if completed, nil on timeout.  Uses sentinel-friendly waiting."
-  (let* ((actual-timeout (or timeout supervisor-oneshot-timeout 30))
-         (deadline (+ (float-time) actual-timeout)))
-    (while (and (< (float-time) deadline)
-                (not (gethash id supervisor--oneshot-completed))
-                (not supervisor--shutting-down))
-      ;; Process pending sentinel calls instead of busy-waiting
-      (accept-process-output nil 0.1))
-    (or (not (null (gethash id supervisor--oneshot-completed)))
-        supervisor--shutting-down)))
+(defvar supervisor--shutdown-timer nil
+  "Timer for shutdown completion checking.")
 
-(defun supervisor--start-entry-sync (entry)
-  "Start a single parsed ENTRY synchronously for dashboard manual start.
-Return t if started (or skipped), nil on error."
+(defvar supervisor--shutdown-complete-flag nil
+  "Non-nil means shutdown sequence is complete.")
+
+(defun supervisor--start-entry-async (entry callback)
+  "Start ENTRY asynchronously for dashboard manual start.
+CALLBACK is called with t on success, nil on error."
   (pcase-let ((`(,id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,otimeout) entry))
     (if (not enabled-p)
         (progn
           (supervisor--log 'info "%s disabled, skipping" id)
-          t)
+          (funcall callback t))
       (let ((args (split-string-and-unquote cmd)))
         (if (not (executable-find (car args)))
             (progn
               (supervisor--log 'warning "executable not found for %s: %s" id (car args))
-              nil)
+              (funcall callback nil))
           ;; Start the process
           (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
-            (when proc
+            (if (not proc)
+                (funcall callback nil)
               (if (eq type 'oneshot)
-                  ;; Wait for oneshot (sentinel-friendly, no busy-wait)
+                  ;; Wait for oneshot via timer (no polling loop)
                   (progn
                     (supervisor--log 'info "waiting for oneshot %s..." id)
-                    (supervisor--wait-for-oneshot-sync id otimeout)
-                    (if (gethash id supervisor--oneshot-completed)
-                        (supervisor--log 'info "oneshot %s completed" id)
-                      (supervisor--log 'warning "oneshot %s timed out or interrupted" id)))
-                ;; Simple process, just spawned
-                (supervisor--log 'info "started %s" id)))
-            (not (null proc))))))))
+                    (supervisor--wait-for-oneshot
+                     id otimeout
+                     (lambda (completed)
+                       (if completed
+                           (supervisor--log 'info "oneshot %s completed" id)
+                         (supervisor--log 'warning "oneshot %s timed out" id))
+                       (funcall callback t))))
+                ;; Simple process: spawned immediately
+                (supervisor--log 'info "started %s" id)
+                (funcall callback t)))))))))
 
 (defun supervisor--start-stage-async (stage-name entries callback)
   "Start ENTRIES for STAGE-NAME asynchronously.  Call CALLBACK when complete."
@@ -1056,6 +1052,9 @@ Ready semantics (when dependents are unblocked):
   (let* ((all-entries (supervisor--all-parsed-entries))
          (all-ids (mapcar #'car all-entries))
          (by-stage (supervisor--partition-by-stage all-entries)))
+    ;; Initialize all entry states to stage-pending
+    (dolist (entry all-entries)
+      (puthash (car entry) 'stage-pending supervisor--entry-state))
     ;; Process stages asynchronously with continuation
     (supervisor--start-stages-async by-stage all-ids)))
 
@@ -1112,17 +1111,36 @@ then SIGKILL any survivors."
              (when (process-live-p proc)
                (signal-process proc 'SIGTERM)))
            supervisor--processes)
-  ;; Wait for graceful exit (sentinel-friendly, no busy-wait)
-  (let ((deadline (+ (float-time) supervisor-shutdown-timeout)))
-    (while (and (< (float-time) deadline)
-                (cl-some #'process-live-p (hash-table-values supervisor--processes)))
-      ;; Process pending sentinels instead of busy-waiting
-      (accept-process-output nil 0.1)))
-  ;; SIGKILL any survivors
-  (maphash (lambda (_name proc)
-             (when (process-live-p proc)
-               (signal-process proc 'SIGKILL)))
-           supervisor--processes)
+  ;; Wait for graceful exit using timer-driven completion (no polling)
+  (when (cl-some #'process-live-p (hash-table-values supervisor--processes))
+    (setq supervisor--shutdown-complete-flag nil)
+    (let ((deadline (+ (float-time) supervisor-shutdown-timeout)))
+      ;; Set up timer to check completion and SIGKILL on timeout
+      (setq supervisor--shutdown-timer
+            (run-with-timer
+             0.1 0.1
+             (lambda ()
+               (cond
+                ;; All processes dead - done
+                ((not (cl-some #'process-live-p
+                               (hash-table-values supervisor--processes)))
+                 (when supervisor--shutdown-timer
+                   (cancel-timer supervisor--shutdown-timer)
+                   (setq supervisor--shutdown-timer nil))
+                 (setq supervisor--shutdown-complete-flag t))
+                ;; Timeout - SIGKILL and done
+                ((>= (float-time) deadline)
+                 (when supervisor--shutdown-timer
+                   (cancel-timer supervisor--shutdown-timer)
+                   (setq supervisor--shutdown-timer nil))
+                 (maphash (lambda (_name proc)
+                            (when (process-live-p proc)
+                              (signal-process proc 'SIGKILL)))
+                          supervisor--processes)
+                 (setq supervisor--shutdown-complete-flag t))))))
+      ;; Yield to event loop until shutdown completes (timer-driven, not polling)
+      (while (not supervisor--shutdown-complete-flag)
+        (sit-for 0.05 t))))  ; t = don't redisplay, just process events
   (clrhash supervisor--processes))
 
 ;;; Dashboard
