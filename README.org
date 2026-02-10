@@ -2,7 +2,7 @@
 #+AUTHOR: telecommuter
 #+OPTIONS: toc:2
 
-[[https://github.com/telecommuter/supervisor.el/actions/workflows/ci.yml][file:https://github.com/telecommuter/supervisor.el/actions/workflows/ci.yml/badge.svg]]
+[[https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml][file:https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml/badge.svg]]
 
 Lightweight process supervisor for managing background processes from Emacs.
 Useful for starting session services when using Emacs as a window manager (EXWM)
@@ -175,6 +175,7 @@ Open with =M-x supervisor=.
 | =supervisor-shutdown-timeout=    | 3                          | Seconds to wait for graceful exit    |
 | =supervisor-oneshot-timeout=     | 30                         | Default oneshot timeout              |
 | =supervisor-oneshot-default-wait= | t                          | Default blocking behavior for oneshots |
+| =supervisor-verbose=             | nil                        | Log all events (stages, starts, unlocks) |
 
 * Hooks
 

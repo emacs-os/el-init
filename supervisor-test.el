@@ -294,5 +294,36 @@
     ;; Valid entry should not be in invalid
     (should (null (gethash "valid" supervisor--invalid)))))
 
+;;; Verbose logging tests
+
+(ert-deftest supervisor-test-log-warning-always-shows ()
+  "Warning messages always show regardless of verbose setting."
+  (let ((supervisor-verbose nil)
+        (messages nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      (supervisor--log 'warning "test warning"))
+    (should (= (length messages) 1))
+    (should (string-match "WARNING" (car messages)))))
+
+(ert-deftest supervisor-test-log-info-hidden-when-not-verbose ()
+  "Info messages hidden when supervisor-verbose is nil."
+  (let ((supervisor-verbose nil)
+        (messages nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      (supervisor--log 'info "test info"))
+    (should (= (length messages) 0))))
+
+(ert-deftest supervisor-test-log-info-shown-when-verbose ()
+  "Info messages shown when supervisor-verbose is non-nil."
+  (let ((supervisor-verbose t)
+        (messages nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      (supervisor--log 'info "test info"))
+    (should (= (length messages) 1))
+    (should (string-match "test info" (car messages)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

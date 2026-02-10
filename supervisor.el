@@ -110,6 +110,30 @@ Set to nil for infinite wait."
   :type '(choice integer (const nil))
   :group 'supervisor)
 
+(defcustom supervisor-verbose nil
+  "When non-nil, log all events including informational messages.
+When nil, only warnings and errors are logged.
+Verbose events include stage start/completion, process start,
+dependency unlocks, and restarts."
+  :type 'boolean
+  :group 'supervisor)
+
+;;; Logging
+
+(defun supervisor--log (level format-string &rest args)
+  "Log a message at LEVEL with FORMAT-STRING and ARGS.
+LEVEL is one of:
+  `error'   - always shown
+  `warning' - always shown (prefixed with WARNING)
+  `info'    - only shown when `supervisor-verbose' is non-nil"
+  (when (or supervisor-verbose
+            (memq level '(error warning)))
+    (let ((prefix (pcase level
+                    ('warning "WARNING - ")
+                    ('error "ERROR - ")
+                    (_ ""))))
+      (message "Supervisor: %s%s" prefix (apply #'format format-string args)))))
+
 ;;; Stages
 
 (defconst supervisor-stages
@@ -124,10 +148,10 @@ Set to nil for infinite wait."
   "Convert STAGE symbol to integer priority.  Default to session (2)."
   (cond
    ((not (symbolp stage))
-    (message "Supervisor: WARNING - :stage must be a symbol, got %S" stage)
+    (supervisor--log 'warning ":stage must be a symbol, got %S" stage)
     2)
    ((not (assq stage supervisor-stages))
-    (message "Supervisor: WARNING - unknown :stage '%s', using session" stage)
+    (supervisor--log 'warning "unknown :stage '%s', using session" stage)
     2)
    (t (alist-get stage supervisor-stages))))
 
@@ -159,7 +183,7 @@ Check PLIST for :oneshot-timeout and fall back to default."
       (let ((val (plist-get plist :oneshot-timeout)))
         (if (and val (not (numberp val)))
             (progn
-              (message "Supervisor: WARNING - :oneshot-timeout must be number or nil, using default")
+              (supervisor--log 'warning ":oneshot-timeout must be number or nil, using default")
               supervisor-oneshot-timeout)
           val))
     supervisor-oneshot-timeout))
@@ -391,7 +415,7 @@ string or a list (COMMAND . PLIST)."
                        ((stringp type-raw) (intern type-raw))
                        (t 'simple)))
            (_ (unless (memq type '(simple oneshot))
-                (message "Supervisor: WARNING - unknown :type '%s' for %s, using simple" type id)))
+                (supervisor--log 'warning "unknown :type '%s' for %s, using simple" type id)))
            ;; :enabled t (default) or :disabled t (inverse) - whether to start at all
            (enabled (cond ((plist-member plist :enabled)
                            (plist-get plist :enabled))
@@ -429,7 +453,7 @@ string or a list (COMMAND . PLIST)."
     ;; Fail after max-restarts restarts (so with max=3, fail on 4th crash)
     (when (>= (length recent) supervisor-max-restarts)
       (puthash id t supervisor--failed)
-      (message "Supervisor: %s crash-looping, marked as FAILED" id)
+      (supervisor--log 'warning "%s crash-looping, marked as FAILED" id)
       t)))
 
 ;;; Staging and Dependency Resolution
@@ -444,7 +468,7 @@ string or a list (COMMAND . PLIST)."
     ;; Convert to sorted alist, reverse each list to preserve original order
     (let (result)
       (dolist (stage-int '(0 1 2 3))
-        (when-let ((entries (gethash stage-int by-stage)))
+        (when-let* ((entries (gethash stage-int by-stage)))
           (push (cons stage-int (nreverse entries)) result)))
       (nreverse result))))
 
@@ -463,8 +487,8 @@ edges removed."
                 (cond
                  ((not (member dep stage-ids))
                   (if (member dep all-ids)
-                      (message "Supervisor: WARNING - :after '%s' for %s is in different stage, ignoring" dep id)
-                    (message "Supervisor: WARNING - :after '%s' for %s does not exist, ignoring" dep id))
+                      (supervisor--log 'warning ":after '%s' for %s is in different stage, ignoring" dep id)
+                    (supervisor--log 'warning ":after '%s' for %s does not exist, ignoring" dep id))
                   nil)
                  (t t)))
               after)))
@@ -490,10 +514,10 @@ Duplicate IDs are skipped with a warning."
          ;; Invalid entry
          (reason
           (puthash id reason supervisor--invalid)
-          (message "Supervisor: INVALID %s - %s" id reason))
+          (supervisor--log 'warning "INVALID %s - %s" id reason))
          ;; Duplicate ID
          ((gethash id seen)
-          (message "Supervisor: WARNING - duplicate ID '%s', skipping" id))
+          (supervisor--log 'warning "duplicate ID '%s', skipping" id))
          ;; Valid entry
          (t
           (puthash id t seen)
@@ -550,7 +574,7 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
       ;; Check for cycle
       (if (= (length result) (length entries))
           (nreverse result)
-        (message "Supervisor: WARNING - cycle detected in :after dependencies, using list order")
+        (supervisor--log 'warning "cycle detected in :after dependencies, using list order")
         ;; Return entries with :after stripped to break the cycle
         (mapcar (lambda (entry)
                   (append (cl-subseq entry 0 8) (list nil) (cl-subseq entry 9)))
@@ -626,18 +650,21 @@ No-op if DAG scheduler is not active (e.g., manual starts)."
              (not (gethash id supervisor--dag-ready)))
     (puthash id t supervisor--dag-ready)
     ;; Cancel any timeout timer
-    (when-let ((timer (gethash id supervisor--dag-timeout-timers)))
+    (when-let* ((timer (gethash id supervisor--dag-timeout-timers)))
       (when (timerp timer)
         (cancel-timer timer))
       (remhash id supervisor--dag-timeout-timers))
     ;; Remove from blocking set
     (remhash id supervisor--dag-blocking)
+    ;; Log that this entry is now ready
+    (supervisor--log 'info "%s ready" id)
     ;; Unlock dependents and collect newly ready ones
     (let ((newly-ready nil))
       (dolist (dep-id (gethash id supervisor--dag-dependents))
         (when (gethash dep-id supervisor--dag-in-degree)
           (cl-decf (gethash dep-id supervisor--dag-in-degree))
           (when (= 0 (gethash dep-id supervisor--dag-in-degree))
+            (supervisor--log 'info "%s unlocked by %s" dep-id id)
             (push dep-id newly-ready))))
       ;; Sort by original index for stable ordering, then start
       (setq newly-ready (sort newly-ready
@@ -665,12 +692,12 @@ Mark ready immediately for simple processes, on exit for oneshot."
     (cond
      ;; Disabled: mark started and ready immediately
      ((not enabled-p)
-      (message "Supervisor: %s disabled, skipping" id)
+      (supervisor--log 'info "%s disabled, skipping" id)
       (puthash id t supervisor--dag-started)
       (supervisor--dag-mark-ready id))
      ;; Delay: schedule start after delay (don't mark started yet)
      ((> delay 0)
-      (message "Supervisor: scheduling %s after %ds delay..." id delay)
+      (supervisor--log 'info "scheduling %s after %ds delay..." id delay)
       (puthash id
                (run-at-time delay nil
                             (lambda ()
@@ -688,7 +715,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
   (let ((args (split-string-and-unquote cmd)))
     (if (not (executable-find (car args)))
         (progn
-          (message "Supervisor: executable not found for %s: %s" id (car args))
+          (supervisor--log 'warning "executable not found for %s: %s" id (car args))
           ;; Mark ready anyway so dependents can proceed
           (supervisor--dag-mark-ready id))
       ;; Start the process
@@ -699,17 +726,17 @@ Mark ready immediately for simple processes, on exit for oneshot."
           ;; Started successfully
           (if (eq type 'oneshot)
               (progn
-                (message "Supervisor: started oneshot %s" id)
+                (supervisor--log 'info "started oneshot %s" id)
                 ;; Set up timeout timer if needed
                 (when oneshot-timeout
                   (puthash id
                            (run-at-time oneshot-timeout nil
                                         (lambda ()
-                                          (message "Supervisor: WARNING - oneshot %s timed out after %ds" id oneshot-timeout)
+                                          (supervisor--log 'warning "oneshot %s timed out after %ds" id oneshot-timeout)
                                           (supervisor--dag-mark-ready id)))
                            supervisor--dag-timeout-timers)))
             ;; Simple process: mark ready immediately (spawned = ready)
-            (message "Supervisor: started %s" id)
+            (supervisor--log 'info "started %s" id)
             (supervisor--dag-mark-ready id)))))))
 
 (defun supervisor--dag-check-stage-complete ()
@@ -722,6 +749,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
              (= 0 (hash-table-count supervisor--dag-delay-timers))
              ;; No blocking oneshots pending
              (= 0 (hash-table-count supervisor--dag-blocking)))
+    (supervisor--log 'info "stage complete")
     (let ((callback supervisor--dag-stage-complete-callback))
       (setq supervisor--dag-stage-complete-callback nil)
       (funcall callback))))
@@ -774,7 +802,7 @@ TYPE is `simple' (long-running) or `oneshot' (run once).
 CONFIG-RESTART is the config's :restart value (t or nil).
 IS-RESTART is t when called from a crash-triggered restart timer."
   ;; Clear any pending restart timer for this ID first
-  (when-let ((timer (gethash id supervisor--restart-timers)))
+  (when-let* ((timer (gethash id supervisor--restart-timers)))
     (when (timerp timer)
       (cancel-timer timer))
     (remhash id supervisor--restart-timers))
@@ -810,14 +838,14 @@ IS-RESTART is t when called from a crash-triggered restart timer."
                                 (let* ((name (process-name p))
                                        (exit-code (process-exit-status p)))
                                   ;; Clean up stderr process
-                                  (when-let ((stderr (get-process (format "%s-stderr" name))))
+                                  (when-let* ((stderr (get-process (format "%s-stderr" name))))
                                     (delete-process stderr))
                                   (remhash name supervisor--processes)
                                   ;; Track oneshot completion with exit code
                                   (when (eq type 'oneshot)
                                     (puthash name exit-code supervisor--oneshot-completed)
                                     (when (> exit-code 0)
-                                      (message "Supervisor: WARNING - oneshot %s failed with exit code %d" name exit-code))
+                                      (supervisor--log 'warning "oneshot %s failed with exit code %d" name exit-code))
                                     ;; Notify DAG scheduler
                                     (supervisor--dag-mark-ready name))
                                   (supervisor--refresh-dashboard)
@@ -827,7 +855,7 @@ IS-RESTART is t when called from a crash-triggered restart timer."
                                               (not (supervisor--get-effective-restart name config-restart))
                                               (gethash name supervisor--failed)
                                               (supervisor--check-crash-loop name))
-                                    (message "Supervisor: %s died, restarting..." name)
+                                    (supervisor--log 'info "%s died, restarting..." name)
                                     ;; Track restart timer so it can be canceled
                                     (puthash name
                                              (run-at-time supervisor-restart-delay nil
@@ -856,12 +884,12 @@ Return t if started (or skipped), nil on error."
   (pcase-let ((`(,id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,otimeout) entry))
     (if (not enabled-p)
         (progn
-          (message "Supervisor: %s disabled, skipping" id)
+          (supervisor--log 'info "%s disabled, skipping" id)
           t)
       (let ((args (split-string-and-unquote cmd)))
         (if (not (executable-find (car args)))
             (progn
-              (message "Supervisor: executable not found for %s: %s" id (car args))
+              (supervisor--log 'warning "executable not found for %s: %s" id (car args))
               nil)
           ;; Start the process
           (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
@@ -869,18 +897,18 @@ Return t if started (or skipped), nil on error."
               (if (eq type 'oneshot)
                   ;; Wait for oneshot to complete
                   (progn
-                    (message "Supervisor: waiting for oneshot %s..." id)
+                    (supervisor--log 'info "waiting for oneshot %s..." id)
                     (supervisor--wait-for-oneshot id otimeout)
                     (if (gethash id supervisor--oneshot-completed)
-                        (message "Supervisor: oneshot %s completed" id)
-                      (message "Supervisor: WARNING - oneshot %s timed out or interrupted" id)))
+                        (supervisor--log 'info "oneshot %s completed" id)
+                      (supervisor--log 'warning "oneshot %s timed out or interrupted" id)))
                 ;; Simple process, just spawned
-                (message "Supervisor: started %s" id)))
+                (supervisor--log 'info "started %s" id)))
             (not (null proc))))))))
 
 (defun supervisor--start-stage-async (stage-name entries callback)
   "Start ENTRIES for STAGE-NAME asynchronously.  Call CALLBACK when complete."
-  (message "Supervisor: === Stage: %s ===" stage-name)
+  (supervisor--log 'info "=== Stage: %s ===" stage-name)
   (if (null entries)
       ;; Empty stage, proceed immediately
       (funcall callback)
@@ -944,7 +972,7 @@ ALL-IDS is the list of all valid entry IDs for cross-stage validation."
   (if (or (null remaining-stages) supervisor--shutting-down)
       (progn
         (supervisor--dag-cleanup)
-        (message "Supervisor: startup complete"))
+        (supervisor--log 'info "startup complete"))
     (let* ((stage-pair (car remaining-stages))
            (rest (cdr remaining-stages))
            (stage-int (car stage-pair))
@@ -1112,7 +1140,7 @@ Skips invalid/malformed entries to avoid parse errors."
 
 (defun supervisor--refresh-dashboard ()
   "Refresh the dashboard buffer if it exists."
-  (when-let ((buf (get-buffer "*supervisor*")))
+  (when-let* ((buf (get-buffer "*supervisor*")))
     (with-current-buffer buf
       (let ((pos (point)))
         (setq tabulated-list-entries (supervisor--get-entries))
@@ -1127,7 +1155,7 @@ Skips invalid/malformed entries to avoid parse errors."
 (defun supervisor-dashboard-describe-entry ()
   "Show detailed information about entry at point."
   (interactive)
-  (when-let ((id (tabulated-list-get-id)))
+  (when-let* ((id (tabulated-list-get-id)))
     (let ((invalid-reason (gethash id supervisor--invalid)))
       (if invalid-reason
           ;; Invalid entry - show the reason
@@ -1171,7 +1199,7 @@ Cycles: config default -> override opposite -> back to config default."
                 (puthash id (if new-enabled 'enabled 'disabled) supervisor--restart-override))
               ;; Cancel pending restart timer when disabling
               (unless new-enabled
-                (when-let ((timer (gethash id supervisor--restart-timers)))
+                (when-let* ((timer (gethash id supervisor--restart-timers)))
                   (when (timerp timer)
                     (cancel-timer timer))
                   (remhash id supervisor--restart-timers))))
@@ -1200,7 +1228,7 @@ Cycles: config default -> override opposite -> back to config default."
           (pcase-let ((`(,_id ,cmd ,_delay ,_enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout) entry))
             (let ((args (split-string-and-unquote cmd)))
               (if (not (executable-find (car args)))
-                  (message "Supervisor: executable not found: %s" (car args))
+                  (supervisor--log 'warning "executable not found: %s" (car args))
                 ;; Clear failed state and oneshot completion on manual start
                 (remhash id supervisor--failed)
                 (remhash id supervisor--restart-times)
@@ -1211,7 +1239,7 @@ Cycles: config default -> override opposite -> back to config default."
 (defun supervisor-dashboard-toggle-logging ()
   "Toggle logging for process at point (takes effect on next start)."
   (interactive)
-  (when-let ((id (tabulated-list-get-id)))
+  (when-let* ((id (tabulated-list-get-id)))
     (if (gethash id supervisor--invalid)
         (message "Cannot toggle logging for invalid entry: %s" id)
       (let* ((current (gethash id supervisor--logging))
@@ -1224,7 +1252,7 @@ Cycles: config default -> override opposite -> back to config default."
 (defun supervisor-dashboard-view-log ()
   "Open the log file for process at point."
   (interactive)
-  (when-let ((id (tabulated-list-get-id)))
+  (when-let* ((id (tabulated-list-get-id)))
     (let ((log-file (supervisor--log-file id)))
       (if (file-exists-p log-file)
           (find-file log-file)

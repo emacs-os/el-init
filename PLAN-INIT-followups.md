@@ -162,6 +162,22 @@ the user-session supervisor simpler, more transparent, and more interactive.
 - MUST include a short "Why supervisor.el exists" section in README, contrasting
   the user-session focus and transparency without being a rant.
 
+## Addendum: Autoloads (Recommended)
+
+Emacs packages typically include autoload cookies so users can call commands
+without preloading the entire file.  This is not strictly required by MELPA,
+but is standard and improves UX.
+
+- SHOULD add `;;;###autoload` cookies for all interactive entry points, at least:
+  - `supervisor-start`
+  - `supervisor-stop`
+  - `supervisor`
+  - `supervisor-validate`
+  - `supervisor-mode` (once implemented)
+  - any other `defun` with `(interactive)`
+- SHOULD add autoload for `supervisor-dashboard-mode` if it is user-facing.
+- Autoload cookies must be kept accurate when commands are renamed or removed.
+
 ## MELPA Submission Requirements
 
 This package MUST be structured for MELPA submission. See [MELPA CONTRIBUTING.org](https://github.com/melpa/melpa/blob/master/CONTRIBUTING.org) for full details.
