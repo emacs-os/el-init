@@ -375,6 +375,16 @@ so the dashboard reflects validation state."
 (defvar supervisor--completed-stages nil
   "List of completed stage symbols.")
 
+(defvar supervisor--cycle-fallback-ids (make-hash-table :test 'equal)
+  "Hash table of entry IDs that had :after cleared due to cycle fallback.")
+
+(defvar supervisor--computed-deps (make-hash-table :test 'equal)
+  "Hash table of ID -> validated :after list (same-stage, existing deps only).")
+
+(defvar supervisor--entry-state (make-hash-table :test 'equal)
+  "Hash table of ID -> state symbol for detailed status.
+States: waiting-deps, delayed, disabled, stage-pending, failed-spawn, started.")
+
 (defvar supervisor-cleanup-hook nil
   "Hook run during cleanup, before killing processes.")
 
@@ -493,7 +503,7 @@ string or a list (COMMAND . PLIST)."
   "Validate :after references in ENTRIES.
 STAGE-IDS is the set of valid IDs in this stage.  ALL-IDS is the set of
 all valid IDs across all stages.  Return ENTRIES with invalid :after
-edges removed."
+edges removed.  Stores computed deps in `supervisor--computed-deps'."
   (mapcar
    (lambda (entry)
      (let* ((id (nth 0 entry))
@@ -509,6 +519,8 @@ edges removed."
                   nil)
                  (t t)))
               after)))
+       ;; Store the computed valid dependencies
+       (puthash id valid-after supervisor--computed-deps)
        (if (equal after valid-after)
            entry
          ;; Return entry with filtered :after, preserving remaining fields
@@ -592,6 +604,9 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
       (if (= (length result) (length entries))
           (nreverse result)
         (supervisor--log 'warning "cycle detected in :after dependencies, using list order")
+        ;; Mark all entries in this stage as having cycle fallback
+        (dolist (entry entries)
+          (puthash (car entry) t supervisor--cycle-fallback-ids))
         ;; Return entries with :after stripped to break the cycle
         (mapcar (lambda (entry)
                   (append (cl-subseq entry 0 8) (list nil) (cl-subseq entry 9)))
@@ -649,7 +664,10 @@ Called once at supervisor startup."
         (cl-incf idx)
         ;; Track blocking oneshots
         (when (and (eq type 'oneshot) oneshot-wait)
-          (puthash id t supervisor--dag-blocking)))))
+          (puthash id t supervisor--dag-blocking))
+        ;; Set initial state based on dependencies
+        (puthash id (if (> (length after) 0) 'waiting-deps 'stage-pending)
+                 supervisor--entry-state))))
   ;; Build dependents graph
   (dolist (entry entries)
     (let ((id (nth 0 entry))
@@ -712,11 +730,13 @@ Mark ready immediately for simple processes, on exit for oneshot."
      ;; Disabled: mark started and ready immediately
      ((not enabled-p)
       (supervisor--log 'info "%s disabled, skipping" id)
+      (puthash id 'disabled supervisor--entry-state)
       (puthash id t supervisor--dag-started)
       (supervisor--dag-mark-ready id))
      ;; Delay: schedule start after delay (don't mark started yet)
      ((> delay 0)
       (supervisor--log 'info "scheduling %s after %ds delay..." id delay)
+      (puthash id 'delayed supervisor--entry-state)
       (puthash id
                (run-at-time delay nil
                             (lambda ()
@@ -737,14 +757,18 @@ Mark ready immediately for simple processes, on exit for oneshot."
     (if (not (executable-find (car args)))
         (progn
           (supervisor--log 'warning "executable not found for %s: %s" id (car args))
+          (puthash id 'failed-spawn supervisor--entry-state)
           ;; Mark ready anyway so dependents can proceed
           (supervisor--dag-mark-ready id))
       ;; Start the process
       (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
         (if (not proc)
             ;; Failed to start, mark ready so stage can proceed
-            (supervisor--dag-mark-ready id)
+            (progn
+              (puthash id 'failed-spawn supervisor--entry-state)
+              (supervisor--dag-mark-ready id))
           ;; Started successfully
+          (puthash id 'started supervisor--entry-state)
           (if (eq type 'oneshot)
               (progn
                 (supervisor--log 'info "started oneshot %s" id)
@@ -889,14 +913,44 @@ IS-RESTART is t when called from a crash-triggered restart timer."
       (puthash id proc supervisor--processes)
       proc)))
 
-(defun supervisor--wait-for-oneshot (id &optional timeout)
-  "Wait for oneshot ID to complete.  Return t if completed, nil on TIMEOUT.
-TIMEOUT is seconds to wait; nil means wait indefinitely."
-  (let ((deadline (when timeout (+ (float-time) timeout))))
-    (while (and (or (null deadline) (< (float-time) deadline))
+(defun supervisor--wait-for-oneshot (id &optional timeout callback)
+  "Wait for oneshot ID to complete asynchronously.
+TIMEOUT is seconds; nil means use `supervisor-oneshot-timeout'.
+CALLBACK is called with t on completion, nil on timeout.
+If CALLBACK is nil, returns immediately (fire-and-forget)."
+  (when callback
+    (let* ((actual-timeout (or timeout supervisor-oneshot-timeout 30))
+           (deadline (+ (float-time) actual-timeout))
+           (timer nil))
+      (setq timer
+            (run-with-timer
+             0.1 0.1
+             (lambda ()
+               (cond
+                ;; Completed
+                ((gethash id supervisor--oneshot-completed)
+                 (when timer (cancel-timer timer))
+                 (funcall callback t))
+                ;; Shutting down
+                (supervisor--shutting-down
+                 (when timer (cancel-timer timer))
+                 (funcall callback nil))
+                ;; Timeout
+                ((>= (float-time) deadline)
+                 (when timer (cancel-timer timer))
+                 (funcall callback nil)))))))))
+
+(defun supervisor--wait-for-oneshot-sync (id &optional timeout)
+  "Wait synchronously for oneshot ID using `accept-process-output'.
+TIMEOUT is seconds; nil means use `supervisor-oneshot-timeout'.
+Returns t if completed, nil on timeout.  Uses sentinel-friendly waiting."
+  (let* ((actual-timeout (or timeout supervisor-oneshot-timeout 30))
+         (deadline (+ (float-time) actual-timeout)))
+    (while (and (< (float-time) deadline)
                 (not (gethash id supervisor--oneshot-completed))
                 (not supervisor--shutting-down))
-      (sit-for 0.1))
+      ;; Process pending sentinel calls instead of busy-waiting
+      (accept-process-output nil 0.1))
     (or (not (null (gethash id supervisor--oneshot-completed)))
         supervisor--shutting-down)))
 
@@ -917,10 +971,10 @@ Return t if started (or skipped), nil on error."
           (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
             (when proc
               (if (eq type 'oneshot)
-                  ;; Wait for oneshot to complete
+                  ;; Wait for oneshot (sentinel-friendly, no busy-wait)
                   (progn
                     (supervisor--log 'info "waiting for oneshot %s..." id)
-                    (supervisor--wait-for-oneshot id otimeout)
+                    (supervisor--wait-for-oneshot-sync id otimeout)
                     (if (gethash id supervisor--oneshot-completed)
                         (supervisor--log 'info "oneshot %s completed" id)
                       (supervisor--log 'warning "oneshot %s timed out or interrupted" id)))
@@ -991,6 +1045,9 @@ Ready semantics (when dependents are unblocked):
   (clrhash supervisor--oneshot-completed)
   (clrhash supervisor--start-times)
   (clrhash supervisor--ready-times)
+  (clrhash supervisor--cycle-fallback-ids)
+  (clrhash supervisor--computed-deps)
+  (clrhash supervisor--entry-state)
   (setq supervisor--current-stage nil)
   (setq supervisor--completed-stages nil)
   (supervisor--dag-cleanup)
@@ -1055,11 +1112,12 @@ then SIGKILL any survivors."
              (when (process-live-p proc)
                (signal-process proc 'SIGTERM)))
            supervisor--processes)
-  ;; Wait for graceful exit
+  ;; Wait for graceful exit (sentinel-friendly, no busy-wait)
   (let ((deadline (+ (float-time) supervisor-shutdown-timeout)))
     (while (and (< (float-time) deadline)
                 (cl-some #'process-live-p (hash-table-values supervisor--processes)))
-      (sleep-for 0.1)))
+      ;; Process pending sentinels instead of busy-waiting
+      (accept-process-output nil 0.1)))
   ;; SIGKILL any survivors
   (maphash (lambda (_name proc)
              (when (process-live-p proc)
@@ -1165,7 +1223,19 @@ Skips invalid/malformed entries to avoid parse errors."
                      (log-override (gethash id supervisor--logging))
                      (effective-logging (cond ((eq log-override 'enabled) t)
                                               ((eq log-override 'disabled) nil)
-                                              (t logging-p))))
+                                              (t logging-p)))
+                     ;; Reason column - detailed state for non-running entries
+                     (entry-state (gethash id supervisor--entry-state))
+                     (reason (cond
+                              (alive "")
+                              ((and oneshot-p oneshot-done) "")
+                              ((eq entry-state 'disabled) "disabled")
+                              ((eq entry-state 'delayed) "delayed")
+                              ((eq entry-state 'waiting-deps) "waiting-deps")
+                              ((eq entry-state 'stage-pending) "stage-pending")
+                              ((eq entry-state 'failed-spawn) "failed-spawn")
+                              (failed "crash-loop")
+                              (t ""))))
                 (push (list id
                             (vector id
                                     (symbol-name type)
@@ -1175,7 +1245,7 @@ Skips invalid/malformed entries to avoid parse errors."
                                     restart-str
                                     (if effective-logging "yes" "no")
                                     pid
-                                    ""))
+                                    reason))
                       entries)))))))
     (nreverse entries)))
 
@@ -1344,7 +1414,8 @@ Cycles: config default -> override opposite -> back to config default."
 
 (defun supervisor-dashboard-show-deps ()
   "Show computed dependencies for entry at point.
-Shows only validated edges: same-stage dependencies that exist."
+Shows post-validation edges: after cycle fallback and stage filtering.
+Run `supervisor-start' first to populate computed dependency data."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
     (if (gethash id supervisor--invalid)
@@ -1352,34 +1423,26 @@ Shows only validated edges: same-stage dependencies that exist."
       (let ((entry (supervisor--get-entry-for-id id)))
         (if entry
             (let* ((my-stage (nth 7 entry))
-                   (raw-after (nth 8 entry))
-                   ;; Build set of valid same-stage IDs
-                   (stage-ids (make-hash-table :test 'equal))
-                   (idx 0))
-              ;; Collect all valid entries in same stage
-              (dolist (e supervisor-programs)
-                (let ((e-id (supervisor--extract-id e idx)))
-                  (cl-incf idx)
-                  (unless (gethash e-id supervisor--invalid)
-                    (let ((parsed (supervisor--parse-entry e)))
-                      (when (eq (nth 7 parsed) my-stage)
-                        (puthash e-id parsed stage-ids))))))
-              ;; Filter :after to only valid same-stage entries
-              (let* ((valid-after (cl-remove-if-not
-                                   (lambda (dep) (gethash dep stage-ids))
-                                   raw-after))
-                     ;; Find entries in same stage that depend on this one
-                     (dependents nil))
-                (maphash (lambda (e-id parsed)
-                           (when (and (not (string= e-id id))
-                                      (member id (nth 8 parsed)))
-                             ;; Only count if this dep is valid (same stage)
-                             (push e-id dependents)))
-                         stage-ids)
-                (message "%s [%s]: depends-on=%s blocks=%s"
-                         id my-stage
-                         (if valid-after (mapconcat #'identity valid-after ", ") "none")
-                         (if dependents (mapconcat #'identity dependents ", ") "none"))))
+                   (cycle-fallback (gethash id supervisor--cycle-fallback-ids))
+                   ;; Use computed deps if available, else show raw (pre-start)
+                   (computed (gethash id supervisor--computed-deps))
+                   (effective-deps (if cycle-fallback
+                                       nil  ; cycle fallback clears all deps
+                                     (or computed (nth 8 entry))))
+                   ;; Find entries that depend on this one (computed)
+                   (dependents nil))
+              ;; Scan computed-deps for entries that list this ID
+              (maphash (lambda (e-id e-deps)
+                         (when (and (not (string= e-id id))
+                                    (not (gethash e-id supervisor--cycle-fallback-ids))
+                                    (member id e-deps))
+                           (push e-id dependents)))
+                       supervisor--computed-deps)
+              (message "%s [%s]%s: depends-on=%s blocks=%s"
+                       id my-stage
+                       (if cycle-fallback " (cycle fallback)" "")
+                       (if effective-deps (mapconcat #'identity effective-deps ", ") "none")
+                       (if dependents (mapconcat #'identity dependents ", ") "none")))
           (message "Entry not found: %s" id))))))
 
 (defun supervisor-dashboard-blame ()
