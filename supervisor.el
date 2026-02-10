@@ -1266,7 +1266,7 @@ Cycles: config default -> override opposite -> back to config default."
   "Toggle proced auto-update in the Proced buffer, or globally if no buffer."
   (interactive)
   (require 'proced)
-  (if-let ((proced-buf (get-buffer "*Proced*")))
+  (if-let* ((proced-buf (get-buffer "*Proced*")))
       (with-current-buffer proced-buf
         (proced-toggle-auto-update)  ; no arg to cycle
         (message "Proced auto-update: %s"

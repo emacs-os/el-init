@@ -9,14 +9,24 @@ supervisor.el is a single-file Emacs Lisp package for managing background proces
 ## Development Commands
 
 ```bash
-make check          # Run lint + test (recommended before commits)
-make lint           # Run byte-compile, checkdoc, package-lint
-make test           # Run ERT tests
+make check          # Run all CI checks (byte-compile, checkdoc, package-lint, ERT tests)
+make lint           # Run byte-compile, checkdoc, package-lint only
+make test           # Run ERT tests only
 make test-one TEST=supervisor-test-parse-string-entry  # Run single test
 
 # Load and test interactively
 emacs -Q -l supervisor.el
 ```
+
+## Pre-commit Requirement
+
+**IMPORTANT:** Always run `make check` and ensure it passes before:
+- Committing changes
+- Moving to the next task or phase
+- Declaring work complete
+
+This matches CI exactly (GitHub Actions runs `make check` on Emacs 28.2, 29.4, and snapshot).
+CI failures that pass locally often involve Emacs version differences (e.g., `when-let` → `when-let*` for Emacs 31+).
 
 ## Architecture
 
