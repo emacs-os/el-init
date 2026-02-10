@@ -55,6 +55,7 @@ Or with hooks for more control:
 | =M-x supervisor-mode=    | Toggle global minor mode (start/stop all)     |
 | =M-x supervisor-start=   | Start all programs by stage (safe to re-run)  |
 | =M-x supervisor-stop=    | Gracefully stop all supervised processes      |
+| =M-x supervisor-reload=  | Reconcile: stop removed/disabled, start new   |
 | =M-x supervisor=         | Open dashboard to monitor/control processes   |
 | =M-x supervisor-validate= | Check config without starting processes       |
 
@@ -167,13 +168,16 @@ Open with =M-x supervisor=.
 
 | Key | Action                                             |
 |-----+----------------------------------------------------|
+| e   | Toggle enabled (takes effect on next start)        |
+| f   | Cycle stage filter (all -> early -> ... -> all)    |
 | s   | Start process (works even if =:enabled nil=)         |
 | k   | Kill process (SIGTERM, disables auto-restart)      |
 | r   | Toggle restart policy (config -> override -> config) |
 | l   | Toggle logging (takes effect on next start)        |
 | L   | View log file                                      |
 | ?   | Show resolved config for entry                     |
-| d   | Show dependency graph (depends-on / blocks)        |
+| d   | Show dependencies for entry at point               |
+| D   | Show full dependency graph for all entries         |
 | B   | Show startup blame view (sorted by duration)       |
 | p   | Open =M-x proced=                                    |
 | P   | Toggle proced auto-update (off -> visible -> on)   |
@@ -212,12 +216,24 @@ Open with =M-x supervisor=.
 | =supervisor-shutdown-timeout=    | 3                          | Seconds to wait for graceful exit    |
 | =supervisor-oneshot-timeout=     | 30                         | Default oneshot timeout              |
 | =supervisor-oneshot-default-wait= | t                          | Default blocking behavior for oneshots |
+| =supervisor-stage-timeout=       | nil                        | Stage timeout in seconds (nil = none) |
+| =supervisor-max-concurrent-starts= | nil                        | Max parallel starts (nil = unlimited) |
 | =supervisor-verbose=             | nil                        | Log all events (stages, starts, unlocks) |
+| =supervisor-log-to-file=         | nil                        | Also write events to supervisor.log  |
 
 * Hooks
 
-- =supervisor-cleanup-hook= - Runs before killing processes during shutdown.
-  Useful for cleanup commands (e.g., resetting redshift color temperature).
+| Hook                          | Arguments           | When                                |
+|-------------------------------+---------------------+-------------------------------------|
+| =supervisor-cleanup-hook=       | none                | Before killing processes on shutdown |
+| =supervisor-stage-start-hook=   | stage-name          | When a stage begins                 |
+| =supervisor-stage-complete-hook= | stage-name          | When a stage completes              |
+| =supervisor-process-exit-hook=  | id, status, code    | When any process exits              |
+
+The =supervisor-process-exit-hook= receives:
+- =id= - process identifier (string)
+- =status= - symbol: =exited= (normal exit), =signal= (killed by signal), or =unknown=
+- =code= - exit code or signal number
 
 * Full Example
 

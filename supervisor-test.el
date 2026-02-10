@@ -654,5 +654,144 @@
     (should (= (length messages) 1))
     (should (string-match "test info" (car messages)))))
 
+;;; P1 behavior tests
+
+(ert-deftest supervisor-test-max-concurrent-starts-active-count-no-leak ()
+  "Active count must not leak when entries are processed from queue."
+  ;; The fix ensures supervisor--dag-process-pending-starts does NOT
+  ;; increment the count - only supervisor--dag-do-start does.
+  (let ((supervisor--dag-pending-starts nil)
+        (supervisor--dag-active-starts 0)
+        (supervisor--dag-entries (make-hash-table :test 'equal))
+        (supervisor--dag-started (make-hash-table :test 'equal))
+        (supervisor--dag-ready (make-hash-table :test 'equal))
+        (supervisor--dag-blocking (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+        (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--ready-times (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor-max-concurrent-starts 2)
+        (started-ids nil))
+    ;; Queue entries
+    (puthash "a" '("a" "true" 0 t t t simple session nil t 30) supervisor--dag-entries)
+    (puthash "b" '("b" "true" 0 t t t simple session nil t 30) supervisor--dag-entries)
+    (setq supervisor--dag-pending-starts '("a" "b"))
+    ;; Before processing, count should be 0
+    (should (= supervisor--dag-active-starts 0))
+    ;; Stub supervisor--dag-start-entry-async to track calls without spawning
+    (cl-letf (((symbol-function 'supervisor--dag-start-entry-async)
+               (lambda (entry) (push (car entry) started-ids))))
+      ;; Call the real function
+      (supervisor--dag-process-pending-starts)
+      ;; Queue should be drained
+      (should (null supervisor--dag-pending-starts))
+      ;; Both entries should have been passed to start-entry-async
+      (should (member "a" started-ids))
+      (should (member "b" started-ids))
+      ;; Active count should still be 0 (no increment in process-pending-starts)
+      (should (= supervisor--dag-active-starts 0)))))
+
+(ert-deftest supervisor-test-enabled-override-affects-effective-enabled ()
+  "Runtime enable override affects effective enabled state."
+  (let ((supervisor--enabled-override (make-hash-table :test 'equal)))
+    ;; No override: config enabled-p applies
+    (should (supervisor--get-effective-enabled "a" t))
+    (should-not (supervisor--get-effective-enabled "b" nil))
+    ;; Override to disabled: entry is disabled regardless of config
+    (puthash "a" 'disabled supervisor--enabled-override)
+    (should-not (supervisor--get-effective-enabled "a" t))
+    ;; Override to enabled: entry is enabled regardless of config
+    (puthash "b" 'enabled supervisor--enabled-override)
+    (should (supervisor--get-effective-enabled "b" nil))))
+
+(ert-deftest supervisor-test-stage-timeout-sets-entry-state ()
+  "Stage timeout marks unstarted entries with stage-timeout state."
+  (let ((supervisor--dag-entries (make-hash-table :test 'equal))
+        (supervisor--dag-started (make-hash-table :test 'equal))
+        (supervisor--dag-blocking (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-ready (make-hash-table :test 'equal))
+        (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+        (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+        (supervisor--dag-id-to-index (make-hash-table :test 'equal))
+        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--dag-stage-timeout-timer nil)
+        (supervisor--dag-pending-starts nil)
+        (supervisor--dag-active-starts 0)
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (callback-called nil))
+    ;; Set up entry that hasn't started
+    (puthash "delayed" '("delayed" "cmd" 5 t t t simple session nil t 30)
+             supervisor--dag-entries)
+    (setq supervisor--dag-stage-complete-callback (lambda () (setq callback-called t)))
+    ;; Force stage complete should mark unstarted as stage-timeout
+    (supervisor--dag-force-stage-complete)
+    (should (eq (gethash "delayed" supervisor--entry-state) 'stage-timeout))
+    (should callback-called)))
+
+(ert-deftest supervisor-test-format-exit-status-signal ()
+  "Exit status formatting distinguishes signal from exit."
+  ;; Signal case
+  (should (string-match "killed by signal 15"
+                        (supervisor--format-exit-status 'signal 15)))
+  ;; Exit with code 0
+  (should (string-match "exited successfully"
+                        (supervisor--format-exit-status 'exit 0)))
+  ;; Exit with non-zero code
+  (should (string-match "exited with code 1"
+                        (supervisor--format-exit-status 'exit 1))))
+
+(ert-deftest supervisor-test-reload-respects-enabled-override ()
+  "Reload uses effective enabled state for start decisions."
+  (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor-programs '(("new-entry" :type simple)))
+        (started-ids nil))
+    ;; Mark entry as runtime-disabled
+    (puthash "new-entry" 'disabled supervisor--enabled-override)
+    ;; Mock supervisor--start-process to track what gets started
+    (cl-letf (((symbol-function 'supervisor--start-process)
+               (lambda (id _cmd _log _type _restart)
+                 (push id started-ids)))
+              ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
+              ((symbol-function 'executable-find) (lambda (_) t)))
+      (supervisor-reload)
+      ;; Entry should NOT have been started due to override
+      (should-not (member "new-entry" started-ids)))))
+
+(ert-deftest supervisor-test-reload-stops-disabled-entries ()
+  "Reload stops running entries that are now disabled."
+  (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor-programs '(("running" :type simple :disabled t)))
+        (killed-ids nil))
+    ;; Create a fake live process
+    (let ((fake-proc (start-process "test-proc" nil "sleep" "100")))
+      (puthash "running" fake-proc supervisor--processes)
+      ;; Mock kill-process to track kills
+      (cl-letf (((symbol-function 'kill-process)
+                 (lambda (proc)
+                   (push (process-name proc) killed-ids)
+                   (delete-process proc)))
+                ((symbol-function 'supervisor--refresh-dashboard) #'ignore))
+        (supervisor-reload)
+        ;; Entry should have been killed due to :disabled
+        (should (member "test-proc" killed-ids))))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
