@@ -45,7 +45,7 @@
 (defcustom supervisor-programs nil
   "List of programs to supervise.
 Each entry is either a command string or (COMMAND . PLIST).
-See README.md for available keywords."
+See README.org for available keywords."
   :type '(repeat (choice string (list string &rest plist)))
   :group 'supervisor)
 
@@ -131,6 +131,63 @@ Set to a file path string to watch a specific file instead."
 
 (defvar supervisor--config-watch-descriptor nil
   "File notification descriptor for config watching.")
+
+;;; Dashboard Faces
+
+(defface supervisor-status-running
+  '((t :foreground "green" :weight bold))
+  "Face for running status in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-status-done
+  '((t :foreground "gray"))
+  "Face for done/completed oneshot status in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-status-failed
+  '((t :foreground "red" :weight bold))
+  "Face for failed status in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-status-dead
+  '((t :foreground "orange" :weight bold))
+  "Face for dead/crash-loop status in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-status-invalid
+  '((t :foreground "magenta" :weight bold))
+  "Face for invalid config entry in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-status-pending
+  '((t :foreground "yellow"))
+  "Face for pending/not-yet-started status in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-status-stopped
+  '((t :foreground "dim gray"))
+  "Face for stopped status in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-stage-separator
+  '((t :weight bold :underline t))
+  "Face for stage separator rows in dashboard."
+  :group 'supervisor)
+
+(defcustom supervisor-stage-descriptions
+  '((stage1 . "X Setup")
+    (stage2 . "System")
+    (stage3 . "Services")
+    (stage4 . "Applets"))
+  "Alist mapping stage symbols to human-readable descriptions.
+Used in dashboard stage separators for better readability."
+  :type '(alist :key-type symbol :value-type string)
+  :group 'supervisor)
+
+(defcustom supervisor-dashboard-group-by-stage t
+  "When non-nil, group dashboard entries by stage with separators."
+  :type 'boolean
+  :group 'supervisor)
 
 ;;; Logging
 
@@ -1542,19 +1599,35 @@ nil means show all entries, otherwise a tag symbol or string.")
     (define-key map "t" #'supervisor-dashboard-cycle-tag-filter)
     (define-key map "r" #'supervisor-dashboard-toggle-restart)
     (define-key map "k" #'supervisor-dashboard-kill)
+    (define-key map "K" #'supervisor-dashboard-kill-force)
     (define-key map "s" #'supervisor-dashboard-start)
     (define-key map "l" #'supervisor-dashboard-toggle-logging)
     (define-key map "L" #'supervisor-dashboard-view-log)
     (define-key map "p" #'proced)
     (define-key map "P" #'supervisor-dashboard-toggle-proced-auto-update)
     (define-key map "g" #'supervisor-dashboard-refresh)
+    (define-key map "G" #'supervisor-dashboard-toggle-auto-refresh)
+    (define-key map "h" #'supervisor-dashboard-help)
     (define-key map "?" #'supervisor-dashboard-describe-entry)
     (define-key map "d" #'supervisor-dashboard-show-deps)
     (define-key map "D" #'supervisor-dashboard-show-graph)
     (define-key map "B" #'supervisor-dashboard-blame)
-    (define-key map "q" #'quit-window)
+    (define-key map "q" #'supervisor-dashboard-quit)
     map)
   "Keymap for `supervisor-dashboard-mode'.")
+
+(defvar-local supervisor--dashboard-last-id nil
+  "Last echoed entry ID, to avoid repeated messages.")
+
+(defun supervisor--dashboard-echo-id ()
+  "Echo full entry ID in minibuffer if point moved to new row."
+  (when-let* ((id (tabulated-list-get-id)))
+    (unless (equal id supervisor--dashboard-last-id)
+      (setq supervisor--dashboard-last-id id)
+      ;; Only echo string IDs longer than column width (15)
+      ;; Skip separator rows (symbol IDs)
+      (when (and (stringp id) (> (length id) 15))
+        (message "%s" id)))))
 
 (define-derived-mode supervisor-dashboard-mode tabulated-list-mode "Supervisor"
   "Major mode for the supervisor dashboard."
@@ -1565,10 +1638,14 @@ nil means show all entries, otherwise a tag symbol or string.")
                                ("Status" 8 t)
                                ("Restart" 7 t)
                                ("Log" 3 t)
-                               ("PID" 6 t)
+                               ("PID" 7 t)
                                ("Reason" 30 t)])
   (setq tabulated-list-padding 1)
-  (tabulated-list-init-header))
+  (tabulated-list-init-header)
+  ;; Echo full ID in minibuffer when point moves between rows
+  (add-hook 'post-command-hook #'supervisor--dashboard-echo-id nil t)
+  ;; Clean up auto-refresh timer when buffer is killed
+  (add-hook 'kill-buffer-hook #'supervisor--cleanup-auto-refresh nil t))
 
 (defun supervisor--get-entry-for-id (id)
   "Get the parsed entry for ID.
@@ -1584,9 +1661,43 @@ Skips invalid/malformed entries to avoid parse errors."
              when (string= entry-id id)
              return (supervisor--parse-entry entry))))
 
+(defun supervisor--status-face (status)
+  "Return the face for STATUS string."
+  (pcase status
+    ("running" 'supervisor-status-running)
+    ("done" 'supervisor-status-done)
+    ("failed" 'supervisor-status-failed)
+    ("dead" 'supervisor-status-dead)
+    ("invalid" 'supervisor-status-invalid)
+    ("pending" 'supervisor-status-pending)
+    ("stopped" 'supervisor-status-stopped)
+    (_ nil)))
+
+(defun supervisor--propertize-status (status)
+  "Return STATUS string with appropriate face applied."
+  (let ((face (supervisor--status-face status)))
+    (if face
+        (propertize status 'face face)
+      status)))
+
+(defun supervisor--make-stage-separator (stage)
+  "Create a separator row for STAGE."
+  (let* ((desc (or (cdr (assq stage supervisor-stage-descriptions))
+                   (symbol-name stage)))
+         (label (propertize (format "── %s: %s " stage desc)
+                            'face 'supervisor-stage-separator)))
+    (list (intern (format "--%s--" stage))  ; Use symbol for separator ID
+          (vector label "" "" "" "" "" "" "" ""))))
+
+(defun supervisor--separator-row-p (id)
+  "Return non-nil if ID represents a stage separator row."
+  (and id (symbolp id) (string-prefix-p "--" (symbol-name id))))
+
 (defun supervisor--get-entries ()
   "Generate entries for the dashboard (deduplicates on the fly).
-Respects `supervisor--dashboard-stage-filter' and tag filter when set."
+Respects `supervisor--dashboard-stage-filter' and tag filter when set.
+When `supervisor-dashboard-group-by-stage' is non-nil and no stage filter
+is active, entries are grouped by stage with separator rows."
   (let ((entries nil)
         (seen (make-hash-table :test 'equal))
         (stage-filter supervisor--dashboard-stage-filter)
@@ -1605,8 +1716,11 @@ Respects `supervisor--dashboard-stage-filter' and tag filter when set."
               ;; Invalid entry - show with reason (only if no filter or cannot determine stage)
               (unless stage-filter
                 (push (list raw-id
-                            (vector raw-id "-" "-" "-" "invalid" "-" "-" "-"
-                                    invalid-reason))
+                            (vector raw-id "-" "-" "-"
+                                    (supervisor--propertize-status "invalid")
+                                    "-" "-" "-"
+                                    invalid-reason)
+                            nil)  ; nil stage for invalid
                       entries))
             ;; Valid entry - parse and show full info
             (pcase-let ((`(,id ,_cmd ,_delay ,enabled-p ,restart-p ,logging-p
@@ -1618,11 +1732,15 @@ Respects `supervisor--dashboard-stage-filter' and tag filter when set."
               (let* ((proc (gethash id supervisor--processes))
                      (alive (and proc (process-live-p proc)))
                      (failed (gethash id supervisor--failed))
-                     (pid (if alive (number-to-string (process-id proc)) "-"))
                      (oneshot-p (eq type 'oneshot))
                      (oneshot-exit (gethash id supervisor--oneshot-completed))
                      (oneshot-done (not (null oneshot-exit)))
                      (oneshot-failed (and oneshot-done (> oneshot-exit 0)))
+                     ;; PID column: show exit code for completed oneshots
+                     (pid (cond (alive (number-to-string (process-id proc)))
+                                ((and oneshot-p oneshot-done)
+                                 (format "exit:%d" oneshot-exit))
+                                (t "-")))
                      (status (cond (alive "running")
                                    (failed "dead")
                                    ((and oneshot-p oneshot-failed) "failed")
@@ -1633,7 +1751,7 @@ Respects `supervisor--dashboard-stage-filter' and tag filter when set."
                      (effective-enabled (supervisor--get-effective-enabled id enabled-p))
                      ;; Restart column - check for overrides (n/a for oneshot)
                      (restart-str (if oneshot-p
-                                      "n/a"
+                                      "-"
                                     (let ((eff (supervisor--get-effective-restart
                                                 id restart-p)))
                                       (if eff "yes" "no"))))
@@ -1660,13 +1778,36 @@ Respects `supervisor--dashboard-stage-filter' and tag filter when set."
                                     (symbol-name type)
                                     (symbol-name stage)
                                     (if effective-enabled "yes" "no")
-                                    status
+                                    (supervisor--propertize-status status)
                                     restart-str
                                     (if effective-logging "yes" "no")
                                     pid
-                                    reason))
+                                    reason)
+                            stage)  ; Include stage for grouping
                       entries))))))))
-    (nreverse entries)))
+    ;; Group by stage if enabled and no stage filter
+    (setq entries (nreverse entries))
+    (if (and supervisor-dashboard-group-by-stage (null stage-filter))
+        ;; Sort by stage, then group with separators
+        ;; Invalid entries (nil stage) go last (priority 99)
+        (let* ((sorted (sort entries
+                             (lambda (a b)
+                               (let* ((stage-a (nth 2 a))
+                                      (stage-b (nth 2 b))
+                                      (sa (if stage-a (supervisor--stage-to-int stage-a) 99))
+                                      (sb (if stage-b (supervisor--stage-to-int stage-b) 99)))
+                                 (< sa sb)))))
+               (result nil)
+               (current-stage nil))
+          (dolist (entry sorted)
+            (let ((entry-stage (nth 2 entry)))
+              (when (and entry-stage (not (eq entry-stage current-stage)))
+                (setq current-stage entry-stage)
+                (push (supervisor--make-stage-separator entry-stage) result))
+              (push (list (car entry) (cadr entry)) result)))
+          (nreverse result))
+      ;; No grouping - return entries without stage metadata
+      (mapcar (lambda (e) (list (car e) (cadr e))) entries))))
 
 (defun supervisor--stage-progress-banner ()
   "Return ASCII banner showing stage progress."
@@ -1682,8 +1823,34 @@ Respects `supervisor--dashboard-stage-filter' and tag filter when set."
             parts))
     (mapconcat #'identity (nreverse parts) " ")))
 
+(defun supervisor--health-summary ()
+  "Return compact health summary string."
+  (let ((running 0) (done 0) (failed 0) (invalid 0) (pending 0) (idx 0))
+    (dolist (entry supervisor-programs)
+      (let ((raw-id (supervisor--extract-id entry idx)))
+        (cl-incf idx)
+        (if (gethash raw-id supervisor--invalid)
+            (cl-incf invalid)
+          (let* ((parsed (ignore-errors (supervisor--parse-entry entry)))
+                 (id (car parsed))
+                 (type (nth 6 parsed))
+                 (proc (gethash id supervisor--processes))
+                 (alive (and proc (process-live-p proc)))
+                 (is-failed (gethash id supervisor--failed))
+                 (oneshot-p (eq type 'oneshot))
+                 (oneshot-exit (gethash id supervisor--oneshot-completed)))
+            (cond
+             (alive (cl-incf running))
+             (is-failed (cl-incf failed))
+             ((and oneshot-p oneshot-exit (> oneshot-exit 0)) (cl-incf failed))
+             ((and oneshot-p oneshot-exit) (cl-incf done))
+             (oneshot-p (cl-incf pending))
+             (t (cl-incf pending)))))))
+    (format "%d run | %d done | %d pend | %d fail | %d inv"
+            running done pending failed invalid)))
+
 (defvar supervisor--help-text
-  "Keys: e:enable f:filter s:start k:kill r:restart l:log L:view ?:info d:deps D:graph B:blame g:refresh q:quit")
+  "[e]nable [f]ilter [t]ag [s]tart [k]ill [K]force [r]estart [l]og [L]view [p]roced [P]auto [d]eps [D]graph [B]lame [g]refresh [G]live [h]elp [?]info [q]uit")
 
 (defun supervisor--refresh-dashboard ()
   "Refresh the dashboard buffer if it exists."
@@ -1694,6 +1861,7 @@ Respects `supervisor--dashboard-stage-filter' and tag filter when set."
         (tabulated-list-print t)
         (setq header-line-format
               (concat (supervisor--stage-progress-banner)
+                      " | " (supervisor--health-summary)
                       "  " supervisor--help-text))
         (goto-char (min pos (point-max)))))))
 
@@ -1748,39 +1916,138 @@ Respects `supervisor--dashboard-stage-filter' and tag filter when set."
                "all"))
     (supervisor--refresh-dashboard)))
 
+(defvar supervisor--status-legend
+  "Status: running=active process | done=oneshot completed ok | failed=crashed/exit>0 | dead=crash-loop | pending=not yet started | stopped=terminated | invalid=config error"
+  "Legend explaining status column values.")
+
 (defun supervisor-dashboard-describe-entry ()
-  "Show detailed information about entry at point."
+  "Show detailed information about entry at point.
+With prefix argument, show status legend instead."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (let ((invalid-reason (gethash id supervisor--invalid)))
-      (if invalid-reason
-          ;; Invalid entry - show the reason
-          (message "INVALID: %s" invalid-reason)
-        ;; Valid entry - show resolved config
-        (let ((entry (supervisor--get-entry-for-id id)))
-          (if entry
-              (pcase-let ((`(,id ,_cmd ,delay ,enabled-p ,restart-p ,logging-p
-                                 ,type ,stage ,after ,oneshot-wait ,oneshot-timeout ,_tags)
-                           entry))
-                (message "%s: type=%s stage=%s enabled=%s restart=%s log=%s delay=%s after=%s%s"
-                         id type stage
-                         (if enabled-p "yes" "no")
-                         (if (eq type 'oneshot) "n/a" (if restart-p "yes" "no"))
-                         (if logging-p "yes" "no")
-                         delay
-                         (or after "none")
-                         (if (eq type 'oneshot)
-                             (format " wait=%s timeout=%s"
-                                     (if oneshot-wait "yes" "no")
-                                     (or oneshot-timeout "none"))
-                           "")))
-            (message "Entry not found: %s" id)))))))
+  (if current-prefix-arg
+      (message "%s" supervisor--status-legend)
+    (let ((id (tabulated-list-get-id)))
+      (cond
+       ((null id)
+        (message "%s" supervisor--status-legend))
+       ((supervisor--separator-row-p id)
+        (message "Stage separator row"))
+       (t
+        (let ((invalid-reason (gethash id supervisor--invalid)))
+          (if invalid-reason
+              ;; Invalid entry - show the reason
+              (message "INVALID: %s" invalid-reason)
+            ;; Valid entry - show resolved config
+            (let ((entry (supervisor--get-entry-for-id id)))
+              (if entry
+                  (pcase-let ((`(,id ,_cmd ,delay ,enabled-p ,restart-p ,logging-p
+                                     ,type ,stage ,after ,oneshot-wait ,oneshot-timeout ,_tags)
+                               entry))
+                    (message "%s: type=%s stage=%s enabled=%s restart=%s log=%s delay=%s after=%s%s"
+                             id type stage
+                             (if enabled-p "yes" "no")
+                             (if (eq type 'oneshot) "n/a" (if restart-p "yes" "no"))
+                             (if logging-p "yes" "no")
+                             delay
+                             (or after "none")
+                             (if (eq type 'oneshot)
+                                 (format " wait=%s timeout=%s"
+                                         (if oneshot-wait "yes" "no")
+                                         (or oneshot-timeout "none"))
+                               "")))
+                (message "Entry not found: %s" id))))))))))
+
+(defun supervisor-dashboard-help ()
+  "Show full help for supervisor dashboard."
+  (interactive)
+  (with-help-window "*Supervisor Help*"
+    (princ "Supervisor Dashboard Help\n")
+    (princ "=========================\n\n")
+    (princ "KEYBINDINGS\n")
+    (princ "-----------\n")
+    (princ "  e     Toggle enabled/disabled for entry\n")
+    (princ "  f     Cycle stage filter (all -> stage1 -> stage2 -> ...)\n")
+    (princ "  t     Cycle tag filter\n")
+    (princ "  s     Start process (if stopped)\n")
+    (princ "  k     Kill process (with confirmation)\n")
+    (princ "  K     Kill process (force, no confirmation)\n")
+    (princ "  r     Toggle auto-restart for entry\n")
+    (princ "  l     Toggle logging for entry\n")
+    (princ "  L     View log file for entry\n")
+    (princ "  p     Open proced (system process list)\n")
+    (princ "  P     Toggle proced auto-update mode\n")
+    (princ "  g     Refresh dashboard\n")
+    (princ "  G     Toggle auto-refresh (live monitoring)\n")
+    (princ "  ?     Show entry details (C-u ? for status legend)\n")
+    (princ "  h     Show this help\n")
+    (princ "  d     Show dependencies for entry\n")
+    (princ "  D     Show dependency graph\n")
+    (princ "  B     Blame: show why entry is in current state\n")
+    (princ "  q     Quit dashboard\n\n")
+    (princ "STATUS VALUES\n")
+    (princ "-------------\n")
+    (princ "  running   Process is alive and running\n")
+    (princ "  done      Oneshot completed successfully (exit 0)\n")
+    (princ "  failed    Process crashed or oneshot exited non-zero\n")
+    (princ "  dead      Process crash-looped (exceeded restart limit)\n")
+    (princ "  pending   Not yet started (waiting for stage/deps)\n")
+    (princ "  stopped   Simple process terminated (not crash-loop)\n")
+    (princ "  invalid   Config entry has errors\n\n")
+    (princ "COLUMN MEANINGS\n")
+    (princ "---------------\n")
+    (princ "  ID        Process identifier (from :id or command)\n")
+    (princ "  Type      simple (daemon) or oneshot (run-once)\n")
+    (princ "  Stage     Startup stage (stage1-4, lower runs first)\n")
+    (princ "  Enabled   Whether process will start (yes/no)\n")
+    (princ "  Status    Current state (see above)\n")
+    (princ "  Restart   Auto-restart on crash (simple only)\n")
+    (princ "  Log       Whether output is logged to file\n")
+    (princ "  PID       Process ID or exit code (exit:N)\n")
+    (princ "  Reason    Why process is in current state\n")))
+
+(defvar-local supervisor--auto-refresh-timer nil
+  "Timer for auto-refresh in dashboard buffer.")
+
+(defcustom supervisor-auto-refresh-interval 2
+  "Interval in seconds for dashboard auto-refresh when enabled."
+  :type 'integer
+  :group 'supervisor)
+
+(defun supervisor--cleanup-auto-refresh ()
+  "Clean up auto-refresh timer when dashboard buffer is killed."
+  (when supervisor--auto-refresh-timer
+    (cancel-timer supervisor--auto-refresh-timer)
+    (setq supervisor--auto-refresh-timer nil)))
+
+(defun supervisor-dashboard-toggle-auto-refresh ()
+  "Toggle automatic dashboard refresh for live monitoring."
+  (interactive)
+  (if supervisor--auto-refresh-timer
+      (progn
+        (cancel-timer supervisor--auto-refresh-timer)
+        (setq supervisor--auto-refresh-timer nil)
+        (message "Auto-refresh disabled"))
+    (setq supervisor--auto-refresh-timer
+          (run-with-timer supervisor-auto-refresh-interval
+                          supervisor-auto-refresh-interval
+                          (lambda ()
+                            (when (buffer-live-p (get-buffer "*supervisor*"))
+                              (supervisor--refresh-dashboard)))))
+    (message "Auto-refresh enabled (every %ds)" supervisor-auto-refresh-interval)))
+
+(defun supervisor-dashboard-quit ()
+  "Quit dashboard and clean up auto-refresh timer."
+  (interactive)
+  (supervisor--cleanup-auto-refresh)
+  (quit-window))
 
 (defun supervisor-dashboard-toggle-restart ()
   "Toggle auto-restart for process at point (no-op for oneshot).
 Cycles: config default -> override opposite -> back to config default."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot toggle restart on separator row"))
     (if (gethash id supervisor--invalid)
         (message "Cannot toggle restart for invalid entry: %s" id)
       (when-let* ((entry (supervisor--get-entry-for-id id)))
@@ -1807,6 +2074,8 @@ Runtime override takes effect on next start (manual or automatic restart).
 Cycles: config default -> override opposite -> back to config default."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot toggle enabled on separator row"))
     (if (gethash id supervisor--invalid)
         (message "Cannot toggle enabled for invalid entry: %s" id)
       (when-let* ((entry (supervisor--get-entry-for-id id)))
@@ -1819,22 +2088,37 @@ Cycles: config default -> override opposite -> back to config default."
               (puthash id (if new-enabled 'enabled 'disabled) supervisor--enabled-override))
             (supervisor--refresh-dashboard)))))))
 
-(defun supervisor-dashboard-kill ()
-  "Stop process at point, disable auto-restart, and send kill signal."
-  (interactive)
+(defun supervisor-dashboard-kill (&optional force)
+  "Stop process at point with confirmation.
+Disables auto-restart and sends kill signal.
+With prefix argument FORCE, skip confirmation."
+  (interactive "P")
+  (let ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot kill separator row")))
   (when-let* ((id (tabulated-list-get-id))
               (proc (gethash id supervisor--processes)))
     (when (process-live-p proc)
-      ;; Disable auto-restart first so sentinel doesn't restart it
-      (puthash id 'disabled supervisor--restart-override)
-      (kill-process proc)
-      (supervisor--refresh-dashboard))))
+      (when (or force
+                (yes-or-no-p (format "Kill process '%s'? " id)))
+        ;; Disable auto-restart first so sentinel doesn't restart it
+        (puthash id 'disabled supervisor--restart-override)
+        (kill-process proc)
+        (supervisor--refresh-dashboard)))))
+
+(defun supervisor-dashboard-kill-force ()
+  "Stop process at point without confirmation.
+Disables auto-restart and sends kill signal immediately."
+  (interactive)
+  (supervisor-dashboard-kill t))
 
 (defun supervisor-dashboard-start ()
   "Start process at point if stopped.
 Respects runtime enable/disable overrides."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot start separator row"))
     (if (gethash id supervisor--invalid)
         (message "Cannot start invalid entry: %s" id)
       (when-let* ((entry (supervisor--get-entry-for-id id)))
@@ -1857,6 +2141,8 @@ Respects runtime enable/disable overrides."
   "Toggle logging for process at point (takes effect on next start)."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot toggle logging on separator row"))
     (if (gethash id supervisor--invalid)
         (message "Cannot toggle logging for invalid entry: %s" id)
       (let* ((current (gethash id supervisor--logging))
@@ -1870,6 +2156,8 @@ Respects runtime enable/disable overrides."
   "Open the log file for process at point."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "No log file for separator row"))
     (let ((log-file (supervisor--log-file id)))
       (if (file-exists-p log-file)
           (find-file log-file)
@@ -1904,6 +2192,8 @@ Shows post-validation edges: after cycle fallback and stage filtering.
 Run `supervisor-start' first to populate computed dependency data."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "No dependencies for separator row"))
     (if (gethash id supervisor--invalid)
         (message "Cannot show dependencies for invalid entry: %s" id)
       (let ((entry (supervisor--get-entry-for-id id)))
@@ -2019,6 +2309,7 @@ Displays computed dependencies after validation and cycle fallback."
       (tabulated-list-print)
       (setq-local header-line-format
                   (concat (supervisor--stage-progress-banner)
+                          " | " (supervisor--health-summary)
                           "  " supervisor--help-text)))
     (pop-to-buffer buf)))
 

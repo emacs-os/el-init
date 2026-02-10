@@ -891,5 +891,62 @@
     ;; a should have nil deps (no :after)
     (should (null (gethash "a" supervisor--computed-deps)))))
 
+;;; Dashboard UI tests
+
+(ert-deftest supervisor-test-separator-row-detection ()
+  "Separator rows are correctly identified."
+  (should (supervisor--separator-row-p '--stage1--))
+  (should (supervisor--separator-row-p '--stage4--))
+  (should-not (supervisor--separator-row-p "nm-applet"))
+  (should-not (supervisor--separator-row-p nil))
+  (should-not (supervisor--separator-row-p 'some-symbol)))
+
+(ert-deftest supervisor-test-health-summary-format ()
+  "Health summary includes all required counts."
+  (let ((supervisor-programs nil)
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+    (let ((summary (supervisor--health-summary)))
+      ;; Should contain all five metrics
+      (should (string-match-p "run" summary))
+      (should (string-match-p "done" summary))
+      (should (string-match-p "pend" summary))
+      (should (string-match-p "fail" summary))
+      (should (string-match-p "inv" summary)))))
+
+(ert-deftest supervisor-test-help-text-key-parity ()
+  "Help text includes all bound keys."
+  ;; Keys that must be discoverable on-screen
+  (should (string-match-p "\\[e\\]" supervisor--help-text))
+  (should (string-match-p "\\[f\\]" supervisor--help-text))
+  (should (string-match-p "\\[t\\]" supervisor--help-text))
+  (should (string-match-p "\\[s\\]" supervisor--help-text))
+  (should (string-match-p "\\[k\\]" supervisor--help-text))
+  (should (string-match-p "\\[K\\]" supervisor--help-text))
+  (should (string-match-p "\\[r\\]" supervisor--help-text))
+  (should (string-match-p "\\[l\\]" supervisor--help-text))
+  (should (string-match-p "\\[L\\]" supervisor--help-text))
+  (should (string-match-p "\\[p\\]" supervisor--help-text))
+  (should (string-match-p "\\[P\\]" supervisor--help-text))
+  (should (string-match-p "\\[d\\]" supervisor--help-text))
+  (should (string-match-p "\\[D\\]" supervisor--help-text))
+  (should (string-match-p "\\[B\\]" supervisor--help-text))
+  (should (string-match-p "\\[g\\]" supervisor--help-text))
+  (should (string-match-p "\\[G\\]" supervisor--help-text))
+  (should (string-match-p "\\[h\\]" supervisor--help-text))
+  (should (string-match-p "\\[?\\]" supervisor--help-text))
+  (should (string-match-p "\\[q\\]" supervisor--help-text)))
+
+(ert-deftest supervisor-test-stage-separator-creation ()
+  "Stage separators have correct structure."
+  (let ((sep (supervisor--make-stage-separator 'stage1)))
+    ;; ID should be a symbol starting with --
+    (should (symbolp (car sep)))
+    (should (string-prefix-p "--" (symbol-name (car sep))))
+    ;; Vector should have 9 elements
+    (should (= 9 (length (cadr sep))))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
