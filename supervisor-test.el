@@ -821,5 +821,75 @@
       (should (null (gethash "a" supervisor--computed-deps)))
       (should (null (gethash "b" supervisor--computed-deps))))))
 
+;;; Tags parsing tests
+
+(ert-deftest supervisor-test-parse-tags ()
+  "Parse :tags keyword."
+  (let ((parsed (supervisor--parse-entry '("foo" :tags (x-setup network)))))
+    ;; tags is the 12th field (index 11)
+    (should (equal (nth 11 parsed) '(x-setup network)))))
+
+(ert-deftest supervisor-test-parse-tags-default-nil ()
+  "Tags default to nil when not specified."
+  (let ((parsed (supervisor--parse-entry "foo")))
+    (should (null (nth 11 parsed)))))
+
+(ert-deftest supervisor-test-parse-tags-single ()
+  "Parse single tag (not in list)."
+  (let ((parsed (supervisor--parse-entry '("foo" :tags myapp))))
+    ;; Single symbol should be wrapped in list
+    (should (equal (nth 11 parsed) '(myapp)))))
+
+;;; Dry-run tests
+
+(ert-deftest supervisor-test-dry-run-output ()
+  "Dry-run produces expected output with stages."
+  (let ((supervisor-programs '(("a" :stage early :type oneshot)
+                               ("b" :stage services)
+                               ("c" :stage session)))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+        (supervisor--computed-deps (make-hash-table :test 'equal)))
+    ;; supervisor-dry-run uses with-output-to-temp-buffer
+    (supervisor-dry-run)
+    (let ((output (with-current-buffer "*supervisor-dry-run*"
+                    (buffer-string))))
+      (kill-buffer "*supervisor-dry-run*")
+      (should (string-match-p "Stage: early" output))
+      (should (string-match-p "Stage: services" output))
+      (should (string-match-p "Stage: session" output))
+      (should (string-match-p "\\ba\\b" output))
+      (should (string-match-p "\\bb\\b" output))
+      (should (string-match-p "\\bc\\b" output)))))
+
+(ert-deftest supervisor-test-dry-run-shows-invalid ()
+  "Dry-run shows invalid entries."
+  (let ((supervisor-programs '(("valid" :type simple)
+                               ("invalid" :type "bad")))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+        (supervisor--computed-deps (make-hash-table :test 'equal)))
+    (supervisor-dry-run)
+    (let ((output (with-current-buffer "*supervisor-dry-run*"
+                    (buffer-string))))
+      (kill-buffer "*supervisor-dry-run*")
+      (should (string-match-p "Invalid Entries" output))
+      (should (string-match-p "invalid" output)))))
+
+(ert-deftest supervisor-test-dry-run-validates-after ()
+  "Dry-run validates :after references using same path as startup."
+  (let ((supervisor-programs '(("a" :stage session)
+                               ("b" :stage session :after "nonexistent")))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+        (supervisor--computed-deps (make-hash-table :test 'equal)))
+    ;; This should call supervisor--validate-after which populates computed-deps
+    (supervisor-dry-run)
+    (kill-buffer "*supervisor-dry-run*")
+    ;; b's computed deps should be empty since nonexistent doesn't exist
+    (should (null (gethash "b" supervisor--computed-deps)))
+    ;; a should have nil deps (no :after)
+    (should (null (gethash "a" supervisor--computed-deps)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

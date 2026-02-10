@@ -28,35 +28,6 @@
 ;; Supervisor is a lightweight process supervisor for managing background
 ;; processes from Emacs.  It is useful for starting session services when
 ;; using Emacs as a window manager (EXWM) or for managing development daemons.
-;;
-;; SCOPE: This is a user-session supervisor, not an init system or PID1
-;; replacement.  It manages processes within your Emacs session and is
-;; designed for transparency and interactivity over industrial strength.
-;;
-;; Features:
-;; - Staged startup (early, services, session, ui) with sequential execution
-;; - Dependency ordering via :after declarations (DAG scheduler)
-;; - Two process types: simple (long-running) and oneshot (run-once)
-;; - Automatic crash recovery with configurable restart policy
-;; - Crash-loop detection to prevent runaway restarts
-;; - Per-process logging with log rotation
-;; - Interactive dashboard for monitoring and control
-;;
-;; Quick start:
-;;
-;;   (setq supervisor-programs
-;;         '(("nm-applet" :type simple :restart t)
-;;           ("blueman-applet" :type simple :restart t)))
-;;
-;;   (add-hook 'after-init-hook #'supervisor-start)
-;;   (add-hook 'kill-emacs-hook #'supervisor-stop)
-;;
-;; Commands:
-;;   M-x supervisor-start  Start all configured programs
-;;   M-x supervisor-stop   Stop all supervised processes
-;;   M-x supervisor        Open the dashboard
-;;
-;; See README.org for full documentation and configuration options.
 
 ;;; Code:
 
@@ -395,8 +366,9 @@ cycle fallback behavior."
   (clrhash supervisor--invalid)
   (clrhash supervisor--cycle-fallback-ids)
   (clrhash supervisor--computed-deps)
-  (let ((all-entries (supervisor--all-parsed-entries))
-        (stage-order '(early services session ui)))
+  (let* ((all-entries (supervisor--all-parsed-entries))
+         (all-ids (mapcar #'car all-entries))
+         (stage-order '(early services session ui)))
     (with-output-to-temp-buffer "*supervisor-dry-run*"
       (princ "=== Supervisor Dry Run ===\n\n")
       (princ (format "Total entries: %d valid, %d invalid\n\n"
@@ -409,13 +381,17 @@ cycle fallback behavior."
                    (princ (format "  %s: %s\n" id reason)))
                  supervisor--invalid)
         (princ "\n"))
-      ;; Process each stage
+      ;; Process each stage (same validation path as real startup)
       (dolist (stage stage-order)
         (let* ((stage-entries (cl-remove-if-not
                                (lambda (e) (eq (nth 7 e) stage))
                                all-entries))
-               (sorted (when stage-entries
-                         (supervisor--stable-topo-sort stage-entries))))
+               (stage-ids (mapcar #'car stage-entries))
+               ;; Validate :after references (same as real startup)
+               (validated (when stage-entries
+                            (supervisor--validate-after stage-entries stage-ids all-ids)))
+               (sorted (when validated
+                         (supervisor--stable-topo-sort validated))))
           (when stage-entries
             (princ (format "--- Stage: %s (%d entries) ---\n"
                            stage (length stage-entries)))
@@ -463,6 +439,22 @@ Runtime overrides take effect on next start (manual or restart).")
 
 (defvar supervisor--oneshot-completed (make-hash-table :test 'equal)
   "Hash table tracking oneshot completion.  Value is exit code.")
+
+(defvar supervisor--oneshot-callbacks (make-hash-table :test 'equal)
+  "Hash table of ID -> (callback . timeout-timer) for oneshot wait.
+Used for event-driven oneshot completion notification.")
+
+(defvar supervisor--shutdown-callback nil
+  "Callback to invoke when all processes have terminated during shutdown.")
+
+(defvar supervisor--shutdown-remaining 0
+  "Count of processes still alive during shutdown.")
+
+(defvar supervisor--shutdown-timer nil
+  "Timer for SIGKILL timeout during graceful shutdown.")
+
+(defvar supervisor--shutdown-complete-flag nil
+  "Non-nil means shutdown has completed.  For callers that need to poll.")
 
 (defvar supervisor--timers nil
   "List of pending delayed-start timers.")
@@ -923,7 +915,7 @@ No-op if DAG scheduler is not active (e.g., manual starts)."
 (defun supervisor--dag-start-entry-async (entry)
   "Start ENTRY asynchronously.
 Mark ready immediately for simple processes, on exit for oneshot."
-  (pcase-let ((`(,id ,cmd ,delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,oneshot-wait ,oneshot-timeout) entry))
+  (pcase-let ((`(,id ,cmd ,delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,oneshot-wait ,oneshot-timeout ,_tags) entry))
     ;; Check effective enabled state (config + runtime override)
     (let ((effective-enabled (supervisor--get-effective-enabled id enabled-p)))
       (cond
@@ -1130,9 +1122,30 @@ IS-RESTART is t when called from a crash-triggered restart timer."
                                           (supervisor--log 'warning "oneshot %s %s"
                                                            name (supervisor--format-exit-status proc-status exit-code))
                                         (supervisor--log 'info "oneshot %s completed" name)))
+                                    ;; Invoke any registered wait callback (event-driven)
+                                    ;; Pass nil if shutting down (process was killed), t otherwise
+                                    (when-let* ((cb-entry (gethash name supervisor--oneshot-callbacks)))
+                                      (remhash name supervisor--oneshot-callbacks)
+                                      (when (cdr cb-entry)  ; cancel timeout timer
+                                        (cancel-timer (cdr cb-entry)))
+                                      (funcall (car cb-entry) (not supervisor--shutting-down)))
                                     ;; Notify DAG scheduler
                                     (supervisor--dag-mark-ready name))
                                   (supervisor--refresh-dashboard)
+                                  ;; Track shutdown completion (event-driven)
+                                  (when supervisor--shutting-down
+                                    (cl-decf supervisor--shutdown-remaining)
+                                    (when (and (<= supervisor--shutdown-remaining 0)
+                                               supervisor--shutdown-callback)
+                                      ;; Cancel SIGKILL timeout timer (early completion)
+                                      (when supervisor--shutdown-timer
+                                        (cancel-timer supervisor--shutdown-timer)
+                                        (setq supervisor--shutdown-timer nil))
+                                      (let ((cb supervisor--shutdown-callback))
+                                        (setq supervisor--shutdown-callback nil)
+                                        (clrhash supervisor--processes)
+                                        (setq supervisor--shutdown-complete-flag t)
+                                        (funcall cb))))
                                   ;; Oneshot processes don't restart - exit is expected
                                   ;; Also skip if runtime-disabled (check early to avoid noise)
                                   (unless (or (eq type 'oneshot)
@@ -1155,41 +1168,34 @@ IS-RESTART is t when called from a crash-triggered restart timer."
       proc)))
 
 (defun supervisor--wait-for-oneshot (id &optional timeout callback)
-  "Wait for oneshot ID to complete asynchronously.
+  "Wait for oneshot ID to complete asynchronously (event-driven).
 TIMEOUT is seconds; nil means wait indefinitely.
 CALLBACK is called with t on completion, nil on timeout/shutdown.
-If CALLBACK is nil, returns immediately (fire-and-forget)."
+If CALLBACK is nil, returns immediately (fire-and-forget).
+Uses sentinel-driven notification instead of polling."
   (when callback
-    (let* ((deadline (when timeout (+ (float-time) timeout)))
-           (timer nil))
-      (setq timer
-            (run-with-timer
-             0.1 0.1
-             (lambda ()
-               (cond
-                ;; Completed
-                ((gethash id supervisor--oneshot-completed)
-                 (when timer (cancel-timer timer))
-                 (funcall callback t))
-                ;; Shutting down
-                (supervisor--shutting-down
-                 (when timer (cancel-timer timer))
-                 (funcall callback nil))
-                ;; Timeout (only if deadline set)
-                ((and deadline (>= (float-time) deadline))
-                 (when timer (cancel-timer timer))
-                 (funcall callback nil)))))))))
-
-(defvar supervisor--shutdown-timer nil
-  "Timer for shutdown completion checking.")
-
-(defvar supervisor--shutdown-complete-flag nil
-  "Non-nil means shutdown sequence is complete.")
+    (cond
+     ;; Already completed
+     ((gethash id supervisor--oneshot-completed)
+      (funcall callback t))
+     ;; Already shutting down
+     (supervisor--shutting-down
+      (funcall callback nil))
+     ;; Register callback for sentinel to invoke
+     (t
+      (let ((timeout-timer
+             (when timeout
+               (run-at-time timeout nil
+                            (lambda ()
+                              (when-let* ((cb-entry (gethash id supervisor--oneshot-callbacks)))
+                                (remhash id supervisor--oneshot-callbacks)
+                                (funcall (car cb-entry) nil)))))))
+        (puthash id (cons callback timeout-timer) supervisor--oneshot-callbacks))))))
 
 (defun supervisor--start-entry-async (entry callback)
   "Start ENTRY asynchronously for dashboard manual start.
 CALLBACK is called with t on success, nil on error."
-  (pcase-let ((`(,id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,otimeout) entry))
+  (pcase-let ((`(,id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,otimeout ,_tags) entry))
     (if (not (supervisor--get-effective-enabled id enabled-p))
         (progn
           (supervisor--log 'info "%s disabled (config or override), skipping" id)
@@ -1388,43 +1394,40 @@ to poll completion status if needed."
              (when (process-live-p proc)
                (signal-process proc 'SIGTERM)))
            supervisor--processes)
-  ;; Set up async timer for graceful exit / SIGKILL (pure timer, no blocking)
-  (if (not (cl-some #'process-live-p (hash-table-values supervisor--processes)))
-      ;; No live processes, cleanup immediately
-      (progn
-        (clrhash supervisor--processes)
-        (setq supervisor--shutdown-complete-flag t)
-        (when callback (funcall callback)))
-    ;; Set up timer to check completion and SIGKILL on timeout
-    (setq supervisor--shutdown-complete-flag nil)
-    (let ((deadline (+ (float-time) supervisor-shutdown-timeout))
-          (cb callback))
+  ;; Set up event-driven shutdown (sentinel-driven, no polling)
+  (let ((live-count 0))
+    (maphash (lambda (_name proc)
+               (when (process-live-p proc)
+                 (cl-incf live-count)))
+             supervisor--processes)
+    (if (zerop live-count)
+        ;; No live processes, cleanup immediately
+        (progn
+          (clrhash supervisor--processes)
+          (setq supervisor--shutdown-complete-flag t)
+          (when callback (funcall callback)))
+      ;; Set up event-driven completion via sentinel
+      (setq supervisor--shutdown-complete-flag nil
+            supervisor--shutdown-remaining live-count
+            supervisor--shutdown-callback callback)
+      ;; Set up one-shot SIGKILL timeout timer (safety net)
       (setq supervisor--shutdown-timer
-            (run-with-timer
-             0.1 0.1
+            (run-at-time
+             supervisor-shutdown-timeout nil
              (lambda ()
-               (cond
-                ;; All processes dead - done
-                ((not (cl-some #'process-live-p
-                               (hash-table-values supervisor--processes)))
-                 (when supervisor--shutdown-timer
-                   (cancel-timer supervisor--shutdown-timer)
-                   (setq supervisor--shutdown-timer nil))
+               (setq supervisor--shutdown-timer nil)
+               ;; SIGKILL any survivors
+               (maphash (lambda (_name proc)
+                          (when (process-live-p proc)
+                            (signal-process proc 'SIGKILL)))
+                        supervisor--processes)
+               ;; Complete shutdown
+               (let ((cb supervisor--shutdown-callback))
+                 (setq supervisor--shutdown-callback nil
+                       supervisor--shutdown-remaining 0)
                  (clrhash supervisor--processes)
                  (setq supervisor--shutdown-complete-flag t)
-                 (when cb (funcall cb)))
-                ;; Timeout - SIGKILL and done
-                ((>= (float-time) deadline)
-                 (when supervisor--shutdown-timer
-                   (cancel-timer supervisor--shutdown-timer)
-                   (setq supervisor--shutdown-timer nil))
-                 (maphash (lambda (_name proc)
-                            (when (process-live-p proc)
-                              (signal-process proc 'SIGKILL)))
-                          supervisor--processes)
-                 (clrhash supervisor--processes)
-                 (setq supervisor--shutdown-complete-flag t)
-                 (when cb (funcall cb))))))))))
+                 (when cb (funcall cb)))))))))
 
 ;;;###autoload
 (defun supervisor-reload ()
@@ -1445,7 +1448,7 @@ Does not restart changed entries - use dashboard kill/start for that."
                (when entry
                  (pcase-let ((`(,_id ,_cmd ,_delay ,enabled-p ,_restart-p
                                      ,_logging-p ,_type ,_stage ,_after
-                                     ,_owait ,_otimeout) entry))
+                                     ,_owait ,_otimeout ,_tags) entry))
                    (not (supervisor--get-effective-enabled id enabled-p))))))
            running-ids))
          (to-stop (cl-union removed-ids disabled-ids :test #'equal))
@@ -1471,7 +1474,7 @@ Does not restart changed entries - use dashboard kill/start for that."
     (dolist (id to-start)
       (let ((entry (cl-find id new-entries :key #'car :test #'equal)))
         (when entry
-          (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout) entry))
+          (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
             (when (supervisor--get-effective-enabled id enabled-p)
               (let ((args (split-string-and-unquote cmd)))
                 (if (not (executable-find (car args)))
@@ -1719,7 +1722,7 @@ Respects `supervisor--dashboard-stage-filter' and tag filter when set."
         (let ((entry (supervisor--get-entry-for-id id)))
           (if entry
               (pcase-let ((`(,id ,_cmd ,delay ,enabled-p ,restart-p ,logging-p
-                                 ,type ,stage ,after ,oneshot-wait ,oneshot-timeout)
+                                 ,type ,stage ,after ,oneshot-wait ,oneshot-timeout ,_tags)
                            entry))
                 (message "%s: type=%s stage=%s enabled=%s restart=%s log=%s delay=%s after=%s%s"
                          id type stage
@@ -1743,7 +1746,7 @@ Cycles: config default -> override opposite -> back to config default."
     (if (gethash id supervisor--invalid)
         (message "Cannot toggle restart for invalid entry: %s" id)
       (when-let* ((entry (supervisor--get-entry-for-id id)))
-        (pcase-let ((`(,_id ,_cmd ,_delay ,_enabled-p ,restart-p ,_logging-p ,type ,_stage ,_after ,_owait ,_otimeout) entry))
+        (pcase-let ((`(,_id ,_cmd ,_delay ,_enabled-p ,restart-p ,_logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
           ;; Oneshot processes don't have restart semantics
           (unless (eq type 'oneshot)
             (let* ((currently-enabled (supervisor--get-effective-restart id restart-p))
@@ -1769,7 +1772,7 @@ Cycles: config default -> override opposite -> back to config default."
     (if (gethash id supervisor--invalid)
         (message "Cannot toggle enabled for invalid entry: %s" id)
       (when-let* ((entry (supervisor--get-entry-for-id id)))
-        (pcase-let ((`(,_id ,_cmd ,_delay ,enabled-p ,_restart-p ,_logging-p ,_type ,_stage ,_after ,_owait ,_otimeout) entry))
+        (pcase-let ((`(,_id ,_cmd ,_delay ,enabled-p ,_restart-p ,_logging-p ,_type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
           (let* ((currently-enabled (supervisor--get-effective-enabled id enabled-p))
                  (new-enabled (not currently-enabled)))
             ;; If new state matches config, clear override; otherwise set override
@@ -1799,7 +1802,7 @@ Respects runtime enable/disable overrides."
       (when-let* ((entry (supervisor--get-entry-for-id id)))
         (unless (and (gethash id supervisor--processes)
                      (process-live-p (gethash id supervisor--processes)))
-          (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout) entry))
+          (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
             (if (not (supervisor--get-effective-enabled id enabled-p))
                 (message "Entry %s is disabled (use 'e' to enable)" id)
               (let ((args (split-string-and-unquote cmd)))
