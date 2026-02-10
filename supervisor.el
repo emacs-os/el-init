@@ -165,21 +165,21 @@ written to the supervisor log file."
 ;;; Stages
 
 (defconst supervisor-stages
-  '((early . 0) (services . 1) (session . 2) (ui . 3))
+  '((stage1 . 0) (stage2 . 1) (stage3 . 2) (stage4 . 3))
   "Stage name to priority mapping.  Lower numbers run first.")
 
 (defconst supervisor-stage-names
-  '(early services session ui)
+  '(stage1 stage2 stage3 stage4)
   "Ordered list of stage names.")
 
 (defun supervisor--stage-to-int (stage)
-  "Convert STAGE symbol to integer priority.  Default to session (2)."
+  "Convert STAGE symbol to integer priority.  Default to stage3 (2)."
   (cond
    ((not (symbolp stage))
     (supervisor--log 'warning ":stage must be a symbol, got %S" stage)
     2)
    ((not (assq stage supervisor-stages))
-    (supervisor--log 'warning "unknown :stage '%s', using session" stage)
+    (supervisor--log 'warning "unknown :stage '%s', using stage3" stage)
     2)
    (t (alist-get stage supervisor-stages))))
 
@@ -368,7 +368,7 @@ cycle fallback behavior."
   (clrhash supervisor--computed-deps)
   (let* ((all-entries (supervisor--all-parsed-entries))
          (all-ids (mapcar #'car all-entries))
-         (stage-order '(early services session ui)))
+         (stage-order '(stage1 stage2 stage3 stage4)))
     (with-output-to-temp-buffer "*supervisor-dry-run*"
       (princ "=== Supervisor Dry Run ===\n\n")
       (princ (format "Total entries: %d valid, %d invalid\n\n"
@@ -496,7 +496,7 @@ failed-to-spawn, stage-timeout, started.")
 
 (defvar supervisor-stage-start-hook nil
   "Hook run when a stage begins.
-Called with one argument: the stage name symbol (early, services, session, ui).")
+Called with one argument: the stage name symbol.")
 
 (defvar supervisor-stage-complete-hook nil
   "Hook run when a stage completes.
@@ -560,7 +560,7 @@ stage after oneshot-wait oneshot-timeout tags).  ENTRY can be a command
 string or a list (COMMAND . PLIST)."
   (if (stringp entry)
       (let ((id (file-name-nondirectory (car (split-string-and-unquote entry)))))
-        (list id entry 0 t t t 'simple 'session nil
+        (list id entry 0 t t t 'simple 'stage3 nil
               supervisor-oneshot-default-wait supervisor-oneshot-timeout nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
@@ -589,12 +589,12 @@ string or a list (COMMAND . PLIST)."
            (logging (if (plist-member plist :logging)
                         (plist-get plist :logging)
                       t))
-           ;; :stage (default session)
+           ;; :stage (default stage3)
            (stage-raw (plist-get plist :stage))
            (stage (if stage-raw
                       (let ((s (supervisor--stage-to-int stage-raw)))
                         (supervisor--int-to-stage s))
-                    'session))
+                    'stage3))
            ;; :after - dependencies (same stage only)
            (after (supervisor--normalize-after (plist-get plist :after)))
            ;; Oneshot wait/timeout settings
@@ -1632,7 +1632,7 @@ Respects `supervisor--dashboard-stage-filter' and tag filter when set."
 
 (defun supervisor--stage-progress-banner ()
   "Return ASCII banner showing stage progress."
-  (let ((all-stages '(early services session ui))
+  (let ((all-stages '(stage1 stage2 stage3 stage4))
         (parts nil))
     (dolist (stage all-stages)
       (push (cond ((member stage supervisor--completed-stages)
@@ -1665,15 +1665,15 @@ Respects `supervisor--dashboard-stage-filter' and tag filter when set."
   (supervisor--refresh-dashboard))
 
 (defun supervisor-dashboard-cycle-filter ()
-  "Cycle dashboard stage filter: all -> early -> services -> session -> ui -> all."
+  "Cycle dashboard stage filter through all stages."
   (interactive)
   (setq supervisor--dashboard-stage-filter
         (pcase supervisor--dashboard-stage-filter
-          ('nil 'early)
-          ('early 'services)
-          ('services 'session)
-          ('session 'ui)
-          ('ui nil)))
+          ('nil 'stage1)
+          ('stage1 'stage2)
+          ('stage2 'stage3)
+          ('stage3 'stage4)
+          ('stage4 nil)))
   (message "Stage filter: %s"
            (if supervisor--dashboard-stage-filter
                (symbol-name supervisor--dashboard-stage-filter)
@@ -1939,7 +1939,7 @@ Displays computed dependencies after validation and cycle fallback."
       (princ (make-string 50 ?=))
       (princ "\n\n")
       ;; Group by stage
-      (dolist (stage-name '(early services session ui))
+      (dolist (stage-name '(stage1 stage2 stage3 stage4))
         (let ((stage-entries nil))
           ;; Collect entries for this stage
           (let ((idx 0))
@@ -2038,8 +2038,8 @@ Example configuration:
   (require \\='supervisor)
 
   (setq supervisor-programs
-        \\='((\"sh -c \\='xrdb ~/.Xresources\\='\" :type oneshot :stage early)
-          (\"nm-applet\" :type simple :stage session)
+        \\='((\"sh -c \\='xrdb ~/.Xresources\\='\" :type oneshot :stage stage1)
+          (\"nm-applet\" :type simple :stage stage3)
           (\"blueman-applet\" :type simple :restart t)))
 
   (supervisor-mode 1)
@@ -2056,10 +2056,7 @@ Process types:
 - oneshot: Run-once scripts, exit is expected
 
 Stages (run sequentially):
-- early: X settings, keyboard config
-- services: System daemons (polkit, dbus)
-- session: User services (default)
-- ui: Compositor, tray apps
+- stage1, stage2, stage3, stage4: run in order (stage3 is default)
 
 Use `M-x supervisor' to open the dashboard for monitoring and control.
 Use `M-x supervisor-validate' to check config without starting processes."

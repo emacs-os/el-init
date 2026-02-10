@@ -23,11 +23,11 @@
 
 (ert-deftest supervisor-test-stages-defined ()
   "Verify stages are properly defined."
-  (should (equal supervisor-stage-names '(early services session ui)))
-  (should (= (alist-get 'early supervisor-stages) 0))
-  (should (= (alist-get 'services supervisor-stages) 1))
-  (should (= (alist-get 'session supervisor-stages) 2))
-  (should (= (alist-get 'ui supervisor-stages) 3)))
+  (should (equal supervisor-stage-names '(stage1 stage2 stage3 stage4)))
+  (should (= (alist-get 'stage1 supervisor-stages) 0))
+  (should (= (alist-get 'stage2 supervisor-stages) 1))
+  (should (= (alist-get 'stage3 supervisor-stages) 2))
+  (should (= (alist-get 'stage4 supervisor-stages) 3)))
 
 ;;; Entry parsing tests
 
@@ -41,17 +41,17 @@
     (should (eq (nth 4 parsed) t))               ; restart-p
     (should (eq (nth 5 parsed) t))               ; logging-p
     (should (eq (nth 6 parsed) 'simple))         ; type
-    (should (eq (nth 7 parsed) 'session))))      ; stage (default)
+    (should (eq (nth 7 parsed) 'stage3))))      ; stage (default)
 
 (ert-deftest supervisor-test-parse-plist-entry ()
   "Parse a plist-style entry with options."
   (let ((parsed (supervisor--parse-entry
-                 '("nm-applet" :type simple :stage services :delay 3 :restart nil))))
+                 '("nm-applet" :type simple :stage stage2 :delay 3 :restart nil))))
     (should (equal (nth 0 parsed) "nm-applet"))
     (should (= (nth 2 parsed) 3))                ; delay
     (should (eq (nth 4 parsed) nil))             ; restart-p
     (should (eq (nth 6 parsed) 'simple))
-    (should (eq (nth 7 parsed) 'services))))
+    (should (eq (nth 7 parsed) 'stage2))))
 
 (ert-deftest supervisor-test-parse-explicit-id ()
   "Parse entry with explicit :id."
@@ -62,9 +62,9 @@
 (ert-deftest supervisor-test-parse-oneshot ()
   "Parse oneshot entry."
   (let ((parsed (supervisor--parse-entry
-                 '("xrdb ~/.Xresources" :type oneshot :stage early))))
+                 '("xrdb ~/.Xresources" :type oneshot :stage stage1))))
     (should (eq (nth 6 parsed) 'oneshot))
-    (should (eq (nth 7 parsed) 'early))))
+    (should (eq (nth 7 parsed) 'stage1))))
 
 (ert-deftest supervisor-test-parse-enabled-disabled ()
   "Parse :enabled and :disabled flags."
@@ -98,19 +98,19 @@
 
 (ert-deftest supervisor-test-stage-to-int ()
   "Convert stage symbols to integers."
-  (should (= (supervisor--stage-to-int 'early) 0))
-  (should (= (supervisor--stage-to-int 'services) 1))
-  (should (= (supervisor--stage-to-int 'session) 2))
-  (should (= (supervisor--stage-to-int 'ui) 3))
-  ;; Unknown defaults to session (2)
+  (should (= (supervisor--stage-to-int 'stage1) 0))
+  (should (= (supervisor--stage-to-int 'stage2) 1))
+  (should (= (supervisor--stage-to-int 'stage3) 2))
+  (should (= (supervisor--stage-to-int 'stage4) 3))
+  ;; Unknown defaults to stage3 (2)
   (should (= (supervisor--stage-to-int 'unknown) 2)))
 
 (ert-deftest supervisor-test-int-to-stage ()
   "Convert integers to stage symbols."
-  (should (eq (supervisor--int-to-stage 0) 'early))
-  (should (eq (supervisor--int-to-stage 1) 'services))
-  (should (eq (supervisor--int-to-stage 2) 'session))
-  (should (eq (supervisor--int-to-stage 3) 'ui)))
+  (should (eq (supervisor--int-to-stage 0) 'stage1))
+  (should (eq (supervisor--int-to-stage 1) 'stage2))
+  (should (eq (supervisor--int-to-stage 2) 'stage3))
+  (should (eq (supervisor--int-to-stage 3) 'stage4)))
 
 ;;; Normalize :after tests
 
@@ -155,12 +155,12 @@
 (ert-deftest supervisor-test-validate-valid-simple ()
   "Valid simple entry passes validation."
   (should (null (supervisor--validate-entry
-                 '("nm-applet" :type simple :stage session :restart t)))))
+                 '("nm-applet" :type simple :stage stage3 :restart t)))))
 
 (ert-deftest supervisor-test-validate-valid-oneshot ()
   "Valid oneshot entry passes validation."
   (should (null (supervisor--validate-entry
-                 '("xrdb" :type oneshot :stage early :oneshot-timeout 30)))))
+                 '("xrdb" :type oneshot :stage stage1 :oneshot-timeout 30)))))
 
 (ert-deftest supervisor-test-validate-unknown-keyword ()
   "Unknown keywords are rejected."
@@ -252,7 +252,7 @@
   ":stage must be a symbol, not a string."
   (should (string-match "must be a symbol"
                         (supervisor--validate-entry
-                         '("foo" :stage "early")))))
+                         '("foo" :stage "stage1")))))
 
 ;;; Integration tests
 
@@ -298,18 +298,18 @@
 
 (ert-deftest supervisor-test-topo-sort-stable-ordering ()
   "Unconstrained nodes maintain original list order."
-  (let* ((entries '(("a" "cmd" 0 t t t simple session nil t 30)
-                    ("b" "cmd" 0 t t t simple session nil t 30)
-                    ("c" "cmd" 0 t t t simple session nil t 30)))
+  (let* ((entries '(("a" "cmd" 0 t t t simple stage3 nil t 30)
+                    ("b" "cmd" 0 t t t simple stage3 nil t 30)
+                    ("c" "cmd" 0 t t t simple stage3 nil t 30)))
          (sorted (supervisor--stable-topo-sort entries)))
     ;; With no dependencies, order should be preserved
     (should (equal (mapcar #'car sorted) '("a" "b" "c")))))
 
 (ert-deftest supervisor-test-topo-sort-respects-after ()
   "Entries with :after come after their dependencies."
-  (let* ((entries '(("c" "cmd" 0 t t t simple session ("a") t 30)
-                    ("a" "cmd" 0 t t t simple session nil t 30)
-                    ("b" "cmd" 0 t t t simple session nil t 30)))
+  (let* ((entries '(("c" "cmd" 0 t t t simple stage3 ("a") t 30)
+                    ("a" "cmd" 0 t t t simple stage3 nil t 30)
+                    ("b" "cmd" 0 t t t simple stage3 nil t 30)))
          (sorted (supervisor--stable-topo-sort entries))
          (order (mapcar #'car sorted)))
     ;; "a" must come before "c" (dependency constraint)
@@ -321,8 +321,8 @@
 
 (ert-deftest supervisor-test-topo-sort-cycle-fallback ()
   "Cycle detection returns list order with :after cleared."
-  (let* ((entries '(("a" "cmd" 0 t t t simple session ("b") t 30)
-                    ("b" "cmd" 0 t t t simple session ("a") t 30)))
+  (let* ((entries '(("a" "cmd" 0 t t t simple stage3 ("b") t 30)
+                    ("b" "cmd" 0 t t t simple stage3 ("a") t 30)))
          (sorted (supervisor--stable-topo-sort entries)))
     ;; Should return in original order
     (should (equal (mapcar #'car sorted) '("a" "b")))
@@ -333,10 +333,10 @@
 (ert-deftest supervisor-test-topo-sort-complex-dag ()
   "Complex DAG with multiple dependencies."
   ;; d depends on b and c, b depends on a
-  (let* ((entries '(("a" "cmd" 0 t t t simple session nil t 30)
-                    ("b" "cmd" 0 t t t simple session ("a") t 30)
-                    ("c" "cmd" 0 t t t simple session nil t 30)
-                    ("d" "cmd" 0 t t t simple session ("b" "c") t 30)))
+  (let* ((entries '(("a" "cmd" 0 t t t simple stage3 nil t 30)
+                    ("b" "cmd" 0 t t t simple stage3 ("a") t 30)
+                    ("c" "cmd" 0 t t t simple stage3 nil t 30)
+                    ("d" "cmd" 0 t t t simple stage3 ("b" "c") t 30)))
          (sorted (supervisor--stable-topo-sort entries))
          (order (mapcar #'car sorted)))
     ;; a must come before b
@@ -360,9 +360,9 @@
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
     ;; Entry: (id cmd delay enabled-p restart-p logging-p type stage after oneshot-wait oneshot-timeout)
-    (let ((entries '(("blocking" "cmd" 0 t t t oneshot session nil t 30)
-                     ("non-blocking" "cmd" 0 t t t oneshot session nil nil 30)
-                     ("simple" "cmd" 0 t t t simple session nil t 30))))
+    (let ((entries '(("blocking" "cmd" 0 t t t oneshot stage3 nil t 30)
+                     ("non-blocking" "cmd" 0 t t t oneshot stage3 nil nil 30)
+                     ("simple" "cmd" 0 t t t simple stage3 nil t 30))))
       (supervisor--dag-init entries)
       ;; Blocking oneshot should be in blocking set
       (should (gethash "blocking" supervisor--dag-blocking))
@@ -382,9 +382,9 @@
         (supervisor--dag-timeout-timers nil)
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
-    (let ((entries '(("a" "cmd" 0 t t t simple session nil t 30)
-                     ("b" "cmd" 0 t t t simple session ("a") t 30)
-                     ("c" "cmd" 0 t t t simple session ("a" "b") t 30))))
+    (let ((entries '(("a" "cmd" 0 t t t simple stage3 nil t 30)
+                     ("b" "cmd" 0 t t t simple stage3 ("a") t 30)
+                     ("c" "cmd" 0 t t t simple stage3 ("a" "b") t 30))))
       (supervisor--dag-init entries)
       ;; a has no dependencies
       (should (= (gethash "a" supervisor--dag-in-degree) 0))
@@ -404,9 +404,9 @@
         (supervisor--dag-timeout-timers nil)
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
-    (let ((entries '(("a" "cmd" 0 t t t simple session nil t 30)
-                     ("b" "cmd" 0 t t t simple session ("a") t 30)
-                     ("c" "cmd" 0 t t t simple session ("a") t 30))))
+    (let ((entries '(("a" "cmd" 0 t t t simple stage3 nil t 30)
+                     ("b" "cmd" 0 t t t simple stage3 ("a") t 30)
+                     ("c" "cmd" 0 t t t simple stage3 ("a") t 30))))
       (supervisor--dag-init entries)
       ;; a should have b and c as dependents
       (let ((deps (gethash "a" supervisor--dag-dependents)))
@@ -428,8 +428,8 @@
         (supervisor--ready-times (make-hash-table :test 'equal)))
     ;; "a" is disabled, "b" depends on "a"
     ;;           (id   cmd   delay enabled-p restart-p logging-p type   stage   after oneshot-wait timeout)
-    (let ((entries '(("a" "cmd" 0 nil t t simple session nil t 30)
-                     ("b" "cmd" 0 t   t t simple session ("a") t 30))))
+    (let ((entries '(("a" "cmd" 0 nil t t simple stage3 nil t 30)
+                     ("b" "cmd" 0 t   t t simple stage3 ("a") t 30))))
       (supervisor--dag-init entries)
       ;; Disabled entry should be marked ready immediately
       (should (gethash "a" supervisor--dag-ready))
@@ -451,7 +451,7 @@
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
     ;; Entry with :async t means oneshot-wait = nil
-    (let ((entries '(("async-oneshot" "cmd" 0 t t t oneshot session nil nil 30))))
+    (let ((entries '(("async-oneshot" "cmd" 0 t t t oneshot stage3 nil nil 30))))
       (supervisor--dag-init entries)
       ;; Async oneshot should NOT be in blocking set
       (should-not (gethash "async-oneshot" supervisor--dag-blocking)))))
@@ -471,7 +471,7 @@
         (supervisor--shutting-down nil)
         (callback-called nil))
     ;; Entry with delay
-    (puthash "delayed" '("delayed" "echo hi" 5 t t t simple session nil t 30) supervisor--dag-entries)
+    (puthash "delayed" '("delayed" "echo hi" 5 t t t simple stage3 nil t 30) supervisor--dag-entries)
     (puthash "delayed" 0 supervisor--dag-in-degree)
     (puthash "delayed" 0 supervisor--dag-id-to-index)
     (puthash "delayed" nil supervisor--dag-dependents)
@@ -498,7 +498,7 @@
         (supervisor--dag-stage-complete-callback nil)
         (callback-called nil))
     ;; Blocking oneshot entry
-    (puthash "blocking" '("blocking" "sleep 10" 0 t t t oneshot session nil t 30) supervisor--dag-entries)
+    (puthash "blocking" '("blocking" "sleep 10" 0 t t t oneshot stage3 nil t 30) supervisor--dag-entries)
     (puthash "blocking" 0 supervisor--dag-in-degree)
     (puthash "blocking" t supervisor--dag-started)
     ;; Oneshot is blocking
@@ -522,7 +522,7 @@
         (supervisor--dag-stage-complete-callback nil)
         (supervisor-verbose nil))
     ;; Set up blocking oneshot
-    (puthash "oneshot" '("oneshot" "cmd" 0 t t t oneshot session nil t 30) supervisor--dag-entries)
+    (puthash "oneshot" '("oneshot" "cmd" 0 t t t oneshot stage3 nil t 30) supervisor--dag-entries)
     (puthash "oneshot" 0 supervisor--dag-in-degree)
     (puthash "oneshot" t supervisor--dag-started)
     (puthash "oneshot" t supervisor--dag-blocking)
@@ -553,8 +553,8 @@
     (cl-letf (((symbol-function 'supervisor--dag-start-entry-async)
                (lambda (entry) (push (car entry) started-ids))))
       ;; Set up: b depends on a
-      (puthash "a" '("a" "cmd" 0 t t t simple session nil t 30) supervisor--dag-entries)
-      (puthash "b" '("b" "cmd" 0 t t t simple session ("a") t 30) supervisor--dag-entries)
+      (puthash "a" '("a" "cmd" 0 t t t simple stage3 nil t 30) supervisor--dag-entries)
+      (puthash "b" '("b" "cmd" 0 t t t simple stage3 ("a") t 30) supervisor--dag-entries)
       (puthash "a" 0 supervisor--dag-in-degree)
       (puthash "b" 1 supervisor--dag-in-degree)
       (puthash "a" t supervisor--dag-started)
@@ -590,8 +590,8 @@
     (cl-letf (((symbol-function 'supervisor--dag-start-entry-async)
                (lambda (entry) (push (car entry) started-ids))))
       ;; Set up: blocking oneshot "slow" with dependent "after-slow"
-      (puthash "slow" '("slow" "sleep 999" 0 t t t oneshot session nil t 5) supervisor--dag-entries)
-      (puthash "after-slow" '("after-slow" "echo done" 0 t t t simple session ("slow") t 30) supervisor--dag-entries)
+      (puthash "slow" '("slow" "sleep 999" 0 t t t oneshot stage3 nil t 5) supervisor--dag-entries)
+      (puthash "after-slow" '("after-slow" "echo done" 0 t t t simple stage3 ("slow") t 30) supervisor--dag-entries)
       (puthash "slow" 0 supervisor--dag-in-degree)
       (puthash "after-slow" 1 supervisor--dag-in-degree)
       (puthash "slow" t supervisor--dag-started)
@@ -677,8 +677,8 @@
         (supervisor-max-concurrent-starts 2)
         (started-ids nil))
     ;; Queue entries
-    (puthash "a" '("a" "true" 0 t t t simple session nil t 30) supervisor--dag-entries)
-    (puthash "b" '("b" "true" 0 t t t simple session nil t 30) supervisor--dag-entries)
+    (puthash "a" '("a" "true" 0 t t t simple stage3 nil t 30) supervisor--dag-entries)
+    (puthash "b" '("b" "true" 0 t t t simple stage3 nil t 30) supervisor--dag-entries)
     (setq supervisor--dag-pending-starts '("a" "b"))
     ;; Before processing, count should be 0
     (should (= supervisor--dag-active-starts 0))
@@ -726,7 +726,7 @@
         (supervisor--entry-state (make-hash-table :test 'equal))
         (callback-called nil))
     ;; Set up entry that hasn't started
-    (puthash "delayed" '("delayed" "cmd" 5 t t t simple session nil t 30)
+    (puthash "delayed" '("delayed" "cmd" 5 t t t simple stage3 nil t 30)
              supervisor--dag-entries)
     (setq supervisor--dag-stage-complete-callback (lambda () (setq callback-called t)))
     ;; Force stage complete should mark unstarted as stage-timeout
@@ -798,8 +798,8 @@
   (let ((supervisor--computed-deps (make-hash-table :test 'equal))
         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
     ;; Entry c depends on a and b, but b doesn't exist in this stage
-    (let ((entries '(("a" "cmd" 0 t t t simple session nil t 30)
-                     ("c" "cmd" 0 t t t simple session ("a" "b") t 30))))
+    (let ((entries '(("a" "cmd" 0 t t t simple stage3 nil t 30)
+                     ("c" "cmd" 0 t t t simple stage3 ("a" "b") t 30))))
       (supervisor--stable-topo-sort entries)
       ;; c's computed deps should only include "a" (b doesn't exist)
       (should (equal (gethash "c" supervisor--computed-deps) '("a")))
@@ -811,8 +811,8 @@
   (let ((supervisor--computed-deps (make-hash-table :test 'equal))
         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
     ;; Create a cycle: a -> b -> a
-    (let ((entries '(("a" "cmd" 0 t t t simple session ("b") t 30)
-                     ("b" "cmd" 0 t t t simple session ("a") t 30))))
+    (let ((entries '(("a" "cmd" 0 t t t simple stage3 ("b") t 30)
+                     ("b" "cmd" 0 t t t simple stage3 ("a") t 30))))
       (supervisor--stable-topo-sort entries)
       ;; Both should be marked as cycle fallback
       (should (gethash "a" supervisor--cycle-fallback-ids))
@@ -844,9 +844,9 @@
 
 (ert-deftest supervisor-test-dry-run-output ()
   "Dry-run produces expected output with stages."
-  (let ((supervisor-programs '(("a" :stage early :type oneshot)
-                               ("b" :stage services)
-                               ("c" :stage session)))
+  (let ((supervisor-programs '(("a" :stage stage1 :type oneshot)
+                               ("b" :stage stage2)
+                               ("c" :stage stage3)))
         (supervisor--invalid (make-hash-table :test 'equal))
         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
         (supervisor--computed-deps (make-hash-table :test 'equal)))
@@ -855,9 +855,9 @@
     (let ((output (with-current-buffer "*supervisor-dry-run*"
                     (buffer-string))))
       (kill-buffer "*supervisor-dry-run*")
-      (should (string-match-p "Stage: early" output))
-      (should (string-match-p "Stage: services" output))
-      (should (string-match-p "Stage: session" output))
+      (should (string-match-p "Stage: stage1" output))
+      (should (string-match-p "Stage: stage2" output))
+      (should (string-match-p "Stage: stage3" output))
       (should (string-match-p "\\ba\\b" output))
       (should (string-match-p "\\bb\\b" output))
       (should (string-match-p "\\bc\\b" output)))))
@@ -878,8 +878,8 @@
 
 (ert-deftest supervisor-test-dry-run-validates-after ()
   "Dry-run validates :after references using same path as startup."
-  (let ((supervisor-programs '(("a" :stage session)
-                               ("b" :stage session :after "nonexistent")))
+  (let ((supervisor-programs '(("a" :stage stage3)
+                               ("b" :stage stage3 :after "nonexistent")))
         (supervisor--invalid (make-hash-table :test 'equal))
         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
         (supervisor--computed-deps (make-hash-table :test 'equal)))
