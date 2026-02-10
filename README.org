@@ -58,6 +58,7 @@ Or with hooks for more control:
 | =M-x supervisor-reload=  | Reconcile: stop removed/disabled, start new   |
 | =M-x supervisor=         | Open dashboard to monitor/control processes   |
 | =M-x supervisor-validate= | Check config without starting processes       |
+| =M-x supervisor-dry-run= | Validate and show startup order (no start)    |
 
 * Process Types
 
@@ -170,6 +171,7 @@ Open with =M-x supervisor=.
 |-----+----------------------------------------------------|
 | e   | Toggle enabled (takes effect on next start)        |
 | f   | Cycle stage filter (all -> early -> ... -> all)    |
+| t   | Cycle tag filter (all -> tag1 -> tag2 -> all)      |
 | s   | Start process (works even if =:enabled nil=)         |
 | k   | Kill process (SIGTERM, disables auto-restart)      |
 | r   | Toggle restart policy (config -> override -> config) |
@@ -201,6 +203,7 @@ Open with =M-x supervisor=.
 | =:oneshot-wait=    | boolean     | t         | Oneshot blocks stage completion          |
 | =:async=           | boolean     | nil       | Alias for =:oneshot-wait nil=              |
 | =:oneshot-timeout= | number      | 30        | Max seconds to wait for oneshot          |
+| =:tags=            | list        | nil       | Tags for dashboard filtering             |
 
 *Note:* When using =:after=, use explicit =:id= on both entries to avoid ambiguity.
 
@@ -220,6 +223,7 @@ Open with =M-x supervisor=.
 | =supervisor-max-concurrent-starts= | nil                        | Max parallel starts (nil = unlimited) |
 | =supervisor-verbose=             | nil                        | Log all events (stages, starts, unlocks) |
 | =supervisor-log-to-file=         | nil                        | Also write events to supervisor.log  |
+| =supervisor-watch-config=        | nil                        | Watch init file and auto-reload      |
 
 * Hooks
 

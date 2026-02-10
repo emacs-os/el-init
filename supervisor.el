@@ -63,6 +63,10 @@
 (require 'cl-lib)
 (require 'subr-x)
 
+;; Forward declarations for optional features
+(declare-function file-notify-add-watch "filenotify" (file flags callback))
+(declare-function file-notify-rm-watch "filenotify" (descriptor))
+
 (defgroup supervisor nil
   "Emacs Lisp process supervisor."
   :group 'processes)
@@ -143,6 +147,19 @@ This is independent of `supervisor-verbose' - all events are logged
 to file when enabled, regardless of verbose setting."
   :type 'boolean
   :group 'supervisor)
+
+(defcustom supervisor-watch-config nil
+  "When non-nil, watch the Emacs init file for modification.
+When the init file is modified, automatically run `supervisor-reload'.
+The file watched is the value of `user-init-file'.
+Set to a file path string to watch a specific file instead."
+  :type '(choice (const :tag "Disabled" nil)
+                 (const :tag "Watch init file" t)
+                 (file :tag "Watch specific file"))
+  :group 'supervisor)
+
+(defvar supervisor--config-watch-descriptor nil
+  "File notification descriptor for config watching.")
 
 ;;; Logging
 
@@ -232,7 +249,7 @@ Check PLIST for :oneshot-timeout and fall back to default."
 
 (defconst supervisor--valid-keywords
   '(:id :type :stage :delay :after :enabled :disabled
-    :restart :no-restart :logging :oneshot-wait :async :oneshot-timeout)
+    :restart :no-restart :logging :oneshot-wait :async :oneshot-timeout :tags)
   "List of valid keywords for entry plists.")
 
 (defconst supervisor--valid-types '(simple oneshot)
@@ -315,8 +332,10 @@ Return nil if valid, or a reason string if invalid."
       (when errors
         (mapconcat #'identity (nreverse errors) "; "))))))
 
-;; Forward declaration for supervisor-validate
+;; Forward declarations for supervisor-validate and supervisor-dry-run
 (defvar supervisor--invalid)
+(defvar supervisor--cycle-fallback-ids)
+(defvar supervisor--computed-deps)
 
 (defun supervisor--extract-id (entry idx)
   "Extract a stable ID from ENTRY at position IDX in `supervisor-programs'.
@@ -366,6 +385,60 @@ so the dashboard reflects validation state."
         (princ "\n")))
     ;; Refresh dashboard if open
     (supervisor--refresh-dashboard)))
+
+;;;###autoload
+(defun supervisor-dry-run ()
+  "Validate entries and show startup order without starting processes.
+Display staged startup order, including dependency resolution and
+cycle fallback behavior."
+  (interactive)
+  (clrhash supervisor--invalid)
+  (clrhash supervisor--cycle-fallback-ids)
+  (clrhash supervisor--computed-deps)
+  (let ((all-entries (supervisor--all-parsed-entries))
+        (stage-order '(early services session ui)))
+    (with-output-to-temp-buffer "*supervisor-dry-run*"
+      (princ "=== Supervisor Dry Run ===\n\n")
+      (princ (format "Total entries: %d valid, %d invalid\n\n"
+                     (length all-entries)
+                     (hash-table-count supervisor--invalid)))
+      ;; Show invalid entries first
+      (when (> (hash-table-count supervisor--invalid) 0)
+        (princ "--- Invalid Entries (skipped) ---\n")
+        (maphash (lambda (id reason)
+                   (princ (format "  %s: %s\n" id reason)))
+                 supervisor--invalid)
+        (princ "\n"))
+      ;; Process each stage
+      (dolist (stage stage-order)
+        (let* ((stage-entries (cl-remove-if-not
+                               (lambda (e) (eq (nth 7 e) stage))
+                               all-entries))
+               (sorted (when stage-entries
+                         (supervisor--stable-topo-sort stage-entries))))
+          (when stage-entries
+            (princ (format "--- Stage: %s (%d entries) ---\n"
+                           stage (length stage-entries)))
+            (let ((order 1))
+              (dolist (entry sorted)
+                (let* ((id (nth 0 entry))
+                       (type (nth 6 entry))
+                       (delay (nth 2 entry))
+                       (enabled-p (nth 3 entry))
+                       (deps (gethash id supervisor--computed-deps))
+                       (cycle (gethash id supervisor--cycle-fallback-ids)))
+                  (princ (format "  %d. %s [%s]%s%s%s\n"
+                                 order id type
+                                 (if (not enabled-p) " DISABLED" "")
+                                 (if (> delay 0) (format " delay=%ds" delay) "")
+                                 (if cycle " (CYCLE FALLBACK)"
+                                   (if deps
+                                       (format " after=%s"
+                                               (mapconcat #'identity deps ","))
+                                     ""))))
+                  (cl-incf order))))
+            (princ "\n"))))
+      (princ "=== End Dry Run ===\n"))))
 
 ;;; State Variables
 
@@ -491,12 +564,12 @@ STATUS is one of:
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
 Return a list: (id cmd delay enabled-p restart-p logging-p type
-stage after oneshot-wait oneshot-timeout).  ENTRY can be a command
+stage after oneshot-wait oneshot-timeout tags).  ENTRY can be a command
 string or a list (COMMAND . PLIST)."
   (if (stringp entry)
       (let ((id (file-name-nondirectory (car (split-string-and-unquote entry)))))
         (list id entry 0 t t t 'simple 'session nil
-              supervisor-oneshot-default-wait supervisor-oneshot-timeout))
+              supervisor-oneshot-default-wait supervisor-oneshot-timeout nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
            (id (or (plist-get plist :id)
@@ -534,8 +607,13 @@ string or a list (COMMAND . PLIST)."
            (after (supervisor--normalize-after (plist-get plist :after)))
            ;; Oneshot wait/timeout settings
            (oneshot-wait (supervisor--oneshot-wait-p plist))
-           (oneshot-timeout (supervisor--oneshot-timeout-value plist)))
-      (list id cmd delay enabled restart logging type stage after oneshot-wait oneshot-timeout))))
+           (oneshot-timeout (supervisor--oneshot-timeout-value plist))
+           ;; Tags for filtering (list of symbols or strings)
+           (tags-raw (plist-get plist :tags))
+           (tags (cond ((null tags-raw) nil)
+                       ((listp tags-raw) tags-raw)
+                       (t (list tags-raw)))))
+      (list id cmd delay enabled restart logging type stage after oneshot-wait oneshot-timeout tags))))
 
 (defun supervisor--check-crash-loop (id)
   "Check if ID is crash-looping.  Return t if should NOT restart."
@@ -648,14 +726,18 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
         (puthash id 0 in-degree)
         (puthash id nil dependents)
         (cl-incf idx)))
-    ;; Build graph
+    ;; Build graph and record computed deps (validated, same-stage only)
     (dolist (entry entries)
       (let ((id (car entry))
-            (after (nth 8 entry)))
+            (after (nth 8 entry))
+            (valid-deps nil))
         (dolist (dep after)
           (when (gethash dep id-to-entry)  ; only count valid deps
+            (push dep valid-deps)
             (cl-incf (gethash id in-degree 0))
-            (puthash dep (cons id (gethash dep dependents)) dependents)))))
+            (puthash dep (cons id (gethash dep dependents)) dependents)))
+        ;; Store computed deps for this entry (reversed to maintain order)
+        (puthash id (nreverse valid-deps) supervisor--computed-deps)))
     ;; Kahn's algorithm with stable ordering (by original index)
     (let ((ready (cl-remove-if-not
                   (lambda (id) (= 0 (gethash id in-degree)))
@@ -1407,11 +1489,16 @@ Does not restart changed entries - use dashboard kill/start for that."
   "Current stage filter for dashboard.
 nil means show all stages, otherwise a stage symbol.")
 
+(defvar-local supervisor--dashboard-tag-filter nil
+  "Current tag filter for dashboard.
+nil means show all entries, otherwise a tag symbol or string.")
+
 (defvar supervisor-dashboard-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
     (define-key map "e" #'supervisor-dashboard-toggle-enabled)
     (define-key map "f" #'supervisor-dashboard-cycle-filter)
+    (define-key map "t" #'supervisor-dashboard-cycle-tag-filter)
     (define-key map "r" #'supervisor-dashboard-toggle-restart)
     (define-key map "k" #'supervisor-dashboard-kill)
     (define-key map "s" #'supervisor-dashboard-start)
@@ -1458,10 +1545,11 @@ Skips invalid/malformed entries to avoid parse errors."
 
 (defun supervisor--get-entries ()
   "Generate entries for the dashboard (deduplicates on the fly).
-Respects `supervisor--dashboard-stage-filter' when set."
+Respects `supervisor--dashboard-stage-filter' and tag filter when set."
   (let ((entries nil)
         (seen (make-hash-table :test 'equal))
         (stage-filter supervisor--dashboard-stage-filter)
+        (tag-filter supervisor--dashboard-tag-filter)
         (idx 0))
     (dolist (entry supervisor-programs)
       ;; Extract ID even for potentially invalid entries
@@ -1481,10 +1569,11 @@ Respects `supervisor--dashboard-stage-filter' when set."
                       entries))
             ;; Valid entry - parse and show full info
             (pcase-let ((`(,id ,_cmd ,_delay ,enabled-p ,restart-p ,logging-p
-                               ,type ,stage ,_after ,_owait ,_otimeout)
+                               ,type ,stage ,_after ,_owait ,_otimeout ,tags)
                          (supervisor--parse-entry entry)))
-              ;; Apply stage filter
-              (when (or (null stage-filter) (eq stage stage-filter))
+              ;; Apply stage and tag filters
+              (when (and (or (null stage-filter) (eq stage stage-filter))
+                         (or (null tag-filter) (member tag-filter tags)))
               (let* ((proc (gethash id supervisor--processes))
                      (alive (and proc (process-live-p proc)))
                      (failed (gethash id supervisor--failed))
@@ -1582,11 +1671,41 @@ Respects `supervisor--dashboard-stage-filter' when set."
           ('services 'session)
           ('session 'ui)
           ('ui nil)))
-  (message "Filter: %s"
+  (message "Stage filter: %s"
            (if supervisor--dashboard-stage-filter
                (symbol-name supervisor--dashboard-stage-filter)
              "all"))
   (supervisor--refresh-dashboard))
+
+(defun supervisor--all-tags ()
+  "Return list of all unique tags used in entries."
+  (let ((tags nil))
+    (dolist (entry supervisor-programs)
+      (unless (stringp entry)
+        (let ((entry-tags (plist-get (cdr entry) :tags)))
+          (dolist (tag (if (listp entry-tags) entry-tags (list entry-tags)))
+            (when tag
+              (cl-pushnew tag tags :test #'equal))))))
+    (sort tags (lambda (a b)
+                 (string< (format "%s" a) (format "%s" b))))))
+
+(defun supervisor-dashboard-cycle-tag-filter ()
+  "Cycle dashboard tag filter through all available tags."
+  (interactive)
+  (let* ((all-tags (supervisor--all-tags))
+         (current supervisor--dashboard-tag-filter)
+         (idx (cl-position current all-tags :test #'equal)))
+    (setq supervisor--dashboard-tag-filter
+          (cond
+           ((null all-tags) nil)
+           ((null idx) (car all-tags))
+           ((= idx (1- (length all-tags))) nil)
+           (t (nth (1+ idx) all-tags))))
+    (message "Tag filter: %s"
+             (if supervisor--dashboard-tag-filter
+                 (format "%s" supervisor--dashboard-tag-filter)
+               "all"))
+    (supervisor--refresh-dashboard)))
 
 (defun supervisor-dashboard-describe-entry ()
   "Show detailed information about entry at point."
@@ -1862,6 +1981,43 @@ Displays computed dependencies after validation and cycle fallback."
                           "  " supervisor--help-text)))
     (pop-to-buffer buf)))
 
+;;; File Watch
+
+(defun supervisor--config-watch-file ()
+  "Return the file to watch for config modification."
+  (cond
+   ((stringp supervisor-watch-config) supervisor-watch-config)
+   ((and supervisor-watch-config user-init-file) user-init-file)
+   (t nil)))
+
+(defun supervisor--config-watch-callback (_event)
+  "Handle config file modification.  Trigger reload after debounce."
+  ;; Simple debounce: cancel pending reload, schedule new one
+  (when (timerp (get 'supervisor--config-watch-callback 'timer))
+    (cancel-timer (get 'supervisor--config-watch-callback 'timer)))
+  (put 'supervisor--config-watch-callback 'timer
+       (run-at-time 1 nil
+                    (lambda ()
+                      (supervisor--log 'info "config file changed, reloading...")
+                      (supervisor-reload)))))
+
+(defun supervisor--start-config-watch ()
+  "Start watching config file if configured."
+  (when-let* ((file (supervisor--config-watch-file)))
+    (when (file-exists-p file)
+      (require 'filenotify)
+      (setq supervisor--config-watch-descriptor
+            (file-notify-add-watch file '(change)
+                                   #'supervisor--config-watch-callback))
+      (supervisor--log 'info "watching %s for changes" file))))
+
+(defun supervisor--stop-config-watch ()
+  "Stop watching config file."
+  (when supervisor--config-watch-descriptor
+    (require 'filenotify)
+    (file-notify-rm-watch supervisor--config-watch-descriptor)
+    (setq supervisor--config-watch-descriptor nil)))
+
 ;;; Global Minor Mode
 
 ;;;###autoload
@@ -1908,7 +2064,10 @@ Use `M-x supervisor-validate' to check config without starting processes."
   :group 'supervisor
   :lighter " Sup"
   (if supervisor-mode
-      (supervisor-start)
+      (progn
+        (supervisor-start)
+        (supervisor--start-config-watch))
+    (supervisor--stop-config-watch)
     (supervisor-stop)))
 
 (provide 'supervisor)

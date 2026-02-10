@@ -793,5 +793,33 @@
         ;; Entry should have been killed due to :disabled
         (should (member "test-proc" killed-ids))))))
 
+(ert-deftest supervisor-test-computed-deps-populated ()
+  "Topo-sort populates computed-deps with validated dependencies."
+  (let ((supervisor--computed-deps (make-hash-table :test 'equal))
+        (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
+    ;; Entry c depends on a and b, but b doesn't exist in this stage
+    (let ((entries '(("a" "cmd" 0 t t t simple session nil t 30)
+                     ("c" "cmd" 0 t t t simple session ("a" "b") t 30))))
+      (supervisor--stable-topo-sort entries)
+      ;; c's computed deps should only include "a" (b doesn't exist)
+      (should (equal (gethash "c" supervisor--computed-deps) '("a")))
+      ;; a has no deps
+      (should (equal (gethash "a" supervisor--computed-deps) nil)))))
+
+(ert-deftest supervisor-test-cycle-fallback-clears-computed-deps ()
+  "Cycle fallback marks entries and clears their computed deps."
+  (let ((supervisor--computed-deps (make-hash-table :test 'equal))
+        (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
+    ;; Create a cycle: a -> b -> a
+    (let ((entries '(("a" "cmd" 0 t t t simple session ("b") t 30)
+                     ("b" "cmd" 0 t t t simple session ("a") t 30))))
+      (supervisor--stable-topo-sort entries)
+      ;; Both should be marked as cycle fallback
+      (should (gethash "a" supervisor--cycle-fallback-ids))
+      (should (gethash "b" supervisor--cycle-fallback-ids))
+      ;; Both should have nil computed deps (edges cleared)
+      (should (null (gethash "a" supervisor--computed-deps)))
+      (should (null (gethash "b" supervisor--computed-deps))))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
