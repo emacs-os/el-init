@@ -19,17 +19,25 @@ Place =supervisor.el= in your load path and add to your init file:
       '(("nm-applet" :type simple :restart t)
         ("blueman-applet" :type simple :restart t)))
 
+(supervisor-mode 1)  ; Starts on enable, stops on disable
+#+end_src
+
+Or with hooks for more control:
+
+#+begin_src emacs-lisp
 (add-hook 'after-init-hook #'supervisor-start)
 (add-hook 'kill-emacs-hook #'supervisor-stop)
 #+end_src
 
 * Commands
 
-| Command              | Description                                   |
-|----------------------+-----------------------------------------------|
-| =M-x supervisor-start= | Start all programs by stage (safe to re-run)  |
-| =M-x supervisor-stop=  | Gracefully stop all supervised processes      |
-| =M-x supervisor=       | Open dashboard to monitor/control processes   |
+| Command                | Description                                   |
+|------------------------+-----------------------------------------------|
+| =M-x supervisor-mode=    | Toggle global minor mode (start/stop all)     |
+| =M-x supervisor-start=   | Start all programs by stage (safe to re-run)  |
+| =M-x supervisor-stop=    | Gracefully stop all supervised processes      |
+| =M-x supervisor=         | Open dashboard to monitor/control processes   |
+| =M-x supervisor-validate= | Check config without starting processes       |
 
 * Process Types
 

@@ -6,6 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 supervisor.el is a single-file Emacs Lisp package for managing background processes. It provides staged startup with dependency ordering, crash recovery, and a dashboard UI.
 
+## Emacs Lisp Standards (MANDATORY)
+
+**CRITICAL:** All code must adhere to `STANDARDS.md` in this repository. This document contains:
+- GNU Coding Standards for Emacs Lisp
+- Emacs Lisp coding conventions from the official manual
+- Naming conventions, predicate suffixes, library loading rules
+- Minor/major mode conventions
+- Documentation and commenting standards
+
+This is a **hard requirement** for all Elisp projects. Read `STANDARDS.md` before writing or modifying any code.
+
 ## Development Commands
 
 ```bash

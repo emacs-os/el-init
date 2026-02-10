@@ -294,6 +294,13 @@
     ;; Valid entry should not be in invalid
     (should (null (gethash "valid" supervisor--invalid)))))
 
+;;; Global minor mode tests
+
+(ert-deftest supervisor-test-mode-defined ()
+  "Verify supervisor-mode is defined as a global minor mode."
+  (should (fboundp 'supervisor-mode))
+  (should (custom-variable-p 'supervisor-mode)))
+
 ;;; Verbose logging tests
 
 (ert-deftest supervisor-test-log-warning-always-shows ()

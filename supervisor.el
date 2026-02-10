@@ -293,6 +293,7 @@ For malformed entries, returns \"malformed#IDX\" for consistency."
    ;; Malformed - use index-based ID
    (t (format "malformed#%d" idx))))
 
+;;;###autoload
 (defun supervisor-validate ()
   "Validate all entries in `supervisor-programs' without starting.
 Display results in a temporary buffer and populate `supervisor--invalid'
@@ -935,6 +936,7 @@ Return t if started (or skipped), nil on error."
         (dolist (id ready-ids)
           (supervisor--dag-try-start-entry id))))))
 
+;;;###autoload
 (defun supervisor-start ()
   "Start all programs in `supervisor-programs' by stage.
 Uses async DAG scheduler - stages run sequentially, but entries within
@@ -992,6 +994,7 @@ ALL-IDS is the list of all valid entry IDs for cross-stage validation."
          (supervisor--dag-cleanup)
          (supervisor--start-stages-async rest all-ids))))))
 
+;;;###autoload
 (defun supervisor-stop ()
   "Stop all supervised processes gracefully.
 Sends SIGTERM, waits up to `supervisor-shutdown-timeout' seconds,
@@ -1285,6 +1288,7 @@ Cycles: config default -> override opposite -> back to config default."
 (defvar supervisor--help-text
   "Keys: s:start k:kill r:restart l:log L:view ?:describe p:proced P:auto g:refresh q:quit")
 
+;;;###autoload
 (defun supervisor ()
   "Open the supervisor dashboard."
   (interactive)
@@ -1295,6 +1299,55 @@ Cycles: config default -> override opposite -> back to config default."
       (tabulated-list-print)
       (setq-local header-line-format supervisor--help-text))
     (pop-to-buffer buf)))
+
+;;; Global Minor Mode
+
+;;;###autoload
+(define-minor-mode supervisor-mode
+  "Global minor mode for process supervision.
+
+When enabled, starts all configured processes via `supervisor-start'.
+When disabled, stops all supervised processes via `supervisor-stop'.
+
+This mode is intended for use in your init file to manage session
+processes, particularly when using Emacs as a window manager (EXWM).
+
+Example configuration:
+
+  (require \\='supervisor)
+
+  (setq supervisor-programs
+        \\='((\"sh -c \\='xrdb ~/.Xresources\\='\" :type oneshot :stage early)
+          (\"nm-applet\" :type simple :stage session)
+          (\"blueman-applet\" :type simple :restart t)))
+
+  (supervisor-mode 1)
+
+Or with `use-package':
+
+  (use-package supervisor
+    :config
+    (setq supervisor-programs \\='(...))
+    (supervisor-mode 1))
+
+Process types:
+- simple: Long-running daemons, restarted on crash if :restart t
+- oneshot: Run-once scripts, exit is expected
+
+Stages (run sequentially):
+- early: X settings, keyboard config
+- services: System daemons (polkit, dbus)
+- session: User services (default)
+- ui: Compositor, tray apps
+
+Use `M-x supervisor' to open the dashboard for monitoring and control.
+Use `M-x supervisor-validate' to check config without starting processes."
+  :global t
+  :group 'supervisor
+  :lighter " Sup"
+  (if supervisor-mode
+      (supervisor-start)
+    (supervisor-stop)))
 
 (provide 'supervisor)
 ;;; supervisor.el ends here
