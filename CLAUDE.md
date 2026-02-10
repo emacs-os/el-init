@@ -98,6 +98,13 @@ A stage is complete only when:
 - If a behavior can be tested, it must be tested
 - Required test coverage: whitelist validation, cycle fallback, stable ordering, oneshot timeout unlock, delayed entry handling, async oneshot non-blocking
 
+## Documentation Files
+
+- **README.md**: Documents what the code *currently does*. Must accurately reflect the actual implementation - no aspirational features or future plans. Keep it truthful and human-readable.
+- **ROADMAP.md**: Future plans and ideas. Not yet implemented.
+- **CLAUDE.md**: Development guidance for AI assistants.
+- **STANDARDS.md**: Emacs Lisp coding standards (mandatory).
+
 ## MELPA Standards
 
 This package must be structured for [MELPA](https://github.com/melpa/melpa/blob/master/CONTRIBUTING.org) submission.
