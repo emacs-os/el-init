@@ -413,6 +413,32 @@
         (should (member "b" deps))
         (should (member "c" deps))))))
 
+(ert-deftest supervisor-test-dag-disabled-entry-ready-immediately ()
+  "Disabled entries are ready immediately and don't block dependents."
+  (let ((supervisor--dag-blocking (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-entries (make-hash-table :test 'equal))
+        (supervisor--dag-started (make-hash-table :test 'equal))
+        (supervisor--dag-ready (make-hash-table :test 'equal))
+        (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+        (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+        (supervisor--dag-id-to-index (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--ready-times (make-hash-table :test 'equal)))
+    ;; "a" is disabled, "b" depends on "a"
+    ;;           (id   cmd   delay enabled-p restart-p logging-p type   stage   after oneshot-wait timeout)
+    (let ((entries '(("a" "cmd" 0 nil t t simple session nil t 30)
+                     ("b" "cmd" 0 t   t t simple session ("a") t 30))))
+      (supervisor--dag-init entries)
+      ;; Disabled entry should be marked ready immediately
+      (should (gethash "a" supervisor--dag-ready))
+      (should (gethash "a" supervisor--dag-started))
+      ;; Entry state should be 'disabled
+      (should (eq (gethash "a" supervisor--entry-state) 'disabled))
+      ;; Dependent "b" should have in-degree 0 (not blocked by disabled "a")
+      (should (= 0 (gethash "b" supervisor--dag-in-degree))))))
+
 (ert-deftest supervisor-test-async-oneshot-not-blocking ()
   "Async oneshots (oneshot-wait nil) do not block stage completion."
   (let ((supervisor--dag-blocking nil)

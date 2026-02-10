@@ -644,7 +644,8 @@ Called once at supervisor startup."
 ;;; DAG Scheduler
 
 (defun supervisor--dag-init (entries)
-  "Initialize DAG scheduler state for ENTRIES."
+  "Initialize DAG scheduler state for ENTRIES.
+Disabled entries are marked ready immediately per spec."
   (setq supervisor--dag-in-degree (make-hash-table :test 'equal))
   (setq supervisor--dag-dependents (make-hash-table :test 'equal))
   (setq supervisor--dag-entries (make-hash-table :test 'equal))
@@ -654,10 +655,13 @@ Called once at supervisor startup."
   (setq supervisor--dag-timeout-timers (make-hash-table :test 'equal))
   (setq supervisor--dag-delay-timers (make-hash-table :test 'equal))
   (setq supervisor--dag-id-to-index (make-hash-table :test 'equal))
-  ;; Build lookup tables
-  (let ((idx 0))
+  ;; Collect disabled entries to mark ready after graph is built
+  (let ((disabled-ids nil)
+        (idx 0))
+    ;; Build lookup tables
     (dolist (entry entries)
       (let* ((id (nth 0 entry))
+             (enabled-p (nth 3 entry))
              (type (nth 6 entry))
              (after (nth 8 entry))
              (oneshot-wait (nth 9 entry)))
@@ -666,20 +670,31 @@ Called once at supervisor startup."
         (puthash id nil supervisor--dag-dependents)
         (puthash id idx supervisor--dag-id-to-index)
         (cl-incf idx)
-        ;; Track blocking oneshots
-        (when (and (eq type 'oneshot) oneshot-wait)
+        ;; Track blocking oneshots (only if enabled)
+        (when (and enabled-p (eq type 'oneshot) oneshot-wait)
           (puthash id t supervisor--dag-blocking))
-        ;; Set initial state based on dependencies
-        (puthash id (if (> (length after) 0) 'waiting-on-deps 'stage-not-started)
-                 supervisor--entry-state))))
-  ;; Build dependents graph
-  (dolist (entry entries)
-    (let ((id (nth 0 entry))
-          (after (nth 8 entry)))
-      (dolist (dep after)
-        (when (gethash dep supervisor--dag-entries)
-          (puthash dep (cons id (gethash dep supervisor--dag-dependents))
-                   supervisor--dag-dependents))))))
+        ;; Set initial state
+        (cond
+         ((not enabled-p)
+          (push id disabled-ids)
+          (puthash id 'disabled supervisor--entry-state))
+         ((> (length after) 0)
+          (puthash id 'waiting-on-deps supervisor--entry-state))
+         (t
+          (puthash id 'stage-not-started supervisor--entry-state)))))
+    ;; Build dependents graph
+    (dolist (entry entries)
+      (let ((id (nth 0 entry))
+            (after (nth 8 entry)))
+        (dolist (dep after)
+          (when (gethash dep supervisor--dag-entries)
+            (puthash dep (cons id (gethash dep supervisor--dag-dependents))
+                     supervisor--dag-dependents)))))
+    ;; Mark disabled entries as ready immediately (spec requirement)
+    ;; This decrements in-degree of their dependents
+    (dolist (id disabled-ids)
+      (puthash id t supervisor--dag-started)
+      (supervisor--dag-mark-ready id))))
 
 (defun supervisor--dag-mark-ready (id)
   "Mark ID as ready and unlock its dependents.
