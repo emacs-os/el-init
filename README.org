@@ -45,7 +45,7 @@ Or with hooks for more control:
 
 #+begin_src emacs-lisp
 (add-hook 'after-init-hook #'supervisor-start)
-(add-hook 'kill-emacs-hook #'supervisor-stop)
+(add-hook 'kill-emacs-hook (lambda () (supervisor-stop (lambda ()))))
 #+end_src
 
 * Commands
@@ -111,9 +111,12 @@ When enabled, crashed processes restart after =supervisor-restart-delay= seconds
 
 * Graceful Shutdown
 
-=supervisor-stop= sends SIGTERM to all processes, waits up to
-=supervisor-shutdown-timeout= seconds (default: 3) for graceful exit, then
-SIGKILL any survivors.
+=supervisor-stop= sends SIGTERM to all processes and returns immediately.
+A timer handles the graceful shutdown window: after
+=supervisor-shutdown-timeout= seconds (default: 3), any survivors are sent
+SIGKILL.  If you need to block until completion (for example in
+=kill-emacs-hook=), pass a callback to =supervisor-stop= and wait on it in
+your own code.
 
 * Logging
 
@@ -243,5 +246,7 @@ Open with =M-x supervisor=.
 
 ;; Start on Emacs init, stop on exit
 (add-hook 'after-init-hook #'supervisor-start)
-(add-hook 'kill-emacs-hook #'supervisor-stop)
+;; If you need to block, use the callback to perform sync teardown.
+(add-hook 'kill-emacs-hook
+          (lambda () (supervisor-stop (lambda ()))) )
 #+end_src
