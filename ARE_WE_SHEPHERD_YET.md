@@ -1,5 +1,9 @@
 # Are We Shepherd Yet?
 
+> **NOTE:** This document describes a long-term vision and roadmap.  The current
+> release of supervisor.el is a **user-session supervisor**, not an init system
+> or PID 1 replacement.  See README.org for the current scope and capabilities.
+
 This project aims to build a complete PID 1 init and supervision system that
 runs inside Emacs, securely and robustly. This is a serious engineering goal.
 The question is not whether we can do it, but whether we are willing to build

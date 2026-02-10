@@ -963,7 +963,13 @@ Return t if started (or skipped), nil on error."
 (defun supervisor-start ()
   "Start all programs in `supervisor-programs' by stage.
 Uses async DAG scheduler - stages run sequentially, but entries within
-a stage can run in parallel based on dependencies."
+a stage can run in parallel based on :after dependencies.
+
+Ready semantics (when dependents are unblocked):
+- Simple process: spawned (process started)
+- Oneshot: exited (success or failure) or timed out
+- Disabled entry: immediately ready
+- Start failure: immediately ready (dependents proceed)"
   (interactive)
   (setq supervisor--shutting-down nil)
   ;; Cancel any existing timers before clearing (prevents orphaned timers)
@@ -1179,9 +1185,9 @@ Skips invalid/malformed entries to avoid parse errors."
         (parts nil))
     (dolist (stage all-stages)
       (push (cond ((member stage supervisor--completed-stages)
-                   (format "[%s ✓]" stage))
+                   (format "[%s *]" stage))
                   ((eq stage supervisor--current-stage)
-                   (format "[%s ▸]" stage))
+                   (format "[%s >]" stage))
                   (t
                    (format "[%s  ]" stage)))
             parts))
@@ -1337,28 +1343,43 @@ Cycles: config default -> override opposite -> back to config default."
                ('nil "off") ('visible "visible") (_ "on")))))
 
 (defun supervisor-dashboard-show-deps ()
-  "Show dependencies for entry at point."
+  "Show computed dependencies for entry at point.
+Shows only validated edges: same-stage dependencies that exist."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
     (if (gethash id supervisor--invalid)
         (message "Cannot show dependencies for invalid entry: %s" id)
       (let ((entry (supervisor--get-entry-for-id id)))
         (if entry
-            (let* ((after (nth 8 entry))
-                   ;; Find entries that depend on this one
-                   (dependents nil)
+            (let* ((my-stage (nth 7 entry))
+                   (raw-after (nth 8 entry))
+                   ;; Build set of valid same-stage IDs
+                   (stage-ids (make-hash-table :test 'equal))
                    (idx 0))
+              ;; Collect all valid entries in same stage
               (dolist (e supervisor-programs)
                 (let ((e-id (supervisor--extract-id e idx)))
                   (cl-incf idx)
                   (unless (gethash e-id supervisor--invalid)
                     (let ((parsed (supervisor--parse-entry e)))
-                      (when (member id (nth 8 parsed))
-                        (push e-id dependents))))))
-              (message "%s: depends-on=%s blocks=%s"
-                       id
-                       (if after (mapconcat #'identity after ", ") "none")
-                       (if dependents (mapconcat #'identity dependents ", ") "none")))
+                      (when (eq (nth 7 parsed) my-stage)
+                        (puthash e-id parsed stage-ids))))))
+              ;; Filter :after to only valid same-stage entries
+              (let* ((valid-after (cl-remove-if-not
+                                   (lambda (dep) (gethash dep stage-ids))
+                                   raw-after))
+                     ;; Find entries in same stage that depend on this one
+                     (dependents nil))
+                (maphash (lambda (e-id parsed)
+                           (when (and (not (string= e-id id))
+                                      (member id (nth 8 parsed)))
+                             ;; Only count if this dep is valid (same stage)
+                             (push e-id dependents)))
+                         stage-ids)
+                (message "%s [%s]: depends-on=%s blocks=%s"
+                         id my-stage
+                         (if valid-after (mapconcat #'identity valid-after ", ") "none")
+                         (if dependents (mapconcat #'identity dependents ", ") "none"))))
           (message "Entry not found: %s" id))))))
 
 (defun supervisor-dashboard-blame ()

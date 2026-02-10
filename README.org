@@ -78,7 +78,11 @@ Processes are grouped into 4 stages that run sequentially:
 Within a stage, entries start in parallel (DAG scheduler). Use =:after= to
 declare dependencies---the dependent waits for the dependency to be ready.
 
-*Ready* means: spawned (simple) or exited successfully (oneshot).
+*Ready* means:
+- *Simple process*: spawned (process started)
+- *Oneshot*: exited (success or failure) or timed out
+- *Disabled entry*: immediately ready (skipped)
+- *Start failure*: immediately ready (allows dependents to proceed)
 
 ** Oneshot Wait Modes
 
