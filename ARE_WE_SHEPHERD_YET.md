@@ -63,16 +63,18 @@ All items below are mandatory. There are no optional phases. Do them in order.
 2. Declarative/data-driven review and refactor based on
    `DATA_DRIVEN_DECLARATIVE.md`. Convert the research into concrete design
    targets and incremental refactors.
-3. Control plane implementation: ship `supervisorctl` and the POSIX wrappers
+3. Service definition layer: formal schema, versioning, persistent overrides,
+   migration plan, and validation coverage.
+4. Control plane implementation: ship `supervisorctl` and the POSIX wrappers
    planned in `sbin/README.md`, with human + JSON output, stable schema, exit
    codes, and tests.
-4. Service definition layer: formal schema, versioning, persistent overrides,
-   migration plan, and validation coverage.
-5. PID 1 engineering: child reaping, signal handling, safe shutdown semantics,
-   crash safety, and tests.
+5. Modularize codebase: split core engine, dashboard UI, and CLI/control plane
+   into separate files with clear boundaries and stable APIs.
 6. Security hardening: restricted control channel, explicit auth model, and a
    documented threat model.
-7. Parity and expansion: timers, socket activation, advanced readiness, and
+7. PID 1 engineering: child reaping, signal handling, safe shutdown semantics,
+   crash safety, and tests.
+8. Parity and expansion: timers, socket activation, advanced readiness, and
    remaining capability additions.
 
 **Roadmap Requirements (Detailed)**
@@ -87,19 +89,40 @@ All items below are mandatory. There are no optional phases. Do them in order.
 - Define the minimal plan/state data structures and pure functions needed.
 - Implement incremental refactors that reduce implicit state and side effects.
 
-**3. Control Plane (CLI + POSIX Wrappers)**
-- Implement `supervisorctl` with human-readable defaults and `--json`.
-- Define a stable JSON schema and exit codes; add tests for all outputs.
-- Use `emacsclient --eval` with explicit server selection flags (`-s`/`-f`).
-- Treat server access as privileged; document socket and auth handling.
-
-**4. Service Definition Layer**
+**3. Service Definition Layer**
 - Define a versioned schema for entries and overrides.
 - Separate requirement dependencies from ordering dependencies (systemd-style).
 - Provide a migration strategy for existing configs.
 - Ensure validation errors are explicit and test-covered.
+- Consider an optional DSL for unit definitions (Shepherd-style) that compiles
+  to the schema, while preserving `setq supervisor-programs` as a supported
+  baseline for simple configs.
 
-**5. PID 1 Engineering**
+**4. Control Plane (CLI + Minimal Shim)**
+- Implement `supervisorctl` with human-readable defaults and `--json`.
+- Keep parsing/dispatch/output in Elisp; the shim is transport only.
+- Use a single minimal shim (not per-command scripts). If shell must be
+  avoided, allow a tiny compiled launcher, still transport-only.
+- Define a stable JSON schema and exit codes; add tests for all outputs.
+- Use `emacsclient --eval` with explicit server selection flags (`-s`/`-f`).
+- Treat server access as privileged; document socket and auth handling.
+
+**5. Modularization (Core/UI/CLI Split)**
+- Split core engine into `supervisor-core.el` (parsing, validation, DAG,
+  scheduling, process management, state).
+- Split dashboard into `supervisor-dashboard.el` (tabulated UI, filters,
+  keybindings, blame/graph views).
+- Prepare `supervisor-cli.el` for control plane dispatcher and formatters.
+- If warranted by size, split doc/UX helpers into `supervisor-doc.el`
+  (help text, banner strings, formatted output helpers).
+- Keep public entry points stable; update tests and `provide`/`require` edges.
+
+**6. Security Hardening**
+- Lock down control channels (local socket by default).
+- If TCP is enabled, require strong auth and protect server files.
+- Document the threat model and safe deployment guidance.
+
+**7. PID 1 Engineering**
 - Implement child reaping and SIGCHLD handling.
 - Define explicit signal handling for shutdown and reboot flows.
 - Ensure safe shutdown order and crash safety under PID 1 semantics.
@@ -129,12 +152,7 @@ Shim approach (preferred):
   requires Emacs to be PID 1, the shim logic must be integrated into Emacs
   (or Emacs must be patched to reap all children itself).
 
-**6. Security Hardening**
-- Lock down control channels (local socket by default).
-- If TCP is enabled, require strong auth and protect server files.
-- Document the threat model and safe deployment guidance.
-
-**7. Parity and Expansion**
+**8. Parity and Expansion**
 - Add timers and socket activation.
 - Add advanced readiness semantics as needed.
 - Keep CLI parity with the interactive UI.
