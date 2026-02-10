@@ -186,6 +186,21 @@ Retries and resilience:
 3. PID 1 engineering: reaping, signal handling, safe shutdown, crash safety.
 4. Security hardening: restrict control channel and document threat model.
 5. Parity and beyond: timers, socket activation, advanced readiness.
+6. Scheduler hardening: move fully to event-driven completion for shutdown and
+   oneshots, eliminating periodic polling timers.
+
+## Scheduler Hardening Details (Future)
+
+- Shutdown: track a live-process counter, decrement in sentinels, and complete
+  when the counter reaches zero.
+- Shutdown timeout: use a single one-shot timer to SIGKILL survivors, then
+  complete.
+- Oneshot completion: rely on process sentinels for success/failure, with a
+  single one-shot timeout timer as a fallback.
+- Remove repeating timer checks that poll process state; prefer sentinels plus
+  one-shot timers only.
+- Ensure completion callbacks fire exactly once, including when no processes
+  are running at shutdown start.
 
 ## Definition of Done
 
