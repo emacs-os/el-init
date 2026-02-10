@@ -29,6 +29,10 @@
 ;; processes from Emacs.  It is useful for starting session services when
 ;; using Emacs as a window manager (EXWM) or for managing development daemons.
 ;;
+;; SCOPE: This is a user-session supervisor, not an init system or PID1
+;; replacement.  It manages processes within your Emacs session and is
+;; designed for transparency and interactivity over industrial strength.
+;;
 ;; Features:
 ;; - Staged startup (early, services, session, ui) with sequential execution
 ;; - Dependency ordering via :after declarations (DAG scheduler)
@@ -359,6 +363,18 @@ so the dashboard reflects validation state."
 (defvar supervisor--invalid (make-hash-table :test 'equal)
   "Hash table mapping invalid entry IDs to reason strings.")
 
+(defvar supervisor--start-times (make-hash-table :test 'equal)
+  "Hash table mapping entry IDs to start timestamps (float-time).")
+
+(defvar supervisor--ready-times (make-hash-table :test 'equal)
+  "Hash table mapping entry IDs to ready timestamps (float-time).")
+
+(defvar supervisor--current-stage nil
+  "Currently executing stage symbol, or nil if not running.")
+
+(defvar supervisor--completed-stages nil
+  "List of completed stage symbols.")
+
 (defvar supervisor-cleanup-hook nil
   "Hook run during cleanup, before killing processes.")
 
@@ -650,6 +666,8 @@ No-op if DAG scheduler is not active (e.g., manual starts)."
   (when (and supervisor--dag-ready
              (not (gethash id supervisor--dag-ready)))
     (puthash id t supervisor--dag-ready)
+    ;; Record ready time for blame view
+    (puthash id (float-time) supervisor--ready-times)
     ;; Cancel any timeout timer
     (when-let* ((timer (gethash id supervisor--dag-timeout-timers)))
       (when (timerp timer)
@@ -713,6 +731,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
   "Start process ID with CMD, LOGGING-P, TYPE, RESTART-P, and ONESHOT-TIMEOUT."
   ;; Mark as started now (process is spawning)
   (puthash id t supervisor--dag-started)
+  ;; Record start time for blame view
+  (puthash id (float-time) supervisor--start-times)
   (let ((args (split-string-and-unquote cmd)))
     (if (not (executable-find (car args)))
         (progn
@@ -911,9 +931,12 @@ Return t if started (or skipped), nil on error."
 (defun supervisor--start-stage-async (stage-name entries callback)
   "Start ENTRIES for STAGE-NAME asynchronously.  Call CALLBACK when complete."
   (supervisor--log 'info "=== Stage: %s ===" stage-name)
+  (setq supervisor--current-stage stage-name)
   (if (null entries)
-      ;; Empty stage, proceed immediately
-      (funcall callback)
+      ;; Empty stage, mark complete and proceed immediately
+      (progn
+        (push stage-name supervisor--completed-stages)
+        (funcall callback))
     ;; Initialize DAG scheduler
     (supervisor--dag-init entries)
     (setq supervisor--dag-stage-complete-callback callback)
@@ -960,6 +983,10 @@ a stage can run in parallel based on dependencies."
   (clrhash supervisor--restart-times)
   (clrhash supervisor--restart-timers)
   (clrhash supervisor--oneshot-completed)
+  (clrhash supervisor--start-times)
+  (clrhash supervisor--ready-times)
+  (setq supervisor--current-stage nil)
+  (setq supervisor--completed-stages nil)
   (supervisor--dag-cleanup)
   (supervisor--rotate-logs)
   ;; Parse and deduplicate entries
@@ -975,6 +1002,7 @@ ALL-IDS is the list of all valid entry IDs for cross-stage validation."
   (if (or (null remaining-stages) supervisor--shutting-down)
       (progn
         (supervisor--dag-cleanup)
+        (setq supervisor--current-stage nil)
         (supervisor--log 'info "startup complete"))
     (let* ((stage-pair (car remaining-stages))
            (rest (cdr remaining-stages))
@@ -991,6 +1019,7 @@ ALL-IDS is the list of all valid entry IDs for cross-stage validation."
       (supervisor--start-stage-async
        stage-name entries
        (lambda ()
+         (push stage-name supervisor--completed-stages)
          (supervisor--dag-cleanup)
          (supervisor--start-stages-async rest all-ids))))))
 
@@ -1046,6 +1075,8 @@ then SIGKILL any survivors."
     (define-key map "P" #'supervisor-dashboard-toggle-proced-auto-update)
     (define-key map "g" #'supervisor-dashboard-refresh)
     (define-key map "?" #'supervisor-dashboard-describe-entry)
+    (define-key map "d" #'supervisor-dashboard-show-deps)
+    (define-key map "B" #'supervisor-dashboard-blame)
     (define-key map "q" #'quit-window)
     map)
   "Keymap for `supervisor-dashboard-mode'.")
@@ -1142,6 +1173,23 @@ Skips invalid/malformed entries to avoid parse errors."
                       entries)))))))
     (nreverse entries)))
 
+(defun supervisor--stage-progress-banner ()
+  "Return ASCII banner showing stage progress."
+  (let ((all-stages '(early services session ui))
+        (parts nil))
+    (dolist (stage all-stages)
+      (push (cond ((member stage supervisor--completed-stages)
+                   (format "[%s ✓]" stage))
+                  ((eq stage supervisor--current-stage)
+                   (format "[%s ▸]" stage))
+                  (t
+                   (format "[%s  ]" stage)))
+            parts))
+    (mapconcat #'identity (nreverse parts) " ")))
+
+(defvar supervisor--help-text
+  "Keys: s:start k:kill r:restart l:log L:view ?:describe d:deps B:blame p:proced g:refresh q:quit")
+
 (defun supervisor--refresh-dashboard ()
   "Refresh the dashboard buffer if it exists."
   (when-let* ((buf (get-buffer "*supervisor*")))
@@ -1149,6 +1197,9 @@ Skips invalid/malformed entries to avoid parse errors."
       (let ((pos (point)))
         (setq tabulated-list-entries (supervisor--get-entries))
         (tabulated-list-print t)
+        (setq header-line-format
+              (concat (supervisor--stage-progress-banner)
+                      "  " supervisor--help-text))
         (goto-char (min pos (point-max)))))))
 
 (defun supervisor-dashboard-refresh ()
@@ -1285,8 +1336,65 @@ Cycles: config default -> override opposite -> back to config default."
              (pcase proced-auto-update-flag
                ('nil "off") ('visible "visible") (_ "on")))))
 
-(defvar supervisor--help-text
-  "Keys: s:start k:kill r:restart l:log L:view ?:describe p:proced P:auto g:refresh q:quit")
+(defun supervisor-dashboard-show-deps ()
+  "Show dependencies for entry at point."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (if (gethash id supervisor--invalid)
+        (message "Cannot show dependencies for invalid entry: %s" id)
+      (let ((entry (supervisor--get-entry-for-id id)))
+        (if entry
+            (let* ((after (nth 8 entry))
+                   ;; Find entries that depend on this one
+                   (dependents nil)
+                   (idx 0))
+              (dolist (e supervisor-programs)
+                (let ((e-id (supervisor--extract-id e idx)))
+                  (cl-incf idx)
+                  (unless (gethash e-id supervisor--invalid)
+                    (let ((parsed (supervisor--parse-entry e)))
+                      (when (member id (nth 8 parsed))
+                        (push e-id dependents))))))
+              (message "%s: depends-on=%s blocks=%s"
+                       id
+                       (if after (mapconcat #'identity after ", ") "none")
+                       (if dependents (mapconcat #'identity dependents ", ") "none")))
+          (message "Entry not found: %s" id))))))
+
+(defun supervisor-dashboard-blame ()
+  "Show startup timing blame view sorted by duration."
+  (interactive)
+  (if (= 0 (hash-table-count supervisor--start-times))
+      (message "No timing data available (run supervisor-start first)")
+    (let ((entries nil))
+      (maphash (lambda (id start-time)
+                 (let* ((ready-time (gethash id supervisor--ready-times))
+                        (duration (if ready-time
+                                      (- ready-time start-time)
+                                    nil)))
+                   (push (list id start-time ready-time duration) entries)))
+               supervisor--start-times)
+      ;; Sort by duration descending (nil durations at end)
+      (setq entries (sort entries
+                          (lambda (a b)
+                            (let ((da (nth 3 a))
+                                  (db (nth 3 b)))
+                              (cond ((and da db) (> da db))
+                                    (da t)
+                                    (t nil))))))
+      ;; Display in a help buffer
+      (with-help-window "*supervisor-blame*"
+        (princ "Supervisor Startup Blame (sorted by duration)\n")
+        (princ (make-string 50 ?=))
+        (princ "\n\n")
+        (dolist (e entries)
+          (let ((id (nth 0 e))
+                (duration (nth 3 e)))
+            (princ (format "%-20s %s\n"
+                           id
+                           (if duration
+                               (format "%.3fs" duration)
+                             "(not ready)")))))))))
 
 ;;;###autoload
 (defun supervisor ()
@@ -1297,7 +1405,9 @@ Cycles: config default -> override opposite -> back to config default."
       (supervisor-dashboard-mode)
       (setq tabulated-list-entries (supervisor--get-entries))
       (tabulated-list-print)
-      (setq-local header-line-format supervisor--help-text))
+      (setq-local header-line-format
+                  (concat (supervisor--stage-progress-banner)
+                          "  " supervisor--help-text)))
     (pop-to-buffer buf)))
 
 ;;; Global Minor Mode

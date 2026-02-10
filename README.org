@@ -8,6 +8,25 @@ Lightweight process supervisor for managing background processes from Emacs.
 Useful for starting session services when using Emacs as a window manager (EXWM)
 or for managing development daemons.
 
+*Scope:* This is a user-session supervisor, not an init system or PID1 replacement.
+
+* Why supervisor.el
+
+When using Emacs as a window manager, you need something to start your session
+services (nm-applet, polkit agent, compositor, etc.). You could use systemd
+user units, but then you're managing your Emacs session with two different
+tools, debugging across two log systems, and dealing with startup ordering
+between processes that systemd knows about and Emacs.
+
+supervisor.el keeps everything in one place:
+- *Transparent:* Plain text logs, explicit config, no magic
+- *Inspectable:* See resolved config, dependency graph, and timing with a keystroke
+- *Interactive:* Override restart policy, toggle logging, start/kill from dashboard
+- *Integrated:* Your session config lives with your Emacs config
+
+It deliberately trades industrial-strength process management for simplicity
+and debuggability within a single user session.
+
 * Installation
 
 Place =supervisor.el= in your load path and add to your init file:
@@ -146,6 +165,9 @@ Open with =M-x supervisor=.
 | r   | Toggle restart policy (config -> override -> config) |
 | l   | Toggle logging (takes effect on next start)        |
 | L   | View log file                                      |
+| ?   | Show resolved config for entry                     |
+| d   | Show dependency graph (depends-on / blocks)        |
+| B   | Show startup blame view (sorted by duration)       |
 | p   | Open =M-x proced=                                    |
 | P   | Toggle proced auto-update (off -> visible -> on)   |
 | g   | Refresh dashboard                                  |
