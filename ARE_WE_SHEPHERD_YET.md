@@ -1,174 +1,206 @@
 # Are We Shepherd Yet?
 
-> **NOTE:** This document describes a long-term vision and roadmap.  The current
-> release of supervisor.el is a **user-session supervisor**, not an init system
-> or PID 1 replacement.  See README.org for the current scope and capabilities.
+> NOTE: This document describes the long-term vision and roadmap. The current
+> release of supervisor.el is a user-session supervisor, not an init system or
+> PID 1 replacement. See README.org for current scope and capabilities.
 
-This project aims to build a complete PID 1 init and supervision system that
-runs inside Emacs, securely and robustly. This is a serious engineering goal.
-The question is not whether we can do it, but whether we are willing to build
-it to the standard that PID 1 demands.
+We are building a complete PID 1 init and supervision system inside Emacs,
+securely and robustly. This is a serious engineering goal. The question is
+not "is it funny". The question is "what do we need to build to be correct".
 
-This document defines the target, the requirements, and the path forward.
+Short answer today: not yet. The rest of this document is the plan, the spec,
+and the path to get there.
 
-## Target: Full PID 1 Init and Supervisor
+## Why
 
-We are building:
-
-- A PID 1 capable init and supervisor that can run in the initial PID namespace.
-- A user-session init that is already usable today and can grow to full system
-  responsibilities.
-- A complete non-interactive control plane (CLI + JSON) so interactive Emacs
-  UI is optional, not required.
+- We want a transparent, hackable init with the power of Emacs.
+- We want full observability and a non-interactive control plane.
+- We want an init that is explainable and deterministic, not opaque.
 
 ## Reality Check: PID 1 Is Different
 
-If Emacs (or a shim that execs Emacs) is PID 1, it must handle the special
-responsibilities of init:
+PID 1 has special responsibilities. It must:
 
-- Reap orphaned children to avoid zombie accumulation.
-- Set explicit signal handlers for termination, shutdown, and child events.
-- Remain responsive and alive; if init dies, the PID namespace dies with it.
+- Reap orphaned children so zombies do not accumulate.
+- Handle termination and child signals explicitly and predictably.
+- Stay alive; if PID 1 exits, the PID namespace dies.
 
-These are not optional. This is what differentiates a normal process from
-an init process.
+These are baseline requirements for an init process, not optional features.
 
-## Shepherd Parity (Minimum)
+## Baseline: Shepherd Parity (Minimum)
 
-The GNU Shepherd manual defines core capabilities we must match or exceed:
+The GNU Shepherd provides a baseline we must match:
 
-- Service model with explicit start/stop actions and structured service state.
-- Dependency model (requirements and provisions) with a dependency graph.
-- Restart policy with respawn limits and delay.
-- One-shot and transient services.
-- A non-interactive CLI (herd) that controls the daemon via a Unix socket.
+- Shepherd can run as a system-wide daemon or a per-user service manager.
+- The `herd` command controls the daemon and provides start/stop/restart/status,
+  enable/disable, and dependency graph inspection.
+- Services declare provisions and requirements and can be inspected and
+  operated on by name.
 
-Our plan must reach feature parity with these fundamentals.
+Shepherd-level usability is the minimum bar for our control plane.
 
-## Systemd-Class Semantics (Ordering vs Requirements)
+## Ordering Semantics: Systemd-Style Split
 
 Systemd distinguishes two concepts:
 
-- Requirement dependencies (Wants/Requires) which pull units in.
-- Ordering dependencies (After/Before) which only control sequence.
+- Ordering dependencies: After/Before control start order only.
+- Requirement dependencies: Wants/Requires pull units in, but do not order.
 
-This separation is critical for deterministic orchestration and must be
-modeled explicitly in the supervisor dependency graph.
+We must model both explicitly for deterministic orchestration.
 
-## Security Model (Required)
+## Control Plane and Security
 
-Emacs server access is a control boundary. A CLI built on `emacsclient --eval`
-must be treated as privileged. If a client can connect, it can execute code
-as the Emacs process.
+The control plane is a security boundary. If we use `emacsclient --eval` for
+control, any client that can connect can execute code as the Emacs process.
+We must treat server access as privileged and lock it down.
 
-Security requirements:
+## Spec and Requirements (Authoritative)
 
-- Default to Unix domain sockets with strict file permissions.
-- If TCP is enabled, require a strong auth key and protect the server file.
-- Provide a locked-down mode that rejects arbitrary evaluation for untrusted
-  callers.
-- Document the threat model clearly.
+This section reproduces the current plan spec so this document is self
+contained. It is the authoritative checklist for completion.
 
-## Requirements: The Specification
+### P0 Requirements (Must)
 
-### PID 1 Core
+Configuration validity whitelist:
 
-- SIGCHLD handling and reliable child reaping.
-- Explicit signal handlers for SIGTERM, SIGINT, SIGQUIT, SIGPWR, SIGUSR1/2.
-- Safe shutdown ordering: stop dependents before dependencies.
-- Crash safety: init must not exit due to unhandled signals.
+- Define a finite whitelist of valid option combinations for
+  `supervisor-programs`.
+- Encode constraints and aliases explicitly (mutual exclusivity, type specific
+  options, `:async t` as `:oneshot-wait nil`, `:oneshot-timeout` type, etc).
+- Validate entries at the start of `supervisor-start` and allow the supervisor
+  to continue if some are invalid.
+- Skip invalid entries, surface them in the dashboard with reason, and log a
+  warning per invalid entry.
 
-### Service Model
+Scheduler semantics (async DAG):
 
-- Service types: long-running, oneshot, transient, and socket-activated (future).
-- Readiness semantics (spawned vs exited vs explicit ready) must be defined.
-- Dependency graph with cycle detection and stable ordering.
-- Strict validation of service definitions.
+- Use async callbacks only (timers and sentinels). No polling loops.
+- Start entries within a stage using a DAG built from `:after` dependencies.
+- Allow parallel startup of unrelated entries.
+- Treat `:after` as waiting on ready state.
+- Preserve stable ordering for unconstrained nodes using original list order.
+- Fall back to list order on cycle detection and clear `:after` edges for that
+  stage to prevent stalls.
+- Do not mark delayed entries as started until delay elapses and spawn begins.
+- Oneshot timeouts unlock dependents and stage completion with a warning.
+- Disabled entries are ready immediately.
+- Clean up all DAG state on stage completion, shutdown, and restart.
 
-### Lifecycle and Policy
+Stage completion:
 
-- start/stop/restart/reload per service.
-- enable/disable (persistent + runtime overrides).
-- bounded restart policy with delay and crash-loop suppression.
-- no busy-wait loops; use timers and sentinels only.
+- A stage is complete only when all simple processes have spawned, all blocking
+  oneshots have exited or timed out, and all delayed entries have started.
 
-### Observability
+Logging and observability:
 
-- status view with PID, exit code, enabled state, and reason.
-- dependency graph inspection.
-- timing and blame output for slow startup.
-- per-service logs with rotation.
+- Provide a `supervisor-verbose` toggle.
+- When verbose, log all meaningful events (stage start/completion, entry
+  start/skip/failure, dependency unlocks, oneshot timeouts, restarts,
+  crash-loop suppression).
+- When not verbose, only warnings and errors should be logged.
 
-### Control Plane (CLI)
+Dashboard:
 
-- systemctl-style commands with human output by default.
-- `--json` output for automation.
-- stable schema and exit codes.
-- parity with all interactive UI actions.
+- Display stage, enabled state, status, restart, logging, PID, and invalid
+  state if applicable.
+- Show `failed` for oneshots with non-zero exit.
+- Show `invalid` for invalid entries with a reason string.
 
-### Security
+Global minor mode:
 
-- authenticated local control via socket.
-- optional TCP access requires explicit config and strong auth.
-- no implicit trust of environment variables for server selection.
-- clear guidance for running as PID 1 or user-session init.
+- Provide a global minor mode named `supervisor-mode`.
+- Enabling starts supervisor, disabling stops it.
+- `C-h f` on `supervisor-mode` must include accurate help and sample config.
 
-### Compatibility and Migration
+Testing policy:
 
-- offer compatibility patterns for Shepherd-like service definitions.
-- provide a mapping from `herd` actions to CLI actions.
+- Use ERT for all tests.
+- If a behavior can be tested, it must be tested.
+- Required coverage: whitelist validation, cycle fallback, stable ordering,
+  oneshot timeout unlock, delayed entry handling, async oneshot non-blocking.
 
-### Testing and Verification
+Retries and resilience:
 
-- if a behavior can be tested, it must be tested.
-- CI must include byte-compile, checkdoc, package-lint, and ERT.
-- include tests for PID 1 signal handling (when feasible in CI).
+- Keep restart behavior bounded (crash-loop detection).
+- Honor restart delay and cancel pending restart timers on shutdown.
+- Start failures must not block dependents or stages.
+
+### Product Positioning: Systemd Jab (P0)
+
+- Explicitly state scope in docs/help: this is a user-session supervisor, not
+  an init system or PID 1 replacement.
+- Runtime inspectability: dashboard shows resolved config and dependency edges
+  or computed DAG order.
+- Logging stays simple and inspectable: plain files with timestamps/rotation.
+- Configuration is explicit and validated; no undocumented defaults.
+- Startup ordering is deterministic and explainable; ready semantics documented
+  in README and `C-h f` help.
+- Dashboard is interactive; overrides for restart/logging are visible and clear;
+  status explains why an entry is not running.
+- Track and expose startup timing: start and ready timestamps and blame view.
+- Calculate and expose the dependency graph; `d` opens deps for entry.
+- Include an ASCII boot banner reflecting stage progress.
+- Provide `supervisor-validate` command.
+- Include "Why supervisor.el exists" in README without ranting.
+
+### P1 Requirements (Should)
+
+- `supervisor-validate` (already promoted to P0 above).
+- `supervisor-reload` to reconcile config changes without restart.
+- Stage-level timeout to avoid stalls.
+- `supervisor-max-concurrent-starts` to avoid bursts.
+- Hooks for stage start/complete and process exit.
+- Distinguish signal death vs non-zero exit in diagnostics.
+- `supervisor-describe-entry` for resolved config display.
+- Dashboard toggle to filter by stage or show dependency edges.
+- Supervisor-level log file when verbose.
+- Runtime enable/disable overrides.
+- Remove or gate demo entries before release builds.
+
+### P2 Requirements (May)
+
+- File watch to trigger `supervisor-reload` on config changes.
+- Per-unit tags for dashboard filtering.
+- Dry-run mode that validates and orders entries without starting them.
+
+### Addendum: Autoloads (Recommended)
+
+- Add `;;;###autoload` cookies for all interactive entry points:
+  `supervisor-start`, `supervisor-stop`, `supervisor`, `supervisor-validate`,
+  `supervisor-mode`, and any other `defun` with `(interactive)`.
+- Add autoload for `supervisor-dashboard-mode` if it is user-facing.
+
+### MELPA Submission Requirements (Quality Gate)
+
+- Lexical binding enabled.
+- Standard package headers and GPL boilerplate.
+- `Package-Requires` minimum Emacs version.
+- LICENSE file present.
+- Pass `package-lint`, `checkdoc`, and `byte-compile` with no warnings.
+- Provide feature matching filename and end with `;;; supervisor.el ends here`.
 
 ## Roadmap (Concrete Phases)
 
-### Phase 1: Control Plane (CLI First)
-
-- Implement `sbin/supervisorctl` and supporting Emacs functions.
-- Provide `status`, `list`, `describe`, `graph`, `blame`, `logs`.
-- Provide `start/stop/restart/enable/disable/reload/validate`.
-
-### Phase 2: Service Definition Layer
-
-- Formal schema, versioned.
-- Persistent enable/disable overrides.
-- Strict validation and explicit error reporting.
-
-### Phase 3: PID 1 Engineering
-
-- Decide on a minimal init shim vs direct Emacs PID 1.
-- Guarantee SIGCHLD reaping and signal handling.
-- Provide safe shutdown and reboot hooks.
-
-### Phase 4: Security Hardening
-
-- Harden emacsclient access and reduce attack surface.
-- Add optional restricted control channel (no arbitrary eval).
-
-### Phase 5: Parity and Beyond
-
-- Match Shepherd features: custom actions, transient services, timers.
-- Expand readiness and socket activation.
-- Documentation for production use.
+1. Control plane: implement `supervisorctl` with human and JSON output.
+2. Service definition layer: formal schema and persistent overrides.
+3. PID 1 engineering: reaping, signal handling, safe shutdown, crash safety.
+4. Security hardening: restrict control channel and document threat model.
+5. Parity and beyond: timers, socket activation, advanced readiness.
 
 ## Definition of Done
 
-We are “Shepherd yet” when:
+We are "Shepherd yet" when:
 
 - PID 1 responsibilities are implemented and tested.
-- CLI is complete and stable, with JSON output.
+- The CLI is complete and stable, with JSON output.
 - Service definitions are validated, versioned, and documented.
 - Security posture is explicit and enforced.
 - The interactive UI is optional, not required.
 
 ## Sources Consulted
 
-- The GNU Shepherd Manual
-- systemd.unit(5) and systemd.target(5)
-- Linux waitpid(2) manual
-- Linux signal handling and PID 1 behavior documentation
-- GNU Emacs server documentation
+- https://www.gnu.org/software/shepherd/manual/shepherd.html
+- https://www.gnu.org/software/emacs/manual/html_node/emacs/Emacs-Server.html
+- https://www.gnu.org/software/emacs/manual/html_node/emacs/emacsclient-Options.html
+- https://man7.org/linux/man-pages/man1/systemd-nspawn.1.html
+- https://man7.org/linux/man-pages/man5/systemd.unit.5.html

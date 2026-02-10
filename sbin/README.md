@@ -1,59 +1,70 @@
 # CLI Wrapper Plan (POSIX shell)
 
 This folder will hold small POSIX shell wrappers that control `supervisor.el`
-via `emacsclient`. The goal is a *systemctl-like* UX that covers nearly all
-supervisor capabilities so the interactive dashboard (`M-x supervisor`) remains
-optional.
+via `emacsclient`. The goal is a systemctl-like UX that covers all supervisor
+features so the interactive dashboard (`M-x supervisor`) remains optional.
+
+Status: design plan only, not yet implemented.
 
 ## Principles
 
-- Default output is human-readable.
+- Human-readable output by default.
 - `--json` returns machine-friendly output.
-- Keep transport simple: `emacsclient --eval`.
-- Fail fast with clear errors if the Emacs server is unavailable.
 - No extra dependencies beyond POSIX shell and `emacsclient`.
+- Fail fast with clear errors if the Emacs server is unavailable.
+- Transport stays simple: `emacsclient --eval`.
+- The CLI must expose the same operations as the dashboard.
 
 ## Primary Command
 
 - `sbin/supervisorctl` (POSIX sh)
 
-## Command Set (systemctl-style)
+## Command Surface (systemctl-style)
+
+Lifecycle:
 
 - `supervisorctl start [ID...]`
-  - Start all configured programs (no args) or specific IDs.
 - `supervisorctl stop [ID...]`
-  - Stop all supervised processes or specific IDs.
 - `supervisorctl restart [ID...]`
-  - Restart all or specific IDs.
-- `supervisorctl enable [ID...]`
-  - Enable entries (config/runtime override). If none, enable all.
-- `supervisorctl disable [ID...]`
-  - Disable entries. If none, disable all.
-- `supervisorctl status [ID...]`
-  - Human-readable status by default.
-  - `--json` returns structured status.
-- `supervisorctl list`
-  - List all entries with status in a compact table.
-- `supervisorctl describe ID`
-  - Show resolved config for a single entry (human or JSON).
-- `supervisorctl validate`
-  - Run validation only (no start). Always prints invalid reasons.
 - `supervisorctl reload`
-  - If implemented, reconcile config without restart.
+- `supervisorctl validate`
+
+State and inspect:
+
+- `supervisorctl status [ID...]`
+- `supervisorctl list`
+- `supervisorctl describe ID`
 - `supervisorctl graph [ID]`
-  - Print dependency edges or subgraph for ID.
 - `supervisorctl blame`
-  - Show startup timing / blame list (longest first).
 - `supervisorctl logs ID [--tail N]`
-  - Print recent log lines for an entry.
+- `supervisorctl stage`
+- `supervisorctl wait [--stage STAGE|--all] [--timeout N]`
+
+Runtime overrides (dashboard parity):
+
+- `supervisorctl enable [ID...]`
+- `supervisorctl disable [ID...]`
+- `supervisorctl restart-policy (on|off) [ID...]`
+- `supervisorctl logging (on|off) [ID...]`
+
+Low-level control:
+
+- `supervisorctl kill ID [--signal SIG]`
+- `supervisorctl ping`
+- `supervisorctl version`
+
+Note: some commands map to P1 items (reload, wait, runtime enable/disable) and
+will be no-ops until implemented.
 
 ## Options
 
-- `--json`            Output JSON instead of human text
-- `--socket NAME`     Use a specific Emacs server socket
-- `--server-file PATH` Use a server file path
-- `--verbose`         Verbose CLI output (not the same as supervisor-verbose)
-- `--quiet`           Minimal output (errors only)
+- `--json` Output JSON instead of human text
+- `--socket-name NAME` Use a specific Emacs server socket (emacsclient `-s`)
+- `--server-file PATH` Use a server file path for TCP (emacsclient `-f`)
+- `--timeout N` Wait at most N seconds for Emacs response (emacsclient `-w`)
+- `--verbose` Verbose CLI output (not the same as `supervisor-verbose`)
+- `--quiet` Minimal output (errors only)
+- `--no-color` Disable ANSI color (if used)
 
 ## Output (Human-Readable Defaults)
 
@@ -62,7 +73,7 @@ optional.
 ```
 ID            TYPE     STAGE    ENABLED  STATUS   RESTART  LOG   PID   REASON
 nm-applet     simple   session  yes      running  yes      yes   1234  -
-blueman       simple   session  yes      stopped  yes      yes   -     -
+blueman       simple   session  yes      stopped  yes      yes   -     waiting on deps
 oneshot-xrdb  oneshot  early    yes      done     n/a      yes   -     -
 invalid#0     -        -        -        invalid  -        -     -     :type must be a symbol
 ```
@@ -87,9 +98,25 @@ Validation: 5 valid, 1 invalid
 INVALID invalid#0: :type must be a symbol
 ```
 
+`graph ID` example:
+
+```
+ID: nm-applet
+Depends-on: dbus, gpg-agent
+Blocks: tray
+```
+
+`blame` example:
+
+```
+ID             START            READY            DURATION
+nm-applet      1692133234.12    1692133235.01    0.89s
+blueman        1692133234.20    1692133236.40    2.20s
+```
+
 ## JSON Output (Proposal)
 
-All JSON should be a single object with a stable schema.
+All JSON should be a single object with a stable schema and sorted keys.
 
 Example `status --json`:
 
@@ -105,36 +132,65 @@ Example `status --json`:
       "restart": true,
       "logging": true,
       "pid": 1234,
-      "reason": null
+      "reason": null,
+      "after": ["dbus", "gpg-agent"],
+      "delay": 0,
+      "start_time": 1692133234.12,
+      "ready_time": 1692133235.01,
+      "duration": 0.89
     }
   ],
   "invalid": [
     {"id": "malformed#0", "reason": ":type must be a symbol"}
+  ],
+  "stage": {
+    "current": "session",
+    "completed": ["early", "services"]
+  }
+}
+```
+
+Example `graph --json`:
+
+```
+{
+  "id": "nm-applet",
+  "depends_on": ["dbus", "gpg-agent"],
+  "blocks": ["tray"],
+  "edges": [
+    ["dbus", "nm-applet"],
+    ["gpg-agent", "nm-applet"],
+    ["nm-applet", "tray"]
   ]
 }
 ```
 
 ## Emacs Functions Required (to back the CLI)
 
-These should return structured data instead of only `message`:
+These should return structured data instead of only `message` output.
+Prefer a single dispatcher plus small helpers.
 
-- `supervisor-status` -> list/alist for all entries
-- `supervisor-describe-entry` -> alist for one entry
-- `supervisor-set-enabled` -> enable/disable by id(s)
-- `supervisor-restart` -> restart by id(s)
-- `supervisor-graph` -> dependency edges
-- `supervisor-blame` -> startup timing info
-- `supervisor-logs` -> recent log lines
+- `supervisor-cli-status` -> list/alist for all entries
+- `supervisor-cli-describe` -> alist for one entry
+- `supervisor-cli-graph` -> dependency edges
+- `supervisor-cli-blame` -> startup timing info
+- `supervisor-cli-logs` -> recent log lines
+- `supervisor-cli-set-enabled` -> enable/disable by id(s)
+- `supervisor-cli-set-restart` -> runtime restart override by id(s)
+- `supervisor-cli-set-logging` -> runtime logging override by id(s)
+- `supervisor-cli-signal` -> send signal to a process
+- `supervisor-cli-validate` -> validation summary and invalid list
+- `supervisor-cli-reload` -> reconcile config without restart
 
 ## Transport
 
 Each CLI command invokes Emacs via:
 
 ```
-emacsclient --eval "(supervisor-status)"
+emacsclient --eval "(supervisor-cli-status)"
 ```
 
-If needed, pass `-s NAME` or `--server-file PATH`.
+If needed, pass `-s NAME` or `--server-file PATH` for server selection.
 
 ## Exit Codes
 
@@ -152,29 +208,26 @@ If needed, pass `-s NAME` or `--server-file PATH`.
 
 ## Security Considerations
 
-Emacs clients can do more than open files. The `emacsclient --eval` option can
-evaluate arbitrary Lisp on the server. In practice, anyone who can connect to
-the server can run code with the privileges of the Emacs process. Design the
-CLI and deployment accordingly. citeturn3search0
+`emacsclient --eval` can evaluate Lisp on the server. Any client that can
+connect effectively controls the Emacs process. Design the CLI and deployment
+accordingly.
 
 Key points:
 
-- Prefer Unix domain sockets (default). File system permissions on the socket
-  constrain who can connect.
-- If TCP is used (`server-use-tcp`), file permissions no longer apply. Access
-  control then depends on the authorization key and the permissions on
-  `server-auth-dir` (defaults to `~/.emacs.d/server/`). Keep that directory
-  private. citeturn1view0
-- TCP defaults to a random port on localhost. Avoid binding to non-local
-  interfaces unless you explicitly want remote access, and secure it. citeturn1view0
-- Avoid setting a static `server-auth-key` unless you have a specific need.
-  The default random key is the recommended mode. citeturn1view0
+- Emacs normally listens on a local Unix domain socket. TCP is optional and
+  must be explicitly enabled.
+- TCP sockets are not protected by file permissions, so access control depends
+  on the auth key and the permissions of the server auth directory and server
+  file.
+- `server-auth-key` should remain random and private; avoid setting a static
+  key unless you have a specific need.
+- Treat the server socket and server file as sensitive; restrict filesystem
+  permissions to the owner.
 
 Practical guidance:
 
-- Treat the server socket and server file as sensitive. If another user can
-  read the server file or connect to the socket, they effectively control
-  your Emacs session.
-- If you plan to use this as a user-session supervisor (or in place of a user
-  init system), consider running Emacs under a dedicated user account and keep
-  the server socket private to that account.
+- Prefer local sockets for user-session supervisors.
+- If you need TCP, bind to localhost only and keep `server-auth-dir` private.
+- Consider running Emacs under a dedicated user account for system-level use.
+- Use explicit `--socket-name` or `--server-file` instead of trusting ambient
+  environment variables in scripts.

@@ -248,3 +248,14 @@ emacs -Q --batch -l package-lint --eval "(package-lint-batch-and-exit \"supervis
 - [ ] LICENSE file exists in repository
 - [ ] `;;; Commentary:` section has usage overview
 - [ ] Feature provided matches filename
+
+## Appendage: Review Findings (Pending)
+
+- P0: No polling loops. Current code uses polling in `supervisor--wait-for-oneshot`
+  and the shutdown wait loop. Decide whether to refactor to timers/sentinels or
+  carve out a justified exception.
+- P0: Computed DAG edges should be inspectable. The current dependency view
+  derives from raw `:after` values and does not reflect cycle fallback when
+  `:after` edges are cleared.
+- P0: Dashboard status should clearly explain why an entry is not running.
+  The current table does not distinguish waiting-on-deps vs delayed vs disabled.
