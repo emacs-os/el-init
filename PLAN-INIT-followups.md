@@ -128,6 +128,40 @@ This spec defines follow-up requirements for the supervisor system described in 
 - MAY add per-unit tags for dashboard filtering.
 - MAY add a dry-run mode that validates and orders entries without starting them.
 
+## Product Positioning: "Systemd Jab" Requirements (P0)
+
+These requirements are intended to sharpen the contrast with systemd by making
+the user-session supervisor simpler, more transparent, and more interactive.
+
+- MUST explicitly state scope in docs/help: this is a user-session supervisor,
+  not an init system / PID1 replacement.
+- MUST provide runtime inspectability:
+  - dashboard can show resolved config for an entry (effective defaults applied)
+  - dashboard can show current dependency edges or computed DAG order
+- MUST keep logging simple and inspectable: per-process log files remain plain
+  files with timestamps/rotation (no opaque logging backend).
+- MUST keep configuration explicit and validated:
+  - whitelist validation with precise reasons (already required above)
+  - no implicit, undocumented defaults in user-facing behavior
+- MUST keep startup ordering deterministic and explainable:
+  - stable ordering and explicit dependency semantics (already required above)
+  - "ready" semantics must be documented in README and `C-h f` help
+- MUST keep the dashboard interactive:
+  - runtime overrides for restart and logging are visible and clear
+  - entry status clearly explains "why not running"
+- MUST track and expose startup timing:
+  - record per-entry start timestamps and ready timestamps
+  - provide a "blame"-style view that ranks entries by startup duration
+- MUST calculate and expose the dependency graph:
+  - computed DAG edges must be available for inspection
+  - dashboard key `d` (or similar) must open a dependency view for the entry at point
+- MUST include a small ASCII boot banner in the dashboard header that reflects
+  stage progress (ticks or similar).
+- MUST provide a `supervisor-validate` command that checks config without
+  starting any processes (already recommended above; promoted to P0 here).
+- MUST include a short "Why supervisor.el exists" section in README, contrasting
+  the user-session focus and transparency without being a rant.
+
 ## MELPA Submission Requirements
 
 This package MUST be structured for MELPA submission. See [MELPA CONTRIBUTING.org](https://github.com/melpa/melpa/blob/master/CONTRIBUTING.org) for full details.

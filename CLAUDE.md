@@ -9,20 +9,10 @@ supervisor.el is a single-file Emacs Lisp package for managing background proces
 ## Development Commands
 
 ```bash
-# Byte-compile (must pass with no warnings)
-emacs -Q --batch -f batch-byte-compile supervisor.el
-
-# Run checkdoc (must pass with no errors)
-emacs -Q --batch --eval "(checkdoc-file \"supervisor.el\")"
-
-# Run package-lint (must pass for MELPA)
-emacs -Q --batch -l package-lint --eval "(package-lint-batch-and-exit \"supervisor.el\")"
-
-# Run ERT tests
-emacs -Q --batch -l supervisor.el -l supervisor-test.el -f ert-run-tests-batch-and-exit
-
-# Run a single test
-emacs -Q --batch -l supervisor.el -l supervisor-test.el --eval "(ert-run-tests-batch-and-exit 'test-name)"
+make check          # Run lint + test (recommended before commits)
+make lint           # Run byte-compile, checkdoc, package-lint
+make test           # Run ERT tests
+make test-one TEST=supervisor-test-parse-string-entry  # Run single test
 
 # Load and test interactively
 emacs -Q -l supervisor.el
@@ -93,10 +83,7 @@ This package must be structured for [MELPA](https://github.com/melpa/melpa/blob/
 
 ### Required Checks
 ```bash
-# All must pass with no errors/warnings before commits
-emacs -Q --batch -f batch-byte-compile supervisor.el
-emacs -Q --batch --eval "(checkdoc-file \"supervisor.el\")"
-emacs -Q --batch -l package-lint --eval "(package-lint-batch-and-exit \"supervisor.el\")"
+make check   # Must pass before commits (runs lint + test)
 ```
 
 ### Code Style

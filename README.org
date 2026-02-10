@@ -1,6 +1,8 @@
 #+TITLE: supervisor.el
-#+AUTHOR: Your Name
+#+AUTHOR: telecommuter
 #+OPTIONS: toc:2
+
+[[https://github.com/telecommuter/supervisor.el/actions/workflows/ci.yml][file:https://github.com/telecommuter/supervisor.el/actions/workflows/ci.yml/badge.svg]]
 
 Lightweight process supervisor for managing background processes from Emacs.
 Useful for starting session services when using Emacs as a window manager (EXWM)
