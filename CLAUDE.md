@@ -100,7 +100,7 @@ A stage is complete only when:
 
 ## Documentation Files
 
-- **README.md**: Documents what the code *currently does*. Must accurately reflect the actual implementation - no aspirational features or future plans. Keep it truthful and human-readable.
+- **README.org**: Documents what the code *currently does*. Must accurately reflect the actual implementation - no aspirational features or future plans. Keep it truthful and human-readable.
 - **ROADMAP.md**: Future plans and ideas. Not yet implemented.
 - **CLAUDE.md**: Development guidance for AI assistants.
 - **STANDARDS.md**: Emacs Lisp coding standards (mandatory).
