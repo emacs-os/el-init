@@ -229,6 +229,30 @@ All items below are mandatory. There are no optional phases. Do them in order.
 - Define explicit signal handling for shutdown and reboot flows.
 - Ensure safe shutdown order and crash safety under PID 1 semantics.
 - Add tests where possible and document any untestable behaviors.
+- Emacs source reality check (from `src/process.c` and `src/sysdep.c`):
+- Emacs installs a SIGCHLD handler (`catch_child_signal` → `deliver_child_signal`
+  → `handle_child_signal`) and updates process state there.
+- Actual reaping is done via `waitpid` through `get_child_status` and
+  `child_status_changed`, but only for known child PIDs.
+- Emacs explicitly avoids `waitpid(-1)` to prevent reaping children created by
+  other threads (e.g., GLib). This means it does **not** reap unknown/orphaned
+  children by default.
+- Emacs uses a self-pipe to wake its `pselect` loop on SIGCHLD, which works for
+  known processes but does not solve orphan reaping.
+
+Required PID 1 deployment paths (must choose one and implement it fully):
+- Path A (recommended): use a tiny PID 1 (e.g., `sinit`) and run Emacs as its
+  managed child. This is the correct no-Emacs-patch path; Emacs is not PID 1.
+- Path B: patch Emacs to support a true PID 1 mode (global reaping plus safe
+  signal handling) so Emacs itself is PID 1.
+
+Shim approach (preferred):
+- Implement a minimal PID 1 shim by repurposing core `sinit` code (only the
+  parts we need). The shim runs as PID 1, reaps all children, handles signals,
+  and launches Emacs as its managed child.
+- Explicit rule: if the shim is PID 1, Emacs is **not** PID 1. If the project
+  requires Emacs to be PID 1, the shim logic must be integrated into Emacs
+  (or Emacs must be patched to reap all children itself).
 
 **6. Security Hardening**
 - Lock down control channels (local socket by default).
@@ -259,3 +283,4 @@ We are "Shepherd yet" when:
 - https://man7.org/linux/man-pages/man5/systemd.unit.5.html
 - https://man7.org/linux/man-pages/man2/waitpid.2.html
 - https://man7.org/linux/man-pages/man7/signal.7.html
+- Emacs source: `src/process.c`, `src/sysdep.c`
