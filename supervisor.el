@@ -1,0 +1,1003 @@
+;;; supervisor.el --- Emacs Lisp process supervisor -*- lexical-binding: t -*-
+
+;; Author: Your Name
+;; Version: 1.0
+;; Package-Requires: ((emacs "27.1"))
+;; Keywords: processes, unix
+;; URL: https://github.com/yourname/supervisor.el
+
+;; Lightweight process supervisor for managing background processes from Emacs.
+;; Supports staged startup, dependencies, crash recovery, and per-process logging.
+;;
+;; Commands: M-x supervisor-start, M-x supervisor-stop, M-x supervisor (dashboard)
+;;
+;; See README.org for full documentation.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'subr-x)
+
+(defgroup supervisor nil
+  "Emacs Lisp process supervisor."
+  :group 'processes)
+
+(defcustom supervisor-programs nil
+  "List of programs to supervise.
+Each entry is either a command string or (COMMAND . PLIST).
+See ENTRY KEYWORDS in the file header for available options."
+  :type '(repeat (choice string (list string &rest plist)))
+  :group 'supervisor)
+
+(defcustom supervisor-log-directory
+  (expand-file-name "supervisor" user-emacs-directory)
+  "Directory for supervisor log files."
+  :type 'directory
+  :group 'supervisor)
+
+(defcustom supervisor-restart-delay 2
+  "Seconds to wait before restarting a crashed process."
+  :type 'integer
+  :group 'supervisor)
+
+(defcustom supervisor-max-restarts 3
+  "Max restarts in `supervisor-restart-window' before marking failed."
+  :type 'integer
+  :group 'supervisor)
+
+(defcustom supervisor-restart-window 60
+  "Time window in seconds for counting restarts."
+  :type 'integer
+  :group 'supervisor)
+
+(defcustom supervisor-shutdown-timeout 3
+  "Seconds to wait for processes to exit gracefully before SIGKILL."
+  :type 'integer
+  :group 'supervisor)
+
+(defcustom supervisor-oneshot-default-wait t
+  "Default wait behavior for oneshot processes.
+When t, oneshots block stage completion (wait for exit).
+When nil, oneshots are async (fire-and-forget, don't block stage)."
+  :type 'boolean
+  :group 'supervisor)
+
+(defcustom supervisor-oneshot-timeout 30
+  "Default timeout in seconds for blocking oneshots.
+If a blocking oneshot takes longer, warn and continue.
+Set to nil for infinite wait."
+  :type '(choice integer (const nil))
+  :group 'supervisor)
+
+;;; Stages
+
+(defconst supervisor-stages
+  '((early . 0) (services . 1) (session . 2) (ui . 3))
+  "Stage name to priority mapping. Lower numbers run first.")
+
+(defconst supervisor-stage-names
+  '(early services session ui)
+  "Ordered list of stage names.")
+
+(defun supervisor--stage-to-int (stage)
+  "Convert STAGE symbol to integer priority. Default to session (2)."
+  (cond
+   ((not (symbolp stage))
+    (message "Supervisor: WARNING - :stage must be a symbol, got %S" stage)
+    2)
+   ((not (assq stage supervisor-stages))
+    (message "Supervisor: WARNING - unknown :stage '%s', using session" stage)
+    2)
+   (t (alist-get stage supervisor-stages))))
+
+(defun supervisor--int-to-stage (n)
+  "Convert integer N to stage symbol."
+  (car (rassq n supervisor-stages)))
+
+(defun supervisor--normalize-after (after)
+  "Normalize AFTER to a list of ID strings."
+  (cond ((null after) nil)
+        ((stringp after) (list after))
+        ((listp after) after)
+        (t nil)))
+
+(defun supervisor--oneshot-wait-p (plist)
+  "Return non-nil if oneshot should block stage completion.
+Checks :oneshot-wait, :async, and falls back to default."
+  (cond
+   ((plist-member plist :oneshot-wait)
+    (plist-get plist :oneshot-wait))
+   ((plist-member plist :async)
+    (not (plist-get plist :async)))
+   (t supervisor-oneshot-default-wait)))
+
+(defun supervisor--oneshot-timeout-value (plist)
+  "Return timeout in seconds for a oneshot, or nil for infinite.
+Checks :oneshot-timeout and falls back to default."
+  (if (plist-member plist :oneshot-timeout)
+      (let ((val (plist-get plist :oneshot-timeout)))
+        (if (and val (not (numberp val)))
+            (progn
+              (message "Supervisor: WARNING - :oneshot-timeout must be number or nil, using default")
+              supervisor-oneshot-timeout)
+          val))
+    supervisor-oneshot-timeout))
+
+;;; State Variables
+
+(defvar supervisor--processes (make-hash-table :test 'equal)
+  "Hash table mapping program names to their process objects.")
+
+(defvar supervisor--restart-override (make-hash-table :test 'equal)
+  "Hash table of restart overrides: nil=inherit config, `enabled', `disabled'.")
+
+(defvar supervisor--restart-times (make-hash-table :test 'equal)
+  "Hash table mapping program names to list of recent restart timestamps.")
+
+(defvar supervisor--failed (make-hash-table :test 'equal)
+  "Hash table of program names that have crash-looped and are marked failed.")
+
+(defvar supervisor--logging (make-hash-table :test 'equal)
+  "Hash table tracking logging state per process (runtime override).")
+
+(defvar supervisor--oneshot-completed (make-hash-table :test 'equal)
+  "Hash table tracking oneshot completion. Value is exit code (0=success, >0=failed).")
+
+(defvar supervisor--timers nil
+  "List of pending delayed-start timers.")
+
+(defvar supervisor--restart-timers (make-hash-table :test 'equal)
+  "Hash table mapping IDs to pending restart timers.")
+
+(defvar supervisor--shutting-down nil
+  "Non-nil when supervisor is shutting down (prevents restarts).")
+
+(defvar supervisor-cleanup-hook nil
+  "Hook run during cleanup, before killing processes.")
+
+;;; DAG Scheduler State (per-stage, reset between stages)
+
+(defvar supervisor--dag-in-degree nil
+  "Hash table of ID -> remaining in-degree count.")
+
+(defvar supervisor--dag-dependents nil
+  "Hash table of ID -> list of IDs that depend on it.")
+
+(defvar supervisor--dag-entries nil
+  "Hash table of ID -> parsed entry.")
+
+(defvar supervisor--dag-blocking nil
+  "Hash table of blocking oneshot IDs still pending.")
+
+(defvar supervisor--dag-started nil
+  "Hash table of IDs that have been started (or skipped).")
+
+(defvar supervisor--dag-ready nil
+  "Hash table of IDs that are ready (spawned/completed/skipped).")
+
+(defvar supervisor--dag-timeout-timers nil
+  "Hash table of ID -> timeout timer for oneshots.")
+
+(defvar supervisor--dag-delay-timers nil
+  "Hash table of ID -> delay timer for delayed entries.")
+
+(defvar supervisor--dag-id-to-index nil
+  "Hash table of ID -> original list index for stable ordering.")
+
+(defvar supervisor--dag-stage-complete-callback nil
+  "Callback to invoke when current stage is complete.")
+
+;;; Helpers
+
+(defun supervisor--parse-entry (entry)
+  "Parse ENTRY into (id cmd delay enabled-p restart-p logging-p type stage after oneshot-wait oneshot-timeout).
+ENTRY can be:
+  \"command\"                - just a string
+  (\"command\" :delay 3 ...) - plist style"
+  (if (stringp entry)
+      (let ((id (file-name-nondirectory (car (split-string-and-unquote entry)))))
+        (list id entry 0 t t t 'simple 'session nil
+              supervisor-oneshot-default-wait supervisor-oneshot-timeout))
+    (let* ((cmd (car entry))
+           (plist (cdr entry))
+           (id (or (plist-get plist :id)
+                   (file-name-nondirectory (car (split-string-and-unquote cmd)))))
+           (delay (or (plist-get plist :delay) 0))
+           (type-raw (plist-get plist :type))
+           (type (cond ((null type-raw) 'simple)
+                       ((symbolp type-raw) type-raw)
+                       ((stringp type-raw) (intern type-raw))
+                       (t 'simple)))
+           (_ (unless (memq type '(simple oneshot))
+                (message "Supervisor: WARNING - unknown :type '%s' for %s, using simple" type id)))
+           ;; :enabled t (default) or :disabled t (inverse) - whether to start at all
+           (enabled (cond ((plist-member plist :enabled)
+                           (plist-get plist :enabled))
+                          ((plist-member plist :disabled)
+                           (not (plist-get plist :disabled)))
+                          (t t)))
+           ;; :restart t (default) or :no-restart t (inverse) - whether to restart on crash
+           (restart (cond ((plist-member plist :restart)
+                           (plist-get plist :restart))
+                          ((plist-member plist :no-restart)
+                           (not (plist-get plist :no-restart)))
+                          (t t)))
+           (logging (if (plist-member plist :logging)
+                        (plist-get plist :logging)
+                      t))
+           ;; :stage (default session)
+           (stage-raw (plist-get plist :stage))
+           (stage (if stage-raw
+                      (let ((s (supervisor--stage-to-int stage-raw)))
+                        (supervisor--int-to-stage s))
+                    'session))
+           ;; :after - dependencies (same stage only)
+           (after (supervisor--normalize-after (plist-get plist :after)))
+           ;; Oneshot wait/timeout settings
+           (oneshot-wait (supervisor--oneshot-wait-p plist))
+           (oneshot-timeout (supervisor--oneshot-timeout-value plist)))
+      (list id cmd delay enabled restart logging type stage after oneshot-wait oneshot-timeout))))
+
+(defun supervisor--check-crash-loop (id)
+  "Check if ID is crash-looping. Returns t if should NOT restart."
+  (let* ((now (float-time))
+         (times (gethash id supervisor--restart-times))
+         (recent (cl-remove-if (lambda (ts) (> (- now ts) supervisor-restart-window)) times)))
+    (puthash id (cons now recent) supervisor--restart-times)
+    ;; Fail after max-restarts restarts (so with max=3, fail on 4th crash)
+    (when (>= (length recent) supervisor-max-restarts)
+      (puthash id t supervisor--failed)
+      (message "Supervisor: %s crash-looping, marked as FAILED" id)
+      t)))
+
+;;; Staging and Dependency Resolution
+
+(defun supervisor--partition-by-stage (parsed-entries)
+  "Partition PARSED-ENTRIES by stage. Returns alist of (stage . entries)."
+  (let ((by-stage (make-hash-table)))
+    (dolist (entry parsed-entries)
+      (let* ((stage (nth 7 entry))
+             (stage-int (supervisor--stage-to-int stage)))
+        (puthash stage-int (cons entry (gethash stage-int by-stage)) by-stage)))
+    ;; Convert to sorted alist, reverse each list to preserve original order
+    (let (result)
+      (dolist (stage-int '(0 1 2 3))
+        (when-let ((entries (gethash stage-int by-stage)))
+          (push (cons stage-int (nreverse entries)) result)))
+      (nreverse result))))
+
+(defun supervisor--validate-after (entries stage-ids)
+  "Validate :after references in ENTRIES. STAGE-IDS is set of valid IDs in stage.
+Returns entries with invalid :after edges removed."
+  (mapcar
+   (lambda (entry)
+     (let* ((id (nth 0 entry))
+            (after (nth 8 entry))
+            (valid-after
+             (cl-remove-if-not
+              (lambda (dep)
+                (cond
+                 ((not (member dep stage-ids))
+                  (if (member dep (mapcar #'car (supervisor--all-parsed-entries)))
+                      (message "Supervisor: WARNING - :after '%s' for %s is in different stage, ignoring" dep id)
+                    (message "Supervisor: WARNING - :after '%s' for %s does not exist, ignoring" dep id))
+                  nil)
+                 (t t)))
+              after)))
+       (if (equal after valid-after)
+           entry
+         ;; Return entry with filtered :after, preserving remaining fields
+         (append (cl-subseq entry 0 8) (list valid-after) (cl-subseq entry 9)))))
+   entries))
+
+(defun supervisor--all-parsed-entries ()
+  "Parse all entries and return list, deduplicating by ID."
+  (let ((seen (make-hash-table :test 'equal))
+        result)
+    (dolist (entry supervisor-programs)
+      (let* ((parsed (supervisor--parse-entry entry))
+             (id (car parsed)))
+        (if (gethash id seen)
+            (message "Supervisor: WARNING - duplicate ID '%s', skipping" id)
+          (puthash id t seen)
+          (push parsed result))))
+    (nreverse result)))
+
+(defun supervisor--stable-topo-sort (entries)
+  "Stable topological sort of ENTRIES respecting :after dependencies.
+Uses original order as tie-breaker. Returns sorted list or original on cycle."
+  (let* ((ids (mapcar #'car entries))
+         (id-to-entry (make-hash-table :test 'equal))
+         (id-to-index (make-hash-table :test 'equal))
+         (in-degree (make-hash-table :test 'equal))
+         (dependents (make-hash-table :test 'equal))
+         (result nil)
+         (idx 0))
+    ;; Build lookup tables
+    (dolist (entry entries)
+      (let ((id (car entry)))
+        (puthash id entry id-to-entry)
+        (puthash id idx id-to-index)
+        (puthash id 0 in-degree)
+        (puthash id nil dependents)
+        (cl-incf idx)))
+    ;; Build graph
+    (dolist (entry entries)
+      (let ((id (car entry))
+            (after (nth 8 entry)))
+        (dolist (dep after)
+          (when (gethash dep id-to-entry)  ; only count valid deps
+            (cl-incf (gethash id in-degree 0))
+            (puthash dep (cons id (gethash dep dependents)) dependents)))))
+    ;; Kahn's algorithm with stable ordering (by original index)
+    (let ((ready (cl-remove-if-not
+                  (lambda (id) (= 0 (gethash id in-degree)))
+                  ids)))
+      ;; Sort ready queue by original index
+      (setq ready (sort ready (lambda (a b)
+                                (< (gethash a id-to-index)
+                                   (gethash b id-to-index)))))
+      (while ready
+        (let* ((id (pop ready))
+               (entry (gethash id id-to-entry)))
+          (push entry result)
+          ;; Update dependents
+          (dolist (dep-id (gethash id dependents))
+            (cl-decf (gethash dep-id in-degree))
+            (when (= 0 (gethash dep-id in-degree))
+              ;; Insert in sorted position by original index
+              (setq ready (sort (cons dep-id ready)
+                                (lambda (a b)
+                                  (< (gethash a id-to-index)
+                                     (gethash b id-to-index)))))))))
+      ;; Check for cycle
+      (if (= (length result) (length entries))
+          (nreverse result)
+        (message "Supervisor: WARNING - cycle detected in :after dependencies, using list order")
+        ;; Return entries with :after stripped to break the cycle
+        (mapcar (lambda (entry)
+                  (append (cl-subseq entry 0 8) (list nil) (cl-subseq entry 9)))
+                entries)))))
+
+;;; Logging
+
+(defun supervisor--ensure-log-directory ()
+  "Create log directory if it doesn't exist."
+  (unless (file-directory-p supervisor-log-directory)
+    (make-directory supervisor-log-directory t)))
+
+(defun supervisor--log-file (prog)
+  "Return the log file path for PROG."
+  (expand-file-name (format "log-%s.log" prog) supervisor-log-directory))
+
+(defun supervisor--rotate-logs ()
+  "Rotate existing log files by adding timestamp suffix.
+Called once at supervisor startup."
+  (supervisor--ensure-log-directory)
+  (dolist (file (directory-files supervisor-log-directory t "^log-.*\\.log$"))
+    ;; Only rotate files without timestamp (current session logs)
+    (when (string-match "^log-\\([^.]+\\)\\.log$" (file-name-nondirectory file))
+      (let* ((timestamp (format-time-string "%Y%m%d-%H%M%S"))
+             (new-name (replace-regexp-in-string
+                        "\\.log$"
+                        (format ".%s.log" timestamp)
+                        file)))
+        (rename-file file new-name t)))))
+
+;;; DAG Scheduler
+
+(defun supervisor--dag-init (entries)
+  "Initialize DAG scheduler state for ENTRIES."
+  (setq supervisor--dag-in-degree (make-hash-table :test 'equal))
+  (setq supervisor--dag-dependents (make-hash-table :test 'equal))
+  (setq supervisor--dag-entries (make-hash-table :test 'equal))
+  (setq supervisor--dag-blocking (make-hash-table :test 'equal))
+  (setq supervisor--dag-started (make-hash-table :test 'equal))
+  (setq supervisor--dag-ready (make-hash-table :test 'equal))
+  (setq supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+  (setq supervisor--dag-delay-timers (make-hash-table :test 'equal))
+  (setq supervisor--dag-id-to-index (make-hash-table :test 'equal))
+  ;; Build lookup tables
+  (let ((idx 0))
+    (dolist (entry entries)
+      (let* ((id (nth 0 entry))
+             (type (nth 6 entry))
+             (after (nth 8 entry))
+             (oneshot-wait (nth 9 entry)))
+        (puthash id entry supervisor--dag-entries)
+        (puthash id (length after) supervisor--dag-in-degree)
+        (puthash id nil supervisor--dag-dependents)
+        (puthash id idx supervisor--dag-id-to-index)
+        (cl-incf idx)
+        ;; Track blocking oneshots
+        (when (and (eq type 'oneshot) oneshot-wait)
+          (puthash id t supervisor--dag-blocking)))))
+  ;; Build dependents graph
+  (dolist (entry entries)
+    (let ((id (nth 0 entry))
+          (after (nth 8 entry)))
+      (dolist (dep after)
+        (when (gethash dep supervisor--dag-entries)
+          (puthash dep (cons id (gethash dep supervisor--dag-dependents))
+                   supervisor--dag-dependents))))))
+
+(defun supervisor--dag-mark-ready (id)
+  "Mark ID as ready and unlock its dependents.
+Called when a process is spawned (simple) or exits (oneshot).
+No-op if DAG scheduler is not active (e.g., manual starts)."
+  (when (and supervisor--dag-ready
+             (not (gethash id supervisor--dag-ready)))
+    (puthash id t supervisor--dag-ready)
+    ;; Cancel any timeout timer
+    (when-let ((timer (gethash id supervisor--dag-timeout-timers)))
+      (when (timerp timer)
+        (cancel-timer timer))
+      (remhash id supervisor--dag-timeout-timers))
+    ;; Remove from blocking set
+    (remhash id supervisor--dag-blocking)
+    ;; Unlock dependents and collect newly ready ones
+    (let ((newly-ready nil))
+      (dolist (dep-id (gethash id supervisor--dag-dependents))
+        (when (gethash dep-id supervisor--dag-in-degree)
+          (cl-decf (gethash dep-id supervisor--dag-in-degree))
+          (when (= 0 (gethash dep-id supervisor--dag-in-degree))
+            (push dep-id newly-ready))))
+      ;; Sort by original index for stable ordering, then start
+      (setq newly-ready (sort newly-ready
+                              (lambda (a b)
+                                (< (gethash a supervisor--dag-id-to-index 999)
+                                   (gethash b supervisor--dag-id-to-index 999)))))
+      (dolist (dep-id newly-ready)
+        (supervisor--dag-try-start-entry dep-id)))
+    ;; Check if stage is complete
+    (supervisor--dag-check-stage-complete)))
+
+(defun supervisor--dag-try-start-entry (id)
+  "Try to start entry ID if not already started and in-degree is 0."
+  (when (and (not (gethash id supervisor--dag-started))
+             (not (gethash id supervisor--dag-delay-timers))  ; not already scheduled
+             (= 0 (gethash id supervisor--dag-in-degree 0))
+             (not supervisor--shutting-down))
+    (let ((entry (gethash id supervisor--dag-entries)))
+      (supervisor--dag-start-entry-async entry))))
+
+(defun supervisor--dag-start-entry-async (entry)
+  "Start ENTRY asynchronously. Marks ready immediately for simple, on exit for oneshot."
+  (pcase-let ((`(,id ,cmd ,delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,oneshot-wait ,oneshot-timeout) entry))
+    (cond
+     ;; Disabled: mark started and ready immediately
+     ((not enabled-p)
+      (message "Supervisor: %s disabled, skipping" id)
+      (puthash id t supervisor--dag-started)
+      (supervisor--dag-mark-ready id))
+     ;; Delay: schedule start after delay (don't mark started yet)
+     ((> delay 0)
+      (message "Supervisor: scheduling %s after %ds delay..." id delay)
+      (puthash id
+               (run-at-time delay nil
+                            (lambda ()
+                              (remhash id supervisor--dag-delay-timers)
+                              (supervisor--dag-do-start id cmd logging-p type restart-p oneshot-wait oneshot-timeout)))
+               supervisor--dag-delay-timers))
+     ;; Start immediately
+     (t
+      (supervisor--dag-do-start id cmd logging-p type restart-p oneshot-wait oneshot-timeout)))))
+
+(defun supervisor--dag-do-start (id cmd logging-p type restart-p _oneshot-wait oneshot-timeout)
+  "Actually start the process for ID."
+  ;; Mark as started now (process is spawning)
+  (puthash id t supervisor--dag-started)
+  (let ((args (split-string-and-unquote cmd)))
+    (if (not (executable-find (car args)))
+        (progn
+          (message "Supervisor: executable not found for %s: %s" id (car args))
+          ;; Mark ready anyway so dependents can proceed
+          (supervisor--dag-mark-ready id))
+      ;; Start the process
+      (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
+        (if (not proc)
+            ;; Failed to start, mark ready so stage can proceed
+            (supervisor--dag-mark-ready id)
+          ;; Started successfully
+          (if (eq type 'oneshot)
+              (progn
+                (message "Supervisor: started oneshot %s" id)
+                ;; Set up timeout timer if needed
+                (when oneshot-timeout
+                  (puthash id
+                           (run-at-time oneshot-timeout nil
+                                        (lambda ()
+                                          (message "Supervisor: WARNING - oneshot %s timed out after %ds" id oneshot-timeout)
+                                          (supervisor--dag-mark-ready id)))
+                           supervisor--dag-timeout-timers)))
+            ;; Simple process: mark ready immediately (spawned = ready)
+            (message "Supervisor: started %s" id)
+            (supervisor--dag-mark-ready id)))))))
+
+(defun supervisor--dag-check-stage-complete ()
+  "Check if current stage is complete and invoke callback if so."
+  (when (and supervisor--dag-stage-complete-callback
+             ;; All entries started (actually spawned, not just scheduled)
+             (= (hash-table-count supervisor--dag-started)
+                (hash-table-count supervisor--dag-entries))
+             ;; No delayed entries pending
+             (= 0 (hash-table-count supervisor--dag-delay-timers))
+             ;; No blocking oneshots pending
+             (= 0 (hash-table-count supervisor--dag-blocking)))
+    (let ((callback supervisor--dag-stage-complete-callback))
+      (setq supervisor--dag-stage-complete-callback nil)
+      (funcall callback))))
+
+(defun supervisor--dag-cleanup ()
+  "Clean up DAG scheduler state."
+  ;; Cancel any remaining timeout timers
+  (when supervisor--dag-timeout-timers
+    (maphash (lambda (_id timer)
+               (when (timerp timer)
+                 (cancel-timer timer)))
+             supervisor--dag-timeout-timers))
+  ;; Cancel any remaining delay timers
+  (when supervisor--dag-delay-timers
+    (maphash (lambda (_id timer)
+               (when (timerp timer)
+                 (cancel-timer timer)))
+             supervisor--dag-delay-timers))
+  (setq supervisor--dag-in-degree nil)
+  (setq supervisor--dag-dependents nil)
+  (setq supervisor--dag-entries nil)
+  (setq supervisor--dag-blocking nil)
+  (setq supervisor--dag-started nil)
+  (setq supervisor--dag-ready nil)
+  (setq supervisor--dag-timeout-timers nil)
+  (setq supervisor--dag-delay-timers nil)
+  (setq supervisor--dag-id-to-index nil)
+  (setq supervisor--dag-stage-complete-callback nil))
+
+;;; Process Management
+
+(defun supervisor--get-effective-logging (id default-logging)
+  "Get effective logging state for ID, considering runtime override."
+  (let ((override (gethash id supervisor--logging)))
+    (if override (eq override 'enabled) default-logging)))
+
+(defun supervisor--get-effective-restart (id config-restart)
+  "Get effective restart state for ID.
+CONFIG-RESTART is the config's :restart value (t or nil).
+Returns t if restart is enabled, nil if disabled."
+  (let ((override (gethash id supervisor--restart-override)))
+    (cond ((eq override 'enabled) t)
+          ((eq override 'disabled) nil)
+          (t config-restart))))
+
+(defun supervisor--start-process (id cmd default-logging type config-restart &optional is-restart)
+  "Start CMD with identifier ID.
+DEFAULT-LOGGING is the config value; runtime override is checked at restart.
+TYPE is `simple' (long-running) or `oneshot' (run once).
+CONFIG-RESTART is the config's :restart value (t or nil).
+IS-RESTART is t when called from a crash-triggered restart timer."
+  ;; Clear any pending restart timer for this ID first
+  (when-let ((timer (gethash id supervisor--restart-timers)))
+    (when (timerp timer)
+      (cancel-timer timer))
+    (remhash id supervisor--restart-timers))
+  ;; Guard conditions - don't start if:
+  ;; - shutting down
+  ;; - this is a crash-restart AND (restart disabled or failed)
+  ;; - already running (race with pending timer)
+  (unless (or supervisor--shutting-down
+              (and is-restart (not (supervisor--get-effective-restart id config-restart)))
+              (and is-restart (gethash id supervisor--failed))
+              (and (gethash id supervisor--processes)
+                   (process-live-p (gethash id supervisor--processes))))
+    (supervisor--ensure-log-directory)
+    (let* ((args (split-string-and-unquote cmd))
+           (logging (supervisor--get-effective-logging id default-logging))
+           (log-file (when logging (supervisor--log-file id)))
+           ;; Create stderr process to capture stderr to same log file
+           (stderr-proc (when logging
+                          (make-pipe-process
+                           :name (format "%s-stderr" id)
+                           :filter (lambda (_proc output)
+                                     (write-region output nil log-file t 'silent)))))
+           (proc (make-process
+                  :name id
+                  :command args
+                  :connection-type 'pipe
+                  :stderr stderr-proc
+                  :filter (when logging
+                            (lambda (_proc output)
+                              (write-region output nil log-file t 'silent)))
+                  :sentinel (lambda (p _event)
+                              (unless (process-live-p p)
+                                (let* ((name (process-name p))
+                                       (exit-code (process-exit-status p)))
+                                  ;; Clean up stderr process
+                                  (when-let ((stderr (get-process (format "%s-stderr" name))))
+                                    (delete-process stderr))
+                                  (remhash name supervisor--processes)
+                                  ;; Track oneshot completion with exit code
+                                  (when (eq type 'oneshot)
+                                    (puthash name exit-code supervisor--oneshot-completed)
+                                    (when (> exit-code 0)
+                                      (message "Supervisor: WARNING - oneshot %s failed with exit code %d" name exit-code))
+                                    ;; Notify DAG scheduler
+                                    (supervisor--dag-mark-ready name))
+                                  (supervisor--refresh-dashboard)
+                                  ;; Oneshot processes don't restart - exit is expected
+                                  (unless (or (eq type 'oneshot)
+                                              supervisor--shutting-down
+                                              (not (supervisor--get-effective-restart name config-restart))
+                                              (gethash name supervisor--failed)
+                                              (supervisor--check-crash-loop name))
+                                    (message "Supervisor: %s died, restarting..." name)
+                                    ;; Track restart timer so it can be canceled
+                                    (puthash name
+                                             (run-at-time supervisor-restart-delay nil
+                                                          #'supervisor--start-process id cmd default-logging type config-restart t)
+                                             supervisor--restart-timers))))))))
+      (set-process-query-on-exit-flag proc nil)
+      (when stderr-proc
+        (set-process-query-on-exit-flag stderr-proc nil))
+      (puthash id proc supervisor--processes)
+      proc)))
+
+(defun supervisor--wait-for-oneshot (id &optional timeout)
+  "Wait for oneshot ID to complete. Returns t if completed, nil on timeout.
+TIMEOUT is seconds to wait; nil means wait indefinitely."
+  (let ((deadline (when timeout (+ (float-time) timeout))))
+    (while (and (or (null deadline) (< (float-time) deadline))
+                (not (gethash id supervisor--oneshot-completed))
+                (not supervisor--shutting-down))
+      (sit-for 0.1))
+    (or (not (null (gethash id supervisor--oneshot-completed)))
+        supervisor--shutting-down)))
+
+(defun supervisor--start-entry-sync (entry)
+  "Start a single parsed ENTRY synchronously. For dashboard manual start.
+Returns t if started (or skipped), nil on error."
+  (pcase-let ((`(,id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,otimeout) entry))
+    (if (not enabled-p)
+        (progn
+          (message "Supervisor: %s disabled, skipping" id)
+          t)
+      (let ((args (split-string-and-unquote cmd)))
+        (if (not (executable-find (car args)))
+            (progn
+              (message "Supervisor: executable not found for %s: %s" id (car args))
+              nil)
+          ;; Start the process
+          (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
+            (when proc
+              (if (eq type 'oneshot)
+                  ;; Wait for oneshot to complete
+                  (progn
+                    (message "Supervisor: waiting for oneshot %s..." id)
+                    (supervisor--wait-for-oneshot id otimeout)
+                    (if (gethash id supervisor--oneshot-completed)
+                        (message "Supervisor: oneshot %s completed" id)
+                      (message "Supervisor: WARNING - oneshot %s timed out or interrupted" id)))
+                ;; Simple process, just spawned
+                (message "Supervisor: started %s" id)))
+            (not (null proc))))))))
+
+(defun supervisor--start-stage-async (stage-name entries callback)
+  "Start ENTRIES for STAGE-NAME asynchronously. Call CALLBACK when complete."
+  (message "Supervisor: === Stage: %s ===" stage-name)
+  (if (null entries)
+      ;; Empty stage, proceed immediately
+      (funcall callback)
+    ;; Initialize DAG scheduler
+    (supervisor--dag-init entries)
+    (setq supervisor--dag-stage-complete-callback callback)
+    ;; Start all initially ready entries (in-degree = 0)
+    (let ((ready-ids nil))
+      (maphash (lambda (id in-deg)
+                 (when (= 0 in-deg)
+                   (push id ready-ids)))
+               supervisor--dag-in-degree)
+      ;; Sort by original order (entries are already sorted)
+      (setq ready-ids (sort ready-ids
+                            (lambda (a b)
+                              (let ((idx-a (cl-position a entries :key #'car :test #'equal))
+                                    (idx-b (cl-position b entries :key #'car :test #'equal)))
+                                (< (or idx-a 999) (or idx-b 999))))))
+      (if (null ready-ids)
+          ;; No entries to start (all have dependencies), this shouldn't happen
+          (funcall callback)
+        ;; Start all ready entries
+        (dolist (id ready-ids)
+          (supervisor--dag-try-start-entry id))))))
+
+(defun supervisor-start ()
+  "Start all programs in `supervisor-programs' by stage.
+Uses async DAG scheduler - stages run sequentially, but entries within
+a stage can run in parallel based on dependencies."
+  (interactive)
+  (setq supervisor--shutting-down nil)
+  ;; Cancel any existing timers before clearing (prevents orphaned timers)
+  (dolist (timer supervisor--timers)
+    (when (timerp timer)
+      (cancel-timer timer)))
+  (setq supervisor--timers nil)
+  (maphash (lambda (_id timer)
+             (when (timerp timer)
+               (cancel-timer timer)))
+           supervisor--restart-timers)
+  ;; Reset runtime state for clean session
+  (clrhash supervisor--restart-override)
+  (clrhash supervisor--failed)
+  (clrhash supervisor--logging)
+  (clrhash supervisor--restart-times)
+  (clrhash supervisor--restart-timers)
+  (clrhash supervisor--oneshot-completed)
+  (supervisor--dag-cleanup)
+  (supervisor--rotate-logs)
+  ;; Parse and deduplicate entries
+  (let* ((all-entries (supervisor--all-parsed-entries))
+         (by-stage (supervisor--partition-by-stage all-entries)))
+    ;; Process stages asynchronously with continuation
+    (supervisor--start-stages-async by-stage)))
+
+(defun supervisor--start-stages-async (remaining-stages)
+  "Process REMAINING-STAGES asynchronously."
+  (if (or (null remaining-stages) supervisor--shutting-down)
+      (progn
+        (supervisor--dag-cleanup)
+        (message "Supervisor: startup complete"))
+    (let* ((stage-pair (car remaining-stages))
+           (rest (cdr remaining-stages))
+           (stage-int (car stage-pair))
+           (stage-name (supervisor--int-to-stage stage-int))
+           (entries (cdr stage-pair))
+           (stage-ids (mapcar #'car entries)))
+      ;; Validate :after references
+      (setq entries (supervisor--validate-after entries stage-ids))
+      ;; Note: we don't need topo sort for the DAG scheduler,
+      ;; it handles ordering via in-degree. But we use it for stable ordering.
+      (setq entries (supervisor--stable-topo-sort entries))
+      ;; Start this stage, with callback to process next stage
+      (supervisor--start-stage-async
+       stage-name entries
+       (lambda ()
+         (supervisor--dag-cleanup)
+         (supervisor--start-stages-async rest))))))
+
+(defun supervisor-stop ()
+  "Stop all supervised processes gracefully.
+Sends SIGTERM, waits up to `supervisor-shutdown-timeout' seconds,
+then SIGKILL any survivors."
+  (interactive)
+  (setq supervisor--shutting-down t)
+  ;; Cancel any pending delayed starts
+  (dolist (timer supervisor--timers)
+    (when (timerp timer)
+      (cancel-timer timer)))
+  (setq supervisor--timers nil)
+  ;; Cancel any pending restart timers
+  (maphash (lambda (_id timer)
+             (when (timerp timer)
+               (cancel-timer timer)))
+           supervisor--restart-timers)
+  (clrhash supervisor--restart-timers)
+  ;; Clean up DAG scheduler
+  (supervisor--dag-cleanup)
+  (run-hooks 'supervisor-cleanup-hook)
+  ;; Send SIGTERM to all
+  (maphash (lambda (_name proc)
+             (when (process-live-p proc)
+               (signal-process proc 'SIGTERM)))
+           supervisor--processes)
+  ;; Wait for graceful exit
+  (let ((deadline (+ (float-time) supervisor-shutdown-timeout)))
+    (while (and (< (float-time) deadline)
+                (cl-some #'process-live-p (hash-table-values supervisor--processes)))
+      (sleep-for 0.1)))
+  ;; SIGKILL any survivors
+  (maphash (lambda (_name proc)
+             (when (process-live-p proc)
+               (signal-process proc 'SIGKILL)))
+           supervisor--processes)
+  (clrhash supervisor--processes))
+
+;;; Dashboard
+
+(defvar supervisor-dashboard-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map tabulated-list-mode-map)
+    (define-key map "r" #'supervisor-dashboard-toggle-restart)
+    (define-key map "k" #'supervisor-dashboard-kill)
+    (define-key map "s" #'supervisor-dashboard-start)
+    (define-key map "l" #'supervisor-dashboard-toggle-logging)
+    (define-key map "L" #'supervisor-dashboard-view-log)
+    (define-key map "p" #'proced)
+    (define-key map "P" #'supervisor-dashboard-toggle-proced-auto-update)
+    (define-key map "g" #'supervisor-dashboard-refresh)
+    (define-key map "q" #'quit-window)
+    map)
+  "Keymap for `supervisor-dashboard-mode'.")
+
+(define-derived-mode supervisor-dashboard-mode tabulated-list-mode "Supervisor"
+  "Major mode for the supervisor dashboard."
+  (setq tabulated-list-format [("ID" 20 t)
+                               ("Type" 8 t)
+                               ("Stage" 9 t)
+                               ("Enabled" 8 t)
+                               ("Status" 8 t)
+                               ("Restart" 8 t)
+                               ("Log" 5 t)
+                               ("PID" 8 t)])
+  (setq tabulated-list-padding 2)
+  (tabulated-list-init-header))
+
+(defun supervisor--get-entry-for-id (id)
+  "Get the parsed entry for ID.
+Returns (id cmd delay enabled-p restart-p logging-p type stage after oneshot-wait oneshot-timeout)."
+  (cl-loop for entry in supervisor-programs
+           for parsed = (supervisor--parse-entry entry)
+           when (string= (car parsed) id) return parsed))
+
+(defun supervisor--get-entries ()
+  "Generate entries for the dashboard (deduplicates on the fly)."
+  (let (entries seen)
+    (dolist (entry supervisor-programs)
+      (pcase-let ((`(,id ,_cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,stage ,_after ,_owait ,_otimeout)
+                   (supervisor--parse-entry entry)))
+        ;; Skip duplicates
+        (unless (member id seen)
+          (push id seen)
+          (let* ((proc (gethash id supervisor--processes))
+                 (alive (and proc (process-live-p proc)))
+                 (failed (gethash id supervisor--failed))
+                 (restart-enabled (supervisor--get-effective-restart id restart-p))
+                 (log-override (gethash id supervisor--logging))
+                 (logging (cond (log-override (eq log-override 'enabled))
+                                (t logging-p)))
+                 (pid (if alive (number-to-string (process-id proc)) "-"))
+                 (oneshot-p (eq type 'oneshot))
+                 (oneshot-exit (gethash id supervisor--oneshot-completed))
+                 (oneshot-done (not (null oneshot-exit)))
+                 (oneshot-failed (and oneshot-done (> oneshot-exit 0)))
+                 (status (cond (alive "running")
+                               (failed "dead")
+                               ((and oneshot-p oneshot-failed) "failed")
+                               ((and oneshot-p oneshot-done) "done")
+                               (oneshot-p "pending")
+                               (t "stopped")))
+                 (enabled-col (if enabled-p "yes" "no"))
+                 (restart-col (cond (oneshot-p "n/a")
+                                    (restart-enabled "yes")
+                                    (t "no"))))
+            (push (list id
+                        (vector id
+                                (symbol-name type)
+                                (symbol-name stage)
+                                enabled-col
+                                status
+                                restart-col
+                                (if logging "yes" "no")
+                                pid))
+                  entries)))))
+    (nreverse entries)))
+
+(defun supervisor--refresh-dashboard ()
+  "Refresh the dashboard buffer if it exists."
+  (when-let ((buf (get-buffer "*supervisor*")))
+    (with-current-buffer buf
+      (let ((pos (point)))
+        (setq tabulated-list-entries (supervisor--get-entries))
+        (tabulated-list-print t)
+        (goto-char (min pos (point-max)))))))
+
+(defun supervisor-dashboard-refresh ()
+  "Refresh the dashboard."
+  (interactive)
+  (supervisor--refresh-dashboard))
+
+(defun supervisor-dashboard-toggle-restart ()
+  "Toggle auto-restart for process at point (no-op for oneshot).
+Cycles: config default -> override opposite -> back to config default."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id))
+              (entry (supervisor--get-entry-for-id id)))
+    (pcase-let ((`(,_id ,_cmd ,_delay ,_enabled-p ,restart-p ,_logging-p ,type ,_stage ,_after ,_owait ,_otimeout) entry))
+      ;; Oneshot processes don't have restart semantics
+      (unless (eq type 'oneshot)
+        (let* ((currently-enabled (supervisor--get-effective-restart id restart-p))
+               (new-enabled (not currently-enabled)))
+          ;; If new state matches config, clear override; otherwise set override
+          (if (eq new-enabled restart-p)
+              (remhash id supervisor--restart-override)
+            (puthash id (if new-enabled 'enabled 'disabled) supervisor--restart-override))
+          ;; Cancel pending restart timer when disabling
+          (unless new-enabled
+            (when-let ((timer (gethash id supervisor--restart-timers)))
+              (when (timerp timer)
+                (cancel-timer timer))
+              (remhash id supervisor--restart-timers))))
+        (supervisor--refresh-dashboard)))))
+
+(defun supervisor-dashboard-kill ()
+  "Stop process at point (disables auto-restart and kills)."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id))
+              (proc (gethash id supervisor--processes)))
+    (when (process-live-p proc)
+      ;; Disable auto-restart first so sentinel doesn't restart it
+      (puthash id 'disabled supervisor--restart-override)
+      (kill-process proc)
+      (supervisor--refresh-dashboard))))
+
+(defun supervisor-dashboard-start ()
+  "Start process at point if stopped."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id))
+              (entry (supervisor--get-entry-for-id id)))
+    (unless (and (gethash id supervisor--processes)
+                 (process-live-p (gethash id supervisor--processes)))
+      (pcase-let ((`(,_id ,cmd ,_delay ,_enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout) entry))
+        (let ((args (split-string-and-unquote cmd)))
+          (if (not (executable-find (car args)))
+              (message "Supervisor: executable not found: %s" (car args))
+            ;; Clear failed state and oneshot completion on manual start
+            (remhash id supervisor--failed)
+            (remhash id supervisor--restart-times)
+            (remhash id supervisor--oneshot-completed)
+            (supervisor--start-process id cmd logging-p type restart-p)
+            (supervisor--refresh-dashboard)))))))
+
+(defun supervisor-dashboard-toggle-logging ()
+  "Toggle logging for process at point (takes effect on next start)."
+  (interactive)
+  (when-let ((id (tabulated-list-get-id)))
+    (let* ((current (gethash id supervisor--logging))
+           (entry (supervisor--get-entry-for-id id))
+           (config-logging (if entry (nth 5 entry) t))  ; logging-p is index 5
+           (effective (if current (eq current 'enabled) config-logging)))
+      (puthash id (if effective 'disabled 'enabled) supervisor--logging))
+    (supervisor--refresh-dashboard)))
+
+(defun supervisor-dashboard-view-log ()
+  "Open the log file for process at point."
+  (interactive)
+  (when-let ((id (tabulated-list-get-id)))
+    (let ((log-file (supervisor--log-file id)))
+      (if (file-exists-p log-file)
+          (find-file log-file)
+        (message "No log file for %s" id)))))
+
+(defun supervisor-dashboard-toggle-proced-auto-update ()
+  "Toggle proced auto-update in the Proced buffer, or globally if no buffer."
+  (interactive)
+  (require 'proced)
+  (if-let ((proced-buf (get-buffer "*Proced*")))
+      (with-current-buffer proced-buf
+        (proced-toggle-auto-update)  ; no arg to cycle
+        (message "Proced auto-update: %s"
+                 (pcase proced-auto-update-flag
+                   ('nil "off") ('visible "visible") (_ "on"))))
+    ;; No proced buffer, cycle global default: nil -> visible -> t -> nil
+    (setq proced-auto-update-flag
+          (pcase proced-auto-update-flag
+            ('nil 'visible)
+            ('visible t)
+            (_ nil)))
+    (message "Proced auto-update (global): %s"
+             (pcase proced-auto-update-flag
+               ('nil "off") ('visible "visible") (_ "on")))))
+
+(defvar supervisor--help-text
+  "Keys: r:toggle  k:kill  s:start  l:log  L:view-log  p:proced  P:auto-update  g:refresh  q:quit")
+
+(defun supervisor ()
+  "Open the supervisor dashboard."
+  (interactive)
+  (let ((buf (get-buffer-create "*supervisor*")))
+    (with-current-buffer buf
+      (supervisor-dashboard-mode)
+      (setq tabulated-list-entries (supervisor--get-entries))
+      (tabulated-list-print)
+      (setq-local header-line-format supervisor--help-text))
+    (pop-to-buffer buf)))
+
+(provide 'supervisor)
+;;; supervisor.el ends here

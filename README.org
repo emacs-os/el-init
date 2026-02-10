@@ -1,0 +1,210 @@
+#+TITLE: supervisor.el
+#+AUTHOR: Your Name
+#+OPTIONS: toc:2
+
+Lightweight process supervisor for managing background processes from Emacs.
+Useful for starting session services when using Emacs as a window manager (EXWM)
+or for managing development daemons.
+
+* Installation
+
+Place =supervisor.el= in your load path and add to your init file:
+
+#+begin_src emacs-lisp
+(require 'supervisor)
+
+(setq supervisor-programs
+      '(("nm-applet" :type simple :restart t)
+        ("blueman-applet" :type simple :restart t)))
+
+(add-hook 'after-init-hook #'supervisor-start)
+(add-hook 'kill-emacs-hook #'supervisor-stop)
+#+end_src
+
+* Commands
+
+| Command              | Description                                   |
+|----------------------+-----------------------------------------------|
+| =M-x supervisor-start= | Start all programs by stage (safe to re-run)  |
+| =M-x supervisor-stop=  | Gracefully stop all supervised processes      |
+| =M-x supervisor=       | Open dashboard to monitor/control processes   |
+
+* Process Types
+
+- *simple* - Long-running daemons (default). Restarts on crash if enabled.
+- *oneshot* - Run-once scripts. Exit is normal, no restart.
+  - Status progression: =pending= -> =running= -> =done= or =failed= (non-zero exit)
+
+* Staged Startup
+
+Processes are grouped into 4 stages that run sequentially:
+
+| Stage    | Priority | Description                                |
+|----------+----------+--------------------------------------------|
+| early    |        1 | X settings, cursor, keyboard config        |
+| services |        2 | System services (polkit, dbus agents)      |
+| session  |        3 | Session services (nm-applet, etc) *[default]* |
+| ui       |        4 | User-visible apps, compositor, tray        |
+
+Within a stage, entries start in parallel (DAG scheduler). Use =:after= to
+declare dependencies---the dependent waits for the dependency to be ready.
+
+*Ready* means: spawned (simple) or exited successfully (oneshot).
+
+** Oneshot Wait Modes
+
+- *Blocking* (default): oneshot blocks stage completion until it exits.
+- *Async* (=:async t= or =:oneshot-wait nil=): fire-and-forget, doesn't block stage.
+
+Use =:oneshot-timeout N= to limit wait time (default: 30 seconds).
+
+* Startup Control
+
+Like =systemctl enable/disable=. The =:enabled= / =:disabled= keywords control
+whether a process starts when =supervisor-start= runs.
+
+Disabled processes appear in the dashboard but don't auto-start. You can still
+manually start them with =s= in the dashboard.
+
+* Restart Policy
+
+The =:restart= / =:no-restart= keywords control crash recovery for simple
+processes (oneshots show "n/a" since they don't restart).
+
+When enabled, crashed processes restart after =supervisor-restart-delay= seconds
+(default: 2). Crash-loop detection marks a process as FAILED after
+=supervisor-max-restarts= (default: 3) restarts within =supervisor-restart-window=
+(default: 60) seconds.
+
+* Graceful Shutdown
+
+=supervisor-stop= sends SIGTERM to all processes, waits up to
+=supervisor-shutdown-timeout= seconds (default: 3) for graceful exit, then
+SIGKILL any survivors.
+
+* Logging
+
+stdout/stderr are captured to per-process log files in =supervisor-log-directory=
+(default: =~/.emacs.d/supervisor/=).
+
+Logs rotate on each =supervisor-start=. Toggle per-process logging with =l= in
+the dashboard; view logs with =L=.
+
+* Shell Expansion
+
+Commands run directly via =make-process= (no shell). For =$VAR= or =~= expansion,
+wrap in =sh -c=:
+
+#+begin_src emacs-lisp
+("sh -c 'echo $USER'" :type oneshot :id "whoami")
+#+end_src
+
+* Dashboard
+
+Open with =M-x supervisor=.
+
+** Columns
+
+| Column  | Description                          |
+|---------+--------------------------------------|
+| ID      | Process identifier                   |
+| Type    | simple or oneshot                    |
+| Stage   | early, services, session, or ui      |
+| Enabled | Whether process auto-starts          |
+| Status  | Current state (see below)            |
+| Restart | Auto-restart enabled (n/a for oneshot) |
+| Log     | Logging enabled                      |
+| PID     | Process ID (- if not running)        |
+
+** Status Values
+
+| Status  | Meaning                              |
+|---------+--------------------------------------|
+| running | Process is alive                     |
+| stopped | Simple process not running           |
+| pending | Oneshot not yet started              |
+| done    | Oneshot exited with code 0           |
+| failed  | Oneshot exited with non-zero code    |
+| dead    | Crash-loop detected, restart stopped |
+
+** Keybindings
+
+| Key | Action                                             |
+|-----+----------------------------------------------------|
+| s   | Start process (works even if =:enabled nil=)         |
+| k   | Kill process (SIGTERM, disables auto-restart)      |
+| r   | Toggle restart policy (config -> override -> config) |
+| l   | Toggle logging (takes effect on next start)        |
+| L   | View log file                                      |
+| p   | Open =M-x proced=                                    |
+| P   | Toggle proced auto-update (off -> visible -> on)   |
+| g   | Refresh dashboard                                  |
+| q   | Quit                                               |
+
+* Entry Keywords
+
+| Keyword          | Type        | Default   | Description                              |
+|------------------+-------------+-----------+------------------------------------------|
+| =:id=              | string      | basename  | Unique identifier                        |
+| =:type=            | symbol      | simple    | =simple= or =oneshot=                        |
+| =:stage=           | symbol      | session   | =early=, =services=, =session=, or =ui=          |
+| =:delay=           | number      | 0         | Seconds to wait before starting          |
+| =:after=           | string/list | nil       | Wait for ID(s) in same stage             |
+| =:enabled=         | boolean     | t         | Start when =supervisor-start= runs         |
+| =:disabled=        | boolean     | nil       | Inverse of =:enabled=                      |
+| =:restart=         | boolean     | t         | Restart on crash (simple only)           |
+| =:no-restart=      | boolean     | nil       | Inverse of =:restart=                      |
+| =:logging=         | boolean     | t         | Log stdout/stderr to file                |
+| =:oneshot-wait=    | boolean     | t         | Oneshot blocks stage completion          |
+| =:async=           | boolean     | nil       | Alias for =:oneshot-wait nil=              |
+| =:oneshot-timeout= | number      | 30        | Max seconds to wait for oneshot          |
+
+*Note:* When using =:after=, use explicit =:id= on both entries to avoid ambiguity.
+
+* Customization Variables
+
+| Variable                       | Default                    | Description                          |
+|--------------------------------+----------------------------+--------------------------------------|
+| =supervisor-programs=            | nil                        | List of programs to supervise        |
+| =supervisor-log-directory=       | =~/.emacs.d/supervisor/=     | Directory for log files              |
+| =supervisor-restart-delay=       | 2                          | Seconds before restart               |
+| =supervisor-max-restarts=        | 3                          | Max restarts before marking failed   |
+| =supervisor-restart-window=      | 60                         | Time window (seconds) for crash detection |
+| =supervisor-shutdown-timeout=    | 3                          | Seconds to wait for graceful exit    |
+| =supervisor-oneshot-timeout=     | 30                         | Default oneshot timeout              |
+| =supervisor-oneshot-default-wait= | t                          | Default blocking behavior for oneshots |
+
+* Hooks
+
+- =supervisor-cleanup-hook= - Runs before killing processes during shutdown.
+  Useful for cleanup commands (e.g., resetting redshift color temperature).
+
+* Full Example
+
+#+begin_src emacs-lisp
+(setq supervisor-programs
+      '(;; Stage: early - oneshots for X setup
+        ("sh -c 'xhost +SI:localuser:$USER'" :type oneshot :id "xhost" :stage early)
+        ("sh -c 'xrdb ~/.Xresources'" :type oneshot :id "xrdb" :stage early :after "xhost")
+        ("sh -c 'xsetroot -cursor_name left_ptr'" :type oneshot :id "cursor" :stage early)
+
+        ;; Stage: services - system daemons
+        ("/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
+         :type simple :id "polkit" :stage services)
+
+        ;; Stage: session (default) - user services
+        ("nm-applet" :type simple :delay 3 :restart t)
+        ("blueman-applet" :type simple :restart t)
+        ("redshift-gtk" :type simple :enabled nil :restart t)  ; disabled by default
+
+        ;; Stage: ui - user-visible apps
+        ("picom" :type simple :stage ui :restart t)))
+
+;; Optional cleanup hook
+(add-hook 'supervisor-cleanup-hook
+          (lambda () (call-process "redshift" nil nil nil "-x")))
+
+;; Start on Emacs init, stop on exit
+(add-hook 'after-init-hook #'supervisor-start)
+(add-hook 'kill-emacs-hook #'supervisor-stop)
+#+end_src
