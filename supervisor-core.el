@@ -40,6 +40,21 @@
 (require 'cl-lib)
 (require 'subr-x)
 
+;;; Timer Subsystem Gate (Experimental)
+;;
+;; The timer subsystem is gated behind this mode variable.
+;; The full mode definition is in supervisor-timer.el.
+
+(defvar supervisor-timer-subsystem-mode nil
+  "Non-nil when the experimental timer subsystem is enabled.
+Use `supervisor-timer-subsystem-mode' command to toggle.
+See supervisor-timer.el for the full mode definition.")
+
+(defun supervisor-timer-subsystem-active-p ()
+  "Return non-nil if timer subsystem is active.
+The timer subsystem is active when `supervisor-timer-subsystem-mode' is enabled."
+  supervisor-timer-subsystem-mode)
+
 ;; Forward declarations for optional features
 (declare-function file-notify-add-watch "filenotify" (file flags callback))
 (declare-function file-notify-rm-watch "filenotify" (descriptor))
@@ -1416,10 +1431,13 @@ Only includes keys from `supervisor--timer-state-persist-keys'."
      supervisor--timer-state)
     (nreverse result)))
 
-(defun supervisor--save-timer-state ()
+(cl-defun supervisor--save-timer-state ()
   "Save timer state to file using atomic write.
 Uses temp file + rename pattern for crash safety.
-Returns t on success, nil on failure."
+Returns t on success, nil on failure.
+Does nothing if timer subsystem is not active."
+  (unless (supervisor-timer-subsystem-active-p)
+    (cl-return-from supervisor--save-timer-state nil))
   (let ((path (supervisor--timer-state-file-path)))
     (when path
       (supervisor--ensure-timer-state-dir)
@@ -1446,11 +1464,14 @@ Returns t on success, nil on failure."
              (delete-file temp-file))
            nil))))))
 
-(defun supervisor--load-timer-state ()
+(cl-defun supervisor--load-timer-state ()
   "Load timer state from file into memory.
 Returns t on success, nil on failure or if file does not exist.
 Merges loaded state with existing in-memory state, preferring file values
-for persisted keys while preserving runtime-computed keys."
+for persisted keys while preserving runtime-computed keys.
+Does nothing if timer subsystem is not active."
+  (unless (supervisor-timer-subsystem-active-p)
+    (cl-return-from supervisor--load-timer-state nil))
   (let ((path (supervisor--timer-state-file-path)))
     (when (and path (file-exists-p path))
       (condition-case err
@@ -1818,11 +1839,15 @@ SUCCESS is t if completed successfully, nil otherwise."
 
 (cl-defun supervisor--timer-scheduler-tick ()
   "Check for due timers and trigger them.
-Reschedules itself for the next due time."
+Reschedules itself for the next due time.
+Does nothing if timer subsystem is not active."
   ;; Cancel any existing scheduler
   (when (timerp supervisor--timer-scheduler)
     (cancel-timer supervisor--timer-scheduler)
     (setq supervisor--timer-scheduler nil))
+  ;; Gate check
+  (unless (supervisor-timer-subsystem-active-p)
+    (cl-return-from supervisor--timer-scheduler-tick nil))
   ;; Don't run if shutting down
   (when supervisor--shutting-down
     (cl-return-from supervisor--timer-scheduler-tick nil))
@@ -1913,9 +1938,13 @@ Called during scheduler start."
     (when (> catch-up-count 0)
       (supervisor--log 'info "processed %d catch-up runs" catch-up-count))))
 
-(defun supervisor--timer-scheduler-start ()
+(cl-defun supervisor--timer-scheduler-start ()
   "Start the timer scheduler.
-Call after supervisor-start has completed stage startup."
+Call after supervisor-start has completed stage startup.
+Does nothing if timer subsystem is not active."
+  (unless (supervisor-timer-subsystem-active-p)
+    (supervisor--log 'info "timer subsystem disabled, skipping scheduler start")
+    (cl-return-from supervisor--timer-scheduler-start nil))
   (setq supervisor--scheduler-startup-time (float-time))
   ;; Build timer list from config
   (let ((plan (supervisor--build-plan supervisor-programs)))

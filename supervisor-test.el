@@ -3144,7 +3144,8 @@ Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
 
 (ert-deftest supervisor-test-timer-trigger-success-path ()
   "Timer trigger succeeds and emits timer-trigger event."
-  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+  (let* ((supervisor-timer-subsystem-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--enabled-override (make-hash-table :test 'equal))
@@ -3483,7 +3484,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-state-save-load-roundtrip ()
   "Timer state survives save/load cycle."
-  (let* ((temp-file (make-temp-file "supervisor-test-timer-state-" nil ".eld"))
+  (let* ((supervisor-timer-subsystem-mode t)
+         (temp-file (make-temp-file "supervisor-test-timer-state-" nil ".eld"))
          (supervisor-timer-state-file temp-file)
          (supervisor--timer-state (make-hash-table :test 'equal)))
     (unwind-protect
@@ -3509,7 +3511,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-state-corrupt-file-handled ()
   "Corrupt timer state file is handled gracefully."
-  (let* ((temp-file (make-temp-file "supervisor-test-corrupt-" nil ".eld"))
+  (let* ((supervisor-timer-subsystem-mode t)
+         (temp-file (make-temp-file "supervisor-test-corrupt-" nil ".eld"))
          (supervisor-timer-state-file temp-file)
          (supervisor--timer-state (make-hash-table :test 'equal)))
     (unwind-protect
@@ -3524,7 +3527,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-state-persistence-disabled ()
   "Nil timer state file path disables persistence."
-  (let ((supervisor-timer-state-file nil)
+  (let ((supervisor-timer-subsystem-mode t)
+        (supervisor-timer-state-file nil)
         (supervisor--timer-state (make-hash-table :test 'equal)))
     (puthash "t1" '(:last-run-at 1000.0) supervisor--timer-state)
     ;; Save returns nil when disabled
@@ -3542,7 +3546,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-state-newer-version-rejected ()
   "Newer schema version is rejected, not just warned."
-  (let* ((temp-file (make-temp-file "supervisor-test-version-" nil ".eld"))
+  (let* ((supervisor-timer-subsystem-mode t)
+         (temp-file (make-temp-file "supervisor-test-version-" nil ".eld"))
          (supervisor-timer-state-file temp-file)
          (supervisor--timer-state (make-hash-table :test 'equal)))
     (unwind-protect
@@ -3560,7 +3565,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-state-stale-ids-pruned ()
   "Stale timer IDs are pruned from state during scheduler startup."
-  (let* ((supervisor-programs '(("true" :id "s1" :type oneshot)))
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-programs '(("true" :id "s1" :type oneshot)))
          (supervisor-timers '((:id "active" :target "s1" :on-startup-sec 60)))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--timer-list nil)
@@ -3584,7 +3590,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-cross-restart-catch-up ()
   "Integration test: scheduler startup with persisted state triggers catch-up."
-  (let* ((temp-file (make-temp-file "supervisor-test-catchup-" nil ".eld"))
+  (let* ((supervisor-timer-subsystem-mode t)
+         (temp-file (make-temp-file "supervisor-test-catchup-" nil ".eld"))
          (supervisor-programs '(("true" :id "s1" :type oneshot)))
          (supervisor-timers '((:id "t1" :target "s1" :on-calendar (:minute 0)
                                :persistent t)))
@@ -3623,7 +3630,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-scheduler-tick-handles-retry ()
   "Scheduler tick triggers retry when due."
-  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+  (let* ((supervisor-timer-subsystem-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--timer-scheduler nil)
@@ -3642,7 +3650,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-retry-budget-reset-on-scheduled ()
   "Retry budget is reset on fresh scheduled trigger."
-  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+  (let* ((supervisor-timer-subsystem-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--timer-scheduler nil)
@@ -3665,7 +3674,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-scheduler-tick-scheduled ()
   "Scheduler tick triggers scheduled run when due."
-  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+  (let* ((supervisor-timer-subsystem-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--timer-scheduler nil)
@@ -3703,7 +3713,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-scheduler-tick-simultaneous-order ()
   "Scheduler tick processes simultaneous due timers in list order."
-  (let* ((timer1 (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+  (let* ((supervisor-timer-subsystem-mode t)
+         (timer1 (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (timer2 (supervisor-timer--create :id "t2" :target "s2" :enabled t))
          (timer3 (supervisor-timer--create :id "t3" :target "s3" :enabled t))
          ;; List order is t1, t2, t3
@@ -3765,7 +3776,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-state-load-merges-correctly ()
   "Load timer state merges with existing runtime state."
-  (let* ((temp-file (make-temp-file "supervisor-test-merge-" nil ".eld"))
+  (let* ((supervisor-timer-subsystem-mode t)
+         (temp-file (make-temp-file "supervisor-test-merge-" nil ".eld"))
          (supervisor-timer-state-file temp-file)
          (supervisor--timer-state (make-hash-table :test 'equal)))
     (unwind-protect
@@ -3805,6 +3817,109 @@ at minute boundaries."
     ;; Unit-active trigger: 900 + 120 = 1020 (earlier)
     (let ((next (supervisor--timer-compute-next-run timer 1001.0)))
       (should (= 1020.0 next)))
+    (clrhash supervisor--timer-state)))
+
+;;; Timer Subsystem Gating Tests
+
+(ert-deftest supervisor-test-timer-gate-scheduler-start-noop ()
+  "Scheduler start is a no-op when timer subsystem is disabled."
+  (let ((supervisor-timer-subsystem-mode nil)
+        (supervisor-programs '(("true" :id "s1" :type oneshot)))
+        (supervisor-timers '((:id "t1" :target "s1" :on-startup-sec 60)))
+        (supervisor--timer-list nil)
+        (supervisor--timer-scheduler nil)
+        (supervisor--shutting-down nil)
+        (supervisor--scheduler-startup-time nil)
+        (supervisor--timer-state-loaded nil)
+        (supervisor-timer-state-file nil))
+    ;; Start should do nothing when gated off
+    (supervisor--timer-scheduler-start)
+    ;; Timer list should remain empty
+    (should (null supervisor--timer-list))
+    ;; Scheduler should not be running
+    (should (null supervisor--timer-scheduler))))
+
+(ert-deftest supervisor-test-timer-gate-state-save-noop ()
+  "State save is a no-op when timer subsystem is disabled."
+  (let* ((supervisor-timer-subsystem-mode nil)
+         (temp-file (concat (make-temp-name
+                             (expand-file-name "supervisor-test-gate-"
+                                               temporary-file-directory))
+                            ".eld"))
+         (supervisor-timer-state-file temp-file)
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (puthash "t1" '(:last-run-at 1000.0) supervisor--timer-state)
+          ;; Save should return nil when gated off
+          (should-not (supervisor--save-timer-state))
+          ;; File should NOT be created
+          (should-not (file-exists-p temp-file)))
+      (when (file-exists-p temp-file) (delete-file temp-file))
+      (clrhash supervisor--timer-state))))
+
+(ert-deftest supervisor-test-timer-gate-state-load-noop ()
+  "State load is a no-op when timer subsystem is disabled."
+  (let* ((supervisor-timer-subsystem-mode nil)
+         (temp-file (make-temp-file "supervisor-test-gate-" nil ".eld"))
+         (supervisor-timer-state-file temp-file)
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          ;; Write a valid state file
+          (with-temp-file temp-file
+            (insert (format "((version . %d) (timestamp . \"test\") (timers . ((\"t1\" :last-run-at 1000.0))))"
+                            supervisor-timer-state-schema-version)))
+          ;; Load should return nil when gated off
+          (should-not (supervisor--load-timer-state))
+          ;; State should NOT be populated
+          (should (= 0 (hash-table-count supervisor--timer-state))))
+      (delete-file temp-file)
+      (clrhash supervisor--timer-state))))
+
+(ert-deftest supervisor-test-timer-gate-scheduler-tick-noop ()
+  "Scheduler tick is a no-op when timer subsystem is disabled."
+  (let* ((supervisor-timer-subsystem-mode nil)
+         (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t
+                                          :on-startup-sec 1))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--timer-scheduler nil)
+         (supervisor--shutting-down nil)
+         (triggered nil))
+    ;; Set up state so timer would be due
+    (puthash "t1" '(:next-run-at 900.0) supervisor--timer-state)
+    ;; Mock trigger to detect if called
+    (cl-letf (((symbol-function 'supervisor--timer-trigger)
+               (lambda (_timer _reason) (setq triggered t)))
+              ((symbol-function 'float-time) (lambda () 1000.0)))
+      (supervisor--timer-scheduler-tick))
+    ;; Timer should NOT have been triggered
+    (should-not triggered)
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-gate-enabled-works ()
+  "Timer functions work normally when subsystem is enabled."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t
+                                          :on-startup-sec 1))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--timer-scheduler nil)
+         (supervisor--shutting-down nil)
+         (triggered nil))
+    ;; Set up state so timer would be due
+    (puthash "t1" '(:next-run-at 900.0) supervisor--timer-state)
+    ;; Mock trigger to detect if called
+    (cl-letf (((symbol-function 'supervisor--timer-trigger)
+               (lambda (_timer _reason) (setq triggered t)))
+              ((symbol-function 'float-time) (lambda () 1000.0)))
+      (supervisor--timer-scheduler-tick))
+    ;; Timer SHOULD have been triggered when enabled
+    (should triggered)
+    ;; Clean up scheduler timer if created
+    (when (timerp supervisor--timer-scheduler)
+      (cancel-timer supervisor--timer-scheduler))
     (clrhash supervisor--timer-state)))
 
 ;;; CLI Control Plane tests
@@ -4057,7 +4172,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-timers-no-timers ()
   "Timers command with no timers configured."
-  (let ((supervisor--timer-list nil)
+  (let ((supervisor-timer-subsystem-mode t)
+        (supervisor--timer-list nil)
         (supervisor--timer-state (make-hash-table :test 'equal))
         (supervisor--invalid-timers (make-hash-table :test 'equal)))
     (let ((result (supervisor--cli-dispatch '("timers"))))
@@ -4067,7 +4183,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-timers-shows-state ()
   "Timers command shows timer state."
-  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+  (let* ((supervisor-timer-subsystem-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--invalid-timers (make-hash-table :test 'equal)))
@@ -4095,7 +4212,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-timers-invalid-human-format ()
   "Timers command shows invalid timers with correct id and reason."
-  (let ((supervisor--timer-list nil)
+  (let ((supervisor-timer-subsystem-mode t)
+        (supervisor--timer-list nil)
         (supervisor--timer-state (make-hash-table :test 'equal))
         (supervisor--invalid-timers (make-hash-table :test 'equal)))
     ;; Add invalid timer with known id and reason
@@ -4110,7 +4228,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-timers-invalid-json-format ()
   "Timers --json outputs invalid timers with correct structure."
-  (let ((supervisor--timer-list nil)
+  (let ((supervisor-timer-subsystem-mode t)
+        (supervisor--timer-list nil)
         (supervisor--timer-state (make-hash-table :test 'equal))
         (supervisor--invalid-timers (make-hash-table :test 'equal)))
     ;; Add invalid timer
@@ -4143,7 +4262,8 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-timers-full-field-mapping ()
   "CLI timers output includes all required fields per Phase 5 contract."
-  (let* ((timer (supervisor-timer--create :id "test-timer" :target "test-target"
+  (let* ((supervisor-timer-subsystem-mode t)
+         (timer (supervisor-timer--create :id "test-timer" :target "test-target"
                                           :enabled t :persistent t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))

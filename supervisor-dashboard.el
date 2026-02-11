@@ -511,8 +511,9 @@ If SNAPSHOT is provided, read runtime state from it."
            (if (and supervisor-dashboard-group-by-stage (null stage-filter))
                (supervisor--group-entries-by-stage entries)
              (mapcar (lambda (e) (list (car e) (cadr e))) entries))))
-      ;; Append timers section if enabled and no stage filter active
+      ;; Append timers section if enabled, subsystem active, and no stage filter
       (when (and supervisor-dashboard-show-timers
+                 (supervisor-timer-subsystem-active-p)
                  (null stage-filter)
                  (or supervisor--timer-list
                      (> (hash-table-count supervisor--invalid-timers) 0)))

@@ -1152,15 +1152,26 @@ Returns a list of alists, one per timer."
 (defun supervisor--cli-cmd-timers (args json-p)
   "Handle `timers' command with ARGS.  JSON-P enables JSON output."
   (let ((unknown (supervisor--cli-has-unknown-flags args)))
-    (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
-                               (format "Unknown option: %s" unknown)
-                               (if json-p 'json 'human))
-      (if args
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
-                                 "timers command does not accept arguments"
-                                 (if json-p 'json 'human))
-        (let* ((timers (supervisor--cli-gather-timer-info))
+    (cond
+     (unknown
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             (format "Unknown option: %s" unknown)
+                             (if json-p 'json 'human)))
+     (args
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "timers command does not accept arguments"
+                             (if json-p 'json 'human)))
+     ;; Check if timer subsystem is enabled
+     ((not (supervisor-timer-subsystem-active-p))
+      (let ((msg "Timer subsystem is disabled (experimental feature).\nEnable with: (supervisor-timer-subsystem-mode 1)"))
+        (supervisor--cli-success
+         (if json-p
+             (json-encode `((status . "disabled")
+                            (message . "Timer subsystem is disabled (experimental feature)")))
+           (concat msg "\n"))
+         (if json-p 'json 'human))))
+     (t
+      (let* ((timers (supervisor--cli-gather-timer-info))
                ;; Convert hash table entries (id -> reason) to plists
                (invalid (let (result)
                           (maphash (lambda (id reason)

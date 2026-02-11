@@ -17,10 +17,12 @@ implementation simplicity.
 - No cron compatibility (use calendar plists instead).
 - No jitter/randomized delay knobs.
 
-## **CRITICAL** Addendum: Experimental Timer Subsystem Gate (Blocking)
+## **CRITICAL** Addendum: Experimental Timer Subsystem Gate ✓
 
 This addendum is mandatory for all phases in this plan.
 Timer functionality is explicitly experimental and must be strongly gated.
+
+**Status: IMPLEMENTED**
 
 Required mode contract:
 
