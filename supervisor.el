@@ -568,6 +568,11 @@ Runtime overrides take effect on next start (manual or restart).")
 (defvar supervisor--logging (make-hash-table :test 'equal)
   "Hash table tracking logging state per process (runtime override).")
 
+(defvar supervisor--manually-stopped (make-hash-table :test 'equal)
+  "Hash table tracking entries manually stopped via CLI or dashboard.
+Entries in this table should not auto-restart until explicitly started again.
+This is cleared when an entry is started, allowing normal restart behavior.")
+
 ;;; Persistent Overrides (Schema v1)
 
 (defcustom supervisor-overrides-file
@@ -2190,6 +2195,7 @@ CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart."
         ;; Schedule restart if appropriate
         (unless (or (eq type 'oneshot)
                     supervisor--shutting-down
+                    (gethash name supervisor--manually-stopped)
                     (eq (gethash name supervisor--enabled-override) 'disabled)
                     (not (supervisor--get-effective-restart name config-restart))
                     (gethash name supervisor--failed)
@@ -2208,6 +2214,8 @@ IS-RESTART is t when called from a crash-triggered restart timer."
     (when (timerp timer)
       (cancel-timer timer))
     (remhash id supervisor--restart-timers))
+  ;; Clear manually-stopped flag - starting an entry re-enables restart behavior
+  (remhash id supervisor--manually-stopped)
   ;; Guard conditions - don't start if:
   ;; - shutting down
   ;; - this is a crash-restart AND (restart disabled or failed or runtime-disabled)
@@ -2391,6 +2399,7 @@ Ready semantics (when dependents are unblocked):
   ;; Reset runtime state for clean session
   (clrhash supervisor--restart-override)
   (clrhash supervisor--enabled-override)
+  (clrhash supervisor--manually-stopped)
   (clrhash supervisor--failed)
   (clrhash supervisor--invalid)
   (clrhash supervisor--logging)
@@ -2631,7 +2640,8 @@ Returns a plist with :stopped and :started counts."
            (when-let* ((proc (gethash id supervisor--processes)))
              (when (process-live-p proc)
                (supervisor--log 'info "reload: stopping %s entry %s" reason id)
-               (puthash id 'disabled supervisor--restart-override)
+               ;; Mark as manually stopped so sentinel doesn't restart it
+               (puthash id t supervisor--manually-stopped)
                (kill-process proc)
                (cl-incf stopped))))
           ('start
@@ -3337,7 +3347,7 @@ Cycles: config default -> override opposite -> back to config default."
 
 (defun supervisor-dashboard-kill (&optional force)
   "Stop process at point with confirmation.
-Disables auto-restart and sends kill signal.
+Prevents auto-restart and sends kill signal.
 With prefix argument FORCE, skip confirmation."
   (interactive "P")
   (let ((id (tabulated-list-get-id)))
@@ -3348,8 +3358,9 @@ With prefix argument FORCE, skip confirmation."
     (when (process-live-p proc)
       (when (or force
                 (yes-or-no-p (format "Kill process '%s'? " id)))
-        ;; Disable auto-restart first so sentinel doesn't restart it
-        (puthash id 'disabled supervisor--restart-override)
+        ;; Mark as manually stopped so sentinel doesn't restart it
+        ;; This is temporary - cleared when entry is started again
+        (puthash id t supervisor--manually-stopped)
         (kill-process proc)
         (supervisor--refresh-dashboard)))))
 
@@ -3924,14 +3935,14 @@ invalid is list of (id . reason) pairs, sorted by ID for determinism."
     (status . ,(alist-get 'status info))
     (restart . ,(if (alist-get 'restart info) t :json-false))
     (logging . ,(if (alist-get 'logging info) t :json-false))
-    (pid . ,(or (alist-get 'pid info) :null))
-    (reason . ,(or (alist-get 'reason info) :null))
+    (pid . ,(alist-get 'pid info))
+    (reason . ,(alist-get 'reason info))
     (delay . ,(alist-get 'delay info))
     (after . ,(or (alist-get 'after info) []))
     (requires . ,(or (alist-get 'requires info) []))
-    (start_time . ,(or (alist-get 'start-time info) :null))
-    (ready_time . ,(or (alist-get 'ready-time info) :null))
-    (duration . ,(or (alist-get 'duration info) :null))))
+    (start_time . ,(alist-get 'start-time info))
+    (ready_time . ,(alist-get 'ready-time info))
+    (duration . ,(alist-get 'duration info))))
 
 (defun supervisor--cli-invalid-to-json-obj (info)
   "Convert invalid entry INFO to JSON-compatible alist."
@@ -4108,6 +4119,9 @@ Use -- before IDs that start with a hyphen."
               (let ((proc (gethash id supervisor--processes)))
                 (if (and proc (process-live-p proc))
                     (progn
+                      ;; Mark as manually stopped so sentinel doesn't restart it
+                      ;; This is temporary - cleared when entry is started again
+                      (puthash id t supervisor--manually-stopped)
                       (delete-process proc)
                       (push id stopped))
                   (push id errors))))
@@ -4322,8 +4336,8 @@ Use -- before IDs that start with a hyphen."
                    (let ((ready-time (gethash id supervisor--ready-times)))
                      (push `((id . ,id)
                              (start_time . ,start-time)
-                             (ready_time . ,(or ready-time :null))
-                             (duration . ,(if ready-time (- ready-time start-time) :null)))
+                             (ready_time . ,ready-time)
+                             (duration . ,(when ready-time (- ready-time start-time))))
                            blame-data)))
                  supervisor--start-times)
         ;; Sort by start time for deterministic output
@@ -4343,9 +4357,9 @@ Use -- before IDs that start with a hyphen."
                                  (alist-get 'id e)
                                  (alist-get 'start_time e)
                                  (let ((r (alist-get 'ready_time e)))
-                                   (if (eq r :null) "-" (format "%.3f" r)))
+                                   (if (null r) "-" (format "%.3f" r)))
                                  (let ((d (alist-get 'duration e)))
-                                   (if (eq d :null) "-" (format "%.3fs" d)))))
+                                   (if (null d) "-" (format "%.3fs" d)))))
                        blame-data "")))
          (if json-p 'json 'human))))))
 
@@ -4407,51 +4421,82 @@ Use -- before IDs that start with a hyphen."
            (if json-p 'json 'human))))))))
 
 (defun supervisor--cli-cmd-logs (args json-p)
-  "Handle `logs [--] ID [--tail N]' command with ARGS.  JSON-P for JSON.
-Use -- before IDs that start with a hyphen."
-  ;; Check for unknown flags (only --tail is valid, stops at --)
-  (let* ((unknown (supervisor--cli-has-unknown-flags args '("--tail")))
-         (has-separator (member "--" args)))
+  "Handle `logs [--tail N] [--] ID' command with ARGS.  JSON-P for JSON.
+Options must come before --.  Use -- before IDs that start with hyphen."
+  ;; Split at -- separator: options before, ID after
+  (let* ((split (supervisor--cli-split-at-separator args))
+         (before (car split))
+         (after (cdr split))
+         ;; Check for unknown flags in before-part only
+         (unknown (supervisor--cli-has-unknown-flags before '("--tail")))
+         ;; Parse --tail from before-part only
+         (tail-arg (member "--tail" before))
+         (tail-val (cadr tail-arg))
+         ;; Validate --tail value if present
+         (tail-missing (and tail-arg
+                            (or (null tail-val)
+                                (string-prefix-p "-" tail-val))))
+         (tail-invalid (and tail-arg tail-val (not tail-missing)
+                            (not (string-match-p "\\`[0-9]+\\'" tail-val))))
+         (tail-n (if (and tail-arg tail-val (not tail-missing) (not tail-invalid))
+                     (string-to-number tail-val)
+                   50))
+         ;; Remove --tail and its value from before-part to get non-option args
+         (before-positional (cl-remove-if (lambda (a) (or (equal a "--tail")
+                                                          (and tail-arg tail-val
+                                                               (not tail-missing)
+                                                               (equal a tail-val))))
+                                          before))
+         ;; ID is first positional from before or first from after
+         (id (or (car after) (car before-positional)))
+         ;; Extra args check: should have at most 1 ID total
+         (extra-ids (append (cdr before-positional) (cdr after))))
     (cond
      (unknown
       (supervisor--cli-error supervisor-cli-exit-invalid-args
                              (format "Unknown option: %s" unknown)
                              (if json-p 'json 'human)))
+     (tail-missing
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "--tail requires a numeric value"
+                             (if json-p 'json 'human)))
+     (tail-invalid
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             (format "--tail value must be a number, got: %s" tail-val)
+                             (if json-p 'json 'human)))
+     ((null id)
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "logs requires an ID argument"
+                             (if json-p 'json 'human)))
+     ;; Reject if first positional in before-part looks like an option
+     ((and (null after) before-positional (string-prefix-p "-" (car before-positional)))
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "logs requires ID as first argument (use -- for IDs starting with -)"
+                             (if json-p 'json 'human)))
+     ;; Reject extra IDs
+     (extra-ids
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             (format "logs takes exactly one ID, got extra: %s"
+                                     (mapconcat #'identity extra-ids " "))
+                             (if json-p 'json 'human)))
      (t
-      (let ((args (supervisor--cli-strip-separator args)))
-        (cond
-         ((null args)
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
-                                 "logs requires an ID argument"
-                                 (if json-p 'json 'human)))
-         ;; Only check for option-as-first-arg if no -- was used
-         ((and (not has-separator) (string-prefix-p "-" (car args)))
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
-                                 "logs requires ID as first argument"
-                                 (if json-p 'json 'human)))
-         (t
-          (let* ((id (car args))
-                 (tail-arg (member "--tail" args))
-                 (tail-n (if (and tail-arg (cadr tail-arg))
-                             (string-to-number (cadr tail-arg))
-                           50))
-                 (log-file (supervisor--log-file id)))
-            (if (file-exists-p log-file)
-                (let ((content (with-temp-buffer
-                                 (insert-file-contents log-file)
-                                 (let ((lines (split-string (buffer-string) "\n" t)))
-                                   (if (> (length lines) tail-n)
-                                       (mapconcat #'identity (last lines tail-n) "\n")
-                                     (buffer-string))))))
-                  (supervisor--cli-success
-                   (if json-p
-                       (json-encode `((id . ,id) (log_file . ,log-file) (content . ,content)))
-                     (concat (format "=== Log for %s (%s) ===\n" id log-file)
-                             content "\n"))
-                   (if json-p 'json 'human)))
-              (supervisor--cli-error supervisor-cli-exit-failure
-                                     (format "No log file for '%s'" id)
-                                     (if json-p 'json 'human)))))))))))
+      (let ((log-file (supervisor--log-file id)))
+        (if (file-exists-p log-file)
+            (let ((content (with-temp-buffer
+                             (insert-file-contents log-file)
+                             (let ((lines (split-string (buffer-string) "\n" t)))
+                               (if (> (length lines) tail-n)
+                                   (mapconcat #'identity (last lines tail-n) "\n")
+                                 (buffer-string))))))
+              (supervisor--cli-success
+               (if json-p
+                   (json-encode `((id . ,id) (log_file . ,log-file) (content . ,content)))
+                 (concat (format "=== Log for %s (%s) ===\n" id log-file)
+                         content "\n"))
+               (if json-p 'json 'human)))
+          (supervisor--cli-error supervisor-cli-exit-failure
+                                 (format "No log file for '%s'" id)
+                                 (if json-p 'json 'human))))))))
 
 (defun supervisor--cli-cmd-ping (args json-p)
   "Handle `ping' command with ARGS.  JSON-P enables JSON output."
@@ -4474,47 +4519,88 @@ Use -- before IDs that start with a hyphen."
          (format "supervisorctl %s (Emacs %s)\n" supervisor-cli-version emacs-version))
        (if json-p 'json 'human)))))
 
+(defconst supervisor--valid-signals
+  '(SIGHUP SIGINT SIGQUIT SIGILL SIGTRAP SIGABRT SIGBUS SIGFPE
+    SIGKILL SIGUSR1 SIGSEGV SIGUSR2 SIGPIPE SIGALRM SIGTERM
+    SIGCHLD SIGCONT SIGSTOP SIGTSTP SIGTTIN SIGTTOU SIGURG
+    SIGXCPU SIGXFSZ SIGVTALRM SIGPROF SIGWINCH SIGIO SIGSYS)
+  "List of valid POSIX signal names for CLI kill command.")
+
 (defun supervisor--cli-cmd-kill (args json-p)
-  "Handle `kill [--] ID [--signal SIG]' command with ARGS.  JSON-P for JSON.
-Use -- before IDs that start with a hyphen."
-  ;; Check for unknown flags (only --signal is valid, stops at --)
-  (let* ((unknown (supervisor--cli-has-unknown-flags args '("--signal")))
-         (has-separator (member "--" args)))
+  "Handle `kill [--signal SIG] [--] ID' command with ARGS.  JSON-P for JSON.
+Options must come before --.  Use -- before IDs that start with hyphen."
+  ;; Split at -- separator: options before, ID after
+  (let* ((split (supervisor--cli-split-at-separator args))
+         (before (car split))
+         (after (cdr split))
+         ;; Check for unknown flags in before-part only
+         (unknown (supervisor--cli-has-unknown-flags before '("--signal")))
+         ;; Parse --signal from before-part only
+         (sig-arg (member "--signal" before))
+         (sig-val (cadr sig-arg))
+         ;; Validate --signal value if present
+         (sig-missing (and sig-arg
+                           (or (null sig-val)
+                               (string-prefix-p "-" sig-val))))
+         ;; Normalize signal name: accept both TERM and SIGTERM forms
+         (sig-name (when (and sig-arg sig-val (not sig-missing))
+                     (let ((upper (upcase sig-val)))
+                       (if (string-prefix-p "SIG" upper) upper (concat "SIG" upper)))))
+         (sig-sym (when sig-name (intern sig-name)))
+         (sig-invalid (and sig-arg sig-val (not sig-missing)
+                           (not (memq sig-sym supervisor--valid-signals))))
+         (sig (if sig-sym sig-sym 'SIGTERM))
+         ;; Remove --signal and its value from before-part to get non-option args
+         (before-positional (cl-remove-if (lambda (a) (or (equal a "--signal")
+                                                          (and sig-arg sig-val
+                                                               (not sig-missing)
+                                                               (equal a sig-val))))
+                                          before))
+         ;; ID is first positional from before or first from after
+         (id (or (car after) (car before-positional)))
+         ;; Extra args check: should have at most 1 ID total
+         (extra-ids (append (cdr before-positional) (cdr after))))
     (cond
      (unknown
       (supervisor--cli-error supervisor-cli-exit-invalid-args
                              (format "Unknown option: %s" unknown)
                              (if json-p 'json 'human)))
+     (sig-missing
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "--signal requires a signal name"
+                             (if json-p 'json 'human)))
+     (sig-invalid
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             (format "Invalid signal name: %s" sig-val)
+                             (if json-p 'json 'human)))
+     ((null id)
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "kill requires an ID argument"
+                             (if json-p 'json 'human)))
+     ;; Reject if first positional in before-part looks like an option
+     ((and (null after) before-positional (string-prefix-p "-" (car before-positional)))
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "kill requires ID as first argument (use -- for IDs starting with -)"
+                             (if json-p 'json 'human)))
+     ;; Reject extra IDs
+     (extra-ids
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             (format "kill takes exactly one ID, got extra: %s"
+                                     (mapconcat #'identity extra-ids " "))
+                             (if json-p 'json 'human)))
      (t
-      (let ((args (supervisor--cli-strip-separator args)))
-        (cond
-         ((null args)
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
-                                 "kill requires an ID argument"
-                                 (if json-p 'json 'human)))
-         ;; Only check for option-as-first-arg if no -- was used
-         ((and (not has-separator) (string-prefix-p "-" (car args)))
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
-                                 "kill requires ID as first argument"
-                                 (if json-p 'json 'human)))
-         (t
-          (let* ((id (car args))
-                 (sig-arg (member "--signal" args))
-                 (sig (if (and sig-arg (cadr sig-arg))
-                          (intern (upcase (cadr sig-arg)))
-                        'SIGTERM))
-                 (proc (gethash id supervisor--processes)))
-            (if (and proc (process-live-p proc))
-                (progn
-                  (signal-process proc sig)
-                  (supervisor--cli-success
-                   (if json-p
-                       (json-encode `((id . ,id) (signal . ,(symbol-name sig))))
-                     (format "Sent %s to %s\n" sig id))
-                   (if json-p 'json 'human)))
-              (supervisor--cli-error supervisor-cli-exit-failure
-                                     (format "Process '%s' not running" id)
-                                     (if json-p 'json 'human)))))))))))
+      (let ((proc (gethash id supervisor--processes)))
+        (if (and proc (process-live-p proc))
+            (progn
+              (signal-process proc sig)
+              (supervisor--cli-success
+               (if json-p
+                   (json-encode `((id . ,id) (signal . ,(symbol-name sig))))
+                 (format "Sent %s to %s\n" sig id))
+               (if json-p 'json 'human)))
+          (supervisor--cli-error supervisor-cli-exit-failure
+                                 (format "Process '%s' not running" id)
+                                 (if json-p 'json 'human))))))))
 
 ;;; CLI Dispatcher
 

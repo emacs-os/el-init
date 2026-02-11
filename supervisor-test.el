@@ -2643,6 +2643,43 @@ Regression test: stderr pipe processes used to pollute the process list."
     (supervisor--cli-dispatch '("logging" "off" "test-id"))
     (should (eq 'disabled (gethash "test-id" supervisor--logging)))))
 
+(ert-deftest supervisor-test-cli-stop-uses-manually-stopped ()
+  "CLI stop sets manually-stopped flag, not restart-override."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (proc (start-process "test-proc" nil "sleep" "999")))
+    (unwind-protect
+        (progn
+          (puthash "test-id" proc supervisor--processes)
+          (supervisor--cli-dispatch '("stop" "test-id"))
+          ;; Should set manually-stopped, NOT restart-override
+          (should (gethash "test-id" supervisor--manually-stopped))
+          (should-not (gethash "test-id" supervisor--restart-override)))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-start-clears-manually-stopped ()
+  "Starting a process clears the manually-stopped flag."
+  (let ((supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor-log-directory (make-temp-file "supervisor-test-" t))
+        (supervisor--shutting-down nil))
+    (puthash "test-id" t supervisor--manually-stopped)
+    (should (gethash "test-id" supervisor--manually-stopped))
+    (let ((proc (supervisor--start-process "test-id" "sleep 999" nil 'simple t)))
+      (unwind-protect
+          (progn
+            ;; Flag should be cleared after start
+            (should-not (gethash "test-id" supervisor--manually-stopped)))
+        (when (and proc (process-live-p proc))
+          (delete-process proc))))))
+
 (ert-deftest supervisor-test-cli-logs-requires-id ()
   "Logs without ID returns invalid-args exit code."
   (let ((result (supervisor--cli-dispatch '("logs"))))
@@ -2786,19 +2823,47 @@ Regression test: stderr pipe processes used to pollute the process list."
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
+(ert-deftest supervisor-test-cli-logs-tail-missing-value ()
+  "Logs with --tail but no value returns invalid-args."
+  (let ((result (supervisor--cli-dispatch '("logs" "test" "--tail"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "requires a numeric value" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-logs-tail-non-numeric ()
+  "Logs with --tail abc returns invalid-args."
+  (let ((result (supervisor--cli-dispatch '("logs" "test" "--tail" "abc"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "must be a number" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-kill-signal-missing-value ()
+  "Kill with --signal but no value returns invalid-args."
+  (let ((result (supervisor--cli-dispatch '("kill" "test" "--signal"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "requires a signal name" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-kill-signal-invalid-name ()
+  "Kill with --signal NOSIG returns invalid-args."
+  (let ((result (supervisor--cli-dispatch '("kill" "test" "--signal" "NOSIG"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "Invalid signal name" (supervisor-cli-result-output result)))))
+
 (ert-deftest supervisor-test-cli-logs-option-before-id ()
-  "Logs with option before ID returns invalid-args (exit 2)."
+  "Logs with only option (no ID) returns invalid-args (exit 2)."
   (let ((result (supervisor--cli-dispatch '("logs" "--tail" "5"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
-    (should (string-match "ID as first argument" (supervisor-cli-result-output result)))))
+    (should (string-match "requires an ID" (supervisor-cli-result-output result)))))
 
 (ert-deftest supervisor-test-cli-kill-option-before-id ()
-  "Kill with option before ID returns invalid-args (exit 2)."
+  "Kill with only option (no ID) returns invalid-args (exit 2)."
   (let ((result (supervisor--cli-dispatch '("kill" "--signal" "TERM"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
-    (should (string-match "ID as first argument" (supervisor-cli-result-output result)))))
+    (should (string-match "requires an ID" (supervisor-cli-result-output result)))))
 
 (ert-deftest supervisor-test-cli-start-rejects-unknown-flags ()
   "Start with unknown flag returns invalid-args (exit 2)."
@@ -2877,6 +2942,26 @@ Regression test: stderr pipe processes used to pollute the process list."
   (let ((result (supervisor--cli-dispatch '("logs" "--" "-svc"))))
     (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
     (should (string-match "No log file" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-logs-rejects-extra-args ()
+  "Logs with extra args returns invalid-args (exit 2)."
+  (let ((result (supervisor--cli-dispatch '("logs" "id1" "id2"))))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "extra" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-kill-rejects-extra-args ()
+  "Kill with extra args returns invalid-args (exit 2)."
+  (let ((result (supervisor--cli-dispatch '("kill" "id1" "id2"))))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "extra" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-logs-options-not-parsed-after-separator ()
+  "Logs does not parse --tail after -- separator."
+  ;; logs -- --tail should treat --tail as the ID, not an option
+  (let ((result (supervisor--cli-dispatch '("logs" "--" "--tail"))))
+    ;; Should fail with "No log file for --tail", not parse --tail as option
+    (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
+    (should (string-match "No log file for '--tail'" (supervisor-cli-result-output result)))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
