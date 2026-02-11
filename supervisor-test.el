@@ -1033,5 +1033,127 @@
     (should (eq supervisor--shutdown-complete-flag t))
     (should (= supervisor--shutdown-remaining 0))))
 
+;;; Phase 1: Plan Builder Tests
+
+(ert-deftest supervisor-test-plan-shape ()
+  "Plan struct has all required fields with correct types."
+  (let* ((programs '(("sleep 100" :id "a" :stage stage1)
+                     ("sleep 200" :id "b" :stage stage1 :after "a")
+                     ("invalid-entry" :unknown-keyword t)))
+         (plan (supervisor--build-plan programs)))
+    ;; Plan is a struct
+    (should (supervisor-plan-p plan))
+    ;; entries is a list of valid parsed entries
+    (should (listp (supervisor-plan-entries plan)))
+    (should (= 2 (length (supervisor-plan-entries plan))))
+    ;; invalid is a hash table with reasons
+    (should (hash-table-p (supervisor-plan-invalid plan)))
+    (should (= 1 (hash-table-count (supervisor-plan-invalid plan))))
+    ;; by-stage is an alist of (stage-int . entries)
+    (should (listp (supervisor-plan-by-stage plan)))
+    (should (assq 0 (supervisor-plan-by-stage plan)))  ; stage1 = 0
+    ;; deps is a hash table
+    (should (hash-table-p (supervisor-plan-deps plan)))
+    ;; dependents is a hash table
+    (should (hash-table-p (supervisor-plan-dependents plan)))
+    ;; cycle-fallback-ids is a hash table
+    (should (hash-table-p (supervisor-plan-cycle-fallback-ids plan)))
+    ;; order-index is a hash table
+    (should (hash-table-p (supervisor-plan-order-index plan)))
+    ;; meta is a plist with version and timestamp
+    (should (listp (supervisor-plan-meta plan)))
+    (should (plist-get (supervisor-plan-meta plan) :version))
+    (should (plist-get (supervisor-plan-meta plan) :timestamp))))
+
+(ert-deftest supervisor-test-plan-determinism ()
+  "Identical config produces identical plan data."
+  (let* ((programs '(("sleep 100" :id "a" :stage stage1)
+                     ("sleep 200" :id "b" :stage stage1 :after "a")
+                     ("sleep 300" :id "c" :stage stage2)))
+         (plan1 (supervisor--build-plan programs))
+         (plan2 (supervisor--build-plan programs)))
+    ;; Entries should be equal
+    (should (equal (supervisor-plan-entries plan1)
+                   (supervisor-plan-entries plan2)))
+    ;; By-stage should have same structure
+    (should (equal (length (supervisor-plan-by-stage plan1))
+                   (length (supervisor-plan-by-stage plan2))))
+    ;; Same stage should have same entries in same order
+    (dolist (stage-pair (supervisor-plan-by-stage plan1))
+      (let* ((stage-int (car stage-pair))
+             (entries1 (cdr stage-pair))
+             (entries2 (cdr (assq stage-int (supervisor-plan-by-stage plan2)))))
+        (should (equal entries1 entries2))))
+    ;; Deps should be equal
+    (should (= (hash-table-count (supervisor-plan-deps plan1))
+               (hash-table-count (supervisor-plan-deps plan2))))
+    (maphash (lambda (k v)
+               (should (equal v (gethash k (supervisor-plan-deps plan2)))))
+             (supervisor-plan-deps plan1))))
+
+(ert-deftest supervisor-test-plan-no-global-mutation ()
+  "Plan building does not mutate global state."
+  (let ((programs '(("sleep 100" :id "a" :stage stage1)
+                    ("sleep 200" :id "b" :stage stage1 :after "a"))))
+    ;; Set up globals with known values
+    (clrhash supervisor--invalid)
+    (clrhash supervisor--cycle-fallback-ids)
+    (clrhash supervisor--computed-deps)
+    (puthash "sentinel" "should-remain" supervisor--invalid)
+    (puthash "sentinel" t supervisor--cycle-fallback-ids)
+    (puthash "sentinel" '("test") supervisor--computed-deps)
+    ;; Build plan
+    (supervisor--build-plan programs)
+    ;; Globals should be unchanged
+    (should (equal "should-remain" (gethash "sentinel" supervisor--invalid)))
+    (should (eq t (gethash "sentinel" supervisor--cycle-fallback-ids)))
+    (should (equal '("test") (gethash "sentinel" supervisor--computed-deps)))
+    ;; Globals should NOT have plan's computed data
+    (should-not (gethash "a" supervisor--computed-deps))
+    (should-not (gethash "b" supervisor--computed-deps))))
+
+(ert-deftest supervisor-test-plan-cycle-detection ()
+  "Plan correctly detects cycles and falls back."
+  (let* ((programs '(("sleep 100" :id "a" :stage stage1 :after "b")
+                     ("sleep 200" :id "b" :stage stage1 :after "a")))
+         (plan (supervisor--build-plan programs)))
+    ;; Both entries should be marked as cycle fallback
+    (should (gethash "a" (supervisor-plan-cycle-fallback-ids plan)))
+    (should (gethash "b" (supervisor-plan-cycle-fallback-ids plan)))
+    ;; Deps should be cleared after fallback
+    (should (null (gethash "a" (supervisor-plan-deps plan))))
+    (should (null (gethash "b" (supervisor-plan-deps plan))))))
+
+(ert-deftest supervisor-test-plan-dependency-validation ()
+  "Plan validates :after references correctly."
+  (let* ((programs '(("sleep 100" :id "a" :stage stage1)
+                     ("sleep 200" :id "b" :stage stage1 :after "a")
+                     ("sleep 300" :id "c" :stage stage1 :after "nonexistent")
+                     ("sleep 400" :id "d" :stage stage2 :after "a")))
+         (plan (supervisor--build-plan programs)))
+    ;; b's dep on a (same stage) should be preserved
+    (should (equal '("a") (gethash "b" (supervisor-plan-deps plan))))
+    ;; c's dep on nonexistent should be removed
+    (should (null (gethash "c" (supervisor-plan-deps plan))))
+    ;; d's dep on a (cross-stage) should be removed
+    (should (null (gethash "d" (supervisor-plan-deps plan))))))
+
+(ert-deftest supervisor-test-plan-duplicate-id-first-occurrence-order ()
+  "Duplicate IDs use first-occurrence index for ordering.
+Regression test: duplicates must not overwrite order-index of kept entry."
+  (let* ((programs '(("sleep 100" :id "a" :stage stage1)
+                     ("sleep 200" :id "b" :stage stage1)
+                     ("sleep 300" :id "a" :stage stage1)))  ; duplicate of a
+         (plan (supervisor--build-plan programs)))
+    ;; Only 2 entries should be in plan (a and b, duplicate skipped)
+    (should (= 2 (length (supervisor-plan-entries plan))))
+    ;; Order index should reflect first occurrence: a=0, b=1
+    (should (= 0 (gethash "a" (supervisor-plan-order-index plan))))
+    (should (= 1 (gethash "b" (supervisor-plan-order-index plan))))
+    ;; Stage order should be a, b (not b, a)
+    (let* ((stage-entries (cdr (assq 0 (supervisor-plan-by-stage plan))))
+           (ids (mapcar #'car stage-entries)))
+      (should (equal '("a" "b") ids)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

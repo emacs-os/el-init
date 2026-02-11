@@ -445,59 +445,59 @@ so the dashboard reflects validation state."
 (defun supervisor-dry-run ()
   "Validate entries and show startup order without starting processes.
 Display staged startup order, including dependency resolution and
-cycle fallback behavior."
+cycle fallback behavior.  Uses the pure plan builder internally."
   (interactive)
-  (clrhash supervisor--invalid)
-  (clrhash supervisor--cycle-fallback-ids)
-  (clrhash supervisor--computed-deps)
-  (let* ((all-entries (supervisor--all-parsed-entries))
-         (all-ids (mapcar #'car all-entries))
-         (stage-order '(stage1 stage2 stage3 stage4)))
+  ;; Build plan using pure function
+  (let ((plan (supervisor--build-plan supervisor-programs)))
+    ;; Populate legacy globals for dashboard compatibility
+    (clrhash supervisor--invalid)
+    (clrhash supervisor--cycle-fallback-ids)
+    (clrhash supervisor--computed-deps)
+    (maphash (lambda (k v) (puthash k v supervisor--invalid))
+             (supervisor-plan-invalid plan))
+    (maphash (lambda (k v) (puthash k v supervisor--cycle-fallback-ids))
+             (supervisor-plan-cycle-fallback-ids plan))
+    (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
+             (supervisor-plan-deps plan))
+    ;; Display from plan artifact
     (with-output-to-temp-buffer "*supervisor-dry-run*"
       (princ "=== Supervisor Dry Run ===\n\n")
       (princ (format "Total entries: %d valid, %d invalid\n\n"
-                     (length all-entries)
-                     (hash-table-count supervisor--invalid)))
+                     (length (supervisor-plan-entries plan))
+                     (hash-table-count (supervisor-plan-invalid plan))))
       ;; Show invalid entries first
-      (when (> (hash-table-count supervisor--invalid) 0)
+      (when (> (hash-table-count (supervisor-plan-invalid plan)) 0)
         (princ "--- Invalid Entries (skipped) ---\n")
         (maphash (lambda (id reason)
                    (princ (format "  %s: %s\n" id reason)))
-                 supervisor--invalid)
+                 (supervisor-plan-invalid plan))
         (princ "\n"))
-      ;; Process each stage (same validation path as real startup)
-      (dolist (stage stage-order)
-        (let* ((stage-entries (cl-remove-if-not
-                               (lambda (e) (eq (nth 7 e) stage))
-                               all-entries))
-               (stage-ids (mapcar #'car stage-entries))
-               ;; Validate :after references (same as real startup)
-               (validated (when stage-entries
-                            (supervisor--validate-after stage-entries stage-ids all-ids)))
-               (sorted (when validated
-                         (supervisor--stable-topo-sort validated))))
-          (when stage-entries
-            (princ (format "--- Stage: %s (%d entries) ---\n"
-                           stage (length stage-entries)))
-            (let ((order 1))
-              (dolist (entry sorted)
-                (let* ((id (nth 0 entry))
-                       (type (nth 6 entry))
-                       (delay (nth 2 entry))
-                       (enabled-p (nth 3 entry))
-                       (deps (gethash id supervisor--computed-deps))
-                       (cycle (gethash id supervisor--cycle-fallback-ids)))
-                  (princ (format "  %d. %s [%s]%s%s%s\n"
-                                 order id type
-                                 (if (not enabled-p) " DISABLED" "")
-                                 (if (> delay 0) (format " delay=%ds" delay) "")
-                                 (if cycle " (CYCLE FALLBACK)"
-                                   (if deps
-                                       (format " after=%s"
-                                               (mapconcat #'identity deps ","))
-                                     ""))))
-                  (cl-incf order))))
-            (princ "\n"))))
+      ;; Display each stage from the plan's by-stage data
+      (dolist (stage-pair (supervisor-plan-by-stage plan))
+        (let* ((stage-int (car stage-pair))
+               (stage-name (supervisor--int-to-stage stage-int))
+               (sorted-entries (cdr stage-pair)))
+          (princ (format "--- Stage: %s (%d entries) ---\n"
+                         stage-name (length sorted-entries)))
+          (let ((order 1))
+            (dolist (entry sorted-entries)
+              (let* ((id (nth 0 entry))
+                     (type (nth 6 entry))
+                     (delay (nth 2 entry))
+                     (enabled-p (nth 3 entry))
+                     (deps (gethash id (supervisor-plan-deps plan)))
+                     (cycle (gethash id (supervisor-plan-cycle-fallback-ids plan))))
+                (princ (format "  %d. %s [%s]%s%s%s\n"
+                               order id type
+                               (if (not enabled-p) " DISABLED" "")
+                               (if (> delay 0) (format " delay=%ds" delay) "")
+                               (if cycle " (CYCLE FALLBACK)"
+                                 (if deps
+                                     (format " after=%s"
+                                             (mapconcat #'identity deps ","))
+                                   ""))))
+                (cl-incf order))))
+          (princ "\n")))
       (princ "=== End Dry Run ===\n"))))
 
 ;;; State Variables
@@ -634,6 +634,187 @@ STATUS is one of:
 
 (defvar supervisor--dag-active-starts 0
   "Count of currently starting processes (for max-concurrent-starts).")
+
+;;; Plan Artifact (Phase 2 Data-Driven Architecture)
+
+(cl-defstruct (supervisor-plan (:constructor supervisor-plan--create))
+  "Immutable execution plan for a supervisor session.
+This struct represents the validated, deterministic plan computed from
+configuration.  It is pure data with no side effects on global state.
+
+Determinism note: All fields except `meta' are deterministic for
+identical input.  The `meta' field contains a wall-clock timestamp,
+so full struct equality requires excluding it."
+  entries          ; list of parsed valid entries
+  invalid          ; hash: id -> reason string
+  by-stage         ; alist of (stage-int . sorted-entries)
+  deps             ; hash: id -> validated deps list (same-stage only)
+  dependents       ; hash: id -> list of dependent ids
+  cycle-fallback-ids ; hash: id -> t for entries with cleared edges
+  order-index      ; hash: id -> original index for stable ordering
+  meta)            ; plist with :version, :timestamp (non-deterministic)
+
+(defconst supervisor-plan-version 1
+  "Schema version for supervisor-plan struct.")
+
+(defun supervisor--build-plan (programs)
+  "Build an immutable execution plan from PROGRAMS.
+This is a pure function that does not modify any global state.
+Returns a `supervisor-plan' struct with all computed scheduling data.
+
+The plan includes:
+- Parsed and validated entries
+- Invalid entries with reasons
+- Entries grouped and sorted by stage
+- Validated dependencies (same-stage only)
+- Reverse dependency index
+- Cycle fallback tracking
+- Stable ordering index"
+  (let ((seen (make-hash-table :test 'equal))
+        (invalid (make-hash-table :test 'equal))
+        (order-index (make-hash-table :test 'equal))
+        (deps (make-hash-table :test 'equal))
+        (dependents (make-hash-table :test 'equal))
+        (cycle-fallback-ids (make-hash-table :test 'equal))
+        (valid-entries nil)
+        (idx 0))
+    ;; Phase 1: Parse and validate all entries, collecting valid ones
+    (dolist (entry programs)
+      (let* ((raw-id (supervisor--extract-id entry idx))
+             (reason (supervisor--validate-entry entry))
+             (parsed (unless reason (supervisor--parse-entry entry))))
+        ;; Only record first-occurrence index (don't let duplicates overwrite)
+        (unless (gethash raw-id order-index)
+          (puthash raw-id idx order-index))
+        (cond
+         ;; Invalid entry
+         (reason
+          (puthash raw-id reason invalid))
+         ;; Duplicate ID
+         ((gethash raw-id seen)
+          ;; Skip silently (deduplication)
+          nil)
+         ;; Valid entry
+         (t
+          (puthash raw-id t seen)
+          (push parsed valid-entries)))
+        (cl-incf idx)))
+    (setq valid-entries (nreverse valid-entries))
+    ;; Phase 2: Partition by stage
+    (let ((by-stage-hash (make-hash-table))
+          (all-ids (mapcar #'car valid-entries)))
+      (dolist (entry valid-entries)
+        (let* ((stage (nth 7 entry))
+               (stage-int (supervisor--stage-to-int stage)))
+          (puthash stage-int (cons entry (gethash stage-int by-stage-hash))
+                   by-stage-hash)))
+      ;; Phase 3: For each stage, validate deps and topo sort
+      (let ((by-stage nil))
+        (dolist (stage-int '(0 1 2 3))
+          (when-let* ((stage-entries (gethash stage-int by-stage-hash)))
+            (setq stage-entries (nreverse stage-entries))
+            (let* ((stage-ids (mapcar #'car stage-entries))
+                   ;; Validate :after references (pure, results stored in deps hash)
+                   (validated-entries
+                    (mapcar
+                     (lambda (entry)
+                       (let* ((id (nth 0 entry))
+                              (after (nth 8 entry))
+                              (valid-after
+                               (cl-remove-if-not
+                                (lambda (dep)
+                                  (and (member dep stage-ids)
+                                       (member dep all-ids)))
+                                after)))
+                         (puthash id valid-after deps)
+                         (if (equal after valid-after)
+                             entry
+                           (append (cl-subseq entry 0 8)
+                                   (list valid-after)
+                                   (cl-subseq entry 9)))))
+                     stage-entries))
+                   ;; Build dependents graph for this stage
+                   (_ (dolist (entry validated-entries)
+                        (let ((id (nth 0 entry))
+                              (after (gethash (nth 0 entry) deps)))
+                          (puthash id nil dependents)
+                          (dolist (dep after)
+                            (puthash dep (cons id (gethash dep dependents))
+                                     dependents)))))
+                   ;; Topo sort (pure, cycle fallback stored in cycle-fallback-ids)
+                   (sorted-entries
+                    (supervisor--build-plan-topo-sort
+                     validated-entries deps order-index cycle-fallback-ids)))
+              (push (cons stage-int sorted-entries) by-stage))))
+        ;; Return the plan struct
+        (supervisor-plan--create
+         :entries valid-entries
+         :invalid invalid
+         :by-stage (nreverse by-stage)
+         :deps deps
+         :dependents dependents
+         :cycle-fallback-ids cycle-fallback-ids
+         :order-index order-index
+         :meta (list :version supervisor-plan-version
+                     :timestamp (float-time)))))))
+
+(defun supervisor--build-plan-topo-sort (entries deps order-index cycle-fallback-ids)
+  "Stable topological sort for plan building (pure helper).
+ENTRIES is the list of entries to sort.
+DEPS is hash of id -> validated deps.
+ORDER-INDEX is hash of id -> original index.
+CYCLE-FALLBACK-IDS is hash to record cycle fallbacks (mutated).
+Returns sorted entries list."
+  (let* ((ids (mapcar #'car entries))
+         (id-to-entry (make-hash-table :test 'equal))
+         (in-degree (make-hash-table :test 'equal))
+         (local-dependents (make-hash-table :test 'equal))
+         (result nil))
+    ;; Build lookup tables
+    (dolist (entry entries)
+      (let ((id (car entry)))
+        (puthash id entry id-to-entry)
+        (puthash id 0 in-degree)
+        (puthash id nil local-dependents)))
+    ;; Compute in-degrees from deps
+    (dolist (entry entries)
+      (let ((id (car entry))
+            (entry-deps (gethash (car entry) deps)))
+        (dolist (dep entry-deps)
+          (when (gethash dep id-to-entry)
+            (cl-incf (gethash id in-degree 0))
+            (puthash dep (cons id (gethash dep local-dependents))
+                     local-dependents)))))
+    ;; Kahn's algorithm with stable ordering
+    (let ((ready (cl-remove-if-not
+                  (lambda (id) (= 0 (gethash id in-degree)))
+                  ids)))
+      (setq ready (sort ready (lambda (a b)
+                                (< (gethash a order-index 999)
+                                   (gethash b order-index 999)))))
+      (while ready
+        (let* ((id (pop ready))
+               (entry (gethash id id-to-entry)))
+          (push entry result)
+          (dolist (dep-id (gethash id local-dependents))
+            (cl-decf (gethash dep-id in-degree))
+            (when (= 0 (gethash dep-id in-degree))
+              (setq ready (sort (cons dep-id ready)
+                                (lambda (a b)
+                                  (< (gethash a order-index 999)
+                                     (gethash b order-index 999)))))))))
+      ;; Check for cycle
+      (if (= (length result) (length entries))
+          (nreverse result)
+        ;; Cycle detected: mark all and clear deps
+        (dolist (entry entries)
+          (let ((id (car entry)))
+            (puthash id t cycle-fallback-ids)
+            (puthash id nil deps)))
+        ;; Return entries with :after stripped
+        (mapcar (lambda (entry)
+                  (append (cl-subseq entry 0 8) (list nil) (cl-subseq entry 9)))
+                entries)))))
 
 ;;; Helpers
 
