@@ -145,6 +145,7 @@ A stage is complete only when:
   - **Indexed and searchable**: Well-organized with clear headings for navigation
   - **No aspirational content**: Only document what currently exists in the code
   - **Human-readable**: Clear prose suitable for end users, not developer notes
+  - **Keep in sync**: When modifying code, update the associated handbook documentation
 - **ROADMAP.md**: Future plans and ideas. Not yet implemented.
 - **CLAUDE.md**: Development guidance for AI assistants.
 - **STANDARDS.md**: Emacs Lisp coding standards (mandatory).
