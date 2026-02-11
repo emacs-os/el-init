@@ -1895,7 +1895,7 @@ Return a cons cell (STATUS . PID)."
                                        (supervisor-snapshot-oneshot-exit snapshot)
                                      supervisor--oneshot-completed)))
          (oneshot-done (not (null oneshot-exit)))
-         (oneshot-failed (and oneshot-done (> oneshot-exit 0)))
+         (oneshot-failed (and oneshot-done (/= oneshot-exit 0)))
          (pid (cond (alive (number-to-string pid-num))
                     ((and oneshot-p oneshot-done) (format "exit:%d" oneshot-exit))
                     (t "-")))

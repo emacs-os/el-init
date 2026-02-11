@@ -3163,6 +3163,32 @@ This ensures retry eligibility correctly rejects signal deaths."
   "Nil exit code is not retryable."
   (should-not (supervisor--timer-failure-retryable-p nil)))
 
+(ert-deftest supervisor-test-signal-death-status-is-failed ()
+  "Signal deaths (negative exit codes) are classified as failed in status.
+This is a regression test: signals are non-retryable but still failed."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+    ;; Simulate SIGKILL death stored as -9
+    (puthash "test-oneshot" -9 supervisor--oneshot-completed)
+    (let ((result (supervisor--compute-entry-status "test-oneshot" 'oneshot)))
+      (should (equal "failed" (car result)))
+      (should (equal "exit:-9" (cdr result))))))
+
+(ert-deftest supervisor-test-signal-death-dashboard-count-is-failed ()
+  "Signal deaths are counted as failed in dashboard summary."
+  (let ((supervisor-programs '(("true" :id "sig-test" :type oneshot)))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal)))
+    ;; Simulate SIGTERM death stored as -15
+    (puthash "sig-test" -15 supervisor--oneshot-completed)
+    (let ((summary (supervisor--health-summary)))
+      ;; Should show 1 fail, not 1 done
+      (should (string-match-p "1 fail" summary))
+      (should-not (string-match-p "1 done" summary)))))
+
 (ert-deftest supervisor-test-timer-schedule-retry-first-attempt ()
   "First retry is scheduled with first interval."
   (let ((supervisor-timer-retry-intervals '(30 120 600))

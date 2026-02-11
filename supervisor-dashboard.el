@@ -561,7 +561,7 @@ If SNAPSHOT is provided, read state from it; otherwise read from globals."
                   (cond
                    (alive (cl-incf running))
                    (is-failed (cl-incf failed))
-                   ((and oneshot-p oneshot-exit (> oneshot-exit 0)) (cl-incf failed))
+                   ((and oneshot-p oneshot-exit (/= oneshot-exit 0)) (cl-incf failed))
                    ((and oneshot-p oneshot-exit) (cl-incf done))
                    (oneshot-p (cl-incf pending))
                    (t (cl-incf pending))))))))))
