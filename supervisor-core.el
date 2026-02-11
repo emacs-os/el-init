@@ -627,6 +627,9 @@ Set to nil to disable persistence (overrides only live in memory)."
 (defconst supervisor-overrides-schema-version 1
   "Schema version for persistent overrides file.")
 
+(defconst supervisor-timer-state-schema-version 1
+  "Schema version for persistent timer state file.")
+
 (defvar supervisor--overrides-loaded nil
   "Non-nil if overrides have been loaded from file this session.")
 
@@ -1357,6 +1360,112 @@ All timestamps are float seconds since epoch.")
 (defvar supervisor--scheduler-startup-time nil
   "Timestamp when scheduler was started (for monotonic triggers).")
 
+(defvar supervisor--timer-state-loaded nil
+  "Non-nil when timer state has been loaded from file.")
+
+;;; Timer State Persistence
+
+(defun supervisor--timer-state-file-path ()
+  "Return the path to the timer state file, or nil if disabled."
+  supervisor-timer-state-file)
+
+(defun supervisor--ensure-timer-state-dir ()
+  "Ensure the directory for the timer state file exists."
+  (when-let* ((path (supervisor--timer-state-file-path)))
+    (let ((dir (file-name-directory path)))
+      (unless (file-directory-p dir)
+        (make-directory dir t)))))
+
+(defconst supervisor--timer-state-persist-keys
+  '(:last-run-at :last-success-at :last-failure-at :last-exit
+    :last-missed-at :last-miss-reason)
+  "State keys that should be persisted across restarts.
+Excludes transient keys like :next-run-at, :retry-attempt, :retry-next-at,
+and :startup-triggered which are computed fresh each session.")
+
+(defun supervisor--timer-state-to-alist ()
+  "Convert timer state hash to alist for persistence.
+Only includes keys from `supervisor--timer-state-persist-keys'."
+  (let (result)
+    (maphash
+     (lambda (id state)
+       (when state
+         (let (filtered)
+           (dolist (key supervisor--timer-state-persist-keys)
+             (when-let* ((val (plist-get state key)))
+               (setq filtered (plist-put filtered key val))))
+           (when filtered
+             (push (cons id filtered) result)))))
+     supervisor--timer-state)
+    (nreverse result)))
+
+(defun supervisor--save-timer-state ()
+  "Save timer state to file using atomic write.
+Uses temp file + rename pattern for crash safety.
+Returns t on success, nil on failure."
+  (let ((path (supervisor--timer-state-file-path)))
+    (when path
+      (supervisor--ensure-timer-state-dir)
+      (let* ((state-alist (supervisor--timer-state-to-alist))
+             (data `((version . ,supervisor-timer-state-schema-version)
+                     (timestamp . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
+                     (timers . ,state-alist)))
+             (temp-file (concat path ".tmp"))
+             (coding-system-for-write 'utf-8-unix))
+        (condition-case err
+            (progn
+              (with-temp-file temp-file
+                (insert ";; Supervisor timer state - do not edit manually\n")
+                (insert ";; Schema version: "
+                        (number-to-string supervisor-timer-state-schema-version)
+                        "\n")
+                (pp data (current-buffer)))
+              (rename-file temp-file path t)
+              t)
+          (error
+           (supervisor--log 'warning "Failed to save timer state: %s"
+                            (error-message-string err))
+           (when (file-exists-p temp-file)
+             (delete-file temp-file))
+           nil))))))
+
+(defun supervisor--load-timer-state ()
+  "Load timer state from file into memory.
+Returns t on success, nil on failure or if file does not exist.
+Merges loaded state with existing in-memory state, preferring file values
+for persisted keys while preserving runtime-computed keys."
+  (let ((path (supervisor--timer-state-file-path)))
+    (when (and path (file-exists-p path))
+      (condition-case err
+          (let* ((data (with-temp-buffer
+                         (insert-file-contents path)
+                         (read (current-buffer))))
+                 (version (alist-get 'version data))
+                 (timers (alist-get 'timers data)))
+            ;; Check version compatibility
+            (unless (and version (<= version supervisor-timer-state-schema-version))
+              (supervisor--log 'warning
+                               "Timer state file version %s is newer than supported %s"
+                               version supervisor-timer-state-schema-version))
+            ;; Merge loaded state into hash
+            (dolist (entry timers)
+              (let ((id (car entry))
+                    (saved-state (cdr entry)))
+                (let ((current (or (gethash id supervisor--timer-state) nil)))
+                  ;; Merge saved keys into current state
+                  (dolist (key supervisor--timer-state-persist-keys)
+                    (when-let* ((val (plist-get saved-state key)))
+                      (setq current (plist-put current key val))))
+                  (puthash id current supervisor--timer-state))))
+            (setq supervisor--timer-state-loaded t)
+            (supervisor--log 'info "Loaded timer state for %d timers from %s"
+                             (length timers) path)
+            t)
+        (error
+         (supervisor--log 'warning "Failed to load timer state from %s: %s"
+                          path (error-message-string err))
+         nil)))))
+
 ;;; Calendar Trigger Computation
 
 (defun supervisor--calendar-field-matches-p (field-value time-value)
@@ -1546,6 +1655,8 @@ Returns t if triggered, nil if skipped."
       (let ((state (or (gethash id supervisor--timer-state) nil)))
         (setq state (plist-put state :last-run-at now))
         (puthash id state supervisor--timer-state))
+      ;; Persist state so last-run-at survives crash during execution
+      (supervisor--save-timer-state)
       ;; Emit event
       (supervisor--emit-event 'timer-trigger id nil
                               (list :target target-id :reason reason))
@@ -1604,6 +1715,8 @@ SUCCESS is t if completed successfully, nil otherwise."
         (when-let* ((updated (supervisor--timer-schedule-retry timer-id state)))
           (setq state updated))))
     (puthash timer-id state supervisor--timer-state)
+    ;; Persist state on completion (success or failure is significant)
+    (supervisor--save-timer-state)
     ;; Update next run time (includes unit-active recalculation)
     (supervisor--timer-update-next-run timer-id)
     ;; Reschedule the scheduler tick
@@ -1722,6 +1835,8 @@ Call after supervisor-start has completed stage startup."
   ;; Build timer list from config
   (let ((plan (supervisor--build-plan supervisor-programs)))
     (setq supervisor--timer-list (supervisor--build-timer-list plan)))
+  ;; Load persisted state before initialization
+  (supervisor--load-timer-state)
   ;; Initialize state for each timer
   (dolist (timer supervisor--timer-list)
     (let ((id (supervisor-timer-id timer)))
@@ -3106,6 +3221,7 @@ Ready semantics (when dependents are unblocked):
   (clrhash supervisor--computed-deps)
   (clrhash supervisor--entry-state)
   (clrhash supervisor--timer-state)
+  (setq supervisor--timer-state-loaded nil)
   (setq supervisor--timer-list nil)
   (setq supervisor--scheduler-startup-time nil)
   (setq supervisor--current-stage nil)

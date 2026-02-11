@@ -145,13 +145,15 @@ Per timer, track at minimum:
 - Configurable retry policy (30s, 2m, 10m default)
 - Retry eligibility gating (positive exits only)
 - Retry budget reset on fresh scheduled trigger
-- Catch-up logic for persistent timers
-- (NOTE: Full catch-up requires Phase 4 persistence)
+- Catch-up logic for persistent timers (cross-restart via Phase 4)
 
-### Phase 4: Durable State Persistence
+### Phase 4: Durable State Persistence ✓
 
 - Load timer state from `supervisor-timer-state-file` on startup
-- Save timer state on significant changes
+- Save timer state on significant changes (trigger start, completion)
+- Atomic write pattern (temp file + rename) for crash safety
+- Only persist relevant keys (last-run-at, last-success-at, etc.)
+- Transient keys (retry state, next-run-at) computed fresh each session
 - Enable catch-up across Emacs restarts
 
 ### Phase 5: Dashboard and CLI

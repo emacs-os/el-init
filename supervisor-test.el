@@ -3264,6 +3264,84 @@ at minute boundaries."
       (should (= (car from-times) 901.0)))
     (clrhash supervisor--timer-state)))
 
+(ert-deftest supervisor-test-timer-state-to-alist ()
+  "Timer state to alist only includes persist keys."
+  (let ((supervisor--timer-state (make-hash-table :test 'equal)))
+    (puthash "t1" '(:last-run-at 1000.0
+                    :last-success-at 1000.0
+                    :next-run-at 2000.0
+                    :retry-attempt 1
+                    :startup-triggered t)
+             supervisor--timer-state)
+    (let ((alist (supervisor--timer-state-to-alist)))
+      ;; Should include persisted keys
+      (should (equal (alist-get "t1" alist nil nil #'equal)
+                     '(:last-run-at 1000.0 :last-success-at 1000.0)))
+      ;; Transient keys should not be included
+      (should-not (plist-get (cdr (assoc "t1" alist)) :next-run-at))
+      (should-not (plist-get (cdr (assoc "t1" alist)) :retry-attempt))
+      (should-not (plist-get (cdr (assoc "t1" alist)) :startup-triggered)))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-state-save-load-roundtrip ()
+  "Timer state survives save/load cycle."
+  (let* ((temp-file (make-temp-file "supervisor-test-timer-state-" nil ".eld"))
+         (supervisor-timer-state-file temp-file)
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          ;; Save some state
+          (puthash "t1" '(:last-run-at 1000.0 :last-success-at 1000.0)
+                   supervisor--timer-state)
+          (puthash "t2" '(:last-failure-at 900.0 :last-exit 1)
+                   supervisor--timer-state)
+          (should (supervisor--save-timer-state))
+          ;; Clear and reload
+          (clrhash supervisor--timer-state)
+          (should (supervisor--load-timer-state))
+          ;; Verify state restored
+          (let ((t1 (gethash "t1" supervisor--timer-state))
+                (t2 (gethash "t2" supervisor--timer-state)))
+            (should (equal (plist-get t1 :last-run-at) 1000.0))
+            (should (equal (plist-get t1 :last-success-at) 1000.0))
+            (should (equal (plist-get t2 :last-failure-at) 900.0))
+            (should (equal (plist-get t2 :last-exit) 1))))
+      (delete-file temp-file)
+      (clrhash supervisor--timer-state))))
+
+(ert-deftest supervisor-test-timer-state-corrupt-file-handled ()
+  "Corrupt timer state file is handled gracefully."
+  (let* ((temp-file (make-temp-file "supervisor-test-corrupt-" nil ".eld"))
+         (supervisor-timer-state-file temp-file)
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert "this is not valid lisp data"))
+          (should-not (supervisor--load-timer-state))
+          ;; Hash should remain unchanged
+          (should (= (hash-table-count supervisor--timer-state) 0)))
+      (delete-file temp-file)
+      (clrhash supervisor--timer-state))))
+
+(ert-deftest supervisor-test-timer-state-persistence-disabled ()
+  "Nil timer state file path disables persistence."
+  (let ((supervisor-timer-state-file nil)
+        (supervisor--timer-state (make-hash-table :test 'equal)))
+    (puthash "t1" '(:last-run-at 1000.0) supervisor--timer-state)
+    ;; Save returns nil when disabled
+    (should-not (supervisor--save-timer-state))
+    ;; Load returns nil when disabled
+    (should-not (supervisor--load-timer-state))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-state-file-path ()
+  "Timer state file path helper returns configured path."
+  (let ((supervisor-timer-state-file "/test/path/timer-state.eld"))
+    (should (equal (supervisor--timer-state-file-path) "/test/path/timer-state.eld")))
+  (let ((supervisor-timer-state-file nil))
+    (should-not (supervisor--timer-state-file-path))))
+
 (ert-deftest supervisor-test-timer-scheduler-tick-handles-retry ()
   "Scheduler tick triggers retry when due."
   (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
