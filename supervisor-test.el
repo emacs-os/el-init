@@ -1704,5 +1704,123 @@ This tests the atomic boundary: invalid/empty plans cause no side effects."
       (should (= 0 (hash-table-count supervisor--processes)))
       (should (= 0 (hash-table-count supervisor--restart-override))))))
 
+;;; Phase 5: Explicit FSM Adoption Tests
+
+(ert-deftest supervisor-test-fsm-valid-states-defined ()
+  "All valid states are defined in the state list."
+  (should (memq 'stage-not-started supervisor--valid-states))
+  (should (memq 'waiting-on-deps supervisor--valid-states))
+  (should (memq 'delayed supervisor--valid-states))
+  (should (memq 'disabled supervisor--valid-states))
+  (should (memq 'started supervisor--valid-states))
+  (should (memq 'failed-to-spawn supervisor--valid-states))
+  (should (memq 'stage-timeout supervisor--valid-states)))
+
+(ert-deftest supervisor-test-fsm-invalid-state-rejected ()
+  "Transitioning to an invalid state signals an error."
+  (let ((supervisor--entry-state (make-hash-table :test 'equal)))
+    (should-error (supervisor--transition-state "test" 'invalid-state)
+                  :type 'error)))
+
+(ert-deftest supervisor-test-fsm-invalid-transition-rejected ()
+  "Invalid state transitions signal an error."
+  (let ((supervisor--entry-state (make-hash-table :test 'equal)))
+    ;; Set up valid path to terminal state
+    (supervisor--transition-state "test" 'stage-not-started)
+    (supervisor--transition-state "test" 'started)
+    ;; Transition from terminal state should error
+    (should-error (supervisor--transition-state "test" 'delayed)
+                  :type 'error)))
+
+(ert-deftest supervisor-test-fsm-valid-transitions ()
+  "Valid state transitions succeed."
+  (let ((supervisor--entry-state (make-hash-table :test 'equal)))
+    ;; nil -> stage-not-started
+    (should (supervisor--transition-state "a" 'stage-not-started))
+    (should (eq 'stage-not-started (gethash "a" supervisor--entry-state)))
+    ;; stage-not-started -> waiting-on-deps
+    (should (supervisor--transition-state "a" 'waiting-on-deps))
+    (should (eq 'waiting-on-deps (gethash "a" supervisor--entry-state)))
+    ;; waiting-on-deps -> delayed
+    (should (supervisor--transition-state "a" 'delayed))
+    (should (eq 'delayed (gethash "a" supervisor--entry-state)))
+    ;; delayed -> started
+    (should (supervisor--transition-state "a" 'started))
+    (should (eq 'started (gethash "a" supervisor--entry-state)))))
+
+(ert-deftest supervisor-test-fsm-self-transitions-allowed ()
+  "Self-transitions are allowed for idempotent operations."
+  (let ((supervisor--entry-state (make-hash-table :test 'equal)))
+    (supervisor--transition-state "a" 'stage-not-started)
+    ;; Self-transition should succeed
+    (should (supervisor--transition-state "a" 'stage-not-started))
+    (should (eq 'stage-not-started (gethash "a" supervisor--entry-state)))))
+
+(ert-deftest supervisor-test-fsm-force-invalid-transition ()
+  "Force parameter allows invalid transitions with warning.
+Returns nil (not t) and emits a warning for forced invalid transitions."
+  (let ((supervisor--entry-state (make-hash-table :test 'equal))
+        (warnings nil))
+    ;; Set up valid path to terminal state
+    (supervisor--transition-state "a" 'stage-not-started)
+    (supervisor--transition-state "a" 'started)
+    (cl-letf (((symbol-function 'supervisor--log)
+               (lambda (_level fmt &rest args)
+                 (push (apply #'format fmt args) warnings))))
+      ;; Force invalid transition from terminal state - should return nil
+      (let ((result (supervisor--transition-state "a" 'delayed t)))
+        ;; Return value should be nil for forced invalid transition
+        (should (null result))
+        ;; State should change despite being invalid
+        (should (eq 'delayed (gethash "a" supervisor--entry-state)))
+        ;; Warning should have been emitted
+        (should (= 1 (length warnings)))
+        (should (string-match-p "Forced invalid transition" (car warnings)))))))
+
+(ert-deftest supervisor-test-fsm-lifecycle-simple-success ()
+  "Test lifecycle path for successful simple process start."
+  (let ((supervisor--entry-state (make-hash-table :test 'equal)))
+    ;; Initial state
+    (supervisor--transition-state "proc" 'stage-not-started)
+    ;; After delay
+    (supervisor--transition-state "proc" 'delayed)
+    ;; After successful spawn
+    (supervisor--transition-state "proc" 'started)
+    (should (eq 'started (gethash "proc" supervisor--entry-state)))))
+
+(ert-deftest supervisor-test-fsm-lifecycle-spawn-failure ()
+  "Test lifecycle path for spawn failure."
+  (let ((supervisor--entry-state (make-hash-table :test 'equal)))
+    ;; Initial state
+    (supervisor--transition-state "proc" 'stage-not-started)
+    ;; Spawn fails
+    (supervisor--transition-state "proc" 'failed-to-spawn)
+    (should (eq 'failed-to-spawn (gethash "proc" supervisor--entry-state)))))
+
+(ert-deftest supervisor-test-fsm-lifecycle-stage-timeout ()
+  "Test lifecycle path for stage timeout."
+  (let ((supervisor--entry-state (make-hash-table :test 'equal)))
+    ;; Initial state with deps
+    (supervisor--transition-state "proc" 'waiting-on-deps)
+    ;; Stage times out before deps complete
+    (supervisor--transition-state "proc" 'stage-timeout)
+    (should (eq 'stage-timeout (gethash "proc" supervisor--entry-state)))))
+
+(ert-deftest supervisor-test-fsm-lifecycle-disabled ()
+  "Test lifecycle path for disabled entry."
+  (let ((supervisor--entry-state (make-hash-table :test 'equal)))
+    ;; Entry is disabled from the start
+    (supervisor--transition-state "proc" 'disabled)
+    (should (eq 'disabled (gethash "proc" supervisor--entry-state)))))
+
+(ert-deftest supervisor-test-fsm-lifecycle-oneshot ()
+  "Test lifecycle path for oneshot process."
+  (let ((supervisor--entry-state (make-hash-table :test 'equal)))
+    ;; Initial state
+    (supervisor--transition-state "oneshot" 'stage-not-started)
+    ;; Started (oneshot still uses 'started state)
+    (supervisor--transition-state "oneshot" 'started)
+    (should (eq 'started (gethash "oneshot" supervisor--entry-state)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

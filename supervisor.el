@@ -580,6 +580,58 @@ Used for event-driven oneshot completion notification.")
 States: waiting-on-deps, delayed, disabled, stage-not-started,
 failed-to-spawn, stage-timeout, started.")
 
+;;; Entry Lifecycle FSM (Phase 5)
+
+(defconst supervisor--valid-states
+  '(stage-not-started waiting-on-deps delayed disabled
+    started failed-to-spawn stage-timeout)
+  "Valid entry lifecycle states.
+- `stage-not-started': initial state, stage hasn't started yet
+- `waiting-on-deps': waiting for :after dependencies to complete
+- `delayed': waiting for :delay timer to expire
+- `disabled': entry is disabled (skipped)
+- `started': process successfully spawned
+- `failed-to-spawn': process failed to start
+- `stage-timeout': stage timed out before entry could start")
+
+(defconst supervisor--state-transitions
+  '((nil . (stage-not-started waiting-on-deps disabled stage-timeout))
+    (stage-not-started . (stage-not-started waiting-on-deps delayed disabled
+                          started failed-to-spawn stage-timeout))
+    (waiting-on-deps . (waiting-on-deps delayed disabled started
+                        failed-to-spawn stage-timeout))
+    (delayed . (delayed started failed-to-spawn stage-timeout disabled)))
+  "Valid state transitions as alist of (from-state . allowed-to-states).
+Self-transitions are allowed for idempotent operations.
+States not listed as keys are terminal (no transitions out).
+The nil key represents initial state assignment.")
+
+(defun supervisor--transition-state (id new-state &optional force)
+  "Transition entry ID to NEW-STATE.
+Validates that NEW-STATE is a valid state and that the transition
+from the current state is legal.  Signals an error for invalid
+transitions unless FORCE is non-nil.
+
+Returns t if transition succeeded, nil if forced through invalid."
+  (unless (memq new-state supervisor--valid-states)
+    (error "Invalid state %s for entry %s" new-state id))
+  (let* ((current (gethash id supervisor--entry-state))
+         (allowed (cdr (assq current supervisor--state-transitions))))
+    (cond
+     ;; Valid transition
+     ((memq new-state allowed)
+      (puthash id new-state supervisor--entry-state)
+      t)
+     ;; Invalid but forced
+     (force
+      (supervisor--log 'warning "Forced invalid transition %s -> %s for %s"
+                       current new-state id)
+      (puthash id new-state supervisor--entry-state)
+      nil)
+     ;; Invalid, not forced - signal error
+     (t
+      (error "Invalid transition %s -> %s for entry %s" current new-state id)))))
+
 (defvar supervisor-cleanup-hook nil
   "Hook run during cleanup, before killing processes.")
 
@@ -1142,15 +1194,15 @@ Disabled entries are marked ready immediately per spec."
         ;; Track blocking oneshots (only if enabled)
         (when (and enabled-p (eq type 'oneshot) oneshot-wait)
           (puthash id t supervisor--dag-blocking))
-        ;; Set initial state
+        ;; Set initial state via FSM transition
         (cond
          ((not enabled-p)
           (push id disabled-ids)
-          (puthash id 'disabled supervisor--entry-state))
+          (supervisor--transition-state id 'disabled))
          ((> (length after) 0)
-          (puthash id 'waiting-on-deps supervisor--entry-state))
+          (supervisor--transition-state id 'waiting-on-deps))
          (t
-          (puthash id 'stage-not-started supervisor--entry-state)))))
+          (supervisor--transition-state id 'stage-not-started)))))
     ;; Build dependents graph
     (dolist (entry entries)
       (let ((id (nth 0 entry))
@@ -1241,13 +1293,13 @@ Mark ready immediately for simple processes, on exit for oneshot."
        ;; Disabled: mark started and ready immediately
        ((not effective-enabled)
         (supervisor--log 'info "%s disabled, skipping" id)
-        (puthash id 'disabled supervisor--entry-state)
+        (supervisor--transition-state id 'disabled)
         (puthash id t supervisor--dag-started)
         (supervisor--dag-mark-ready id))
        ;; Delay: schedule start after delay (don't mark started yet)
        ((> delay 0)
         (supervisor--log 'info "scheduling %s after %ds delay..." id delay)
-        (puthash id 'delayed supervisor--entry-state)
+        (supervisor--transition-state id 'delayed)
         (puthash id
                  (run-at-time delay nil
                               (lambda ()
@@ -1265,7 +1317,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
 
 (defun supervisor--dag-handle-spawn-failure (id)
   "Handle spawn failure for ID by marking state and unblocking dependents."
-  (puthash id 'failed-to-spawn supervisor--entry-state)
+  (supervisor--transition-state id 'failed-to-spawn)
   (supervisor--dag-finish-spawn-attempt)
   (supervisor--dag-mark-ready id))
 
@@ -1280,7 +1332,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
 
 (defun supervisor--dag-handle-spawn-success (id type oneshot-timeout)
   "Handle successful spawn of ID with TYPE and ONESHOT-TIMEOUT."
-  (puthash id 'started supervisor--entry-state)
+  (supervisor--transition-state id 'started)
   (supervisor--dag-finish-spawn-attempt)
   (if (eq type 'oneshot)
       (progn
@@ -1574,7 +1626,7 @@ Mark all unstarted entries as timed out and invoke the callback."
   (maphash (lambda (id _entry)
              (unless (gethash id supervisor--dag-started)
                (puthash id t supervisor--dag-started)
-               (puthash id 'stage-timeout supervisor--entry-state)))
+               (supervisor--transition-state id 'stage-timeout)))
            supervisor--dag-entries)
   ;; Clear blocking oneshots
   (clrhash supervisor--dag-blocking)
@@ -1679,9 +1731,9 @@ Ready semantics (when dependents are unblocked):
              (supervisor-plan-cycle-fallback-ids plan))
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
              (supervisor-plan-deps plan))
-    ;; Initialize all entry states to stage-not-started
+    ;; Initialize all entry states to stage-not-started via FSM
     (dolist (entry (supervisor-plan-entries plan))
-      (puthash (car entry) 'stage-not-started supervisor--entry-state))
+      (supervisor--transition-state (car entry) 'stage-not-started))
     ;; Process stages asynchronously using plan's pre-sorted by-stage data
     (supervisor--start-stages-from-plan (supervisor-plan-by-stage plan))))
 
