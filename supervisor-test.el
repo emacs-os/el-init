@@ -1885,7 +1885,12 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
   (should (memq 'process-ready supervisor--event-types))
   (should (memq 'process-exit supervisor--event-types))
   (should (memq 'process-failed supervisor--event-types))
-  (should (memq 'cleanup supervisor--event-types)))
+  (should (memq 'cleanup supervisor--event-types))
+  ;; Timer event types
+  (should (memq 'timer-trigger supervisor--event-types))
+  (should (memq 'timer-overlap supervisor--event-types))
+  (should (memq 'timer-success supervisor--event-types))
+  (should (memq 'timer-failure supervisor--event-types)))
 
 (ert-deftest supervisor-test-emit-event-invalid-type-rejected ()
   "Emitting an invalid event type signals an error."
@@ -2793,6 +2798,313 @@ Regression test: stderr pipe processes used to pollute the process list."
          (timers (supervisor--build-timer-list plan)))
     (should (= 1 (length timers)))
     (should (= 1 (hash-table-count supervisor--invalid-timers)))))
+
+;;; Timer Scheduler Core tests
+
+(ert-deftest supervisor-test-calendar-field-matches-star ()
+  "Calendar field * matches any value."
+  (should (supervisor--calendar-field-matches-p '* 0))
+  (should (supervisor--calendar-field-matches-p '* 23))
+  (should (supervisor--calendar-field-matches-p '* 59)))
+
+(ert-deftest supervisor-test-calendar-field-matches-integer ()
+  "Calendar field integer matches exact value."
+  (should (supervisor--calendar-field-matches-p 3 3))
+  (should-not (supervisor--calendar-field-matches-p 3 4))
+  (should-not (supervisor--calendar-field-matches-p 3 0)))
+
+(ert-deftest supervisor-test-calendar-field-matches-list ()
+  "Calendar field list matches any value in list."
+  (should (supervisor--calendar-field-matches-p '(1 3 5) 1))
+  (should (supervisor--calendar-field-matches-p '(1 3 5) 3))
+  (should (supervisor--calendar-field-matches-p '(1 3 5) 5))
+  (should-not (supervisor--calendar-field-matches-p '(1 3 5) 2))
+  (should-not (supervisor--calendar-field-matches-p '(1 3 5) 4)))
+
+(ert-deftest supervisor-test-calendar-matches-time ()
+  "Calendar spec matches decoded time correctly."
+  ;; Create a decoded time for 2025-01-15 03:30:00 (Wednesday)
+  (let ((decoded (decode-time (encode-time 0 30 3 15 1 2025))))
+    ;; Exact match
+    (should (supervisor--calendar-matches-time-p
+             '(:hour 3 :minute 30) decoded))
+    ;; Wildcards
+    (should (supervisor--calendar-matches-time-p
+             '(:hour 3 :minute *) decoded))
+    ;; Lists
+    (should (supervisor--calendar-matches-time-p
+             '(:hour (1 2 3) :minute 30) decoded))
+    ;; Mismatch
+    (should-not (supervisor--calendar-matches-time-p
+                 '(:hour 4 :minute 30) decoded))
+    (should-not (supervisor--calendar-matches-time-p
+                 '(:hour 3 :minute 0) decoded))))
+
+(ert-deftest supervisor-test-calendar-next-minute-finds-match ()
+  "Calendar next minute finds matching time."
+  ;; From 2025-01-15 00:00:00, find next 03:30
+  (let* ((from (encode-time 0 0 0 15 1 2025))
+         (next (supervisor--calendar-next-minute
+                from '(:hour 3 :minute 30) 1440)))
+    (should next)
+    ;; Should be 03:30
+    (let ((decoded (decode-time next)))
+      (should (= 3 (decoded-time-hour decoded)))
+      (should (= 30 (decoded-time-minute decoded))))))
+
+(ert-deftest supervisor-test-calendar-next-minute-respects-limit ()
+  "Calendar next minute respects iteration limit."
+  ;; Looking for hour 25 (impossible) with small limit
+  (let* ((from (encode-time 0 0 0 15 1 2025))
+         (next (supervisor--calendar-next-minute
+                from '(:hour 25 :minute 0) 60)))
+    (should-not next)))
+
+(ert-deftest supervisor-test-timer-next-startup-time ()
+  "Startup trigger computes time relative to scheduler start."
+  (let* ((timer (supervisor-timer--create
+                 :id "t1" :target "s1" :on-startup-sec 120))
+         (supervisor--scheduler-startup-time 1000.0)
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    ;; No previous run - should return startup + delay
+    (should (= 1120.0 (supervisor--timer-next-startup-time timer)))
+    ;; After startup trigger has fired - should return nil
+    (puthash "t1" '(:startup-triggered t) supervisor--timer-state)
+    (should-not (supervisor--timer-next-startup-time timer))))
+
+(ert-deftest supervisor-test-timer-next-unit-active-time ()
+  "Unit-active trigger computes time relative to last success."
+  (let* ((timer (supervisor-timer--create
+                 :id "t1" :target "s1" :on-unit-active-sec 300))
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    ;; No previous success - should return nil
+    (should-not (supervisor--timer-next-unit-active-time timer))
+    ;; After a successful run
+    (puthash "t1" '(:last-success-at 2000.0) supervisor--timer-state)
+    (should (= 2300.0 (supervisor--timer-next-unit-active-time timer)))))
+
+(ert-deftest supervisor-test-timer-compute-next-run-picks-earliest ()
+  "Timer picks earliest trigger when multiple are configured."
+  (let* ((timer (supervisor-timer--create
+                 :id "t1" :target "s1"
+                 :on-startup-sec 60
+                 :on-unit-active-sec 300))
+         (supervisor--scheduler-startup-time 1000.0)
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    ;; Only startup is available (no previous success)
+    (should (= 1060.0 (supervisor--timer-compute-next-run timer 1000.0)))
+    ;; After startup trigger has fired and a success recorded, unit-active becomes available
+    (puthash "t1" '(:last-success-at 1050.0 :startup-triggered t) supervisor--timer-state)
+    ;; Startup already fired, unit-active at 1350
+    (should (= 1350.0 (supervisor--timer-compute-next-run timer 1100.0)))))
+
+(ert-deftest supervisor-test-timer-overlap-detection ()
+  "Timer detects when target is still running."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1"))
+         (supervisor--processes (make-hash-table :test 'equal)))
+    ;; No process - not active
+    (should-not (supervisor--timer-target-active-p timer))
+    ;; Dead process - not active
+    (puthash "s1" (start-process "test" nil "true") supervisor--processes)
+    (sleep-for 0.1) ; Let it die
+    (should-not (supervisor--timer-target-active-p timer))
+    ;; Cleanup
+    (clrhash supervisor--processes)))
+
+(ert-deftest supervisor-test-timer-trigger-disabled-timer ()
+  "Timer trigger skips disabled timer and records miss."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled nil))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor-programs '(("true" :id "s1" :type oneshot))))
+    ;; Trigger disabled timer
+    (should-not (supervisor--timer-trigger timer 'scheduled))
+    ;; Should record miss with reason 'disabled
+    (let ((state (gethash "t1" supervisor--timer-state)))
+      (should state)
+      (should (plist-get state :last-missed-at))
+      (should (eq 'disabled (plist-get state :last-miss-reason))))
+    ;; Cleanup
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-trigger-disabled-target ()
+  "Timer trigger skips disabled target and records miss."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor-programs '(("true" :id "s1" :type oneshot :disabled t))))
+    ;; Trigger timer with disabled target (via config)
+    (should-not (supervisor--timer-trigger timer 'scheduled))
+    ;; Should record miss with reason 'disabled-target
+    (let ((state (gethash "t1" supervisor--timer-state)))
+      (should state)
+      (should (plist-get state :last-missed-at))
+      (should (eq 'disabled-target (plist-get state :last-miss-reason))))
+    ;; Cleanup
+    (clrhash supervisor--timer-state)
+    (clrhash supervisor--processes)
+    (clrhash supervisor--enabled-override)
+    (clrhash supervisor--invalid)))
+
+(ert-deftest supervisor-test-timer-trigger-disabled-target-override ()
+  "Timer trigger respects runtime disabled override."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor-programs '(("true" :id "s1" :type oneshot))))
+    ;; Disable target via runtime override
+    (puthash "s1" 'disabled supervisor--enabled-override)
+    ;; Trigger timer
+    (should-not (supervisor--timer-trigger timer 'scheduled))
+    ;; Should record miss with reason 'disabled-target
+    (let ((state (gethash "t1" supervisor--timer-state)))
+      (should state)
+      (should (eq 'disabled-target (plist-get state :last-miss-reason))))
+    ;; Cleanup
+    (clrhash supervisor--timer-state)
+    (clrhash supervisor--processes)
+    (clrhash supervisor--enabled-override)
+    (clrhash supervisor--invalid)))
+
+(ert-deftest supervisor-test-timer-trigger-target-not-found ()
+  "Timer trigger handles missing target gracefully."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "nonexistent" :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor-programs nil))
+    ;; Trigger timer with nonexistent target
+    (should-not (supervisor--timer-trigger timer 'scheduled))
+    ;; No state recorded (early return)
+    (should-not (gethash "t1" supervisor--timer-state))
+    ;; Cleanup
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-trigger-overlap-skips ()
+  "Timer trigger skips when target is still running."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor-programs '(("sleep 10" :id "s1" :type oneshot))))
+    ;; Simulate running process
+    (puthash "s1" (start-process "test-overlap" nil "sleep" "10")
+             supervisor--processes)
+    ;; Trigger timer
+    (should-not (supervisor--timer-trigger timer 'scheduled))
+    ;; Should record miss with reason 'overlap
+    (let ((state (gethash "t1" supervisor--timer-state)))
+      (should state)
+      (should (eq 'overlap (plist-get state :last-miss-reason))))
+    ;; Cleanup
+    (let ((proc (gethash "s1" supervisor--processes)))
+      (when (process-live-p proc)
+        (delete-process proc)))
+    (clrhash supervisor--invalid)
+    (clrhash supervisor--timer-state)
+    (clrhash supervisor--processes)
+    (clrhash supervisor--enabled-override)))
+
+(ert-deftest supervisor-test-timer-trigger-success-path ()
+  "Timer trigger succeeds and emits timer-trigger event."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--scheduler-startup-time (float-time))
+         (supervisor-programs '(("true" :id "s1" :type oneshot)))
+         (events nil)
+         (hook-fn (lambda (event)
+                    (when (eq (plist-get event :type) 'timer-trigger)
+                      (push event events)))))
+    ;; Capture timer-trigger event
+    (add-hook 'supervisor-event-hook hook-fn)
+    (unwind-protect
+        (progn
+          ;; Trigger timer
+          (should (supervisor--timer-trigger timer 'scheduled))
+          ;; Should have recorded :last-run-at
+          (let ((state (gethash "t1" supervisor--timer-state)))
+            (should state)
+            (should (plist-get state :last-run-at)))
+          ;; Should have emitted timer-trigger event
+          (should (= 1 (length events)))
+          (let ((event (car events)))
+            (should (eq 'timer-trigger (plist-get event :type)))
+            (should (equal "t1" (plist-get event :id)))
+            (should (equal "s1" (plist-get (plist-get event :data) :target)))))
+      ;; Cleanup
+      (remove-hook 'supervisor-event-hook hook-fn)
+      (clrhash supervisor--invalid)
+      (clrhash supervisor--timer-state)
+      (clrhash supervisor--processes)
+      (clrhash supervisor--enabled-override))))
+
+(ert-deftest supervisor-test-timer-startup-trigger-independent ()
+  "Startup trigger is independent from calendar/unit-active triggers."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t
+                                          :on-startup-sec 60
+                                          :on-calendar '(:minute 0)))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--scheduler-startup-time 1000.0))
+    ;; Simulate a calendar trigger having fired (sets :last-run-at)
+    (puthash "t1" (list :last-run-at 1010.0) supervisor--timer-state)
+    ;; Startup trigger should still return a time (not cancelled by calendar)
+    (let ((next (supervisor--timer-next-startup-time timer)))
+      (should next)
+      (should (= 1060.0 next)))
+    ;; Now mark startup as triggered
+    (puthash "t1" (list :last-run-at 1010.0 :startup-triggered t)
+             supervisor--timer-state)
+    ;; Now startup trigger should return nil
+    (should-not (supervisor--timer-next-startup-time timer))
+    ;; Cleanup
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-startup-consumed-on-skipped-run ()
+  "Startup trigger is consumed even when run is skipped (disabled-target)."
+  ;; Regression test: startup trigger must not cause 1s retry loop on skip
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t
+                                          :on-startup-sec 10))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--scheduler-startup-time 1000.0)
+         (supervisor-programs '(("true" :id "s1" :type oneshot :disabled t))))
+    ;; Initialize next-run-at to startup trigger time
+    (puthash "t1" '(:next-run-at 1010.0) supervisor--timer-state)
+    ;; Simulate time is now past startup trigger
+    (cl-letf (((symbol-function 'float-time) (lambda () 1015.0)))
+      ;; Trigger should fail (target disabled)
+      (should-not (supervisor--timer-trigger timer 'scheduled))
+      ;; But startup-triggered should be set to prevent retry loop
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (plist-get state :startup-triggered)))
+      ;; Next startup time should now be nil (consumed)
+      (should-not (supervisor--timer-next-startup-time timer)))
+    ;; Cleanup
+    (clrhash supervisor--timer-state)
+    (clrhash supervisor--processes)
+    (clrhash supervisor--enabled-override)
+    (clrhash supervisor--invalid)))
+
+(ert-deftest supervisor-test-timer-scheduler-not-started-during-shutdown ()
+  "Timer scheduler is not started when shutting down."
+  (let ((supervisor--shutting-down t)
+        (supervisor-timers '((:id "t1" :target "s1" :on-startup-sec 60)))
+        (supervisor-programs '(("true" :id "s1" :type oneshot)))
+        (scheduler-started nil))
+    ;; Mock the scheduler start function
+    (cl-letf (((symbol-function 'supervisor--timer-scheduler-start)
+               (lambda () (setq scheduler-started t))))
+      ;; Simulate stage completion with no remaining stages
+      (supervisor--start-stages-from-plan nil)
+      ;; Scheduler should NOT have been started
+      (should-not scheduler-started))))
 
 ;;; CLI Control Plane tests
 
