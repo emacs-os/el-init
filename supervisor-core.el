@@ -1442,11 +1442,13 @@ for persisted keys while preserving runtime-computed keys."
                          (read (current-buffer))))
                  (version (alist-get 'version data))
                  (timers (alist-get 'timers data)))
-            ;; Check version compatibility
-            (unless (and version (<= version supervisor-timer-state-schema-version))
+            ;; Check version compatibility - skip loading if incompatible
+            (when (or (null version)
+                      (> version supervisor-timer-state-schema-version))
               (supervisor--log 'warning
-                               "Timer state file version %s is newer than supported %s"
-                               version supervisor-timer-state-schema-version))
+                               "Timer state file version %s is incompatible (supported: %s), skipping"
+                               version supervisor-timer-state-schema-version)
+              (signal 'error (list "Incompatible timer state schema version")))
             ;; Merge loaded state into hash
             (dolist (entry timers)
               (let ((id (car entry))
@@ -1840,13 +1842,26 @@ Call after supervisor-start has completed stage startup."
   ;; Load persisted state before initialization
   (supervisor--load-timer-state)
   ;; Initialize state for each timer
-  (dolist (timer supervisor--timer-list)
-    (let ((id (supervisor-timer-id timer)))
-      ;; Preserve existing state or create new
-      (unless (gethash id supervisor--timer-state)
-        (puthash id nil supervisor--timer-state))
-      ;; Compute initial next-run
-      (supervisor--timer-update-next-run id)))
+  (let ((active-ids (make-hash-table :test 'equal)))
+    (dolist (timer supervisor--timer-list)
+      (let ((id (supervisor-timer-id timer)))
+        (puthash id t active-ids)
+        ;; Preserve existing state or create new
+        (unless (gethash id supervisor--timer-state)
+          (puthash id nil supervisor--timer-state))
+        ;; Compute initial next-run
+        (supervisor--timer-update-next-run id)))
+    ;; Prune stale timer IDs not in current config
+    (let ((stale-ids nil))
+      (maphash (lambda (id _state)
+                 (unless (gethash id active-ids)
+                   (push id stale-ids)))
+               supervisor--timer-state)
+      (dolist (id stale-ids)
+        (remhash id supervisor--timer-state))
+      (when stale-ids
+        (supervisor--log 'info "pruned %d stale timer IDs from state"
+                         (length stale-ids)))))
   ;; Process catch-up runs for persistent timers
   (supervisor--timer-process-catch-ups)
   ;; Start the scheduler tick

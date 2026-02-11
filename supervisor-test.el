@@ -3405,6 +3405,87 @@ at minute boundaries."
   (let ((supervisor-timer-state-file nil))
     (should-not (supervisor--timer-state-file-path))))
 
+(ert-deftest supervisor-test-timer-state-newer-version-rejected ()
+  "Newer schema version is rejected, not just warned."
+  (let* ((temp-file (make-temp-file "supervisor-test-version-" nil ".eld"))
+         (supervisor-timer-state-file temp-file)
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          ;; Write file with future version
+          (with-temp-file temp-file
+            (insert (format "((version . %d) (timestamp . \"test\") (timers . ((\"t1\" :last-run-at 1000.0))))"
+                            (1+ supervisor-timer-state-schema-version))))
+          ;; Load should fail
+          (should-not (supervisor--load-timer-state))
+          ;; Hash should remain empty (data not merged)
+          (should (= (hash-table-count supervisor--timer-state) 0)))
+      (delete-file temp-file)
+      (clrhash supervisor--timer-state))))
+
+(ert-deftest supervisor-test-timer-state-stale-ids-pruned ()
+  "Stale timer IDs are pruned from state during scheduler startup."
+  (let* ((supervisor-programs '(("true" :id "s1" :type oneshot)))
+         (supervisor-timers '((:id "active" :target "s1" :on-startup-sec 60)))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--timer-list nil)
+         (supervisor--timer-scheduler nil)
+         (supervisor--shutting-down nil)
+         (supervisor--scheduler-startup-time nil)
+         (supervisor-timer-state-file nil))
+    ;; Pre-populate state with a stale ID
+    (puthash "stale-removed" '(:last-run-at 500.0) supervisor--timer-state)
+    (puthash "active" '(:last-run-at 900.0) supervisor--timer-state)
+    ;; Mock to prevent actual scheduling
+    (cl-letf (((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
+              ((symbol-function 'supervisor--timer-process-catch-ups) #'ignore)
+              ((symbol-function 'float-time) (lambda () 1000.0)))
+      (supervisor--timer-scheduler-start))
+    ;; Stale ID should be pruned
+    (should-not (gethash "stale-removed" supervisor--timer-state))
+    ;; Active ID should remain
+    (should (gethash "active" supervisor--timer-state))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-cross-restart-catch-up ()
+  "Integration test: scheduler startup with persisted state triggers catch-up."
+  (let* ((temp-file (make-temp-file "supervisor-test-catchup-" nil ".eld"))
+         (supervisor-programs '(("true" :id "s1" :type oneshot)))
+         (supervisor-timers '((:id "t1" :target "s1" :on-calendar (:minute 0)
+                               :persistent t)))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--timer-list nil)
+         (supervisor--timer-scheduler nil)
+         (supervisor--shutting-down nil)
+         (supervisor--scheduler-startup-time nil)
+         (supervisor--timer-state-loaded nil)
+         (supervisor-timer-state-file temp-file)
+         (supervisor-timer-catch-up-limit 86400)
+         (catch-up-triggered nil))
+    (unwind-protect
+        (progn
+          ;; Write persisted state with old last-run (simulates restart)
+          (with-temp-file temp-file
+            (insert (format "((version . %d) (timestamp . \"test\") (timers . ((\"t1\" :last-run-at 900.0 :last-success-at 900.0))))"
+                            supervisor-timer-state-schema-version)))
+          ;; Mock to track catch-up and prevent actual scheduling
+          (cl-letf (((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
+                    ((symbol-function 'supervisor--timer-trigger)
+                     (lambda (_timer reason)
+                       (when (eq reason 'catch-up)
+                         (setq catch-up-triggered t))))
+                    ;; Mock calendar to return a time between last-run and now
+                    ((symbol-function 'supervisor--timer-compute-next-run)
+                     (lambda (_timer _from) 950.0))
+                    ((symbol-function 'float-time) (lambda () 1000.0)))
+            (supervisor--timer-scheduler-start))
+          ;; Verify state was loaded from file
+          (should supervisor--timer-state-loaded)
+          ;; Verify catch-up was triggered
+          (should catch-up-triggered))
+      (when (file-exists-p temp-file) (delete-file temp-file))
+      (clrhash supervisor--timer-state))))
+
 (ert-deftest supervisor-test-timer-scheduler-tick-handles-retry ()
   "Scheduler tick triggers retry when due."
   (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
