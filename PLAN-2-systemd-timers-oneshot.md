@@ -17,6 +17,44 @@ implementation simplicity.
 - No cron compatibility (use calendar plists instead).
 - No jitter/randomized delay knobs.
 
+## **CRITICAL** Addendum: Experimental Timer Subsystem Gate (Blocking)
+
+This addendum is mandatory for all phases in this plan.
+Timer functionality is explicitly experimental and must be strongly gated.
+
+Required mode contract:
+
+- Introduce `supervisor-timer-subsystem-mode` as a global minor mode.
+- `supervisor-timer-subsystem-mode` is a child subsystem of `supervisor-mode`.
+- Default state is disabled (experimental opt-in).
+- If `supervisor-mode` is disabled, timer subsystem behavior must be a no-op even if
+  `supervisor-timer-subsystem-mode` is non-nil.
+
+Hard gating requirements (MUST):
+
+- When timer subsystem is gated off (or parent `supervisor-mode` is off), timer code must not:
+  - build timer plans/lists in startup or reload flows
+  - start, tick, or reschedule timer scheduler loops
+  - trigger timer-driven oneshot runs
+  - execute retry or catch-up logic
+  - emit timer-specific events
+  - load or save timer-state persistence data
+  - render timer sections in dashboard
+  - expose active timer runtime data in CLI status surfaces
+- Transitioning gate from enabled to disabled (or parent mode to disabled) must:
+  - cancel scheduler timers immediately
+  - stop further timer side effects in the same session
+- CLI behavior while gated off must be explicit (human and JSON) and indicate that
+  the timer subsystem is disabled/experimental.
+
+Acceptance requirements (MUST test):
+
+- `supervisor-start` and `supervisor-reload` do not activate timer subsystem when gated off.
+- Parent `supervisor-mode` off forces timer subsystem no-op behavior.
+- No timer state file I/O occurs while gated off.
+- Dashboard/CLI timer surfaces reflect disabled subsystem state.
+- Existing timer behavior tests remain valid under gate-on mode.
+
 ## Design Decisions (Implemented)
 
 - Timer triggers supported:

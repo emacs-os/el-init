@@ -2799,6 +2799,84 @@ Regression test: stderr pipe processes used to pollute the process list."
     (should (= 1 (length timers)))
     (should (= 1 (hash-table-count supervisor--invalid-timers)))))
 
+(ert-deftest supervisor-test-timer-build-list-duplicate-invalid-first ()
+  "Duplicate timer ID rejected deterministically when first is invalid.
+Second valid occurrence should not activate when first invalid occurrence used the ID."
+  (let* ((supervisor-timers '((:id "dup" :target "missing" :on-startup-sec 60)  ; invalid (bad target)
+                              (:id "dup" :target "s1" :on-startup-sec 120)))    ; valid but duplicate
+         (programs '(("s1" :type oneshot :id "s1")))
+         (plan (supervisor--build-plan programs))
+         (timers (supervisor--build-timer-list plan)))
+    ;; No active timers (first invalid, second duplicate)
+    (should (= 0 (length timers)))
+    ;; One invalid entry (hash key = "dup", first error preserved)
+    (should (= 1 (hash-table-count supervisor--invalid-timers)))
+    ;; First error (target not found) should be preserved, not overwritten by duplicate
+    (should (string-match-p "target" (gethash "dup" supervisor--invalid-timers)))))
+
+(ert-deftest supervisor-test-timer-validate-startup-sec-zero-rejected ()
+  "Timer with zero :on-startup-sec is rejected (must be positive)."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-startup-sec 0) nil)))
+    (should err)
+    (should (string-match-p ":on-startup-sec must be a positive" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-field-range-minute ()
+  "Calendar :minute field rejects values outside 0-59."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-calendar (:minute 60)) nil)))
+    (should err)
+    (should (string-match-p "out of range" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-field-range-hour ()
+  "Calendar :hour field rejects values outside 0-23."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-calendar (:hour 24)) nil)))
+    (should err)
+    (should (string-match-p "out of range" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-field-range-day ()
+  "Calendar :day-of-month field rejects values outside 1-31."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-calendar (:day-of-month 0)) nil)))
+    (should err)
+    (should (string-match-p "out of range" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-field-range-month ()
+  "Calendar :month field rejects values outside 1-12."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-calendar (:month 13)) nil)))
+    (should err)
+    (should (string-match-p "out of range" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-field-range-dow ()
+  "Calendar :day-of-week field rejects values outside 0-6."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-calendar (:day-of-week 7)) nil)))
+    (should err)
+    (should (string-match-p "out of range" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-field-range-list ()
+  "Calendar field list with out-of-range value is rejected."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-calendar (:minute (0 30 61))) nil)))
+    (should err)
+    (should (string-match-p "out of range" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-dotted-pair-rejected ()
+  "Calendar field dotted pair is rejected (not crash)."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-calendar (:minute (0 . 1))) nil)))
+    (should err)
+    (should (string-match-p "non-empty list of integers" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-empty-list-rejected ()
+  "Calendar field empty list is rejected."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-calendar (:minute ())) nil)))
+    (should err)
+    (should (string-match-p "non-empty list of integers" err))))
+
 ;;; Timer Scheduler Core tests
 
 (ert-deftest supervisor-test-calendar-field-matches-star ()

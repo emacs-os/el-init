@@ -1200,14 +1200,28 @@ Return nil if valid, or an error message string."
    ((not (keywordp (car calendar)))
     ":on-calendar entry must start with a keyword")
    (t
-    (let ((valid-fields supervisor-timer-calendar-fields))
+    (let ((valid-fields supervisor-timer-calendar-fields)
+          (field-ranges '((:minute 0 59)
+                          (:hour 0 23)
+                          (:day-of-month 1 31)
+                          (:month 1 12)
+                          (:day-of-week 0 6))))
       (cl-loop for (key val) on calendar by #'cddr
                unless (memq key valid-fields)
                return (format ":on-calendar has unknown field %s" key)
                unless (or (eq val '*)
                           (integerp val)
-                          (and (listp val) (cl-every #'integerp val)))
-               return (format ":on-calendar field %s must be integer, list of integers, or *" key))))))
+                          (and (proper-list-p val) val (cl-every #'integerp val)))
+               return (format ":on-calendar field %s must be integer, non-empty list of integers, or *" key)
+               ;; Range validation
+               for range = (cdr (assq key field-ranges))
+               for min-val = (car range)
+               for max-val = (cadr range)
+               when (and range (not (eq val '*)))
+               unless (if (proper-list-p val)
+                          (cl-every (lambda (v) (and (>= v min-val) (<= v max-val))) val)
+                        (and (>= val min-val) (<= val max-val)))
+               return (format ":on-calendar field %s value out of range (%d-%d)" key min-val max-val))))))
 
 (defun supervisor--validate-timer-calendar (calendar)
   "Validate CALENDAR schedule (single plist or list of plists).
@@ -1258,8 +1272,8 @@ PLAN is used to verify the target exists and is a oneshot."
       ;; Validate trigger field types (explicit nil is invalid when key is present)
       (when (plist-member timer-plist :on-startup-sec)
         (let ((startup-sec (plist-get timer-plist :on-startup-sec)))
-          (unless (and startup-sec (integerp startup-sec) (>= startup-sec 0))
-            (throw 'invalid ":on-startup-sec must be a non-negative integer"))))
+          (unless (and startup-sec (integerp startup-sec) (> startup-sec 0))
+            (throw 'invalid ":on-startup-sec must be a positive integer"))))
       (when (plist-member timer-plist :on-unit-active-sec)
         (let ((active-sec (plist-get timer-plist :on-unit-active-sec)))
           (unless (and active-sec (integerp active-sec) (> active-sec 0))
@@ -1318,21 +1332,24 @@ PLAN is used for target validation."
         (seen-ids (make-hash-table :test 'equal)))
     (dolist (timer-plist supervisor-timers)
       (let* ((id (or (plist-get timer-plist :id)
-                     (format "timer#%d" (hash-table-count supervisor--invalid-timers))))
-             (error-reason (supervisor--validate-timer timer-plist plan)))
+                     (format "timer#%d" (hash-table-count supervisor--invalid-timers)))))
         (cond
-         ;; Invalid timer
-         (error-reason
-          (puthash id error-reason supervisor--invalid-timers)
-          (supervisor--log 'warning "INVALID timer %s - %s" id error-reason))
-         ;; Duplicate ID
+         ;; Check for duplicates first (before validation) for deterministic rejection
          ((gethash id seen-ids)
-          (puthash id "duplicate timer ID" supervisor--invalid-timers)
+          ;; Only add to invalid if not already there (preserve first error)
+          (unless (gethash id supervisor--invalid-timers)
+            (puthash id "duplicate timer ID" supervisor--invalid-timers))
           (supervisor--log 'warning "duplicate timer ID '%s', skipping" id))
-         ;; Valid timer
+         ;; Then validate
          (t
+          ;; Mark ID as seen regardless of validity
           (puthash id t seen-ids)
-          (push (supervisor--parse-timer timer-plist) timers)))))
+          (let ((error-reason (supervisor--validate-timer timer-plist plan)))
+            (if error-reason
+                (progn
+                  (puthash id error-reason supervisor--invalid-timers)
+                  (supervisor--log 'warning "INVALID timer %s - %s" id error-reason))
+              (push (supervisor--parse-timer timer-plist) timers)))))))
     (nreverse timers)))
 
 ;;; Timer Scheduler State
