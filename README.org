@@ -1,87 +1,76 @@
 [[https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml][https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml/badge.svg]]
 
-*A userspace service manager for Emacs sessions.*
+* supervisor.el Handbook
 
-This project provides deterministic process supervision, staged startup,
-dependency management, crash recovery, and observability from within Emacs.
+A userspace service manager for Emacs sessions.
 
-It can serve as an alternative to ~systemctl --user~ on systemd-based systems,
-and is particularly well-suited to EXWM or highly customized desktop
-environments where multiple independent services must be coordinated reliably.
+~supervisor.el~ provides deterministic process supervision, staged startup,
+dependency ordering, crash recovery, interactive operations, CLI control, and
+an experimental timer subsystem for scheduled ~oneshot~ services.
 
-It is also useful for users who already run Emacs as a long-lived daemon and
-prefer to configure and manage their remaining session services, background
-tasks, or scheduled jobs directly in Emacs Lisp rather than through external
-service managers.
+This handbook is the implementation reference for current behavior.
 
 * Navigation
 
-- [[#about-supervisorel][About supervisor.el]]
-- [[#codebase-layout][Codebase Layout]]
+- [[#scope-and-goals][Scope and Goals]]
+- [[#module-layout][Module Layout]]
 - [[#requirements][Requirements]]
-- [[#install-and-enable][Install And Enable]]
-- [[#public-commands][Public Commands]]
-- [[#cli-control-plane-supervisorctl][CLI Control Plane (~supervisorctl~)]]
-- [[#configuration-model][Configuration Model]]
-- [[#startup-execution-model][Startup Execution Model]]
-- [[#entry-lifecycle-state-machine][Entry Lifecycle State Machine]]
-- [[#process-lifecycle-and-restart][Process Lifecycle And Restart]]
-- [[#reload-reconciler][Reload Reconciler]]
-- [[#stop-semantics][Stop Semantics]]
-- [[#dashboard-m-x-supervisor][Dashboard (~M-x supervisor~)]]
-- [[#logging][Logging]]
-- [[#config-file-watch][Config File Watch]]
-- [[#structured-events-and-hooks][Structured Events And Hooks]]
-- [[#customization-variables][Customization Variables]]
+- [[#quick-start][Quick Start]]
+- [[#service-definition-handbook-supervisor-programs][Service Definition Handbook (~supervisor-programs~)]]
+- [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
+- [[#timer-subsystem-handbook-experimental][Timer Subsystem Handbook (Experimental)]]
+- [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook (~M-x supervisor~)]]
+- [[#cli-handbook-sbinsupervisorctl][CLI Handbook (~sbin/supervisorctl~)]]
+- [[#events-and-hooks][Events and Hooks]]
+- [[#persistence-and-files][Persistence and Files]]
+- [[#customization-reference][Customization Reference]]
+- [[#command-reference][Command Reference]]
+- [[#indexes][Indexes]]
 - [[#security][Security]]
-- [[#development-commands][Development Commands]]
+- [[#development][Development]]
 - [[#license][License]]
 
-* About supervisor.el
+<<scope-and-goals>>
+* Scope and Goals
 
-~supervisor.el~ is an Emacs user-session process supervisor.
+~supervisor.el~ is a *per-user session supervisor*.
 
-It manages background programs from inside Emacs with:
+It is designed for long-lived Emacs sessions (for example EXWM or daemon +
+emacsclient workflows) where you want to define and manage session services in
+Elisp.
 
-- validated config parsing
-- staged startup (~stage1 -> stage2 -> stage3 -> stage4~)
-- intra-stage dependency ordering (~:after~)
-- restart/crash-loop handling for long-running processes
-- oneshot orchestration with wait/timeout semantics
-- a tabulated dashboard for control and inspection
-- structured events and legacy compatibility hooks
+It is not a system init replacement in current release scope.
 
-This is user-session supervision, not a system init replacement.
+<<module-layout>>
+* Module Layout
 
-** Codebase Layout
+| File | Purpose |
+| ~supervisor.el~ | Facade; loads all modules and provides feature ~supervisor~ |
+| ~supervisor-core.el~ | Engine: parsing, validation, planning, DAG scheduler, lifecycle, overrides |
+| ~supervisor-timer.el~ | Experimental timer subsystem: timers, scheduler, retry/catch-up, timer state |
+| ~supervisor-dashboard.el~ | Dashboard UI, keybindings, transient menu integration |
+| ~supervisor-cli.el~ | CLI parser/dispatcher/formatters and wrapper adapter |
+| ~sbin/supervisorctl~ | Transport wrapper around ~emacsclient --eval~ |
 
-The package is modular, with ~supervisor.el~ as a stable facade:
+Load order in facade: core -> timer -> dashboard -> cli.
 
-| File | Role |
-| ~supervisor.el~ | Facade. Requires all modules and provides ~supervisor~ |
-| ~supervisor-core.el~ | Parsing, validation, planning, scheduler, runtime state, process lifecycle, persistence |
-| ~supervisor-dashboard.el~ | Dashboard UI, keymaps, rendering, dashboard actions |
-| ~supervisor-cli.el~ | CLI parsing/dispatch/formatting and wrapper transport adapter |
+Module dependency rules:
 
-Dependency rules in code:
+- ~supervisor-core.el~ has no hard dependency on dashboard or CLI.
+- ~supervisor-timer.el~ depends on core.
+- ~supervisor-dashboard.el~ depends on core (+ optional timer symbols).
+- ~supervisor-cli.el~ depends on core (+ optional timer symbols).
 
-- ~supervisor-core.el~ does not require dashboard or CLI modules
-- ~supervisor-dashboard.el~ requires only ~supervisor-core.el~
-- ~supervisor-cli.el~ requires only ~supervisor-core.el~
-- ~supervisor.el~ requires all modules in load order: core -> dashboard -> cli
-
-Standalone module loading is supported:
-
-- ~(require 'supervisor-core)~ works in headless/batch contexts
-- ~(require 'supervisor-cli)~ works without loading dashboard
-
-** Requirements
+<<requirements>>
+* Requirements
 
 - Emacs 28.1+
-- ~supervisor.el~, ~supervisor-core.el~, ~supervisor-dashboard.el~, ~supervisor-cli.el~ available in ~load-path~
-- Optional: ~transient~ package for dashboard action menu (~?~)
+- Optional: ~transient~ for dashboard menu key ~?~
+- For CLI wrapper: ~emacsclient~, ~base64~, and ~sed~ in ~PATH~
 
-** Install And Enable
+<<quick-start>>
+* Quick Start
 
 #+begin_src emacs-lisp
 (require 'supervisor)
@@ -96,235 +85,164 @@ Standalone module loading is supported:
 (supervisor-mode 1)
 #+end_src
 
-When Emacs is your session owner (for example EXWM), typical hooks are:
+Suggested hooks when Emacs is your session owner:
 
 #+begin_src emacs-lisp
 (add-hook 'elpaca-after-init-hook #'supervisor-start)
 (add-hook 'kill-emacs-hook #'supervisor-stop-now)
 #+end_src
 
-~supervisor-stop-now~ is synchronous and intended for ~kill-emacs-hook~.
+Enable the experimental timer subsystem only if you are using timers:
 
-** Public Commands
-
-| Command | What it does |
-| ~M-x supervisor-mode~ | Global mode. Enable -> ~supervisor-start~; disable -> ~supervisor-stop~; also starts/stops config watch |
-| ~M-x supervisor-start~ | Build plan, validate, and start entries by stage |
-| ~M-x supervisor-stop~ | Asynchronous graceful shutdown (~SIGTERM~, then timeout ~SIGKILL~) |
-| ~M-x supervisor-stop-now~ | Synchronous hard shutdown (~SIGKILL~ + brief wait) |
-| ~M-x supervisor-reload~ | Reconcile runtime state against current config |
-| ~M-x supervisor~ | Open dashboard buffer ~*supervisor*~ |
-| ~M-x supervisor-validate~ | Validate config and show errors without starting |
-| ~M-x supervisor-dry-run~ | Show computed startup order and metadata without starting |
-| ~M-x supervisor-migrate-config~ | Show canonical schema v1 view of current config |
-| ~M-x supervisor-overrides-load~ | Reload persisted runtime overrides from disk |
-| ~M-x supervisor-overrides-save~ | Save current runtime overrides to disk |
-| ~M-x supervisor-overrides-clear~ | Clear runtime overrides in memory and on disk |
-
-** CLI Control Plane (~supervisorctl~)
-
-A shell wrapper in ~sbin/supervisorctl~ provides command-line control via ~emacsclient~.
-This allows scripting and terminal-based management without the interactive dashboard.
-
-*** Requirements
-
-- Emacs server running (~M-x server-start~ or ~(server-start)~)
-- ~emacsclient~ available in ~PATH~
-
-*** Usage
-
-#+begin_src bash
-sbin/supervisorctl [OPTIONS] COMMAND [ARGS...]
+#+begin_src emacs-lisp
+;; Parent mode must also be on.
+(supervisor-mode 1)
+(supervisor-timer-subsystem-mode 1)
 #+end_src
 
-*** Options
+<<service-definition-handbook-supervisor-programs>>
+* Service Definition Handbook (~supervisor-programs~)
 
-| Option | Purpose |
-| ~--help~ | Show wrapper help text |
-| ~--json~ | Output JSON instead of human-readable text |
-| ~--socket NAME~ | Use specific Emacs server socket |
-| ~--server-file PATH~ | Use server file for TCP |
-| ~--timeout N~ | Wait at most N seconds for response |
-
-*** Commands
-
-Lifecycle:
-
-| Command | Purpose |
-| ~start [ID...]~ | Start entries (or all if none specified) |
-| ~stop [ID...]~ | Stop entries (or all if none specified) |
-| ~restart [ID...]~ | Restart entries (or all if none specified) |
-| ~reload~ | Reconcile config without full restart |
-| ~validate~ | Validate config and show errors |
-
-Inspection:
-
-| Command | Purpose |
-| ~status [ID...]~ | Show status of entries |
-| ~list [ID...]~ | Alias for status |
-| ~describe ID~ | Show detailed info for an entry |
-| ~graph [ID]~ | Show dependency graph |
-| ~blame~ | Show startup timing info |
-| ~logs ID [--tail N]~ | View entry log file |
-
-Runtime policy:
-
-| Command | Purpose |
-| ~enable ID...~ | Enable entries |
-| ~disable ID...~ | Disable entries |
-| ~restart-policy (on\vert{}off) ID...~ | Set restart policy |
-| ~logging (on\vert{}off) ID...~ | Set logging policy |
-
-Utilities:
-
-| Command | Purpose |
-| ~kill ID [--signal SIG]~ | Send signal to process |
-| ~ping~ | Check if supervisor is responsive |
-| ~version~ | Show version info |
-
-*** Exit Codes
-
-| Code | Meaning |
-| ~0~ | Success |
-| ~1~ | Runtime failure |
-| ~2~ | Invalid arguments |
-| ~3~ | Emacs server unavailable |
-| ~4~ | Validation failed |
-
-*** JSON Output
-
-When ~--json~ is passed, all output is JSON with a stable schema.
-Status output always includes ~entries~ and ~invalid~ arrays (empty arrays when no data).
-
-** Configuration Model
-
-Set ~supervisor-programs~ to a list of entries.
+~supervisor-programs~ is a list of entries.
 
 Entry forms:
 
-- String command: ~"nm-applet"~
-- List command + plist: ~("nm-applet" :id "nm" :stage stage3 ...)~
+- Command string: ~"nm-applet"~
+- Command + plist: ~("nm-applet" :id "nm" :stage stage3 ...)~
 
-*** Entry Keywords
+** Entry Keywords
 
 | Keyword | Type | Default | Notes |
-| ~:id~ | string | executable basename | Must be string when provided |
+| ~:id~ | string | basename of executable token | Must be string if provided |
 | ~:type~ | symbol | ~simple~ | ~simple~ or ~oneshot~ |
 | ~:stage~ | symbol | ~stage3~ | ~stage1~, ~stage2~, ~stage3~, ~stage4~ |
-| ~:delay~ | number | ~0~ | Non-negative seconds |
-| ~:after~ | string or list of strings | ~nil~ | Ordering dependencies (same stage) |
-| ~:requires~ | string or list of strings | ~nil~ | Requirement dependencies (same stage, also pull-in) |
-| ~:enabled~ | boolean | ~t~ | Enable entry |
+| ~:delay~ | non-negative number | ~0~ | Delays spawn in seconds |
+| ~:after~ | string or list of strings | ~nil~ | Ordering dependency (same stage) |
+| ~:requires~ | string or list of strings | ~nil~ | Requirement + ordering dependency (same stage) |
+| ~:enabled~ | boolean | ~t~ | Enable/disable service |
 | ~:disabled~ | boolean | ~nil~ | Inverse form of ~:enabled~ |
-| ~:restart~ | boolean | ~t~ for ~simple~ | Invalid for ~oneshot~ |
+| ~:restart~ | boolean | ~t~ | For ~simple~ only |
 | ~:no-restart~ | boolean | ~nil~ | Inverse form of ~:restart~ |
-| ~:logging~ | boolean | ~t~ | Per-process stdout/stderr logging |
-| ~:oneshot-wait~ | boolean | ~supervisor-oneshot-default-wait~ | Invalid for ~simple~ |
-| ~:async~ | boolean | ~nil~ | Alias for non-blocking oneshot |
-| ~:oneshot-timeout~ | number or ~nil~ | ~supervisor-oneshot-timeout~ | Invalid for ~simple~ |
-| ~:tags~ | symbol/string/list | ~nil~ | Dashboard tag filtering labels |
+| ~:logging~ | boolean | ~t~ | Per-process log capture |
+| ~:oneshot-wait~ | boolean | ~supervisor-oneshot-default-wait~ | For ~oneshot~ only |
+| ~:async~ | boolean | ~nil~ | Alias for non-blocking oneshot (~not :oneshot-wait~) |
+| ~:oneshot-timeout~ | number or ~nil~ | ~supervisor-oneshot-timeout~ | For ~oneshot~ only |
+| ~:tags~ | symbol, string, or list | ~nil~ | Dashboard tag filtering |
 
-*** Dependency Model (Schema v1)
+** Validation Rules
 
-Two types of dependencies are supported:
+Validation is performed by ~supervisor--validate-entry~ and plan building.
 
-- ~:after~ (ordering only): controls start ORDER but does not pull in services
-- ~:requires~ (pull-in + ordering): implies ordering AND the required service should be active
-
-Dependency constraints:
-
-- Both ~:after~ and ~:requires~ must reference services in the same stage
-- Cross-stage ~:after~ is ignored with a warning
-- Cross-stage ~:requires~ causes an error (entry marked invalid)
-- Missing dependencies are ignored with a warning
-
-*** Migration
-
-~M-x supervisor-migrate-config~ displays current config in canonical schema v1 format.
-This is useful for:
-
-- Normalizing shorthand entries to explicit form
-- Seeing computed defaults
-- Preparing config for future schema versions
-
-*** Validation Rules
-
-Entries are validated before startup and in validate/dry-run.
-
-- unknown keywords are rejected
-- ~:id~ must be a string
-- ~:type~ must be symbol and one of ~simple~/~oneshot~
-- ~:stage~ must be symbol and one of ~stage1..stage4~
-- ~:delay~ must be non-negative number
-- ~:oneshot-timeout~ must be number or ~nil~
-- mutually exclusive pairs are rejected:
+- Unknown keywords are rejected.
+- ~:id~ must be a string when present.
+- ~:type~ must be symbol ~simple~ or ~oneshot~.
+- ~:stage~ must be symbol ~stage1..stage4~.
+- ~:delay~ must be non-negative number.
+- ~:oneshot-timeout~ must be number or ~nil~.
+- ~:after~ and ~:requires~ must be string or proper list of strings.
+- Mutually exclusive pairs are rejected:
 - ~:enabled~ with ~:disabled~
 - ~:restart~ with ~:no-restart~
 - ~:oneshot-wait~ with ~:async~
-- type-specific restrictions are enforced:
+- Type restrictions are enforced:
 - ~oneshot~ rejects ~:restart~ and ~:no-restart~
 - ~simple~ rejects ~:oneshot-wait~, ~:async~, ~:oneshot-timeout~
 
-Invalid entries are skipped by startup/reload and shown as ~invalid~ in dashboard with reason.
+Invalid entries are skipped at start/reload and shown as ~invalid~ in dashboard
+and CLI status/validate output.
 
-Duplicate IDs: first valid occurrence wins; later duplicates are skipped.
+** ID Resolution and Duplicate Handling
 
-*** Internal Normalized Shape
+ID resolution for string entries uses the basename of the first command token
+(after ~split-string-and-unquote~).
 
-Every valid entry is normalized internally to:
+Duplicate IDs are deterministic:
+
+- First valid occurrence wins.
+- Later duplicates are skipped with warning.
+
+** Dependency Semantics: ~:after~ vs ~:requires~
+
+- ~:after~: ordering only.
+- ~:requires~: pull-in + ordering.
+
+Planner rules:
+
+- Both are constrained to same-stage dependencies.
+- Cross-stage ~:after~ is ignored with warning.
+- Cross-stage ~:requires~ is an error (entry invalid).
+- Missing dependencies are ignored with warning.
+- Topological sort uses stable list order as tie-break.
+- Cycle fallback clears dependency edges for affected stage and falls back to
+  deterministic list order.
+
+** Internal Normalized Shape
+
+Valid entries are normalized to schema v1 tuple form:
 
 #+begin_src elisp
 (id cmd delay enabled-p restart-p logging-p type stage after
     oneshot-wait oneshot-timeout tags requires)
 #+end_src
 
-Accessor functions (~supervisor-entry-id~, ~supervisor-entry-command~, etc.) abstract the tuple indexing.
+Accessor functions (~supervisor-entry-id~, ~supervisor-entry-command~, etc.) are
+the canonical way to read entry fields.
 
-** Startup Execution Model
+** Validation and Dry-Run Commands
 
-~supervisor-start~ runs an asynchronous staged DAG scheduler.
+~M-x supervisor-validate~:
 
-*** Plan Build (Before Scheduling)
+- validates services
+- validates timers when timer module is available
+- populates invalid hashes for dashboard/CLI visibility
+- opens ~*supervisor-validate*~ report buffer
 
-1. Parse/validate all entries.
-2. Deduplicate IDs.
-3. Partition by stage.
-4. Validate ~:after~ dependencies against same-stage IDs (warn on missing/cross-stage).
-5. Validate ~:requires~ dependencies against same-stage IDs (error on cross-stage, warn on missing).
-6. Topologically sort each stage with stable input-order tie-break.
-7. If cycle detected, clear all ~:after~ edges in that stage and use list order.
+~M-x supervisor-dry-run~:
 
-*** Stage Scheduling
+- builds plan without starting processes
+- prints stage order and resolved dependency metadata
+- prints timer validation summary when timers are configured
+- opens ~*supervisor-dry-run*~ report buffer
 
-- Stages run sequentially: ~stage1~, ~stage2~, ~stage3~, ~stage4~.
-- Entries inside a stage may start in parallel (dependency constrained).
-- Optional ~supervisor-max-concurrent-starts~ limits concurrent spawn attempts.
+<<startup-and-lifecycle-model>>
+* Startup and Lifecycle Model
 
-*** Ready Semantics
+** Stages and Ordering
 
-Readiness (used to unblock dependents and complete stages):
+Stage order is fixed:
 
-- ~simple~: ready when spawned successfully
-- ~oneshot~: ready when exited (success/failure) or timed out
-- disabled: treated as ready immediately
-- failed spawn: treated as ready immediately
+- ~stage1~
+- ~stage2~
+- ~stage3~
+- ~stage4~
 
-*** Stage Completion Criteria
+Stages execute sequentially; entries inside a stage execute in dependency order,
+with parallelism allowed where dependencies permit.
 
-A stage is complete only when all are true:
+** Async DAG Scheduler Semantics
 
-- all stage entries reached started/skipped/failed-to-spawn accounting
-- no pending delay timers
-- no pending blocking oneshots
+Within a stage:
 
-*** Timeouts
+- In-degree 0 entries are eligible to start.
+- Dependents unlock when prerequisites become ready.
+- Disabled entries are marked ready immediately.
+- Start failures mark ready immediately (do not block graph).
+- Optional ~supervisor-max-concurrent-starts~ limits active spawn attempts.
 
-- Per-entry oneshot timeout via ~:oneshot-timeout~ (or ~supervisor-oneshot-timeout~ default)
-- Optional ~supervisor-stage-timeout~ can force stage completion and mark unstarted entries as ~stage-timeout~
+Ready semantics:
 
-** Entry Lifecycle State Machine
+- ~simple~: ready when process spawns.
+- ~oneshot~: ready on exit (success/failure) or timeout.
 
-~supervisor--entry-state~ tracks normalized lifecycle state.
+Stage completion requires all of:
+
+- all entries started/skipped/failed-to-spawn,
+- no pending delay timers,
+- no pending blocking oneshots.
+
+** Lifecycle State Machine
+
+Per-entry runtime state is tracked in ~supervisor--entry-state~.
 
 States:
 
@@ -336,97 +254,268 @@ States:
 - ~failed-to-spawn~
 - ~stage-timeout~
 
-Transitions are validated by a central helper. Invalid transitions error unless forced.
+Invalid transitions signal errors unless forced by internal maintenance paths.
 
-** Process Lifecycle And Restart
+** Process Spawn and Command Execution
 
-*** Spawn Model
+Processes are created via ~make-process~.
 
-Processes start via ~make-process~ with argv from ~split-string-and-unquote~.
-No implicit shell interpretation is performed.
+- Command arguments are parsed by ~split-string-and-unquote~.
+- No implicit shell is used.
+- Use explicit shell (~sh -c ...~) if shell semantics are required.
 
-If shell behavior is needed (pipes, redirects, expansion), call a shell explicitly,
-for example ~"sh -c '..."~.
+** Restart and Crash Loop Policy (~simple~)
 
-*** Restart Model (~simple~ only)
+Restart behavior is controlled by effective restart policy
+(config + runtime override).
 
-- restart allowed only when effective restart policy is enabled
-- restart delay uses ~supervisor-restart-delay~
-- crash loop window uses ~supervisor-restart-window~
-- when crash count reaches ~supervisor-max-restarts~, entry is marked failed (~dead~) and restart stops
+- Delay: ~supervisor-restart-delay~
+- Window: ~supervisor-restart-window~ seconds
+- Threshold: ~supervisor-max-restarts~
+- On crash-loop threshold, service is marked failed (~dead~) and restart stops.
 
-~oneshot~ entries do not restart.
+~oneshot~ services are not auto-restarted.
 
-*** Runtime Overrides
+** Oneshot Exit Encoding
 
-Dashboard toggles set runtime overrides for next starts/restarts:
+For oneshot completion tracking (~supervisor--oneshot-completed~):
 
-- enabled override (~e~)
-- restart override (~r~)
-- logging override (~l~)
+- normal exit stores exit code (~0~, ~1~, ...)
+- signal death stores negative signal number (~SIGKILL~ -> ~-9~)
 
-*** Persistent Overrides
-
-Runtime overrides survive Emacs restart when persistence is enabled.
-
-| Variable | Default | Purpose |
-| ~supervisor-overrides-file~ | ~~/.local/state/supervisor/overrides.eld~ | Path to overrides file, or nil to disable |
-
-| Command | Purpose |
-| ~M-x supervisor-overrides-load~ | Reload overrides from file |
-| ~M-x supervisor-overrides-save~ | Save current overrides to file |
-| ~M-x supervisor-overrides-clear~ | Clear all overrides (memory and file) |
-
-Overrides are auto-loaded on ~supervisor-start~ and auto-saved when changed via dashboard toggles.
-The file uses atomic writes (temp file + rename) for crash safety.
-Corrupt files are preserved for inspection and do not block startup.
-
-** Reload Reconciler
-
-~supervisor-reload~ uses a declarative reconcile pipeline:
-
-1. build plan
-2. build runtime snapshot
-3. compute actions (~start~, ~stop~, ~noop~, ~skip~)
-4. apply actions
-
-Behavior:
-
-- stop running entries removed from config
-- stop running entries now effectively disabled
-- start eligible entries present in config but not running
-- skip failed entries and completed oneshots
-- keep already converged entries as ~noop~
-
-It does not auto-restart already-running entries because command/plist changed.
+This is used by status/reporting and timer retry eligibility.
 
 ** Stop Semantics
 
-*** ~supervisor-stop~ (asynchronous)
+~supervisor-stop~ (async graceful):
 
-- enters shutdown mode
-- cancels delayed/restart timers and DAG state
-- emits cleanup event
-- sends ~SIGTERM~ to live supervised processes
-- completes by sentinel accounting
+- sends ~SIGTERM~
+- waits asynchronously for exits
 - after ~supervisor-shutdown-timeout~, sends ~SIGKILL~ to survivors
 
-*** ~supervisor-stop-now~ (synchronous)
+~supervisor-stop-now~ (sync hard stop):
 
-- enters shutdown mode
-- cancels delayed/restart timers and DAG state
-- emits cleanup event
 - sends immediate ~SIGKILL~
-- waits briefly (up to ~0.5s) for process death
-- clears process table and sets completion flag
+- waits up to ~0.5s~ for process death
+- intended for ~kill-emacs-hook~
 
-** Dashboard (~M-x supervisor~)
+<<runtime-overrides-and-reconciliation>>
+* Runtime Overrides and Reconciliation
 
-Dashboard is ~tabulated-list-mode~ in buffer ~*supervisor*~.
+** Runtime Overrides
 
-Rows and header are built from a shared runtime snapshot per refresh.
+Three override tables are supported:
 
-*** Columns
+- enabled override (~supervisor--enabled-override~)
+- restart override (~supervisor--restart-override~)
+- logging override (~supervisor--logging~)
+
+Effective value resolution is:
+
+- explicit runtime override if present,
+- otherwise config default.
+
+** Persistence of Overrides
+
+Overrides are persisted in ~supervisor-overrides-file~.
+
+- Saved with atomic write (temp file + rename)
+- Loaded on ~supervisor-start~
+- Corrupt file is logged and preserved
+
+Interactive helpers:
+
+- ~M-x supervisor-overrides-load~
+- ~M-x supervisor-overrides-save~
+- ~M-x supervisor-overrides-clear~
+
+Dashboard toggles for enabled/restart persist immediately.
+Dashboard logging toggle updates runtime state; use explicit save command (or CLI
+logging command) when you want persistence written immediately.
+
+** Reload Reconciler (~supervisor-reload~)
+
+Reconcile flow:
+
+1. Build plan
+2. Build runtime snapshot
+3. Compute actions (~start~, ~stop~, ~noop~, ~skip~)
+4. Apply actions
+
+Effects:
+
+- Stops removed entries
+- Stops entries now effectively disabled
+- Starts newly eligible entries
+- Leaves converged entries running
+
+<<timer-subsystem-handbook-experimental>>
+* Timer Subsystem Handbook (Experimental)
+
+Timer subsystem lives in ~supervisor-timer.el~ and is disabled by default.
+
+** Gating Contract
+
+Timer subsystem is active only when both are true:
+
+- ~supervisor-mode~ is enabled
+- ~supervisor-timer-subsystem-mode~ is enabled
+
+If gate is inactive, timer scheduler side effects do not run.
+
+** Timer Configuration (~supervisor-timers~)
+
+Each timer is a plist.
+
+Required keys:
+
+- ~:id~ (non-empty string)
+- ~:target~ (non-empty string; must resolve to a ~oneshot~ service)
+
+Trigger keys (at least one required):
+
+- ~:on-calendar~
+- ~:on-startup-sec~
+- ~:on-unit-active-sec~
+
+Optional keys:
+
+- ~:enabled~ (boolean, default ~t~)
+- ~:persistent~ (boolean, default ~t~)
+
+#+begin_src emacs-lisp
+(setq supervisor-timers
+      '((:id "daily-backup"
+         :target "backup-oneshot"
+         :on-calendar (:hour 3 :minute 0)
+         :persistent t)
+        (:id "warm-cache"
+         :target "cache-prime"
+         :on-startup-sec 45)
+        (:id "sync-loop"
+         :target "sync-oneshot"
+         :on-unit-active-sec 300)))
+#+end_src
+
+** Calendar Trigger Format
+
+~:on-calendar~ accepts either:
+
+- single plist, or
+- list of plists (earliest next match wins)
+
+Allowed fields:
+
+- ~:minute~ (0..59)
+- ~:hour~ (0..23)
+- ~:day-of-month~ (1..31)
+- ~:month~ (1..12)
+- ~:day-of-week~ (0..6)
+
+Field values:
+
+- integer
+- non-empty list of integers
+- ~*~ wildcard
+
+Semantics:
+
+- next run is computed strictly after current time
+- day-by-day search with bounded horizon (28-year cycle coverage)
+- DST gaps are handled by validating encoded/decoded wall clock fields
+
+** Trigger Semantics
+
+~:on-startup-sec~:
+
+- positive integer seconds after scheduler startup
+- fires once per supervisor session
+
+~:on-unit-active-sec~:
+
+- positive integer seconds after last successful target completion
+
+Combined timers:
+
+- scheduler chooses earliest due trigger among configured trigger types
+
+** Overlap, Disable, and Missing-Target Behavior
+
+When due:
+
+- Disabled timer -> skipped, miss reason ~disabled~
+- Active target oneshot -> skipped, miss reason ~overlap~
+- Disabled target service -> skipped, miss reason ~disabled-target~
+- Missing target entry -> warning, no trigger
+
+Miss metadata is stored in timer state.
+
+** Retry Policy
+
+Configured by ~supervisor-timer-retry-intervals~ (default ~'(30 120 600)~).
+
+- Retryable failures: positive exit codes only
+- Non-retryable: signal deaths (negative stored exit codes), nil, and zero
+- Retry budget resets on fresh scheduled runs
+
+** Catch-up Policy
+
+Configured by:
+
+- ~:persistent~ per timer (default ~t~)
+- ~supervisor-timer-catch-up-limit~ in seconds (default 24h)
+
+On scheduler start, persistent timers may trigger catch-up runs for missed
+schedules within the configured window.
+
+** Timer Persistence
+
+Timer runtime state file: ~supervisor-timer-state-file~.
+
+- Atomic writes (temp + rename)
+- Schema versioned
+- Newer incompatible schema versions are rejected
+- Stale timer IDs are pruned when scheduler starts
+
+Persisted keys include:
+
+- ~:last-run-at~
+- ~:last-success-at~
+- ~:last-failure-at~
+- ~:last-exit~
+- ~:last-missed-at~
+- ~:last-miss-reason~
+
+Transient keys (for example ~:next-run-at~, retry bookkeeping, startup-consumed
+state) are recomputed each session.
+
+** Timer Scheduler Lifecycle
+
+- Started after all service stages complete
+- Stopped on ~supervisor-stop~, ~supervisor-stop-now~, and when timer mode is disabled
+- Uses ~run-at-time~ scheduling (no polling loop)
+
+** Timer Visibility Surfaces
+
+Dashboard:
+
+- Timer section is shown only when
+- ~supervisor-dashboard-show-timers~ is non-nil
+- timer subsystem is active
+- there are timer rows or invalid timer definitions
+
+CLI:
+
+- ~supervisorctl timers~ shows timer runtime/invalid definitions
+- If subsystem is gated off, command returns explicit disabled status
+
+<<dashboard-handbook-m-x-supervisor>>
+* Dashboard Handbook (~M-x supervisor~)
+
+Dashboard buffer: ~*supervisor*~, major mode ~supervisor-dashboard-mode~
+(derived from ~tabulated-list-mode~).
+
+** Service Columns
 
 - ~ID~
 - ~Type~
@@ -438,7 +527,7 @@ Rows and header are built from a shared runtime snapshot per refresh.
 - ~PID~
 - ~Reason~
 
-*** Status Values
+** Service Status Values
 
 - ~running~
 - ~done~
@@ -448,7 +537,7 @@ Rows and header are built from a shared runtime snapshot per refresh.
 - ~stopped~
 - ~invalid~
 
-*** Reason Values
+** Service Reason Values
 
 - ~disabled~
 - ~delayed~
@@ -458,81 +547,183 @@ Rows and header are built from a shared runtime snapshot per refresh.
 - ~stage-timeout~
 - ~crash-loop~
 
-*** Dashboard Keys
+** Timer Rows in Dashboard
 
-| Key | Action |
+Timer rows are informational and use timer runtime state.
+
+Timer row status values:
+
+- ~active~ (target currently running)
+- ~done~ (last exit ~0~)
+- ~failed~ (last exit non-zero)
+- ~pending~ (no completion yet)
+
+Timer reason column shows either:
+
+- ~missed: <reason>~, or
+- ~next: <relative time>~
+
+** Dashboard Keymap
+
+| Key | Function |
 | ~e~ | Toggle enabled override |
 | ~f~ | Cycle stage filter |
 | ~t~ | Cycle tag filter |
-| ~s~ | Start entry |
-| ~k~ | Kill entry (confirm) |
-| ~K~ | Kill entry (no confirm) |
+| ~s~ | Start selected service |
+| ~k~ | Kill selected service (confirm) |
+| ~K~ | Kill selected service (force) |
 | ~r~ | Toggle restart override |
 | ~l~ | Toggle logging override |
-| ~L~ | View entry log file |
+| ~L~ | Open selected service log file |
 | ~p~ | Open ~proced~ |
 | ~P~ | Toggle proced auto-update |
-| ~d~ | Show dependency info for entry |
+| ~d~ | Show dependencies for selected service |
 | ~D~ | Show full dependency graph |
 | ~B~ | Show startup blame timings |
 | ~g~ | Refresh dashboard |
-| ~G~ | Toggle dashboard auto-refresh |
-| ~?~ | Open action menu (transient) |
-| ~i~ | Show entry details (~C-u i~ shows status legend) |
-| ~h~ | Open full dashboard help |
+| ~G~ | Toggle auto-refresh |
+| ~?~ | Open transient action menu |
+| ~i~ | Describe row (~C-u i~ shows status legend) |
+| ~h~ | Open dashboard help buffer |
 | ~q~ | Quit dashboard |
 
 Notes:
 
-- separator rows reject process actions with user error
-- dependency graph and blame need startup metadata from ~supervisor-start~
-- invalid entries are shown when stage filter is not active
-- ~?~ requires ~transient~; if missing, dashboard reports a user error
+- Separator rows reject service actions.
+- ~?~ requires the ~transient~ package.
+- Full ID is echoed in minibuffer when current row ID exceeds table width.
 
-** Logging
+<<cli-handbook-sbinsupervisorctl>>
+* CLI Handbook (~sbin/supervisorctl~)
 
-Two logging layers exist:
+The shell wrapper is transport-only; behavior is implemented in
+~supervisor-cli.el~ dispatchers.
 
-- Supervisor-level log (~supervisor.log~) controlled by ~supervisor-log-to-file~
-- Per-process logs ~log-<id>.log~ controlled by entry/effective logging
+** Wrapper Syntax
 
-On session start, existing per-process ~log-*.log~ files are rotated to timestamped names.
+#+begin_src bash
+sbin/supervisorctl [WRAPPER-OPTIONS] COMMAND [COMMAND-ARGS]
+#+end_src
 
-** Config File Watch
+** Wrapper Options
 
-~supervisor-watch-config~ options:
+| Option | Notes |
+| ~--help~, ~-h~ | Show wrapper help |
+| ~--json~ | Request JSON output from CLI dispatcher |
+| ~--socket NAME~, ~--socket-name NAME~, ~-s NAME~ | Use specific local socket |
+| ~--server-file PATH~, ~-f PATH~ | Use server file transport |
+| ~--timeout N~, ~-t N~ | Pass wait timeout to ~emacsclient -w~ |
 
-- ~nil~: disabled
-- ~t~: watch ~user-init-file~
-- string path: watch that file
+Wrapper transport rules:
 
-On file change, reload is debounced by 1 second, then ~supervisor-reload~ runs.
-~supervisor-mode~ starts/stops watching automatically.
+- ~--socket~ and ~--server-file~ are mutually exclusive.
+- ~--server-file~ emits a TCP transport warning.
 
-** Structured Events And Hooks
+** CLI Commands
 
-*** Built-in Messages vs Hooks
+Lifecycle:
 
-Core logs stage lifecycle to ~*Messages*~ automatically (~Supervisor: stageN starting/complete~). No hook needed.
+- ~status [ID...]~
+- ~list [ID...]~ (alias of ~status~)
+- ~describe ID~
+- ~start [-- ID...]~
+- ~stop [-- ID...]~
+- ~restart [-- ID...]~
+- ~reload~
+- ~validate~
 
-Hooks are for automation and integration:
+Overrides and policy:
 
-- trigger external actions (notifications, commands)
-- log failures to custom destinations
-- react to process exits
-- integrate with other packages
+- ~enable [--] ID...~
+- ~disable [--] ID...~
+- ~restart-policy (on|off) [--] ID...~
+- ~logging (on|off) [--] ID...~
 
-Do not use hooks to re-log what core already emits.
+Inspection and utilities:
 
-*** Unified Event Hook
+- ~blame~
+- ~graph [ID]~
+- ~logs [--tail N] [--] ID~
+- ~kill [--signal SIG] [--] ID~
+- ~ping~
+- ~version~
+- ~timers~
 
-~supervisor-event-hook~ receives one plist argument:
+Use ~--~ before IDs that start with ~-~ for commands that accept positional
+IDs.
 
-- ~:type~ event type symbol
-- ~:ts~ float timestamp
-- ~:id~ process ID or ~nil~
-- ~:stage~ stage symbol or ~nil~
-- ~:data~ event-specific payload plist
+** Command Notes
+
+~validate~:
+
+- returns exit code ~4~ if service or timer validation errors exist
+- returns both service and timer invalid sets
+
+~start~, ~stop~, ~restart~:
+
+- with IDs: operate on those IDs
+- with no IDs: operate on whole supervisor (~start~, ~stop-now~, ~stop-now+start~)
+
+~graph~:
+
+- no ID: full edge list
+- with ID: after/requires/blocks for that ID
+
+~timers~:
+
+- explicit disabled response when timer subsystem is gated off
+
+** Output Formats
+
+Human format is default.
+
+~--json~ returns stable object structures per command (for example status,
+validate, graph, timers).
+
+Status JSON top-level keys:
+
+- ~entries~ (array)
+- ~invalid~ (array)
+
+Timer JSON top-level keys:
+
+- ~timers~ (array)
+- ~invalid~ (array)
+
+Validation JSON top-level keys:
+
+- ~services~ with ~valid~, ~invalid~, ~errors~
+- ~timers~ with ~valid~, ~invalid~, ~errors~
+
+Error JSON shape (for argument/runtime errors):
+
+- ~error~ (boolean)
+- ~message~ (string)
+- ~exitcode~ (integer)
+
+Empty collections are encoded as arrays (not ~null~).
+
+** Exit Codes
+
+| Code | Meaning |
+| ~0~ | Success |
+| ~1~ | Runtime failure |
+| ~2~ | Invalid arguments |
+| ~3~ | Emacs server unavailable |
+| ~4~ | Validation failed |
+
+<<events-and-hooks>>
+* Events and Hooks
+
+** Unified Event Hook
+
+~supervisor-event-hook~ receives one plist per event:
+
+- ~:type~ (symbol)
+- ~:ts~ (float timestamp)
+- ~:id~ (string or ~nil~)
+- ~:stage~ (symbol or ~nil~)
+- ~:data~ (plist)
 
 Event types:
 
@@ -543,102 +734,239 @@ Event types:
 - ~process-exit~
 - ~process-failed~
 - ~cleanup~
+- ~timer-trigger~
+- ~timer-overlap~
+- ~timer-success~
+- ~timer-failure~
 
-~process-ready~ semantics:
+** Legacy Compatibility Hooks
 
-- simple process spawned and ready
-- oneshot exited (success/failure) or timed out
-- not emitted for disabled entries
-- not emitted for failed spawn attempts
-
-*** Legacy Hooks (Compatibility)
-
-Legacy hooks are still supported and dispatched by the event adapter:
+Still supported and dispatched from event adapter:
 
 - ~supervisor-cleanup-hook~
 - ~supervisor-stage-start-hook~
 - ~supervisor-stage-complete-hook~
-- ~supervisor-process-exit-hook~ (~id status code~)
+- ~supervisor-process-exit-hook~ (~id~, ~status~, ~code~)
 
-~supervisor-process-exit-hook~ status values:
+<<persistence-and-files>>
+* Persistence and Files
 
-- ~exited~
-- ~signal~
-- ~unknown~
+** Log Files
 
-** Customization Variables
+- Supervisor-level log file (optional):
+- ~<supervisor-log-directory>/supervisor.log~ (controlled by ~supervisor-log-to-file~)
+- Per-process logs:
+- ~<supervisor-log-directory>/log-<id>.log~ (controlled per service logging policy)
+
+Existing ~log-*.log~ files are rotated on ~supervisor-start~.
+
+** Overrides File
+
+- Path: ~supervisor-overrides-file~
+- Default: ~${XDG_STATE_HOME}/supervisor/overrides.eld~ if ~XDG_STATE_HOME~ is
+  set, otherwise ~~/.local/state/supervisor/overrides.eld~
+- Format: schema-versioned Elisp data
+
+** Timer State File
+
+- Path: ~supervisor-timer-state-file~
+- Default: ~${XDG_STATE_HOME}/supervisor/timer-state.eld~ if ~XDG_STATE_HOME~ is
+  set, otherwise ~~/.local/state/supervisor/timer-state.eld~
+- Active only when timer subsystem is active
+
+<<customization-reference>>
+* Customization Reference
+
+All user options (defcustom) are listed below.
+
+** Core Options
 
 | Variable | Default | Purpose |
-| ~supervisor-programs~ | ~nil~ | Entry list to supervise |
-| ~supervisor-log-directory~ | ~~/.emacs.d/supervisor/~ | Directory for logs |
-| ~supervisor-restart-delay~ | ~2~ | Delay before restart |
+| ~supervisor-programs~ | ~nil~ | Service definition list |
+| ~supervisor-timers~ | ~nil~ | Timer definition list |
+| ~supervisor-log-directory~ | ~(expand-file-name "supervisor" user-emacs-directory)~ | Log directory |
+| ~supervisor-restart-delay~ | ~2~ | Restart delay (seconds) |
 | ~supervisor-max-restarts~ | ~3~ | Crash-loop threshold |
 | ~supervisor-restart-window~ | ~60~ | Crash-loop time window (seconds) |
-| ~supervisor-shutdown-timeout~ | ~3~ | Graceful stop timeout before SIGKILL |
-| ~supervisor-oneshot-default-wait~ | ~t~ | Default blocking mode for oneshots |
+| ~supervisor-shutdown-timeout~ | ~3~ | Graceful shutdown timeout |
+| ~supervisor-oneshot-default-wait~ | ~t~ | Default oneshot blocking behavior |
 | ~supervisor-oneshot-timeout~ | ~30~ | Default oneshot timeout |
-| ~supervisor-stage-timeout~ | ~nil~ | Optional per-stage timeout |
-| ~supervisor-max-concurrent-starts~ | ~nil~ | Optional start concurrency limit |
+| ~supervisor-stage-timeout~ | ~nil~ | Per-stage timeout |
+| ~supervisor-max-concurrent-starts~ | ~nil~ | Max concurrent stage spawns |
 | ~supervisor-verbose~ | ~nil~ | Show info-level messages |
-| ~supervisor-log-to-file~ | ~nil~ | Enable supervisor-level log file |
-| ~supervisor-watch-config~ | ~nil~ | Config file watch and auto-reload |
-| ~supervisor-stage-descriptions~ | ~((stage1 . "X Setup") (stage2 . "System") (stage3 . "Services") (stage4 . "Applets"))~ | Stage labels in grouped dashboard |
-| ~supervisor-dashboard-group-by-stage~ | ~t~ | Show stage separator rows |
-| ~supervisor-dashboard-show-header-hints~ | ~nil~ | Show key hints in dashboard header |
-| ~supervisor-auto-refresh-interval~ | ~2~ | Dashboard live-refresh interval |
-| ~supervisor-overrides-file~ | ~~/.local/state/supervisor/overrides.eld~ | Override persistence file (nil to disable) |
+| ~supervisor-log-to-file~ | ~nil~ | Write supervisor events to file |
+| ~supervisor-watch-config~ | ~nil~ | Config file watch/reload |
+| ~supervisor-overrides-file~ | ~(XDG_STATE_HOME or ~/.local/state)/supervisor/overrides.eld~ | Override persistence path |
 
-** Security
+** Timer Options
 
-*** Scope and Trust Model
+| Variable | Default | Purpose |
+| ~supervisor-timer-state-file~ | ~(XDG_STATE_HOME or ~/.local/state)/supervisor/timer-state.eld~ | Timer state persistence path |
+| ~supervisor-timer-retry-intervals~ | ~'(30 120 600)~ | Retry schedule |
+| ~supervisor-timer-catch-up-limit~ | ~(* 24 60 60)~ | Catch-up lookback window |
 
-This is a user-session supervisor, not a hardened system init.  The CLI
-control plane (~supervisorctl~) uses ~emacsclient --eval~ to execute Elisp
-on the Emacs server.  Any principal that can connect to the server socket
-can execute arbitrary code as the Emacs user.
+** Dashboard Options
 
-Trust boundary: the Emacs server socket is the security perimeter.
+| Variable | Default | Purpose |
+| ~supervisor-stage-descriptions~ | ~((stage1 . "X Setup") (stage2 . "System") (stage3 . "Services") (stage4 . "Applets"))~ | Stage labels |
+| ~supervisor-dashboard-group-by-stage~ | ~t~ | Group rows by stage |
+| ~supervisor-dashboard-show-header-hints~ | ~nil~ | Show header key hint line |
+| ~supervisor-dashboard-show-timers~ | ~t~ | Show timer section |
+| ~supervisor-auto-refresh-interval~ | ~2~ | Auto-refresh cadence |
 
-*** Threat Model
+<<command-reference>>
+* Command Reference
 
-| Threat | Mitigation |
-| Local unprivileged user on same host | Unix socket permissions (Emacs creates socket dir mode 0700) |
-| Compromised process as same user | Out of scope - same-user access is trusted |
-| Misconfigured TCP server exposure | Use local sockets; if TCP required, bind localhost only |
+** Interactive Emacs Commands
 
-*** Assumptions
+| Command | Purpose |
+| ~M-x supervisor-mode~ | Global supervisor mode (start/stop + file watch) |
+| ~M-x supervisor-timer-subsystem-mode~ | Toggle experimental timer subsystem gate |
+| ~M-x supervisor-start~ | Build plan and start staged scheduler |
+| ~M-x supervisor-stop~ | Async graceful stop |
+| ~M-x supervisor-stop-now~ | Sync hard stop |
+| ~M-x supervisor-reload~ | Reconcile running state against config |
+| ~M-x supervisor-validate~ | Validate config without start |
+| ~M-x supervisor-dry-run~ | Show execution plan without start |
+| ~M-x supervisor-migrate-config~ | Emit canonical schema v1 config |
+| ~M-x supervisor-overrides-load~ | Load overrides from disk |
+| ~M-x supervisor-overrides-save~ | Save overrides to disk |
+| ~M-x supervisor-overrides-clear~ | Clear overrides in memory + file |
+| ~M-x supervisor~ | Open dashboard |
 
-This package assumes default Emacs server behavior:
+** Dashboard Interactive Commands
 
-- Socket directory created with mode 0700 (owner-only access)
-- No TCP server enabled unless explicitly configured
+| Command | Purpose |
+| ~M-x supervisor-dashboard-refresh~ | Refresh dashboard buffer |
+| ~M-x supervisor-dashboard-cycle-filter~ | Cycle stage filter |
+| ~M-x supervisor-dashboard-cycle-tag-filter~ | Cycle tag filter |
+| ~M-x supervisor-dashboard-describe-entry~ | Describe selected row |
+| ~M-x supervisor-dashboard-help~ | Open dashboard help |
+| ~M-x supervisor-dashboard-toggle-auto-refresh~ | Toggle auto-refresh |
+| ~M-x supervisor-dashboard-quit~ | Quit dashboard |
+| ~M-x supervisor-dashboard-toggle-restart~ | Toggle restart override |
+| ~M-x supervisor-dashboard-toggle-enabled~ | Toggle enabled override |
+| ~M-x supervisor-dashboard-kill~ | Kill selected service (confirm) |
+| ~M-x supervisor-dashboard-kill-force~ | Kill selected service (no confirm) |
+| ~M-x supervisor-dashboard-start~ | Start selected service |
+| ~M-x supervisor-dashboard-toggle-logging~ | Toggle logging override |
+| ~M-x supervisor-dashboard-view-log~ | Open selected service log |
+| ~M-x supervisor-dashboard-toggle-proced-auto-update~ | Toggle proced auto-update |
+| ~M-x supervisor-dashboard-show-deps~ | Show selected service deps |
+| ~M-x supervisor-dashboard-blame~ | Show startup timing view |
+| ~M-x supervisor-dashboard-show-graph~ | Show full dependency graph |
+| ~M-x supervisor-dashboard-menu-open~ | Open transient menu |
 
-Custom ~server-auth-dir~, ~server-socket-dir~, or TCP server configurations
-are the operator's responsibility to secure.  The wrapper does not validate
-filesystem permissions on these paths.
+<<indexes>>
+* Indexes
 
-*** Secure Deployment
+These indexes are intentionally redundant for searchability.
 
-Recommended (local socket):
+** Index: Entry Keywords
 
-#+begin_src bash
-# Default behavior - uses local Unix socket
-supervisorctl status
-#+end_src
+- ~:id~
+- ~:type~
+- ~:stage~
+- ~:delay~
+- ~:after~
+- ~:requires~
+- ~:enabled~
+- ~:disabled~
+- ~:restart~
+- ~:no-restart~
+- ~:logging~
+- ~:oneshot-wait~
+- ~:async~
+- ~:oneshot-timeout~
+- ~:tags~
 
-If TCP is required:
+** Index: Timer Keywords
 
-- Bind to localhost only: ~(setq server-host "127.0.0.1")~
-- Keep ~server-auth-dir~ private (mode 0700)
-- Use explicit ~--server-file~ rather than ambient environment
+- ~:id~
+- ~:target~
+- ~:enabled~
+- ~:persistent~
+- ~:on-calendar~
+- ~:on-startup-sec~
+- ~:on-unit-active-sec~
+- ~:minute~
+- ~:hour~
+- ~:day-of-month~
+- ~:month~
+- ~:day-of-week~
 
-For system-level deployments:
+** Index: CLI Commands
 
-- Run Emacs under a dedicated service account
-- Restrict socket directory permissions
-- Consider MAC policy (SELinux/AppArmor) for socket access
+- ~status~
+- ~list~
+- ~describe~
+- ~start~
+- ~stop~
+- ~restart~
+- ~reload~
+- ~validate~
+- ~enable~
+- ~disable~
+- ~restart-policy~
+- ~logging~
+- ~blame~
+- ~graph~
+- ~logs~
+- ~kill~
+- ~ping~
+- ~version~
+- ~timers~
 
-** Development Commands
+** Index: Customization Variables
+
+- ~supervisor-programs~
+- ~supervisor-timers~
+- ~supervisor-log-directory~
+- ~supervisor-restart-delay~
+- ~supervisor-max-restarts~
+- ~supervisor-restart-window~
+- ~supervisor-shutdown-timeout~
+- ~supervisor-oneshot-default-wait~
+- ~supervisor-oneshot-timeout~
+- ~supervisor-stage-timeout~
+- ~supervisor-max-concurrent-starts~
+- ~supervisor-verbose~
+- ~supervisor-log-to-file~
+- ~supervisor-watch-config~
+- ~supervisor-overrides-file~
+- ~supervisor-timer-state-file~
+- ~supervisor-timer-retry-intervals~
+- ~supervisor-timer-catch-up-limit~
+- ~supervisor-stage-descriptions~
+- ~supervisor-dashboard-group-by-stage~
+- ~supervisor-dashboard-show-header-hints~
+- ~supervisor-dashboard-show-timers~
+- ~supervisor-auto-refresh-interval~
+
+** Index: Hook Variables
+
+- ~supervisor-event-hook~
+- ~supervisor-cleanup-hook~
+- ~supervisor-stage-start-hook~
+- ~supervisor-stage-complete-hook~
+- ~supervisor-process-exit-hook~
+
+<<security>>
+* Security
+
+~supervisorctl~ uses ~emacsclient --eval~. Any principal that can connect to
+your Emacs server can execute code as your Emacs user.
+
+Security boundary: your Emacs server socket/server-file access controls.
+
+Practical guidance:
+
+- Prefer local socket transport.
+- Use ~--server-file~ only when you intentionally operate server-file/TCP mode.
+- Keep server auth/socket directories private (owner-only permissions).
+
+<<development>>
+* Development
 
 #+begin_src bash
 make check
@@ -647,6 +975,13 @@ make test
 make test-one TEST=supervisor-test-parse-string-entry
 #+end_src
 
-** License
+Interactive load:
+
+#+begin_src bash
+emacs -Q -l supervisor.el
+#+end_src
+
+<<license>>
+* License
 
 GPL-3.0-or-later. See ~LICENSE~.
