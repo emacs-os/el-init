@@ -329,6 +329,58 @@ On file change, reload is debounced by 1 second, then `supervisor-reload` runs.
 
 ** Structured Events And Hooks
 
+*** Built-in Messages (No Hook Needed)
+
+Supervisor logs stage lifecycle messages to `*Messages*` automatically:
+
+#+begin_example
+Supervisor: stage1 starting
+Supervisor: stage1 complete
+Supervisor: stage2 starting
+...
+#+end_example
+
+You do not need hooks to see these. They are always emitted by core.
+
+*** When To Use Hooks
+
+Hooks are for *automation and integration*, not display. Use them when you need to:
+
+- trigger external actions (send notification, run command, update UI)
+- log failures to a custom destination
+- react to specific process exits
+- integrate with other Emacs packages
+
+Do *not* use hooks to duplicate what core already logs. This creates duplicate messages.
+
+**** Good: React to failures
+
+#+begin_src emacs-lisp
+(add-hook 'supervisor-event-hook
+          (lambda (event)
+            (pcase (plist-get event :type)
+              ('process-failed
+               (message "FAILED: %s" (plist-get event :id)))
+              ('process-exit
+               (let ((code (plist-get (plist-get event :data) :code)))
+                 (unless (eq code 0)
+                   (message "%s exited with code %s"
+                            (plist-get event :id) code)))))))
+#+end_src
+
+**** Bad: Duplicate stage messages
+
+#+begin_src emacs-lisp
+;; DON'T DO THIS - core already logs stage transitions
+(add-hook 'supervisor-event-hook
+          (lambda (event)
+            (pcase (plist-get event :type)
+              ('stage-start
+               (message "Starting %s" (plist-get event :stage)))  ; duplicate!
+              ('stage-complete
+               (message "Completed %s" (plist-get event :stage))))))  ; duplicate!
+#+end_src
+
 *** Unified Event Hook
 
 `supervisor-event-hook` receives one plist argument:
