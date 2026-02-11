@@ -92,6 +92,11 @@
   "Face for oneshot process type in dashboard."
   :group 'supervisor)
 
+(defface supervisor-type-timer
+  '((t :foreground "#98d8c8"))
+  "Face for timer type in dashboard."
+  :group 'supervisor)
+
 (defface supervisor-stage-1
   '((t :foreground "#ff6b6b"))
   "Face for stage1 in dashboard."
@@ -151,6 +156,11 @@ Used in dashboard stage separators for better readability."
   "When non-nil, show key hints in dashboard header line.
 When nil (default), the header shows only the health summary.
 Press \\`h' in the dashboard for full keybinding help."
+  :type 'boolean
+  :group 'supervisor)
+
+(defcustom supervisor-dashboard-show-timers t
+  "When non-nil, show timers section in dashboard after services."
   :type 'boolean
   :group 'supervisor)
 
@@ -359,6 +369,85 @@ If SNAPSHOT is provided, read runtime state from it."
                 ""
               (propertize reason 'face 'supervisor-reason)))))
 
+(defun supervisor--format-timer-relative-time (timestamp)
+  "Format TIMESTAMP as relative time for dashboard display."
+  (if (null timestamp)
+      "-"
+    (let* ((now (float-time))
+           (diff (- now timestamp))
+           (abs-diff (abs diff))
+           (suffix (if (> diff 0) " ago" ""))
+           (prefix (if (< diff 0) "in " "")))
+      (cond
+       ((< abs-diff 60) (format "%s%ds%s" prefix (round abs-diff) suffix))
+       ((< abs-diff 3600) (format "%s%dm%s" prefix (round (/ abs-diff 60)) suffix))
+       ((< abs-diff 86400) (format "%s%dh%s" prefix (round (/ abs-diff 3600)) suffix))
+       (t (format "%s%dd%s" prefix (round (/ abs-diff 86400)) suffix))))))
+
+(defun supervisor--make-timer-separator ()
+  "Create a separator row for the Timers section."
+  (let ((label (propertize "── Timers "
+                           'face 'supervisor-stage-separator)))
+    (list '--timers--
+          (vector label "" "" "" "" "" "" "" ""))))
+
+(defun supervisor--make-timer-dashboard-entry (timer)
+  "Create a dashboard entry vector for TIMER."
+  (let* ((id (supervisor-timer-id timer))
+         (target (supervisor-timer-target timer))
+         (enabled (supervisor-timer-enabled timer))
+         (state (gethash id supervisor--timer-state))
+         (next-run (plist-get state :next-run-at))
+         (last-exit (plist-get state :last-exit))
+         (miss-reason (plist-get state :last-miss-reason))
+         ;; Compute status: pending, active (target running), or based on last result
+         (target-active (supervisor--timer-target-active-p timer))
+         (status (cond
+                  (target-active "active")
+                  ((and last-exit (= last-exit 0)) "done")
+                  ((and last-exit (> last-exit 0)) "failed")
+                  (t "pending")))
+         ;; Reason shows next run time or last miss
+         (reason (cond
+                  (miss-reason (format "missed: %s" miss-reason))
+                  (next-run (format "next: %s"
+                                    (supervisor--format-timer-relative-time next-run)))
+                  (t "-"))))
+    (vector (propertize id 'face 'supervisor-type-timer)
+            (propertize "timer" 'face 'supervisor-type-timer)
+            (propertize target 'face 'supervisor-type-oneshot)
+            (propertize (if enabled "yes" "no")
+                        'face (if enabled
+                                  'supervisor-enabled-yes
+                                'supervisor-enabled-no))
+            (supervisor--propertize-status status)
+            "-"  ; restart (N/A for timers)
+            "-"  ; logging (N/A for timers)
+            "-"  ; PID (N/A for timers)
+            (if (string-empty-p reason)
+                ""
+              (propertize reason 'face 'supervisor-reason)))))
+
+(defun supervisor--get-timer-entries ()
+  "Generate timer entries for the dashboard.
+Returns list of (id vector) pairs."
+  (let ((entries nil))
+    (dolist (timer supervisor--timer-list)
+      (let ((id (supervisor-timer-id timer)))
+        (push (list id (supervisor--make-timer-dashboard-entry timer)) entries)))
+    ;; Also show invalid timers
+    (maphash (lambda (id reason)
+               (push (list id
+                           (vector (propertize id 'face 'supervisor-status-invalid)
+                                   (propertize "timer" 'face 'supervisor-type-timer)
+                                   "-" "-"
+                                   (supervisor--propertize-status "invalid")
+                                   "-" "-" "-"
+                                   (propertize reason 'face 'supervisor-reason)))
+                     entries))
+             supervisor--invalid-timers)
+    (nreverse entries)))
+
 (defun supervisor--group-entries-by-stage (entries)
   "Group ENTRIES by stage with separator rows.
 ENTRIES is a list of (id vector stage) tuples."
@@ -418,9 +507,20 @@ If SNAPSHOT is provided, read runtime state from it."
                             stage)
                       entries)))))))
     (setq entries (nreverse entries))
-    (if (and supervisor-dashboard-group-by-stage (null stage-filter))
-        (supervisor--group-entries-by-stage entries)
-      (mapcar (lambda (e) (list (car e) (cadr e))) entries))))
+    (let ((final-entries
+           (if (and supervisor-dashboard-group-by-stage (null stage-filter))
+               (supervisor--group-entries-by-stage entries)
+             (mapcar (lambda (e) (list (car e) (cadr e))) entries))))
+      ;; Append timers section if enabled and no stage filter active
+      (when (and supervisor-dashboard-show-timers
+                 (null stage-filter)
+                 (or supervisor--timer-list
+                     (> (hash-table-count supervisor--invalid-timers) 0)))
+        (setq final-entries
+              (append final-entries
+                      (list (supervisor--make-timer-separator))
+                      (supervisor--get-timer-entries))))
+      final-entries)))
 
 (defun supervisor--health-summary (&optional snapshot)
   "Return compact health summary string.
