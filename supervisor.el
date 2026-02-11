@@ -235,7 +235,7 @@ Used in dashboard stage separators for better readability."
 
 (defcustom supervisor-dashboard-show-header-hints nil
   "When non-nil, show key hints in dashboard header line.
-When nil (default), the header shows only stage progress and health summary.
+When nil (default), the header shows only the health summary.
 Press \\`h' in the dashboard for full keybinding help."
   :type 'boolean
   :group 'supervisor)
@@ -696,12 +696,12 @@ to legacy hooks for backward compatibility."
                      :data data)))
     ;; Run unified event hook
     (run-hook-with-args 'supervisor-event-hook event)
-    ;; Log stage transitions to *Messages*
+    ;; Log stage transitions to *Messages* (always visible, not debug info)
     (pcase type
       ('stage-start
-       (supervisor--log 'info "stage %s starting" stage))
+       (supervisor--log 'warning "stage %s starting" stage))
       ('stage-complete
-       (supervisor--log 'info "stage %s complete" stage)))
+       (supervisor--log 'warning "stage %s complete" stage)))
     ;; Dispatch to legacy hooks for backward compatibility
     (pcase type
       ('stage-start
