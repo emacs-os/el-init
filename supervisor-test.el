@@ -3008,6 +3008,13 @@ When from-time is exactly at a matching minute boundary, should return next occu
 On March 9, 2025 in America/New_York, 2:00-2:59 AM doesn't exist (spring forward).
 Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
   (let ((process-environment (cons "TZ=America/New_York" process-environment)))
+    ;; Skip test if TZ setting doesn't take effect (CI may lack timezone data)
+    ;; In America/New_York, 2:30 AM on March 9 2025 doesn't exist due to DST.
+    ;; encode-time will shift it to 3:30 AM. If it stays at 2:30, TZ isn't working.
+    (let* ((test-time (encode-time 0 30 2 9 3 2025))
+           (test-decoded (decode-time test-time)))
+      ;; If DST is working, hour should be 3 (shifted from non-existent 2:30)
+      (skip-unless (= 3 (decoded-time-hour test-decoded))))
     ;; From March 9, 2025 00:00:00 (before DST transition)
     (let* ((from (encode-time 0 0 0 9 3 2025))
            (next (supervisor-timer--calendar-next-minute
