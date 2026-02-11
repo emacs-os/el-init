@@ -30,6 +30,18 @@ Required mode contract:
 - If `supervisor-mode` is disabled, timer subsystem behavior must be a no-op even if
   `supervisor-timer-subsystem-mode` is non-nil.
 
+Required modularization contract (MUST):
+
+- Extract timer subsystem implementation into a dedicated module file
+  (for example `supervisor-timer.el`).
+- Keep timer concerns owned by that module: timer schema/validation, calendar
+  computation, scheduler loop, retry/catch-up logic, timer state, and timer
+  persistence.
+- Keep `supervisor-core.el` as orchestrator/integration layer that calls the
+  timer module through a narrow internal API (start/stop/build/list/state hooks).
+- Timer subsystem experimental gating must be implemented in/through the module
+  boundary, not scattered ad hoc across unrelated files.
+
 Hard gating requirements (MUST):
 
 - When timer subsystem is gated off (or parent `supervisor-mode` is off), timer code must not:
@@ -54,6 +66,8 @@ Acceptance requirements (MUST test):
 - No timer state file I/O occurs while gated off.
 - Dashboard/CLI timer surfaces reflect disabled subsystem state.
 - Existing timer behavior tests remain valid under gate-on mode.
+- Module boundaries are respected: timer internals load from timer module and
+  core only depends on the timer module API surface.
 
 ## Design Decisions (Implemented)
 

@@ -1516,29 +1516,91 @@ DECODED-TIME is from `decode-time'.  CALENDAR is a plist with
          (or (null day-of-week)
              (supervisor--calendar-field-matches-p day-of-week (decoded-time-weekday decoded-time))))))
 
-(defun supervisor--calendar-next-minute (from-time calendar max-iterations)
-  "Find next time matching CALENDAR starting from FROM-TIME.
-Search at most MAX-ITERATIONS minutes into the future.
-Return timestamp or nil if not found within limit."
-  ;; Round FROM-TIME up to next minute boundary
+(defun supervisor--calendar-field-to-list (field min-val max-val)
+  "Convert calendar FIELD to sorted list of integers.
+FIELD can be *, an integer, or a list of integers.
+For *, returns range from MIN-VAL to MAX-VAL."
+  (sort (cond ((eq field '*) (number-sequence min-val max-val))
+              ((listp field) (copy-sequence field))
+              (t (list field)))
+        #'<))
+
+(defun supervisor--calendar-find-time-on-day (year month day cal-hour cal-minute min-hour min-minute)
+  "Find first time matching CAL-HOUR:CAL-MINUTE on YEAR-MONTH-DAY.
+YEAR, MONTH, and DAY specify the date to search.
+CAL-HOUR and CAL-MINUTE are calendar field specs (*, int, or list).
+Only consider times at or after MIN-HOUR:MIN-MINUTE.
+Return timestamp or nil if no valid time on this day.
+
+Handles DST gaps by validating that encoded time matches requested fields."
+  (when (< min-hour 24)
+    (let ((hours (supervisor--calendar-field-to-list cal-hour 0 23))
+          (minutes (supervisor--calendar-field-to-list cal-minute 0 59)))
+      ;; Filter to valid ranges (hour 0-23, minute 0-59)
+      (setq hours (cl-remove-if-not (lambda (h) (and (>= h 0) (<= h 23))) hours))
+      (setq minutes (cl-remove-if-not (lambda (m) (and (>= m 0) (<= m 59))) minutes))
+      (catch 'found
+        (dolist (h hours)
+          (when (>= h min-hour)
+            (let ((start-m (if (= h min-hour) min-minute 0)))
+              (dolist (m minutes)
+                (when (>= m start-m)
+                  ;; Encode the candidate time
+                  (let* ((candidate (encode-time 0 m h day month year))
+                         (decoded (decode-time candidate))
+                         (actual-hour (decoded-time-hour decoded))
+                         (actual-minute (decoded-time-minute decoded)))
+                    ;; DST gap check: verify encode-time didn't shift the time
+                    ;; (e.g., 2:30 AM on spring-forward day becomes 3:30 AM)
+                    (when (and (= actual-hour h) (= actual-minute m))
+                      (throw 'found (float-time candidate)))))))))
+        nil))))
+
+(defun supervisor--calendar-next-minute (from-time calendar max-days)
+  "Find next time matching CALENDAR starting strictly after FROM-TIME.
+Search at most MAX-DAYS days into the future.
+Return timestamp or nil if not found within limit.
+
+Uses day-by-day iteration for efficiency (vs minute-by-minute)."
   (let* ((decoded (decode-time from-time))
-         (base-time (encode-time
-                     0  ; seconds = 0
-                     (decoded-time-minute decoded)
-                     (decoded-time-hour decoded)
-                     (decoded-time-day decoded)
-                     (decoded-time-month decoded)
-                     (decoded-time-year decoded))))
-    ;; If we're past the minute boundary, advance to next minute
-    (when (> (float-time from-time) (float-time base-time))
-      (setq base-time (time-add base-time 60)))
-    ;; Search forward minute by minute
-    (cl-loop for i from 0 below max-iterations
-             for check-time = (time-add base-time (* i 60))
-             for decoded-check = (decode-time check-time)
-             when (supervisor--calendar-matches-time-p calendar decoded-check)
-             return (float-time check-time)
-             finally return nil)))
+         (from-year (decoded-time-year decoded))
+         (from-month (decoded-time-month decoded))
+         (from-day (decoded-time-day decoded))
+         (from-hour (decoded-time-hour decoded))
+         (from-min (decoded-time-minute decoded))
+         ;; Calendar constraints (default to * which matches anything)
+         (cal-hour (or (plist-get calendar :hour) '*))
+         (cal-minute (or (plist-get calendar :minute) '*))
+         (cal-month (or (plist-get calendar :month) '*))
+         (cal-dom (or (plist-get calendar :day-of-month) '*))
+         (cal-dow (or (plist-get calendar :day-of-week) '*)))
+    (catch 'found
+      (dotimes (day-offset max-days)
+        ;; Compute the date for this day
+        (let* ((day-time (encode-time 0 0 0 (+ from-day day-offset) from-month from-year))
+               (day-dec (decode-time day-time))
+               (year (decoded-time-year day-dec))
+               (month (decoded-time-month day-dec))
+               (day (decoded-time-day day-dec))
+               (dow (decoded-time-weekday day-dec)))
+          ;; Check day-level constraints
+          (when (and (supervisor--calendar-field-matches-p cal-month month)
+                     (supervisor--calendar-field-matches-p cal-dom day)
+                     (supervisor--calendar-field-matches-p cal-dow dow))
+            ;; Day matches - find first valid hour:minute
+            (let* ((is-from-day (= day-offset 0))
+                   ;; On first day, need time strictly after from-time
+                   (min-hour (if is-from-day from-hour 0))
+                   (min-minute (if is-from-day (1+ from-min) 0)))
+              ;; Handle minute overflow
+              (when (> min-minute 59)
+                (setq min-minute 0)
+                (setq min-hour (1+ min-hour)))
+              (let ((match-time (supervisor--calendar-find-time-on-day
+                                 year month day cal-hour cal-minute min-hour min-minute)))
+                (when match-time
+                  (throw 'found match-time)))))))
+      nil)))
 
 (defun supervisor--timer-next-calendar-time (timer from-time)
   "Compute next calendar trigger time for TIMER after FROM-TIME.
@@ -1546,15 +1608,17 @@ Return timestamp or nil if no calendar trigger configured."
   (let ((calendar (supervisor-timer-on-calendar timer)))
     (when calendar
       ;; Handle list of calendars - find earliest match
+      ;; Search limit: 28 years (10228 days) covers full leap-day + weekday cycle
+      ;; (Feb 29 on a specific weekday repeats every 28 years worst case)
       (if (and (listp calendar) (listp (car calendar)))
           ;; List of calendar plists
           (let ((times (cl-loop for cal in calendar
                                 for next = (supervisor--calendar-next-minute
-                                            from-time cal 525600) ; ~1 year
+                                            from-time cal 10228)
                                 when next collect next)))
             (when times (apply #'min times)))
         ;; Single calendar plist
-        (supervisor--calendar-next-minute from-time calendar 525600)))))
+        (supervisor--calendar-next-minute from-time calendar 10228)))))
 
 ;;; Monotonic Trigger Computation
 

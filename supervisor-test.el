@@ -2923,7 +2923,7 @@ Second valid occurrence should not activate when first invalid occurrence used t
   ;; From 2025-01-15 00:00:00, find next 03:30
   (let* ((from (encode-time 0 0 0 15 1 2025))
          (next (supervisor--calendar-next-minute
-                from '(:hour 3 :minute 30) 1440)))
+                from '(:hour 3 :minute 30) 2)))  ; 2 days max
     (should next)
     ;; Should be 03:30
     (let ((decoded (decode-time next)))
@@ -2935,8 +2935,65 @@ Second valid occurrence should not activate when first invalid occurrence used t
   ;; Looking for hour 25 (impossible) with small limit
   (let* ((from (encode-time 0 0 0 15 1 2025))
          (next (supervisor--calendar-next-minute
-                from '(:hour 25 :minute 0) 60)))
+                from '(:hour 25 :minute 0) 7)))  ; 7 days max
     (should-not next)))
+
+(ert-deftest supervisor-test-calendar-next-minute-leap-day ()
+  "Calendar next minute finds leap day across multi-year gap.
+From March 2025, next Feb 29 is in 2028 (~3 years away)."
+  (let* ((from (encode-time 0 0 0 1 3 2025))  ; 2025-03-01 00:00:00
+         (next (supervisor--calendar-next-minute
+                from '(:month 2 :day-of-month 29 :hour 0 :minute 0) 10228)))  ; 28 years
+    (should next)
+    (let ((decoded (decode-time next)))
+      (should (= 2028 (decoded-time-year decoded)))
+      (should (= 2 (decoded-time-month decoded)))
+      (should (= 29 (decoded-time-day decoded))))))
+
+(ert-deftest supervisor-test-calendar-next-minute-leap-day-weekday ()
+  "Calendar next minute finds leap day + weekday across long gap.
+From March 2025, next Feb 29 that is Sunday (dow=0) is in 2032 (~7 years away)."
+  (let* ((from (encode-time 0 0 0 1 3 2025))  ; 2025-03-01 00:00:00
+         (next (supervisor--calendar-next-minute
+                from '(:month 2 :day-of-month 29 :day-of-week 0 :hour 0 :minute 0) 10228)))
+    (should next)
+    (let ((decoded (decode-time next)))
+      (should (= 2032 (decoded-time-year decoded)))
+      (should (= 2 (decoded-time-month decoded)))
+      (should (= 29 (decoded-time-day decoded)))
+      ;; Verify it's actually Sunday (day-of-week 0)
+      (should (= 0 (decoded-time-weekday decoded))))))
+
+(ert-deftest supervisor-test-calendar-next-minute-strictly-after ()
+  "Calendar next minute returns time strictly after from-time.
+When from-time is exactly at a matching minute boundary, should return next occurrence."
+  ;; From 2025-01-15 03:30:00 exactly (matches :hour 3 :minute 30)
+  (let* ((from (encode-time 0 30 3 15 1 2025))
+         (next (supervisor--calendar-next-minute
+                from '(:hour 3 :minute 30) 2)))  ; 2 days max
+    (should next)
+    ;; Should be next day's 03:30, not the same time
+    (should (> next (float-time from)))
+    (let ((decoded (decode-time next)))
+      (should (= 16 (decoded-time-day decoded)))  ; Next day
+      (should (= 3 (decoded-time-hour decoded)))
+      (should (= 30 (decoded-time-minute decoded))))))
+
+(ert-deftest supervisor-test-calendar-next-minute-dst-gap ()
+  "Calendar next minute skips non-existent DST gap times.
+On March 9, 2025 in America/New_York, 2:00-2:59 AM doesn't exist (spring forward).
+Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
+  (let ((process-environment (cons "TZ=America/New_York" process-environment)))
+    ;; From March 9, 2025 00:00:00 (before DST transition)
+    (let* ((from (encode-time 0 0 0 9 3 2025))
+           (next (supervisor--calendar-next-minute
+                  from '(:hour 2 :minute 30) 7)))  ; 7 days max
+      (should next)
+      (let ((decoded (decode-time next)))
+        ;; Should be March 10 (next day), not March 9
+        (should (= 10 (decoded-time-day decoded)))
+        (should (= 2 (decoded-time-hour decoded)))
+        (should (= 30 (decoded-time-minute decoded)))))))
 
 (ert-deftest supervisor-test-timer-next-startup-time ()
   "Startup trigger computes time relative to scheduler start."
