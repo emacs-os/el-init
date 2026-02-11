@@ -65,11 +65,3 @@ Required PID 1 deployment paths (must choose one and implement it fully):
   managed child. This is the correct no-Emacs-patch path; Emacs is not PID 1.
 - Path B: patch Emacs to support a true PID 1 mode (global reaping plus safe
   signal handling) so Emacs itself is PID 1.
-
-Shim approach (preferred):
-- Implement a minimal PID 1 shim by repurposing core `sinit` code (only the
-  parts we need). The shim runs as PID 1, reaps all children, handles signals,
-  and launches Emacs as its managed child.
-- Explicit rule: if the shim is PID 1, Emacs is **not** PID 1. If the project
-  requires Emacs to be PID 1, the shim logic must be integrated into Emacs
-  (or Emacs must be patched to reap all children itself).
