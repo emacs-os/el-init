@@ -48,11 +48,12 @@ CI failures that pass locally often involve Emacs version differences (e.g., `wh
 All internal functions work with this parsed format, not raw config entries.
 
 ### Staged Startup Flow
-1. `supervisor-start` parses all entries and partitions by stage (stage1→stage2→stage3→stage4)
-2. `supervisor--start-stages-async` processes stages sequentially via continuation-passing
-3. Within each stage, `supervisor--dag-init` builds a dependency graph from `:after` declarations
-4. Entries with in-degree 0 start immediately; others wait for dependencies
-5. `supervisor--dag-mark-ready` is called when a process is ready (spawned for simple, exited for oneshot)
+1. `supervisor-start` builds a plan using `supervisor--build-plan` (pure, deterministic)
+2. Plan contains entries partitioned by stage (stage1→stage2→stage3→stage4), pre-sorted
+3. `supervisor--start-stages-from-plan` processes stages sequentially via continuation-passing
+4. Within each stage, `supervisor--dag-init` builds a dependency graph from `:after` declarations
+5. Entries with in-degree 0 start immediately; others wait for dependencies
+6. `supervisor--dag-mark-ready` is called when a process is ready (spawned for simple, exited for oneshot)
 
 ### Process Types
 - **simple**: Long-running daemons. "Ready" when spawned. Restarts on crash.

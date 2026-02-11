@@ -659,7 +659,8 @@ so full struct equality requires excluding it."
 
 (defun supervisor--build-plan (programs)
   "Build an immutable execution plan from PROGRAMS.
-This is a pure function that does not modify any global state.
+This function does not modify global runtime state, but does emit
+warnings for invalid entries, duplicate IDs, and invalid :after refs.
 Returns a `supervisor-plan' struct with all computed scheduling data.
 
 The plan includes:
@@ -689,11 +690,11 @@ The plan includes:
         (cond
          ;; Invalid entry
          (reason
-          (puthash raw-id reason invalid))
+          (puthash raw-id reason invalid)
+          (supervisor--log 'warning "INVALID %s - %s" raw-id reason))
          ;; Duplicate ID
          ((gethash raw-id seen)
-          ;; Skip silently (deduplication)
-          nil)
+          (supervisor--log 'warning "duplicate ID '%s', skipping" raw-id))
          ;; Valid entry
          (t
           (puthash raw-id t seen)
@@ -714,7 +715,7 @@ The plan includes:
           (when-let* ((stage-entries (gethash stage-int by-stage-hash)))
             (setq stage-entries (nreverse stage-entries))
             (let* ((stage-ids (mapcar #'car stage-entries))
-                   ;; Validate :after references (pure, results stored in deps hash)
+                   ;; Validate :after references (results stored in deps hash)
                    (validated-entries
                     (mapcar
                      (lambda (entry)
@@ -723,8 +724,17 @@ The plan includes:
                               (valid-after
                                (cl-remove-if-not
                                 (lambda (dep)
-                                  (and (member dep stage-ids)
-                                       (member dep all-ids)))
+                                  (cond
+                                   ((not (member dep stage-ids))
+                                    (if (member dep all-ids)
+                                        (supervisor--log 'warning
+                                          ":after '%s' for %s is in different stage, ignoring"
+                                          dep id)
+                                      (supervisor--log 'warning
+                                        ":after '%s' for %s does not exist, ignoring"
+                                        dep id))
+                                    nil)
+                                   (t t)))
                                 after)))
                          (puthash id valid-after deps)
                          (if (equal after valid-after)
@@ -1616,19 +1626,25 @@ Ready semantics (when dependents are unblocked):
   (setq supervisor--completed-stages nil)
   (supervisor--dag-cleanup)
   (supervisor--rotate-logs)
-  ;; Parse and deduplicate entries
-  (let* ((all-entries (supervisor--all-parsed-entries))
-         (all-ids (mapcar #'car all-entries))
-         (by-stage (supervisor--partition-by-stage all-entries)))
+  ;; Build execution plan (pure, deterministic)
+  (let ((plan (supervisor--build-plan supervisor-programs)))
+    ;; Populate legacy globals from plan for dashboard/other code
+    (maphash (lambda (k v) (puthash k v supervisor--invalid))
+             (supervisor-plan-invalid plan))
+    (maphash (lambda (k v) (puthash k v supervisor--cycle-fallback-ids))
+             (supervisor-plan-cycle-fallback-ids plan))
+    (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
+             (supervisor-plan-deps plan))
     ;; Initialize all entry states to stage-not-started
-    (dolist (entry all-entries)
+    (dolist (entry (supervisor-plan-entries plan))
       (puthash (car entry) 'stage-not-started supervisor--entry-state))
-    ;; Process stages asynchronously with continuation
-    (supervisor--start-stages-async by-stage all-ids)))
+    ;; Process stages asynchronously using plan's pre-sorted by-stage data
+    (supervisor--start-stages-from-plan (supervisor-plan-by-stage plan))))
 
-(defun supervisor--start-stages-async (remaining-stages all-ids)
-  "Process REMAINING-STAGES asynchronously.
-ALL-IDS is the list of all valid entry IDs for cross-stage validation."
+(defun supervisor--start-stages-from-plan (remaining-stages)
+  "Process REMAINING-STAGES from prebuilt plan asynchronously.
+REMAINING-STAGES is an alist of (stage-int . sorted-entries) from the plan.
+Entries are already validated and topologically sorted."
   (if (or (null remaining-stages) supervisor--shutting-down)
       (progn
         (supervisor--dag-cleanup)
@@ -1638,21 +1654,15 @@ ALL-IDS is the list of all valid entry IDs for cross-stage validation."
            (rest (cdr remaining-stages))
            (stage-int (car stage-pair))
            (stage-name (supervisor--int-to-stage stage-int))
-           (entries (cdr stage-pair))
-           (stage-ids (mapcar #'car entries)))
-      ;; Validate :after references
-      (setq entries (supervisor--validate-after entries stage-ids all-ids))
-      ;; Note: we don't need topo sort for the DAG scheduler,
-      ;; it handles ordering via in-degree. But we use it for stable ordering.
-      (setq entries (supervisor--stable-topo-sort entries))
-      ;; Start this stage, with callback to process next stage
+           (entries (cdr stage-pair)))
+      ;; Entries are already sorted by plan builder - no recomputation needed
       (supervisor--start-stage-async
        stage-name entries
        (lambda ()
          (run-hook-with-args 'supervisor-stage-complete-hook stage-name)
          (push stage-name supervisor--completed-stages)
          (supervisor--dag-cleanup)
-         (supervisor--start-stages-async rest all-ids))))))
+         (supervisor--start-stages-from-plan rest))))))
 
 ;;;###autoload
 (defun supervisor-stop-now ()

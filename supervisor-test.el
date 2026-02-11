@@ -1155,5 +1155,77 @@ Regression test: duplicates must not overwrite order-index of kept entry."
            (ids (mapcar #'car stage-entries)))
       (should (equal '("a" "b") ids)))))
 
+;;; Phase 2: Startup Uses Plan Tests
+
+(ert-deftest supervisor-test-startup-populates-globals-from-plan ()
+  "Plan->global copy mechanism populates legacy globals correctly.
+Unit test for the plan data extraction used by supervisor-start.
+Note: Does not call supervisor-start directly to avoid process spawning."
+  (let ((supervisor-programs '(("sleep 100" :id "a" :stage stage1)
+                               ("sleep 200" :id "b" :stage stage1 :after "a")
+                               ("invalid" :unknown-key t)))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+        (supervisor--computed-deps (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal))
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--start-times (make-hash-table :test 'equal))
+        (supervisor--ready-times (make-hash-table :test 'equal))
+        (supervisor--timers nil)
+        (supervisor--current-stage nil)
+        (supervisor--completed-stages nil)
+        (supervisor--shutting-down t))  ; Prevent actual process starts
+    ;; Build plan and populate globals (same as supervisor-start)
+    (let ((plan (supervisor--build-plan supervisor-programs)))
+      (maphash (lambda (k v) (puthash k v supervisor--invalid))
+               (supervisor-plan-invalid plan))
+      (maphash (lambda (k v) (puthash k v supervisor--cycle-fallback-ids))
+               (supervisor-plan-cycle-fallback-ids plan))
+      (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
+               (supervisor-plan-deps plan)))
+    ;; Verify globals were populated from plan
+    (should (gethash "invalid" supervisor--invalid))  ; Invalid entry recorded
+    (should (equal '("a") (gethash "b" supervisor--computed-deps)))  ; Deps computed
+    (should (= 1 (hash-table-count supervisor--invalid)))))
+
+(ert-deftest supervisor-test-plan-build-warns-on-duplicates ()
+  "Plan building emits warnings for duplicate IDs.
+Regression test for warning parity with legacy startup path."
+  (let ((supervisor-programs '(("sleep 100" :id "dup")
+                               ("sleep 200" :id "dup")))
+        (messages nil))
+    (cl-letf (((symbol-function 'supervisor--log)
+               (lambda (_level fmt &rest args)
+                 (push (apply #'format fmt args) messages))))
+      (supervisor--build-plan supervisor-programs))
+    ;; Should have warned about duplicate
+    (should (cl-some (lambda (m) (string-match-p "duplicate ID 'dup'" m))
+                     messages))))
+
+(ert-deftest supervisor-test-plan-build-warns-on-invalid-after ()
+  "Plan building emits warnings for invalid :after references.
+Regression test for warning parity with legacy startup path."
+  (let ((supervisor-programs '(("sleep 100" :id "a" :stage stage1)
+                               ("sleep 200" :id "b" :stage stage1 :after "nonexistent")
+                               ("sleep 300" :id "c" :stage stage2 :after "a")))
+        (messages nil))
+    (cl-letf (((symbol-function 'supervisor--log)
+               (lambda (_level fmt &rest args)
+                 (push (apply #'format fmt args) messages))))
+      (supervisor--build-plan supervisor-programs))
+    ;; Should have warned about nonexistent dep
+    (should (cl-some (lambda (m) (string-match-p "does not exist" m))
+                     messages))
+    ;; Should have warned about cross-stage dep
+    (should (cl-some (lambda (m) (string-match-p "different stage" m))
+                     messages))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
