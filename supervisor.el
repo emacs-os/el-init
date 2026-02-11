@@ -327,7 +327,7 @@ Check PLIST for :oneshot-timeout and fall back to default."
 ;;; Entry Validation
 
 (defconst supervisor--valid-keywords
-  '(:id :type :stage :delay :after :enabled :disabled
+  '(:id :type :stage :delay :after :requires :enabled :disabled
     :restart :no-restart :logging :oneshot-wait :async :oneshot-timeout :tags)
   "List of valid keywords for entry plists.")
 
@@ -412,6 +412,23 @@ Return nil if valid, or a reason string if invalid."
         (dolist (kw supervisor--oneshot-only-keywords)
           (when (plist-member plist kw)
             (push (format "%s is invalid for :type simple" kw) errors))))
+      ;; Check :after value type (string or list of strings)
+      ;; Use proper-list-p to handle dotted lists safely (Bug 3 fix)
+      (when (plist-member plist :after)
+        (let ((after (plist-get plist :after)))
+          (unless (or (null after)
+                      (stringp after)
+                      (and (proper-list-p after)
+                           (cl-every #'stringp after)))
+            (push ":after must be a string or list of strings" errors))))
+      ;; Check :requires value type (string or list of strings)
+      (when (plist-member plist :requires)
+        (let ((requires (plist-get plist :requires)))
+          (unless (or (null requires)
+                      (stringp requires)
+                      (and (proper-list-p requires)
+                           (cl-every #'stringp requires)))
+            (push ":requires must be a string or list of strings" errors))))
       ;; Return nil if valid, or joined error string
       (when errors
         (mapconcat #'identity (nreverse errors) "; "))))))
@@ -549,6 +566,177 @@ Runtime overrides take effect on next start (manual or restart).")
 
 (defvar supervisor--logging (make-hash-table :test 'equal)
   "Hash table tracking logging state per process (runtime override).")
+
+;;; Persistent Overrides (Schema v1)
+
+(defcustom supervisor-overrides-file
+  (expand-file-name "supervisor/overrides.eld"
+                    (or (getenv "XDG_STATE_HOME")
+                        (expand-file-name ".local/state" (getenv "HOME"))))
+  "File path for persistent service overrides.
+Overrides are stored in Emacs Lisp Data format (eld).
+Set to nil to disable persistence (overrides only live in memory)."
+  :type '(choice (file :tag "Path to overrides file")
+                 (const :tag "Disable persistence" nil))
+  :group 'supervisor)
+
+(defconst supervisor-overrides-schema-version 1
+  "Schema version for persistent overrides file.")
+
+(defvar supervisor--overrides-loaded nil
+  "Non-nil if overrides have been loaded from file this session.")
+
+(defun supervisor--overrides-file-path ()
+  "Return the overrides file path, or nil if persistence is disabled."
+  supervisor-overrides-file)
+
+(defun supervisor--ensure-overrides-dir ()
+  "Ensure the directory for the overrides file exists."
+  (when-let* ((path (supervisor--overrides-file-path)))
+    (let ((dir (file-name-directory path)))
+      (unless (file-directory-p dir)
+        (make-directory dir t)))))
+
+(defun supervisor--overrides-to-alist ()
+  "Collect current in-memory overrides into an alist.
+Returns nil if no overrides are set."
+  (let ((overrides nil))
+    (maphash (lambda (id val)
+               (push (cons id (list :enabled val)) overrides))
+             supervisor--enabled-override)
+    (maphash (lambda (id val)
+               (let ((existing (assoc id overrides)))
+                 (if existing
+                     (setcdr existing (plist-put (cdr existing) :restart val))
+                   (push (cons id (list :restart val)) overrides))))
+             supervisor--restart-override)
+    (maphash (lambda (id val)
+               (let ((existing (assoc id overrides)))
+                 (if existing
+                     (setcdr existing (plist-put (cdr existing) :logging val))
+                   (push (cons id (list :logging val)) overrides))))
+             supervisor--logging)
+    overrides))
+
+(defun supervisor--save-overrides ()
+  "Save current overrides to file using atomic write.
+Uses temp file + rename pattern for crash safety.
+Returns t on success, nil on failure."
+  (let ((path (supervisor--overrides-file-path)))
+    (when path
+      (supervisor--ensure-overrides-dir)
+      (let* ((overrides (supervisor--overrides-to-alist))
+             (data `((version . ,supervisor-overrides-schema-version)
+                     (timestamp . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
+                     (overrides . ,overrides)))
+             (temp-file (concat path ".tmp"))
+             (coding-system-for-write 'utf-8-unix))
+        (condition-case err
+            (progn
+              (with-temp-file temp-file
+                (insert ";; Supervisor overrides file - do not edit manually\n")
+                (insert ";; Schema version: " (number-to-string supervisor-overrides-schema-version) "\n")
+                (pp data (current-buffer)))
+              (rename-file temp-file path t)
+              t)
+          (error
+           (supervisor--log 'warning "Failed to save overrides: %s" (error-message-string err))
+           (when (file-exists-p temp-file)
+             (delete-file temp-file))
+           nil))))))
+
+(defun supervisor--load-overrides ()
+  "Load overrides from file into memory.
+Returns t on success, nil on failure or if file doesn't exist.
+Handles corrupt files safely by logging a warning and continuing.
+Clears existing in-memory overrides before loading to prevent stale state."
+  (let ((path (supervisor--overrides-file-path)))
+    (when (and path (file-exists-p path))
+      (condition-case err
+          (let* ((data (with-temp-buffer
+                         (insert-file-contents path)
+                         (read (current-buffer))))
+                 (version (alist-get 'version data))
+                 (overrides (alist-get 'overrides data)))
+            ;; Check version compatibility
+            (unless (and version (<= version supervisor-overrides-schema-version))
+              (supervisor--log 'warning
+                "Overrides file version %s is newer than supported %s"
+                version supervisor-overrides-schema-version))
+            ;; Clear existing overrides before loading to prevent stale state
+            (clrhash supervisor--enabled-override)
+            (clrhash supervisor--restart-override)
+            (clrhash supervisor--logging)
+            ;; Load overrides into hashes
+            (dolist (entry overrides)
+              (let ((id (car entry))
+                    (plist (cdr entry)))
+                (when-let* ((enabled (plist-get plist :enabled)))
+                  (puthash id enabled supervisor--enabled-override))
+                (when-let* ((restart (plist-get plist :restart)))
+                  (puthash id restart supervisor--restart-override))
+                (when-let* ((logging (plist-get plist :logging)))
+                  (puthash id logging supervisor--logging))))
+            (setq supervisor--overrides-loaded t)
+            (supervisor--log 'info "Loaded %d overrides from %s"
+                             (length overrides) path)
+            t)
+        (error
+         (supervisor--log 'warning "Failed to load overrides from %s: %s"
+                          path (error-message-string err))
+         ;; Don't delete corrupted file - leave for manual inspection
+         nil)))))
+
+(defun supervisor--merge-override (id key value)
+  "Set override KEY for ID to VALUE and save.
+KEY is one of :enabled, :restart, or :logging.
+VALUE is `enabled', `disabled', or nil (to clear)."
+  (let ((hash (pcase key
+                (:enabled supervisor--enabled-override)
+                (:restart supervisor--restart-override)
+                (:logging supervisor--logging))))
+    (if (null value)
+        (remhash id hash)
+      (puthash id value hash)))
+  (supervisor--save-overrides))
+
+(defun supervisor--clear-all-overrides ()
+  "Clear all overrides from memory and file."
+  (clrhash supervisor--enabled-override)
+  (clrhash supervisor--restart-override)
+  (clrhash supervisor--logging)
+  (when-let* ((path (supervisor--overrides-file-path)))
+    (when (file-exists-p path)
+      (delete-file path)))
+  (supervisor--log 'info "Cleared all persistent overrides"))
+
+(defun supervisor-overrides-load ()
+  "Interactively load overrides from the configured file.
+This reloads overrides even if they were already loaded."
+  (interactive)
+  (setq supervisor--overrides-loaded nil)
+  (if (supervisor--load-overrides)
+      (progn
+        (supervisor--refresh-dashboard)
+        (message "Supervisor: Loaded overrides from %s"
+                 (supervisor--overrides-file-path)))
+    (message "Supervisor: No overrides to load or file not found")))
+
+(defun supervisor-overrides-save ()
+  "Interactively save current overrides to file."
+  (interactive)
+  (if (supervisor--save-overrides)
+      (message "Supervisor: Saved overrides to %s"
+               (supervisor--overrides-file-path))
+    (message "Supervisor: Failed to save overrides")))
+
+(defun supervisor-overrides-clear ()
+  "Interactively clear all persistent overrides."
+  (interactive)
+  (when (yes-or-no-p "Clear all supervisor overrides? ")
+    (supervisor--clear-all-overrides)
+    (supervisor--refresh-dashboard)
+    (message "Supervisor: Cleared all overrides")))
 
 (defvar supervisor--oneshot-completed (make-hash-table :test 'equal)
   "Hash table tracking oneshot completion.  Value is exit code.")
@@ -792,14 +980,275 @@ so full struct equality requires excluding it."
   entries          ; list of parsed valid entries
   invalid          ; hash: id -> reason string
   by-stage         ; alist of (stage-int . sorted-entries)
-  deps             ; hash: id -> validated deps list (same-stage only)
-  dependents       ; hash: id -> list of dependent ids
+  deps             ; hash: id -> validated :after deps (ordering only)
+  requires-deps    ; hash: id -> validated :requires deps (pull-in + ordering)
+  dependents       ; hash: id -> list of dependent ids (combined)
   cycle-fallback-ids ; hash: id -> t for entries with cleared edges
   order-index      ; hash: id -> original index for stable ordering
   meta)            ; plist with :version, :timestamp (non-deterministic)
 
 (defconst supervisor-plan-version 1
   "Schema version for supervisor-plan struct.")
+
+;;; Service Definition Schema (v1)
+
+(defconst supervisor-service-schema-version 1
+  "Schema version for service definitions.
+Version history:
+  1 - Initial versioned schema with explicit dependency model split.")
+
+(cl-defstruct (supervisor-service (:constructor supervisor-service--create)
+                                  (:copier nil))
+  "Canonical service record for supervisor entries (schema v1).
+This struct represents a fully parsed and validated service definition.
+All internal functions should use this struct, not raw config entries
+or legacy tuple indexing.
+
+Field documentation:
+  id             - Unique identifier string (required)
+  command        - Shell command string to execute (required)
+  type           - Process type: `simple' (daemon) or `oneshot' (run-once)
+                   Default: `simple'
+  stage          - Startup stage: `stage1', `stage2', `stage3', or `stage4'
+                   Default: `stage3'
+  delay          - Seconds to wait before starting (non-negative number)
+                   Default: 0
+  enabled        - Whether to start this service (boolean)
+                   Default: t
+  restart        - Whether to restart on crash, for simple type only (boolean)
+                   Default: t
+  logging        - Whether to log stdout/stderr to file (boolean)
+                   Default: t
+  after          - Ordering dependencies: list of service IDs (same stage only)
+                   These control start ORDER but do not pull in services.
+                   Default: nil
+  requires       - Requirement dependencies: list of service IDs
+                   These PULL IN services and also imply ordering.
+                   Cross-stage requires cause an error (must use after).
+                   Default: nil
+  oneshot-wait   - For oneshots: block stage completion until exit (boolean)
+                   Default: value of `supervisor-oneshot-default-wait'
+  oneshot-timeout - For oneshots: timeout in seconds, or nil for infinite
+                   Default: value of `supervisor-oneshot-timeout'
+  tags           - List of symbols/strings for filtering
+                   Default: nil"
+  (id nil :type string :documentation "Unique identifier (required)")
+  (command nil :type string :documentation "Shell command to execute (required)")
+  (type 'simple :type symbol :documentation "Process type: simple or oneshot")
+  (stage 'stage3 :type symbol :documentation "Startup stage")
+  (delay 0 :type number :documentation "Delay before starting (seconds)")
+  (enabled t :type boolean :documentation "Whether to start this service")
+  (restart t :type boolean :documentation "Restart on crash (simple only)")
+  (logging t :type boolean :documentation "Log stdout/stderr to file")
+  (after nil :type list :documentation "Ordering dependencies (same stage)")
+  (requires nil :type list :documentation "Requirement dependencies")
+  (oneshot-wait nil :type boolean :documentation "Block stage for oneshot exit")
+  (oneshot-timeout nil :type (or null number) :documentation "Oneshot timeout")
+  (tags nil :type list :documentation "Filter tags"))
+
+(defconst supervisor-service-required-fields '(id command)
+  "List of required fields in a service record.")
+
+(defconst supervisor-service-optional-fields
+  '((type . simple)
+    (stage . stage3)
+    (delay . 0)
+    (enabled . t)
+    (restart . t)
+    (logging . t)
+    (after . nil)
+    (requires . nil)
+    (oneshot-wait . :defer)  ; resolved at runtime from global default
+    (oneshot-timeout . :defer)
+    (tags . nil))
+  "Alist of optional fields with their default values.
+A value of :defer means the default is resolved at runtime.")
+
+;;; Parsed Entry Accessors (Schema v1)
+;;
+;; These functions abstract the internal tuple representation.
+;; Use these instead of direct (nth N entry) indexing for maintainability.
+;; The tuple format is:
+;;   (id cmd delay enabled-p restart-p logging-p type stage after
+;;    oneshot-wait oneshot-timeout tags requires)
+
+(defsubst supervisor-entry-id (entry)
+  "Return the ID of parsed ENTRY."
+  (nth 0 entry))
+
+(defsubst supervisor-entry-command (entry)
+  "Return the command of parsed ENTRY."
+  (nth 1 entry))
+
+(defsubst supervisor-entry-delay (entry)
+  "Return the delay in seconds of parsed ENTRY."
+  (nth 2 entry))
+
+(defsubst supervisor-entry-enabled-p (entry)
+  "Return non-nil if parsed ENTRY is enabled."
+  (nth 3 entry))
+
+(defsubst supervisor-entry-restart-p (entry)
+  "Return non-nil if parsed ENTRY should restart on crash."
+  (nth 4 entry))
+
+(defsubst supervisor-entry-logging-p (entry)
+  "Return non-nil if parsed ENTRY should log to file."
+  (nth 5 entry))
+
+(defsubst supervisor-entry-type (entry)
+  "Return the type (`simple' or `oneshot') of parsed ENTRY."
+  (nth 6 entry))
+
+(defsubst supervisor-entry-stage (entry)
+  "Return the stage symbol of parsed ENTRY."
+  (nth 7 entry))
+
+(defsubst supervisor-entry-after (entry)
+  "Return the ordering dependencies (after) of parsed ENTRY."
+  (nth 8 entry))
+
+(defsubst supervisor-entry-oneshot-wait (entry)
+  "Return non-nil if oneshot ENTRY blocks stage completion."
+  (nth 9 entry))
+
+(defsubst supervisor-entry-oneshot-timeout (entry)
+  "Return the timeout in seconds for oneshot ENTRY, or nil."
+  (nth 10 entry))
+
+(defsubst supervisor-entry-tags (entry)
+  "Return the tags list of parsed ENTRY."
+  (nth 11 entry))
+
+(defsubst supervisor-entry-requires (entry)
+  "Return the requirement dependencies of parsed ENTRY."
+  (nth 12 entry))
+
+;;; Migration Layer (Schema v1)
+;;
+;; Functions to help migrate from legacy supervisor-programs format
+;; to the schema v1 service definition format.
+
+(defun supervisor--migrate-entry-to-plist (entry)
+  "Migrate raw ENTRY to a canonical schema v1 plist format.
+Returns a plist suitable for use in supervisor-programs.
+This normalizes short-form entries to their explicit form."
+  (let* ((parsed (supervisor--parse-entry entry))
+         (id (supervisor-entry-id parsed))
+         (cmd (supervisor-entry-command parsed))
+         (type (supervisor-entry-type parsed))
+         (stage (supervisor-entry-stage parsed))
+         (delay (supervisor-entry-delay parsed))
+         (enabled (supervisor-entry-enabled-p parsed))
+         (restart (supervisor-entry-restart-p parsed))
+         (logging (supervisor-entry-logging-p parsed))
+         (after (supervisor-entry-after parsed))
+         (requires (supervisor-entry-requires parsed))
+         (oneshot-wait (supervisor-entry-oneshot-wait parsed))
+         (oneshot-timeout (supervisor-entry-oneshot-timeout parsed))
+         (tags (supervisor-entry-tags parsed))
+         (plist nil))
+    ;; Build plist from parsed values, only including non-default values
+    (when tags
+      (setq plist (plist-put plist :tags tags)))
+    (when requires
+      (setq plist (plist-put plist :requires requires)))
+    (when after
+      (setq plist (plist-put plist :after after)))
+    (when (eq type 'oneshot)
+      (when (not (eq oneshot-wait supervisor-oneshot-default-wait))
+        (setq plist (plist-put plist :oneshot-wait oneshot-wait)))
+      (when (not (eq oneshot-timeout supervisor-oneshot-timeout))
+        (setq plist (plist-put plist :oneshot-timeout oneshot-timeout))))
+    (when (not logging)
+      (setq plist (plist-put plist :logging nil)))
+    (when (and (eq type 'simple) (not restart))
+      (setq plist (plist-put plist :no-restart t)))
+    (when (not enabled)
+      (setq plist (plist-put plist :disabled t)))
+    (when (> delay 0)
+      (setq plist (plist-put plist :delay delay)))
+    (when (not (eq stage 'stage3))
+      (setq plist (plist-put plist :stage stage)))
+    (when (not (eq type 'simple))
+      (setq plist (plist-put plist :type type)))
+    ;; Only include :id if it differs from the derived ID
+    (let ((derived-id (file-name-nondirectory
+                       (car (split-string-and-unquote cmd)))))
+      (when (not (equal id derived-id))
+        (setq plist (plist-put plist :id id))))
+    ;; Return as (cmd . plist) or just cmd if no options
+    (if plist
+        (cons cmd plist)
+      cmd)))
+
+(defun supervisor--migrate-all-entries ()
+  "Migrate all entries in `supervisor-programs' to schema v1 format.
+Returns a list of migrated entries with a summary of changes.
+Invalid and duplicate entries are skipped with a warning."
+  (let ((seen (make-hash-table :test 'equal))
+        (migrated nil)
+        (skipped nil)
+        (idx 0))
+    (dolist (entry supervisor-programs)
+      (let* ((id (supervisor--extract-id entry idx))
+             (reason (supervisor--validate-entry entry)))
+        (cond
+         (reason
+          (push (cons id reason) skipped))
+         ((gethash id seen)
+          (push (cons id "duplicate ID") skipped))
+         (t
+          (puthash id t seen)
+          (push (supervisor--migrate-entry-to-plist entry) migrated)))
+        (cl-incf idx)))
+    (list :migrated (nreverse migrated)
+          :skipped (nreverse skipped))))
+
+(defun supervisor-migrate-config ()
+  "Display the current config migrated to schema v1 format.
+Shows the canonical form of all valid entries, suitable for
+replacing the existing `supervisor-programs' definition."
+  (interactive)
+  (let* ((result (supervisor--migrate-all-entries))
+         (migrated (plist-get result :migrated))
+         (skipped (plist-get result :skipped)))
+    (with-output-to-temp-buffer "*supervisor-migrate*"
+      (princ ";;; Supervisor Configuration (Schema v1)\n")
+      (princ ";; Generated by supervisor-migrate-config\n")
+      (princ (format ";; Version: %d\n\n" supervisor-service-schema-version))
+      (when skipped
+        (princ ";; Skipped entries (invalid or duplicate):\n")
+        (dolist (entry skipped)
+          (princ (format ";;   %s: %s\n" (car entry) (cdr entry))))
+        (princ "\n"))
+      (princ "(setq supervisor-programs\n")
+      (princ "      '(")
+      (let ((first t))
+        (dolist (entry migrated)
+          (if first
+              (setq first nil)
+            (princ "\n        "))
+          (if (stringp entry)
+              (princ (format "%S" entry))
+            (princ "(")
+            (princ (format "%S" (car entry)))
+            (let ((plist (cdr entry)))
+              (while plist
+                (princ (format " %s %S" (car plist) (cadr plist)))
+                (setq plist (cddr plist))))
+            (princ ")"))))
+      (princ "))\n")
+      (princ "\n;; To use: Copy this to your init file, replacing your\n")
+      (princ ";; existing supervisor-programs definition.\n"))))
+
+(defun supervisor-migrate-entry-to-service (entry)
+  "Convert raw config ENTRY directly to a `supervisor-service' struct.
+This is the high-level migration function for programmatic use."
+  (let* ((reason (supervisor--validate-entry entry)))
+    (if reason
+        (error "Invalid entry: %s" reason)
+      (supervisor-entry-to-service (supervisor--parse-entry entry)))))
 
 (cl-defstruct (supervisor-snapshot (:constructor supervisor-snapshot--create))
   "Runtime state snapshot for read-only operations.
@@ -850,14 +1299,16 @@ The plan includes:
 - Parsed and validated entries
 - Invalid entries with reasons
 - Entries grouped and sorted by stage
-- Validated dependencies (same-stage only)
-- Reverse dependency index
+- Validated :after dependencies (ordering only, same-stage)
+- Validated :requires dependencies (pull-in + ordering, same-stage)
+- Reverse dependency index (combined)
 - Cycle fallback tracking
 - Stable ordering index"
   (let ((seen (make-hash-table :test 'equal))
         (invalid (make-hash-table :test 'equal))
         (order-index (make-hash-table :test 'equal))
         (deps (make-hash-table :test 'equal))
+        (requires-deps (make-hash-table :test 'equal))
         (dependents (make-hash-table :test 'equal))
         (cycle-fallback-ids (make-hash-table :test 'equal))
         (valid-entries nil)
@@ -871,15 +1322,17 @@ The plan includes:
         (unless (gethash raw-id order-index)
           (puthash raw-id idx order-index))
         (cond
-         ;; Invalid entry
+         ;; Invalid entry - only record if not already seen (first valid wins)
          (reason
-          (puthash raw-id reason invalid)
+          (unless (gethash raw-id seen)
+            (puthash raw-id reason invalid))
           (supervisor--log 'warning "INVALID %s - %s" raw-id reason))
          ;; Duplicate ID
          ((gethash raw-id seen)
           (supervisor--log 'warning "duplicate ID '%s', skipping" raw-id))
-         ;; Valid entry
+         ;; Valid entry - first valid wins, clear any stale invalid state
          (t
+          (remhash raw-id invalid)  ; clear if earlier invalid had same ID
           (puthash raw-id t seen)
           (push parsed valid-entries)))
         (cl-incf idx)))
@@ -893,17 +1346,20 @@ The plan includes:
           (puthash stage-int (cons entry (gethash stage-int by-stage-hash))
                    by-stage-hash)))
       ;; Phase 3: For each stage, validate deps and topo sort
-      (let ((by-stage nil))
+      (let ((by-stage nil)
+            (combined-deps (make-hash-table :test 'equal)))
         (dolist (stage-int '(0 1 2 3))
           (when-let* ((stage-entries (gethash stage-int by-stage-hash)))
             (setq stage-entries (nreverse stage-entries))
             (let* ((stage-ids (mapcar #'car stage-entries))
-                   ;; Validate :after references (results stored in deps hash)
+                   ;; Validate :after references (ordering only, same-stage)
                    (validated-entries
                     (mapcar
                      (lambda (entry)
-                       (let* ((id (nth 0 entry))
-                              (after (nth 8 entry))
+                       (let* ((id (supervisor-entry-id entry))
+                              (after (supervisor-entry-after entry))
+                              (requires (supervisor-entry-requires entry))
+                              ;; Validate :after - warn on cross-stage/missing
                               (valid-after
                                (cl-remove-if-not
                                 (lambda (dep)
@@ -918,38 +1374,91 @@ The plan includes:
                                         dep id))
                                     nil)
                                    (t t)))
-                                after)))
+                                after))
+                              ;; Validate :requires - error on cross-stage, warn on missing
+                              (valid-requires
+                               (cl-remove-if-not
+                                (lambda (dep)
+                                  (cond
+                                   ((not (member dep all-ids))
+                                    (supervisor--log 'warning
+                                      ":requires '%s' for %s does not exist, ignoring"
+                                      dep id)
+                                    nil)
+                                   ((not (member dep stage-ids))
+                                    ;; Cross-stage :requires is an error
+                                    (puthash id
+                                             (format ":requires '%s' is in different stage (cross-stage requires not allowed)"
+                                                     dep)
+                                             invalid)
+                                    (supervisor--log 'error
+                                      ":requires '%s' for %s is in different stage (not allowed)"
+                                      dep id)
+                                    nil)
+                                   (t t)))
+                                requires)))
                          (puthash id valid-after deps)
-                         (if (equal after valid-after)
-                             entry
-                           (append (cl-subseq entry 0 8)
-                                   (list valid-after)
-                                   (cl-subseq entry 9)))))
+                         (puthash id valid-requires requires-deps)
+                         ;; Combined deps for topo sort (union of after + requires)
+                         (puthash id (cl-union valid-after valid-requires :test #'equal)
+                                  combined-deps)
+                         ;; Return entry with validated deps
+                         (let ((new-entry entry))
+                           (unless (equal after valid-after)
+                             (setq new-entry
+                                   (append (cl-subseq new-entry 0 8)
+                                           (list valid-after)
+                                           (cl-subseq new-entry 9))))
+                           (unless (equal requires valid-requires)
+                             (setq new-entry
+                                   (append (cl-subseq new-entry 0 12)
+                                           (list valid-requires))))
+                           new-entry)))
                      stage-entries))
-                   ;; Build dependents graph for this stage
+                   ;; Filter out entries that were marked invalid during :requires validation
+                   (validated-entries
+                    (cl-remove-if (lambda (entry)
+                                    (gethash (supervisor-entry-id entry) invalid))
+                                  validated-entries))
+                   ;; Build dependents graph (combined :after + :requires)
                    (_ (dolist (entry validated-entries)
-                        (let ((id (nth 0 entry))
-                              (after (gethash (nth 0 entry) deps)))
+                        (let* ((id (supervisor-entry-id entry))
+                               (all-deps (gethash id combined-deps)))
                           (puthash id nil dependents)
-                          (dolist (dep after)
+                          (dolist (dep all-deps)
                             (puthash dep (cons id (gethash dep dependents))
                                      dependents)))))
-                   ;; Topo sort (pure, cycle fallback stored in cycle-fallback-ids)
+                   ;; Topo sort using combined deps
                    (sorted-entries
                     (supervisor--build-plan-topo-sort
-                     validated-entries deps order-index cycle-fallback-ids)))
-              (push (cons stage-int sorted-entries) by-stage))))
-        ;; Return the plan struct
-        (supervisor-plan--create
-         :entries valid-entries
-         :invalid invalid
-         :by-stage (nreverse by-stage)
-         :deps deps
-         :dependents dependents
-         :cycle-fallback-ids cycle-fallback-ids
-         :order-index order-index
-         :meta (list :version supervisor-plan-version
-                     :timestamp (float-time)))))))
+                     validated-entries combined-deps order-index cycle-fallback-ids))
+                   ;; If cycle was detected, also clear deps and requires-deps
+                   (_ (dolist (entry sorted-entries)
+                        (let ((id (supervisor-entry-id entry)))
+                          (when (gethash id cycle-fallback-ids)
+                            (puthash id nil deps)
+                            (puthash id nil requires-deps))))))
+              ;; Only push non-empty stages (Bug 4 fix)
+              (when sorted-entries
+                (push (cons stage-int sorted-entries) by-stage)))))
+        ;; Filter valid-entries to exclude entries invalidated in phase 2/3
+        ;; (Bug 2 fix: cross-stage :requires entries should not be in plan.entries)
+        (let ((final-entries (cl-remove-if
+                              (lambda (entry)
+                                (gethash (supervisor-entry-id entry) invalid))
+                              valid-entries)))
+          ;; Return the plan struct
+          (supervisor-plan--create
+           :entries final-entries
+           :invalid invalid
+           :by-stage (nreverse by-stage)
+           :deps deps
+           :requires-deps requires-deps
+           :dependents dependents
+           :cycle-fallback-ids cycle-fallback-ids
+           :order-index order-index
+           :meta (list :version supervisor-plan-version
+                       :timestamp (float-time))))))))
 
 (defun supervisor--build-plan-topo-sort (entries deps order-index cycle-fallback-ids)
   "Stable topological sort for plan building (pure helper).
@@ -1001,12 +1510,16 @@ Returns sorted entries list."
           (nreverse result)
         ;; Cycle detected: mark all and clear deps
         (dolist (entry entries)
-          (let ((id (car entry)))
+          (let ((id (supervisor-entry-id entry)))
             (puthash id t cycle-fallback-ids)
             (puthash id nil deps)))
-        ;; Return entries with :after stripped
+        ;; Return entries with :after and :requires stripped
+        ;; (full 13-element entries from parse-entry)
         (mapcar (lambda (entry)
-                  (append (cl-subseq entry 0 8) (list nil) (cl-subseq entry 9)))
+                  (append (cl-subseq entry 0 8)
+                          (list nil)                ; clear :after (index 8)
+                          (cl-subseq entry 9 12)
+                          (list nil)))              ; clear :requires (index 12)
                 entries)))))
 
 ;;; Helpers
@@ -1014,12 +1527,29 @@ Returns sorted entries list."
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
 Return a list: (id cmd delay enabled-p restart-p logging-p type
-stage after oneshot-wait oneshot-timeout tags).  ENTRY can be a command
-string or a list (COMMAND . PLIST)."
+stage after oneshot-wait oneshot-timeout tags requires).
+
+Indices (schema v1):
+  0  id             - unique identifier string
+  1  cmd            - shell command string
+  2  delay          - seconds to wait before starting
+  3  enabled-p      - whether to start this service
+  4  restart-p      - whether to restart on crash (simple only)
+  5  logging-p      - whether to log stdout/stderr
+  6  type           - `simple' or `oneshot'
+  7  stage          - startup stage symbol
+  8  after          - ordering dependencies (same stage, start order only)
+  9  oneshot-wait   - block stage for oneshot exit
+  10 oneshot-timeout - timeout for blocking oneshots
+  11 tags           - list of filter tags
+  12 requires       - requirement dependencies (pull-in + ordering)
+
+ENTRY can be a command string or a list (COMMAND . PLIST).
+Use accessor functions instead of direct indexing for new code."
   (if (stringp entry)
       (let ((id (file-name-nondirectory (car (split-string-and-unquote entry)))))
         (list id entry 0 t t t 'simple 'stage3 nil
-              supervisor-oneshot-default-wait supervisor-oneshot-timeout nil))
+              supervisor-oneshot-default-wait supervisor-oneshot-timeout nil nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
            (id (or (plist-get plist :id)
@@ -1053,8 +1583,10 @@ string or a list (COMMAND . PLIST)."
                       (let ((s (supervisor--stage-to-int stage-raw)))
                         (supervisor--int-to-stage s))
                     'stage3))
-           ;; :after - dependencies (same stage only)
+           ;; :after - ordering dependencies (same stage only, start order)
            (after (supervisor--normalize-after (plist-get plist :after)))
+           ;; :requires - requirement dependencies (pull-in + ordering)
+           (requires (supervisor--normalize-after (plist-get plist :requires)))
            ;; Oneshot wait/timeout settings
            (oneshot-wait (supervisor--oneshot-wait-p plist))
            (oneshot-timeout (supervisor--oneshot-timeout-value plist))
@@ -1063,7 +1595,43 @@ string or a list (COMMAND . PLIST)."
            (tags (cond ((null tags-raw) nil)
                        ((listp tags-raw) tags-raw)
                        (t (list tags-raw)))))
-      (list id cmd delay enabled restart logging type stage after oneshot-wait oneshot-timeout tags))))
+      (list id cmd delay enabled restart logging type stage after
+            oneshot-wait oneshot-timeout tags requires))))
+
+;;; Entry/Service Conversion Functions
+
+(defun supervisor-entry-to-service (entry)
+  "Convert parsed ENTRY tuple to a `supervisor-service' struct."
+  (supervisor-service--create
+   :id (supervisor-entry-id entry)
+   :command (supervisor-entry-command entry)
+   :type (supervisor-entry-type entry)
+   :stage (supervisor-entry-stage entry)
+   :delay (supervisor-entry-delay entry)
+   :enabled (supervisor-entry-enabled-p entry)
+   :restart (supervisor-entry-restart-p entry)
+   :logging (supervisor-entry-logging-p entry)
+   :after (supervisor-entry-after entry)
+   :requires (supervisor-entry-requires entry)
+   :oneshot-wait (supervisor-entry-oneshot-wait entry)
+   :oneshot-timeout (supervisor-entry-oneshot-timeout entry)
+   :tags (supervisor-entry-tags entry)))
+
+(defun supervisor-service-to-entry (service)
+  "Convert SERVICE struct to a parsed entry tuple."
+  (list (supervisor-service-id service)
+        (supervisor-service-command service)
+        (supervisor-service-delay service)
+        (supervisor-service-enabled service)
+        (supervisor-service-restart service)
+        (supervisor-service-logging service)
+        (supervisor-service-type service)
+        (supervisor-service-stage service)
+        (supervisor-service-after service)
+        (supervisor-service-oneshot-wait service)
+        (supervisor-service-oneshot-timeout service)
+        (supervisor-service-tags service)
+        (supervisor-service-requires service)))
 
 (defun supervisor--check-crash-loop (id)
   "Check if ID is crash-looping.  Return t if should NOT restart."
@@ -1177,11 +1745,14 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
         (puthash id nil dependents)
         (cl-incf idx)))
     ;; Build graph and record computed deps (validated, same-stage only)
+    ;; Combine :after and :requires for dependency tracking
     (dolist (entry entries)
-      (let ((id (car entry))
-            (after (nth 8 entry))
-            (valid-deps nil))
-        (dolist (dep after)
+      (let* ((id (supervisor-entry-id entry))
+             (after (supervisor-entry-after entry))
+             (requires (supervisor-entry-requires entry))
+             (all-deps (cl-union after requires :test #'equal))
+             (valid-deps nil))
+        (dolist (dep all-deps)
           (when (gethash dep id-to-entry)  ; only count valid deps
             (push dep valid-deps)
             (cl-incf (gethash id in-degree 0))
@@ -1212,16 +1783,31 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
       ;; Check for cycle
       (if (= (length result) (length entries))
           (nreverse result)
-        (supervisor--log 'warning "cycle detected in :after dependencies, using list order")
+        (supervisor--log 'warning "cycle detected in dependencies, using list order")
         ;; Mark all entries in this stage as having cycle fallback and clear
         ;; computed deps to reflect post-fallback state (no edges)
         (dolist (entry entries)
-          (let ((id (car entry)))
+          (let ((id (supervisor-entry-id entry)))
             (puthash id t supervisor--cycle-fallback-ids)
             (puthash id nil supervisor--computed-deps)))
-        ;; Return entries with :after stripped to break the cycle
+        ;; Return entries with :after and :requires stripped to break the cycle
+        ;; Handle both 11-element (legacy) and 13-element (schema v1) entries
         (mapcar (lambda (entry)
-                  (append (cl-subseq entry 0 8) (list nil) (cl-subseq entry 9)))
+                  (let ((len (length entry)))
+                    (cond
+                     ;; Full 13-element entry: clear both :after (8) and :requires (12)
+                     ((>= len 13)
+                      (append (cl-subseq entry 0 8)
+                              (list nil)                ; clear :after
+                              (cl-subseq entry 9 12)
+                              (list nil)))              ; clear :requires
+                     ;; 11-element legacy entry: just clear :after (8)
+                     ((>= len 11)
+                      (append (cl-subseq entry 0 8)
+                              (list nil)                ; clear :after
+                              (cl-subseq entry 9)))
+                     ;; Shorter entries: return as-is
+                     (t entry))))
                 entries)))))
 
 ;;; Logging
@@ -1268,13 +1854,16 @@ Disabled entries are marked ready immediately per spec."
         (idx 0))
     ;; Build lookup tables
     (dolist (entry entries)
-      (let* ((id (nth 0 entry))
-             (enabled-p (nth 3 entry))
-             (type (nth 6 entry))
-             (after (nth 8 entry))
-             (oneshot-wait (nth 9 entry)))
+      (let* ((id (supervisor-entry-id entry))
+             (enabled-p (supervisor-entry-enabled-p entry))
+             (type (supervisor-entry-type entry))
+             (after (supervisor-entry-after entry))
+             (requires (supervisor-entry-requires entry))
+             (oneshot-wait (supervisor-entry-oneshot-wait entry))
+             ;; Combine :after and :requires for dependency tracking
+             (all-deps (cl-union after requires :test #'equal)))
         (puthash id entry supervisor--dag-entries)
-        (puthash id (length after) supervisor--dag-in-degree)
+        (puthash id (length all-deps) supervisor--dag-in-degree)
         (puthash id nil supervisor--dag-dependents)
         (puthash id idx supervisor--dag-id-to-index)
         (cl-incf idx)
@@ -1286,15 +1875,17 @@ Disabled entries are marked ready immediately per spec."
          ((not enabled-p)
           (push id disabled-ids)
           (supervisor--transition-state id 'disabled))
-         ((> (length after) 0)
+         ((> (length all-deps) 0)
           (supervisor--transition-state id 'waiting-on-deps))
          (t
           (supervisor--transition-state id 'stage-not-started)))))
-    ;; Build dependents graph
+    ;; Build dependents graph from combined :after + :requires
     (dolist (entry entries)
-      (let ((id (nth 0 entry))
-            (after (nth 8 entry)))
-        (dolist (dep after)
+      (let* ((id (supervisor-entry-id entry))
+             (after (supervisor-entry-after entry))
+             (requires (supervisor-entry-requires entry))
+             (all-deps (cl-union after requires :test #'equal)))
+        (dolist (dep all-deps)
           (when (gethash dep supervisor--dag-entries)
             (puthash dep (cons id (gethash dep supervisor--dag-dependents))
                      supervisor--dag-dependents)))))
@@ -1812,6 +2403,8 @@ Ready semantics (when dependents are unblocked):
   (clrhash supervisor--entry-state)
   (setq supervisor--current-stage nil)
   (setq supervisor--completed-stages nil)
+  ;; Load persisted overrides (restores enabled/restart/logging overrides)
+  (supervisor--load-overrides)
   (supervisor--dag-cleanup)
   (supervisor--rotate-logs)
   ;; Build execution plan (pure, deterministic)
@@ -2709,6 +3302,8 @@ Cycles: config default -> override opposite -> back to config default."
               (if (eq new-enabled restart-p)
                   (remhash id supervisor--restart-override)
                 (puthash id (if new-enabled 'enabled 'disabled) supervisor--restart-override))
+              ;; Persist the override
+              (supervisor--save-overrides)
               ;; Cancel pending restart timer when disabling
               (unless new-enabled
                 (when-let* ((timer (gethash id supervisor--restart-timers)))
@@ -2735,6 +3330,8 @@ Cycles: config default -> override opposite -> back to config default."
             (if (eq new-enabled enabled-p)
                 (remhash id supervisor--enabled-override)
               (puthash id (if new-enabled 'enabled 'disabled) supervisor--enabled-override))
+            ;; Persist the override
+            (supervisor--save-overrides)
             (supervisor--refresh-dashboard)))))))
 
 (defun supervisor-dashboard-kill (&optional force)

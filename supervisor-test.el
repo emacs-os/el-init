@@ -2089,5 +2089,412 @@ Regression test: stderr pipe processes used to pollute the process list."
     (should (fboundp 'supervisor-dashboard-menu))
     (should (get 'supervisor-dashboard-menu 'transient--prefix))))
 
+;;; Schema v1 Tests
+
+(ert-deftest supervisor-test-service-schema-version ()
+  "Service schema version constant is defined."
+  (should (= supervisor-service-schema-version 1)))
+
+(ert-deftest supervisor-test-service-struct-fields ()
+  "Service struct has all expected fields."
+  (let ((service (supervisor-service--create
+                  :id "test"
+                  :command "sleep 100"
+                  :type 'simple
+                  :stage 'stage2
+                  :delay 5
+                  :enabled t
+                  :restart nil
+                  :logging t
+                  :after '("dep1")
+                  :requires '("req1")
+                  :oneshot-wait nil
+                  :oneshot-timeout 60
+                  :tags '(tag1 tag2))))
+    (should (equal "test" (supervisor-service-id service)))
+    (should (equal "sleep 100" (supervisor-service-command service)))
+    (should (eq 'simple (supervisor-service-type service)))
+    (should (eq 'stage2 (supervisor-service-stage service)))
+    (should (= 5 (supervisor-service-delay service)))
+    (should (supervisor-service-enabled service))
+    (should-not (supervisor-service-restart service))
+    (should (supervisor-service-logging service))
+    (should (equal '("dep1") (supervisor-service-after service)))
+    (should (equal '("req1") (supervisor-service-requires service)))
+    (should-not (supervisor-service-oneshot-wait service))
+    (should (= 60 (supervisor-service-oneshot-timeout service)))
+    (should (equal '(tag1 tag2) (supervisor-service-tags service)))))
+
+(ert-deftest supervisor-test-entry-accessors ()
+  "Entry accessor functions work correctly."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 100" :id "test" :type simple :stage stage2
+                  :delay 5 :restart nil :after ("dep1") :requires ("req1")))))
+    (should (equal "test" (supervisor-entry-id entry)))
+    (should (equal "sleep 100" (supervisor-entry-command entry)))
+    (should (eq 'simple (supervisor-entry-type entry)))
+    (should (eq 'stage2 (supervisor-entry-stage entry)))
+    (should (= 5 (supervisor-entry-delay entry)))
+    (should-not (supervisor-entry-restart-p entry))
+    (should (equal '("dep1") (supervisor-entry-after entry)))
+    (should (equal '("req1") (supervisor-entry-requires entry)))))
+
+(ert-deftest supervisor-test-entry-to-service-conversion ()
+  "Entry to service conversion preserves all fields."
+  (let* ((entry (supervisor--parse-entry
+                 '("sleep 100" :id "test" :type oneshot :stage stage1
+                   :after ("dep") :requires ("req") :tags (t1 t2))))
+         (service (supervisor-entry-to-service entry)))
+    (should (equal "test" (supervisor-service-id service)))
+    (should (equal "sleep 100" (supervisor-service-command service)))
+    (should (eq 'oneshot (supervisor-service-type service)))
+    (should (eq 'stage1 (supervisor-service-stage service)))
+    (should (equal '("dep") (supervisor-service-after service)))
+    (should (equal '("req") (supervisor-service-requires service)))
+    (should (equal '(t1 t2) (supervisor-service-tags service)))))
+
+(ert-deftest supervisor-test-service-to-entry-conversion ()
+  "Service to entry conversion preserves all fields."
+  (let* ((service (supervisor-service--create
+                   :id "test"
+                   :command "sleep 100"
+                   :type 'oneshot
+                   :stage 'stage1
+                   :delay 10
+                   :enabled nil
+                   :restart t
+                   :logging nil
+                   :after '("dep")
+                   :requires '("req")
+                   :oneshot-wait t
+                   :oneshot-timeout 120
+                   :tags '(t1)))
+         (entry (supervisor-service-to-entry service)))
+    (should (equal "test" (supervisor-entry-id entry)))
+    (should (equal "sleep 100" (supervisor-entry-command entry)))
+    (should (eq 'oneshot (supervisor-entry-type entry)))
+    (should (eq 'stage1 (supervisor-entry-stage entry)))
+    (should (= 10 (supervisor-entry-delay entry)))
+    (should-not (supervisor-entry-enabled-p entry))
+    (should (supervisor-entry-restart-p entry))
+    (should-not (supervisor-entry-logging-p entry))
+    (should (equal '("dep") (supervisor-entry-after entry)))
+    (should (equal '("req") (supervisor-entry-requires entry)))
+    (should (supervisor-entry-oneshot-wait entry))
+    (should (= 120 (supervisor-entry-oneshot-timeout entry)))
+    (should (equal '(t1) (supervisor-entry-tags entry)))))
+
+;;; Dependency Semantics Tests
+
+(ert-deftest supervisor-test-requires-keyword-valid ()
+  ":requires keyword is accepted as valid."
+  (should-not (supervisor--validate-entry
+               '("foo" :type simple :requires "bar"))))
+
+(ert-deftest supervisor-test-requires-parsed-correctly ()
+  ":requires is parsed into entry correctly."
+  (let ((entry (supervisor--parse-entry
+                '("foo" :requires ("bar" "baz")))))
+    (should (equal '("bar" "baz") (supervisor-entry-requires entry)))))
+
+(ert-deftest supervisor-test-requires-cross-stage-error ()
+  "Cross-stage :requires causes an error in plan."
+  (let* ((programs '(("sleep 100" :id "a" :stage stage1)
+                     ("sleep 200" :id "b" :stage stage2 :requires "a")))
+         (plan (supervisor--build-plan programs)))
+    ;; Entry b should be marked invalid due to cross-stage requires
+    (should (gethash "b" (supervisor-plan-invalid plan)))))
+
+(ert-deftest supervisor-test-requires-combined-with-after ()
+  ":requires and :after are combined for topological sort."
+  (let* ((programs '(("sleep 100" :id "a" :stage stage1)
+                     ("sleep 200" :id "b" :stage stage1 :after "a")
+                     ("sleep 300" :id "c" :stage stage1 :requires "a")))
+         (plan (supervisor--build-plan programs))
+         (by-stage (supervisor-plan-by-stage plan))
+         (stage1-entries (cdr (assq 0 by-stage)))
+         (stage1-ids (mapcar #'car stage1-entries)))
+    ;; a should come before both b and c
+    (should (< (cl-position "a" stage1-ids :test #'equal)
+               (cl-position "b" stage1-ids :test #'equal)))
+    (should (< (cl-position "a" stage1-ids :test #'equal)
+               (cl-position "c" stage1-ids :test #'equal)))))
+
+(ert-deftest supervisor-test-plan-requires-deps-populated ()
+  "Plan includes separate requires-deps hash."
+  (let* ((programs '(("sleep 100" :id "a" :stage stage1)
+                     ("sleep 200" :id "b" :stage stage1 :requires "a")))
+         (plan (supervisor--build-plan programs)))
+    (should (supervisor-plan-requires-deps plan))
+    (should (equal '("a") (gethash "b" (supervisor-plan-requires-deps plan))))))
+
+;;; Persistent Overrides Tests
+
+(ert-deftest supervisor-test-overrides-file-path ()
+  "Overrides file path respects custom setting."
+  (let ((supervisor-overrides-file "/custom/path/overrides.eld"))
+    (should (equal "/custom/path/overrides.eld"
+                   (supervisor--overrides-file-path))))
+  (let ((supervisor-overrides-file nil))
+    (should-not (supervisor--overrides-file-path))))
+
+(ert-deftest supervisor-test-overrides-to-alist ()
+  "Overrides are correctly collected into an alist."
+  (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal)))
+    (puthash "a" 'enabled supervisor--enabled-override)
+    (puthash "b" 'disabled supervisor--restart-override)
+    (puthash "a" 'enabled supervisor--logging)
+    (let ((alist (supervisor--overrides-to-alist)))
+      (should (= 2 (length alist)))
+      (let ((a-entry (cdr (assoc "a" alist)))
+            (b-entry (cdr (assoc "b" alist))))
+        (should (eq 'enabled (plist-get a-entry :enabled)))
+        (should (eq 'enabled (plist-get a-entry :logging)))
+        (should (eq 'disabled (plist-get b-entry :restart)))))))
+
+(ert-deftest supervisor-test-overrides-save-load-roundtrip ()
+  "Overrides survive save and load roundtrip."
+  (let* ((temp-file (make-temp-file "supervisor-test-overrides-" nil ".eld"))
+         (supervisor-overrides-file temp-file)
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--overrides-loaded nil))
+    (unwind-protect
+        (progn
+          ;; Set some overrides
+          (puthash "test-entry" 'disabled supervisor--enabled-override)
+          (puthash "test-entry" 'enabled supervisor--restart-override)
+          ;; Save
+          (should (supervisor--save-overrides))
+          ;; Clear memory
+          (clrhash supervisor--enabled-override)
+          (clrhash supervisor--restart-override)
+          ;; Load
+          (should (supervisor--load-overrides))
+          ;; Verify
+          (should (eq 'disabled (gethash "test-entry" supervisor--enabled-override)))
+          (should (eq 'enabled (gethash "test-entry" supervisor--restart-override))))
+      (delete-file temp-file))))
+
+(ert-deftest supervisor-test-overrides-corrupt-file-handled ()
+  "Corrupt overrides file is handled gracefully."
+  (let* ((temp-file (make-temp-file "supervisor-test-corrupt-" nil ".eld"))
+         (supervisor-overrides-file temp-file)
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          ;; Write corrupt data
+          (with-temp-file temp-file
+            (insert "this is not valid lisp (((("))
+          ;; Load should return nil but not error
+          (should-not (supervisor--load-overrides))
+          ;; File should still exist (not deleted)
+          (should (file-exists-p temp-file)))
+      (delete-file temp-file))))
+
+;;; Migration Tests
+
+(ert-deftest supervisor-test-migrate-string-entry ()
+  "Migration handles simple string entries."
+  (let ((result (supervisor--migrate-entry-to-plist "nm-applet")))
+    ;; Simple string with defaults should remain a string
+    (should (stringp result))
+    (should (equal "nm-applet" result))))
+
+(ert-deftest supervisor-test-migrate-plist-entry ()
+  "Migration handles plist entries."
+  (let ((result (supervisor--migrate-entry-to-plist
+                 '("sleep 100" :type oneshot :stage stage1))))
+    (should (listp result))
+    (should (equal "sleep 100" (car result)))
+    (should (eq 'oneshot (plist-get (cdr result) :type)))
+    (should (eq 'stage1 (plist-get (cdr result) :stage)))))
+
+(ert-deftest supervisor-test-migrate-all-entries-skips-invalid ()
+  "Migration skips invalid entries with reason."
+  (let ((supervisor-programs '(("valid" :type simple)
+                               ("invalid" :type "bad"))))
+    (let ((result (supervisor--migrate-all-entries)))
+      (should (= 1 (length (plist-get result :migrated))))
+      (should (= 1 (length (plist-get result :skipped))))
+      (should (assoc "invalid" (plist-get result :skipped))))))
+
+(ert-deftest supervisor-test-migrate-all-entries-skips-duplicates ()
+  "Migration skips duplicate IDs."
+  (let ((supervisor-programs '(("a" :id "test" :type simple)
+                               ("b" :id "test" :type oneshot))))
+    (let ((result (supervisor--migrate-all-entries)))
+      (should (= 1 (length (plist-get result :migrated))))
+      (should (= 1 (length (plist-get result :skipped))))
+      (let ((skipped-reason (cdr (assoc "test" (plist-get result :skipped)))))
+        (should (string-match "duplicate" skipped-reason))))))
+
+(ert-deftest supervisor-test-migrate-entry-to-service ()
+  "High-level migration function works."
+  (let ((service (supervisor-migrate-entry-to-service
+                  '("sleep 100" :id "test" :type oneshot))))
+    (should (supervisor-service-p service))
+    (should (equal "test" (supervisor-service-id service)))
+    (should (eq 'oneshot (supervisor-service-type service)))))
+
+(ert-deftest supervisor-test-migrate-entry-to-service-invalid-errors ()
+  "High-level migration function signals error for invalid entry."
+  (should-error
+   (supervisor-migrate-entry-to-service '("foo" :type "bad"))
+   :type 'error))
+
+;;; Bug fix verification tests
+
+(ert-deftest supervisor-test-validate-after-must-be-string-or-list ()
+  "Validation rejects non-string/list :after values."
+  ;; Valid cases
+  (should-not (supervisor--validate-entry '("foo" :after "bar")))
+  (should-not (supervisor--validate-entry '("foo" :after ("a" "b"))))
+  (should-not (supervisor--validate-entry '("foo" :after nil)))
+  ;; Invalid cases
+  (should (string-match ":after must be"
+                        (supervisor--validate-entry '("foo" :after 123))))
+  (should (string-match ":after must be"
+                        (supervisor--validate-entry '("foo" :after (1 2 3))))))
+
+(ert-deftest supervisor-test-validate-requires-must-be-string-or-list ()
+  "Validation rejects non-string/list :requires values."
+  ;; Valid cases
+  (should-not (supervisor--validate-entry '("foo" :requires "bar")))
+  (should-not (supervisor--validate-entry '("foo" :requires ("a" "b"))))
+  (should-not (supervisor--validate-entry '("foo" :requires nil)))
+  ;; Invalid cases
+  (should (string-match ":requires must be"
+                        (supervisor--validate-entry '("foo" :requires 123))))
+  (should (string-match ":requires must be"
+                        (supervisor--validate-entry '("foo" :requires (1 2 3))))))
+
+(ert-deftest supervisor-test-cross-stage-requires-excluded-from-stage ()
+  "Entries with cross-stage :requires are excluded from stage lists."
+  (let* ((programs '(("a" :stage stage2 :id "a")
+                     ("b" :stage stage3 :id "b" :requires "a")))  ; cross-stage
+         (plan (supervisor--build-plan programs))
+         (stage3-entries (cdr (assoc 2 (supervisor-plan-by-stage plan)))))
+    ;; "b" should be marked invalid
+    (should (gethash "b" (supervisor-plan-invalid plan)))
+    ;; "b" should NOT appear in stage3 entries (was the bug)
+    (should-not (cl-find "b" stage3-entries :key #'supervisor-entry-id :test #'equal))))
+
+(ert-deftest supervisor-test-dag-uses-requires-edges ()
+  "DAG scheduler uses :requires edges for in-degree calculation."
+  (let* ((entries '(("a" "sleep 1" 0 t t t simple stage3 nil t 30 nil nil)
+                    ("b" "sleep 1" 0 t t t simple stage3 nil t 30 nil ("a"))))
+         ;; Entry "b" has :requires "a" at index 12
+         (supervisor--dag-in-degree (make-hash-table :test 'equal))
+         (supervisor--dag-dependents (make-hash-table :test 'equal))
+         (supervisor--dag-entries (make-hash-table :test 'equal))
+         (supervisor--dag-blocking (make-hash-table :test 'equal))
+         (supervisor--dag-started (make-hash-table :test 'equal))
+         (supervisor--dag-ready (make-hash-table :test 'equal))
+         (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+         (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+         (supervisor--dag-id-to-index (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal)))
+    (supervisor--dag-init entries)
+    ;; "a" has no deps, in-degree should be 0
+    (should (= 0 (gethash "a" supervisor--dag-in-degree)))
+    ;; "b" has :requires "a", in-degree should be 1
+    (should (= 1 (gethash "b" supervisor--dag-in-degree)))
+    ;; "a" should have "b" as dependent
+    (should (member "b" (gethash "a" supervisor--dag-dependents)))))
+
+(ert-deftest supervisor-test-override-load-clears-stale-state ()
+  "Loading overrides clears stale in-memory state not present in file."
+  (let* ((temp-file (make-temp-file "supervisor-test-stale-" nil ".eld"))
+         (supervisor-overrides-file temp-file)
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          ;; First, save a file with only "file-entry"
+          (puthash "file-entry" 'enabled supervisor--enabled-override)
+          (supervisor--save-overrides)
+          ;; Clear and add stale state that's NOT in the file
+          (clrhash supervisor--enabled-override)
+          (clrhash supervisor--restart-override)
+          (clrhash supervisor--logging)
+          (puthash "stale-entry" 'disabled supervisor--enabled-override)
+          (puthash "stale-entry" 'disabled supervisor--restart-override)
+          (puthash "stale-entry" 'disabled supervisor--logging)
+          (puthash "another-stale" 'enabled supervisor--enabled-override)
+          ;; Load from file - should clear stale state and restore file state
+          (supervisor--load-overrides)
+          ;; Stale entries should be gone (not in file)
+          (should-not (gethash "stale-entry" supervisor--enabled-override))
+          (should-not (gethash "another-stale" supervisor--enabled-override))
+          (should-not (gethash "stale-entry" supervisor--restart-override))
+          (should-not (gethash "stale-entry" supervisor--logging))
+          ;; File entry should be restored
+          (should (eq 'enabled (gethash "file-entry" supervisor--enabled-override))))
+      (delete-file temp-file))))
+
+(ert-deftest supervisor-test-duplicate-id-invalid-does-not-poison-valid ()
+  "Valid entry is not poisoned by later invalid duplicate with same ID."
+  (let* ((programs '(("cmd" :id "test" :type simple)      ; valid first
+                     ("cmd" :id "test" :type "bad")))     ; invalid duplicate
+         (plan (supervisor--build-plan programs)))
+    ;; The valid entry should be in plan.entries
+    (should (= 1 (length (supervisor-plan-entries plan))))
+    (should (equal "test" (supervisor-entry-id (car (supervisor-plan-entries plan)))))
+    ;; The ID should NOT be in the invalid hash (first valid wins)
+    (should-not (gethash "test" (supervisor-plan-invalid plan)))))
+
+(ert-deftest supervisor-test-duplicate-id-invalid-first-valid-later ()
+  "First valid occurrence wins even when first occurrence is invalid."
+  (let* ((programs '(("cmd" :id "test" :type "bad")       ; invalid first
+                     ("cmd" :id "test" :type simple)))    ; valid later
+         (plan (supervisor--build-plan programs)))
+    ;; The valid entry should be in plan.entries
+    (should (= 1 (length (supervisor-plan-entries plan))))
+    (should (equal "test" (supervisor-entry-id (car (supervisor-plan-entries plan)))))
+    ;; The ID should NOT be in the invalid hash (valid cleared stale invalid)
+    (should-not (gethash "test" (supervisor-plan-invalid plan)))))
+
+(ert-deftest supervisor-test-cross-stage-requires-excluded-from-plan-entries ()
+  "Entries with cross-stage :requires are excluded from plan.entries."
+  (let* ((programs '(("a" :stage stage2 :id "a")
+                     ("b" :stage stage3 :id "b" :requires "a")))  ; cross-stage
+         (plan (supervisor--build-plan programs)))
+    ;; "b" should be marked invalid
+    (should (gethash "b" (supervisor-plan-invalid plan)))
+    ;; "b" should NOT appear in plan.entries (Bug 2 fix)
+    (should-not (cl-find "b" (supervisor-plan-entries plan)
+                         :key #'supervisor-entry-id :test #'equal))))
+
+(ert-deftest supervisor-test-validate-dotted-list-after ()
+  "Validation handles dotted lists in :after without error."
+  ;; Dotted list should return validation error, not signal
+  (let ((result (supervisor--validate-entry '("foo" :after (a . b)))))
+    (should (stringp result))
+    (should (string-match ":after must be" result))))
+
+(ert-deftest supervisor-test-validate-dotted-list-requires ()
+  "Validation handles dotted lists in :requires without error."
+  ;; Dotted list should return validation error, not signal
+  (let ((result (supervisor--validate-entry '("foo" :requires (x . y)))))
+    (should (stringp result))
+    (should (string-match ":requires must be" result))))
+
+(ert-deftest supervisor-test-empty-stages-not-in-by-stage ()
+  "Empty stages after filtering are not included in by-stage."
+  (let* ((programs '(("a" :stage stage2 :id "a")
+                     ("b" :stage stage3 :id "b" :requires "a")))  ; cross-stage, invalid
+         (plan (supervisor--build-plan programs)))
+    ;; stage3 should be empty after filtering
+    ;; by-stage should NOT contain stage3 entry
+    (let ((stage3-entry (assoc 2 (supervisor-plan-by-stage plan))))
+      (should-not stage3-entry))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

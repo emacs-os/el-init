@@ -73,7 +73,8 @@ Entry forms:
 | `:type` | symbol | `simple` | `simple` or `oneshot` |
 | `:stage` | symbol | `stage3` | `stage1`, `stage2`, `stage3`, `stage4` |
 | `:delay` | number | `0` | Non-negative seconds |
-| `:after` | string or list of strings | `nil` | Dependencies in same stage |
+| `:after` | string or list of strings | `nil` | Ordering dependencies (same stage) |
+| `:requires` | string or list of strings | `nil` | Requirement dependencies (same stage, also pull-in) |
 | `:enabled` | boolean | `t` | Enable entry |
 | `:disabled` | boolean | `nil` | Inverse form of `:enabled` |
 | `:restart` | boolean | `t` for `simple` | Invalid for `oneshot` |
@@ -83,6 +84,29 @@ Entry forms:
 | `:async` | boolean | `nil` | Alias for non-blocking oneshot |
 | `:oneshot-timeout` | number or `nil` | `supervisor-oneshot-timeout` | Invalid for `simple` |
 | `:tags` | symbol/string/list | `nil` | Dashboard tag filtering labels |
+
+*** Dependency Model (Schema v1)
+
+Two types of dependencies are supported:
+
+- `:after` (ordering only): controls start ORDER but does not pull in services
+- `:requires` (pull-in + ordering): implies ordering AND the required service should be active
+
+Dependency constraints:
+
+- Both `:after` and `:requires` must reference services in the same stage
+- Cross-stage `:after` is ignored with a warning
+- Cross-stage `:requires` causes an error (entry marked invalid)
+- Missing dependencies are ignored with a warning
+
+*** Migration
+
+`M-x supervisor-migrate-config` displays current config in canonical schema v1 format.
+This is useful for:
+
+- Normalizing shorthand entries to explicit form
+- Seeing computed defaults
+- Preparing config for future schema versions
 
 *** Validation Rules
 
@@ -112,8 +136,10 @@ Every valid entry is normalized internally to:
 
 #+begin_src elisp
 (id cmd delay enabled-p restart-p logging-p type stage after
-    oneshot-wait oneshot-timeout tags)
+    oneshot-wait oneshot-timeout tags requires)
 #+end_src
+
+Accessor functions (`supervisor-entry-id`, `supervisor-entry-command`, etc.) abstract the tuple indexing.
 
 ** Startup Execution Model
 
@@ -124,8 +150,8 @@ Every valid entry is normalized internally to:
 1. Parse/validate all entries.
 2. Deduplicate IDs.
 3. Partition by stage.
-4. Validate `:after` dependencies against same-stage IDs.
-5. Ignore missing/cross-stage deps with warning.
+4. Validate `:after` dependencies against same-stage IDs (warn on missing/cross-stage).
+5. Validate `:requires` dependencies against same-stage IDs (error on cross-stage, warn on missing).
 6. Topologically sort each stage with stable input-order tie-break.
 7. If cycle detected, clear all `:after` edges in that stage and use list order.
 
@@ -199,6 +225,22 @@ Dashboard toggles set runtime overrides for next starts/restarts:
 - enabled override (`e`)
 - restart override (`r`)
 - logging override (`l`)
+
+*** Persistent Overrides
+
+Runtime overrides survive Emacs restart when persistence is enabled.
+
+| Variable | Default | Purpose |
+| `supervisor-overrides-file` | `~/.local/state/supervisor/overrides.eld` | Path to overrides file, or nil to disable |
+
+| Command | Purpose |
+| `M-x supervisor-overrides-load` | Reload overrides from file |
+| `M-x supervisor-overrides-save` | Save current overrides to file |
+| `M-x supervisor-overrides-clear` | Clear all overrides (memory and file) |
+
+Overrides are auto-loaded on `supervisor-start` and auto-saved when changed via dashboard toggles.
+The file uses atomic writes (temp file + rename) for crash safety.
+Corrupt files are preserved for inspection and do not block startup.
 
 ** Reload Reconciler
 
@@ -403,6 +445,7 @@ Legacy hooks are still supported and dispatched by the event adapter:
 | `supervisor-stage-descriptions` | `((stage1 . "X Setup") (stage2 . "System") (stage3 . "Services") (stage4 . "Applets"))` | Stage labels in grouped dashboard |
 | `supervisor-dashboard-group-by-stage` | `t` | Show stage separator rows |
 | `supervisor-auto-refresh-interval` | `2` | Dashboard live-refresh interval |
+| `supervisor-overrides-file` | `~/.local/state/supervisor/overrides.eld` | Override persistence file (nil to disable) |
 
 ** Development Commands
 
