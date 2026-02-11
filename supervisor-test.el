@@ -1227,5 +1227,168 @@ Regression test for warning parity with legacy startup path."
     (should (cl-some (lambda (m) (string-match-p "different stage" m))
                      messages))))
 
+;;; Phase 3: Snapshot-Based Read Model Tests
+
+(ert-deftest supervisor-test-snapshot-shape ()
+  "Snapshot struct has all required fields."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal)))
+    (let ((snapshot (supervisor--build-snapshot)))
+      (should (supervisor-snapshot-p snapshot))
+      (should (hash-table-p (supervisor-snapshot-process-alive snapshot)))
+      (should (hash-table-p (supervisor-snapshot-process-pids snapshot)))
+      (should (hash-table-p (supervisor-snapshot-failed snapshot)))
+      (should (hash-table-p (supervisor-snapshot-oneshot-exit snapshot)))
+      (should (hash-table-p (supervisor-snapshot-entry-state snapshot)))
+      (should (hash-table-p (supervisor-snapshot-invalid snapshot)))
+      (should (hash-table-p (supervisor-snapshot-enabled-override snapshot)))
+      (should (hash-table-p (supervisor-snapshot-restart-override snapshot)))
+      (should (hash-table-p (supervisor-snapshot-logging-override snapshot)))
+      (should (numberp (supervisor-snapshot-timestamp snapshot))))))
+
+(ert-deftest supervisor-test-snapshot-captures-state ()
+  "Snapshot captures current runtime state correctly."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal)))
+    ;; Set up some state
+    (puthash "test-failed" t supervisor--failed)
+    (puthash "test-oneshot" 0 supervisor--oneshot-completed)
+    (puthash "test-entry" 'running supervisor--entry-state)
+    (puthash "test-invalid" "bad config" supervisor--invalid)
+    (puthash "test-enabled" 'disabled supervisor--enabled-override)
+    ;; Build snapshot
+    (let ((snapshot (supervisor--build-snapshot)))
+      ;; Verify state was captured
+      (should (gethash "test-failed" (supervisor-snapshot-failed snapshot)))
+      (should (= 0 (gethash "test-oneshot" (supervisor-snapshot-oneshot-exit snapshot))))
+      (should (eq 'running (gethash "test-entry" (supervisor-snapshot-entry-state snapshot))))
+      (should (equal "bad config" (gethash "test-invalid" (supervisor-snapshot-invalid snapshot))))
+      (should (eq 'disabled (gethash "test-enabled" (supervisor-snapshot-enabled-override snapshot)))))))
+
+(ert-deftest supervisor-test-status-from-snapshot-parity ()
+  "Status computation from snapshot matches direct global access."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal)))
+    ;; Set up state for a failed entry
+    (puthash "test" t supervisor--failed)
+    (puthash "oneshot-done" 0 supervisor--oneshot-completed)
+    ;; Build snapshot
+    (let ((snapshot (supervisor--build-snapshot)))
+      ;; Status from globals
+      (let ((status-globals (supervisor--compute-entry-status "test" 'simple)))
+        ;; Status from snapshot
+        (let ((status-snapshot (supervisor--compute-entry-status "test" 'simple snapshot)))
+          (should (equal status-globals status-snapshot))))
+      ;; Test oneshot status
+      (let ((status-globals (supervisor--compute-entry-status "oneshot-done" 'oneshot)))
+        (let ((status-snapshot (supervisor--compute-entry-status "oneshot-done" 'oneshot snapshot)))
+          (should (equal status-globals status-snapshot)))))))
+
+(ert-deftest supervisor-test-health-summary-from-snapshot-parity ()
+  "Health summary from snapshot matches direct global access."
+  (let ((supervisor-programs '(("sleep 100" :id "a")
+                               ("sleep 200" :id "b")))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal)))
+    ;; Mark one as failed
+    (puthash "a" t supervisor--failed)
+    ;; Build snapshot
+    (let ((snapshot (supervisor--build-snapshot)))
+      ;; Health from globals
+      (let ((health-globals (supervisor--health-summary)))
+        ;; Health from snapshot
+        (let ((health-snapshot (supervisor--health-summary snapshot)))
+          (should (equal health-globals health-snapshot)))))))
+
+(ert-deftest supervisor-test-reason-from-snapshot-parity ()
+  "Reason computation from snapshot matches direct global access."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal)))
+    ;; Set up various states
+    (puthash "disabled" 'disabled supervisor--entry-state)
+    (puthash "delayed" 'delayed supervisor--entry-state)
+    (puthash "waiting" 'waiting-on-deps supervisor--entry-state)
+    (puthash "crashed" t supervisor--failed)
+    ;; Build snapshot
+    (let ((snapshot (supervisor--build-snapshot)))
+      ;; Test each case
+      (dolist (test-case '(("disabled" . simple)
+                           ("delayed" . simple)
+                           ("waiting" . simple)
+                           ("crashed" . simple)))
+        (let ((id (car test-case))
+              (type (cdr test-case)))
+          (should (equal (supervisor--compute-entry-reason id type)
+                         (supervisor--compute-entry-reason id type snapshot))))))))
+
+(ert-deftest supervisor-test-initial-dashboard-uses-shared-snapshot ()
+  "Initial dashboard render uses same snapshot for entries and header.
+Regression test: M-x supervisor must use shared snapshot like refresh does."
+  (let ((supervisor-programs '(("sleep 100" :id "a")))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--current-stage nil)
+        (supervisor--completed-stages nil)
+        (snapshots-built 0))
+    ;; Track how many snapshots are built during initial render
+    (cl-letf (((symbol-function 'supervisor--build-snapshot)
+               (lambda ()
+                 (cl-incf snapshots-built)
+                 (supervisor-snapshot--create
+                  :process-alive (make-hash-table :test 'equal)
+                  :process-pids (make-hash-table :test 'equal)
+                  :failed (copy-hash-table supervisor--failed)
+                  :oneshot-exit (copy-hash-table supervisor--oneshot-completed)
+                  :entry-state (copy-hash-table supervisor--entry-state)
+                  :invalid (copy-hash-table supervisor--invalid)
+                  :enabled-override (copy-hash-table supervisor--enabled-override)
+                  :restart-override (copy-hash-table supervisor--restart-override)
+                  :logging-override (copy-hash-table supervisor--logging)
+                  :timestamp (float-time)))))
+      (unwind-protect
+          (progn
+            (supervisor)
+            ;; Should build exactly one snapshot for initial render
+            (should (= 1 snapshots-built)))
+        ;; Cleanup
+        (when-let* ((buf (get-buffer "*supervisor*")))
+          (kill-buffer buf))))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

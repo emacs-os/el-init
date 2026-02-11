@@ -657,6 +657,45 @@ so full struct equality requires excluding it."
 (defconst supervisor-plan-version 1
   "Schema version for supervisor-plan struct.")
 
+(cl-defstruct (supervisor-snapshot (:constructor supervisor-snapshot--create))
+  "Runtime state snapshot for read-only operations.
+Captures current state of all supervised processes for dashboard,
+status queries, and reconciliation without direct global access."
+  process-alive    ; hash: id -> t if process is alive
+  process-pids     ; hash: id -> pid (integer) or nil
+  failed           ; hash: id -> t if crash-looped
+  oneshot-exit     ; hash: id -> exit code or nil
+  entry-state      ; hash: id -> state symbol
+  invalid          ; hash: id -> reason string
+  enabled-override ; hash: id -> 'enabled, 'disabled, or nil
+  restart-override ; hash: id -> 'enabled, 'disabled, or nil
+  logging-override ; hash: id -> 'enabled, 'disabled, or nil
+  timestamp)       ; float-time when snapshot was taken
+
+(defun supervisor--build-snapshot ()
+  "Build a snapshot of current runtime state.
+Returns a `supervisor-snapshot' struct capturing process states,
+completion status, and overrides.  Safe to call at any time."
+  (let ((process-alive (make-hash-table :test 'equal))
+        (process-pids (make-hash-table :test 'equal)))
+    ;; Capture process liveness and PIDs
+    (maphash (lambda (id proc)
+               (when (process-live-p proc)
+                 (puthash id t process-alive)
+                 (puthash id (process-id proc) process-pids)))
+             supervisor--processes)
+    (supervisor-snapshot--create
+     :process-alive process-alive
+     :process-pids process-pids
+     :failed (copy-hash-table supervisor--failed)
+     :oneshot-exit (copy-hash-table supervisor--oneshot-completed)
+     :entry-state (copy-hash-table supervisor--entry-state)
+     :invalid (copy-hash-table supervisor--invalid)
+     :enabled-override (copy-hash-table supervisor--enabled-override)
+     :restart-override (copy-hash-table supervisor--restart-override)
+     :logging-override (copy-hash-table supervisor--logging)
+     :timestamp (float-time))))
+
 (defun supervisor--build-plan (programs)
   "Build an immutable execution plan from PROGRAMS.
 This function does not modify global runtime state, but does emit
@@ -1935,17 +1974,28 @@ Skips invalid/malformed entries to avoid parse errors."
   "Return non-nil if ID represents a stage separator row."
   (and id (symbolp id) (string-prefix-p "--" (symbol-name id))))
 
-(defun supervisor--compute-entry-status (id type)
+(defun supervisor--compute-entry-status (id type &optional snapshot)
   "Compute status string and PID string for entry ID of TYPE.
+If SNAPSHOT is provided, read from it; otherwise read from globals.
 Return a cons cell (STATUS . PID)."
-  (let* ((proc (gethash id supervisor--processes))
-         (alive (and proc (process-live-p proc)))
-         (failed (gethash id supervisor--failed))
+  (let* ((alive (if snapshot
+                    (gethash id (supervisor-snapshot-process-alive snapshot))
+                  (let ((proc (gethash id supervisor--processes)))
+                    (and proc (process-live-p proc)))))
+         (pid-num (if snapshot
+                      (gethash id (supervisor-snapshot-process-pids snapshot))
+                    (let ((proc (gethash id supervisor--processes)))
+                      (and proc (process-live-p proc) (process-id proc)))))
+         (failed (gethash id (if snapshot
+                                 (supervisor-snapshot-failed snapshot)
+                               supervisor--failed)))
          (oneshot-p (eq type 'oneshot))
-         (oneshot-exit (gethash id supervisor--oneshot-completed))
+         (oneshot-exit (gethash id (if snapshot
+                                       (supervisor-snapshot-oneshot-exit snapshot)
+                                     supervisor--oneshot-completed)))
          (oneshot-done (not (null oneshot-exit)))
          (oneshot-failed (and oneshot-done (> oneshot-exit 0)))
-         (pid (cond (alive (number-to-string (process-id proc)))
+         (pid (cond (alive (number-to-string pid-num))
                     ((and oneshot-p oneshot-done) (format "exit:%d" oneshot-exit))
                     (t "-")))
          (status (cond (alive "running")
@@ -1956,15 +2006,24 @@ Return a cons cell (STATUS . PID)."
                        (t "stopped"))))
     (cons status pid)))
 
-(defun supervisor--compute-entry-reason (id type)
-  "Compute reason string for entry ID of TYPE."
-  (let* ((proc (gethash id supervisor--processes))
-         (alive (and proc (process-live-p proc)))
-         (failed (gethash id supervisor--failed))
+(defun supervisor--compute-entry-reason (id type &optional snapshot)
+  "Compute reason string for entry ID of TYPE.
+If SNAPSHOT is provided, read from it; otherwise read from globals."
+  (let* ((alive (if snapshot
+                    (gethash id (supervisor-snapshot-process-alive snapshot))
+                  (let ((proc (gethash id supervisor--processes)))
+                    (and proc (process-live-p proc)))))
+         (failed (gethash id (if snapshot
+                                 (supervisor-snapshot-failed snapshot)
+                               supervisor--failed)))
          (oneshot-p (eq type 'oneshot))
-         (oneshot-exit (gethash id supervisor--oneshot-completed))
+         (oneshot-exit (gethash id (if snapshot
+                                       (supervisor-snapshot-oneshot-exit snapshot)
+                                     supervisor--oneshot-completed)))
          (oneshot-done (not (null oneshot-exit)))
-         (entry-state (gethash id supervisor--entry-state)))
+         (entry-state (gethash id (if snapshot
+                                      (supervisor-snapshot-entry-state snapshot)
+                                    supervisor--entry-state))))
     (cond
      (alive "")
      ((and oneshot-p oneshot-done) "")
@@ -1977,19 +2036,34 @@ Return a cons cell (STATUS . PID)."
      (failed "crash-loop")
      (t ""))))
 
-(defun supervisor--make-dashboard-entry (id type stage enabled-p restart-p logging-p)
+(defun supervisor--make-dashboard-entry (id type stage enabled-p restart-p logging-p
+                                            &optional snapshot)
   "Create a dashboard entry vector for ID.
-TYPE, STAGE, ENABLED-P, RESTART-P, LOGGING-P are parsed entry fields."
-  (let* ((status-pid (supervisor--compute-entry-status id type))
+TYPE, STAGE, ENABLED-P, RESTART-P, LOGGING-P are parsed entry fields.
+If SNAPSHOT is provided, read runtime state from it."
+  (let* ((status-pid (supervisor--compute-entry-status id type snapshot))
          (status (car status-pid))
          (pid (cdr status-pid))
-         (reason (supervisor--compute-entry-reason id type))
-         (effective-enabled (supervisor--get-effective-enabled id enabled-p))
+         (reason (supervisor--compute-entry-reason id type snapshot))
+         ;; For overrides, use snapshot if provided, otherwise globals
+         (enabled-override (if snapshot
+                               (gethash id (supervisor-snapshot-enabled-override snapshot))
+                             (gethash id supervisor--enabled-override)))
+         (effective-enabled (cond ((eq enabled-override 'enabled) t)
+                                  ((eq enabled-override 'disabled) nil)
+                                  (t enabled-p)))
+         (restart-override (if snapshot
+                               (gethash id (supervisor-snapshot-restart-override snapshot))
+                             (gethash id supervisor--restart-override)))
+         (effective-restart (cond ((eq restart-override 'enabled) t)
+                                  ((eq restart-override 'disabled) nil)
+                                  (t restart-p)))
          (restart-str (if (eq type 'oneshot)
                           "-"
-                        (if (supervisor--get-effective-restart id restart-p)
-                            "yes" "no")))
-         (log-override (gethash id supervisor--logging))
+                        (if effective-restart "yes" "no")))
+         (log-override (if snapshot
+                           (gethash id (supervisor-snapshot-logging-override snapshot))
+                         (gethash id supervisor--logging)))
          (effective-logging (cond ((eq log-override 'enabled) t)
                                   ((eq log-override 'disabled) nil)
                                   (t logging-p))))
@@ -2023,19 +2097,22 @@ ENTRIES is a list of (id vector stage) tuples."
         (push (list (car entry) (cadr entry)) result)))
     (nreverse result)))
 
-(defun supervisor--get-entries ()
+(defun supervisor--get-entries (&optional snapshot)
   "Generate entries for the dashboard (deduplicates on the fly).
 Respects `supervisor--dashboard-stage-filter' and tag filter when set.
 When `supervisor-dashboard-group-by-stage' is non-nil and no stage filter
-is active, entries are grouped by stage with separator rows."
-  (let ((entries nil)
-        (seen (make-hash-table :test 'equal))
-        (stage-filter supervisor--dashboard-stage-filter)
-        (tag-filter supervisor--dashboard-tag-filter)
-        (idx 0))
+is active, entries are grouped by stage with separator rows.
+If SNAPSHOT is provided, read runtime state from it."
+  (let* ((snapshot (or snapshot (supervisor--build-snapshot)))
+         (entries nil)
+         (seen (make-hash-table :test 'equal))
+         (stage-filter supervisor--dashboard-stage-filter)
+         (tag-filter supervisor--dashboard-tag-filter)
+         (invalid-hash (supervisor-snapshot-invalid snapshot))
+         (idx 0))
     (dolist (entry supervisor-programs)
       (let* ((raw-id (supervisor--extract-id entry idx))
-             (invalid-reason (gethash raw-id supervisor--invalid)))
+             (invalid-reason (gethash raw-id invalid-hash)))
         (cl-incf idx)
         (unless (gethash raw-id seen)
           (puthash raw-id t seen)
@@ -2055,7 +2132,7 @@ is active, entries are grouped by stage with separator rows."
                          (or (null tag-filter) (member tag-filter tags)))
                 (push (list id
                             (supervisor--make-dashboard-entry
-                             id type stage enabled-p restart-p logging-p)
+                             id type stage enabled-p restart-p logging-p snapshot)
                             stage)
                       entries)))))))
     (setq entries (nreverse entries))
@@ -2077,10 +2154,21 @@ is active, entries are grouped by stage with separator rows."
             parts))
     (mapconcat #'identity (nreverse parts) " ")))
 
-(defun supervisor--health-summary ()
-  "Return compact health summary string."
+(defun supervisor--health-summary (&optional snapshot)
+  "Return compact health summary string.
+If SNAPSHOT is provided, read state from it; otherwise read from globals."
   (let ((running 0) (done 0) (failed 0) (invalid 0) (pending 0)
         (seen (make-hash-table :test 'equal))
+        (invalid-hash (if snapshot
+                          (supervisor-snapshot-invalid snapshot)
+                        supervisor--invalid))
+        (process-alive (when snapshot (supervisor-snapshot-process-alive snapshot)))
+        (failed-hash (if snapshot
+                         (supervisor-snapshot-failed snapshot)
+                       supervisor--failed))
+        (oneshot-hash (if snapshot
+                          (supervisor-snapshot-oneshot-exit snapshot)
+                        supervisor--oneshot-completed))
         (idx 0))
     (dolist (entry supervisor-programs)
       (let ((raw-id (supervisor--extract-id entry idx)))
@@ -2088,18 +2176,20 @@ is active, entries are grouped by stage with separator rows."
         ;; Skip duplicates to match runtime behavior
         (unless (gethash raw-id seen)
           (puthash raw-id t seen)
-          (if (gethash raw-id supervisor--invalid)
+          (if (gethash raw-id invalid-hash)
               (cl-incf invalid)
             (let ((parsed (ignore-errors (supervisor--parse-entry entry))))
               (if (null parsed)
                   (cl-incf invalid)
                 (let* ((id (car parsed))
                        (type (nth 6 parsed))
-                       (proc (gethash id supervisor--processes))
-                       (alive (and proc (process-live-p proc)))
-                       (is-failed (gethash id supervisor--failed))
+                       (alive (if snapshot
+                                  (gethash id process-alive)
+                                (let ((proc (gethash id supervisor--processes)))
+                                  (and proc (process-live-p proc)))))
+                       (is-failed (gethash id failed-hash))
                        (oneshot-p (eq type 'oneshot))
-                       (oneshot-exit (gethash id supervisor--oneshot-completed)))
+                       (oneshot-exit (gethash id oneshot-hash)))
                   (cond
                    (alive (cl-incf running))
                    (is-failed (cl-incf failed))
@@ -2117,15 +2207,18 @@ is active, entries are grouped by stage with separator rows."
   "Key hints displayed in dashboard header.")
 
 (defun supervisor--refresh-dashboard ()
-  "Refresh the dashboard buffer if it exists."
+  "Refresh the dashboard buffer if it exists.
+Builds a single snapshot and uses it for both entries and health summary,
+ensuring consistency within a single refresh cycle."
   (when-let* ((buf (get-buffer "*supervisor*")))
     (with-current-buffer buf
-      (let ((pos (point)))
-        (setq tabulated-list-entries (supervisor--get-entries))
+      (let* ((snapshot (supervisor--build-snapshot))
+             (pos (point)))
+        (setq tabulated-list-entries (supervisor--get-entries snapshot))
         (tabulated-list-print t)
         (setq header-line-format
               (concat (supervisor--stage-progress-banner)
-                      " | " (supervisor--health-summary)
+                      " | " (supervisor--health-summary snapshot)
                       "  " supervisor--help-text))
         (goto-char (min pos (point-max)))))))
 
@@ -2564,17 +2657,20 @@ Displays computed dependencies after validation and cycle fallback."
 
 ;;;###autoload
 (defun supervisor ()
-  "Open the supervisor dashboard."
+  "Open the supervisor dashboard.
+Builds a single snapshot for both entries and header to ensure consistency."
   (interactive)
   (let ((buf (get-buffer-create "*supervisor*")))
     (with-current-buffer buf
       (supervisor-dashboard-mode)
-      (setq tabulated-list-entries (supervisor--get-entries))
-      (tabulated-list-print)
-      (setq-local header-line-format
-                  (concat (supervisor--stage-progress-banner)
-                          " | " (supervisor--health-summary)
-                          "  " supervisor--help-text)))
+      ;; Build snapshot once and use for both entries and header
+      (let ((snapshot (supervisor--build-snapshot)))
+        (setq tabulated-list-entries (supervisor--get-entries snapshot))
+        (tabulated-list-print)
+        (setq-local header-line-format
+                    (concat (supervisor--stage-progress-banner)
+                            " | " (supervisor--health-summary snapshot)
+                            "  " supervisor--help-text))))
     (pop-to-buffer buf)))
 
 ;;; File Watch
