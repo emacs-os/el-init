@@ -4,7 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-supervisor.el is a single-file Emacs Lisp package for managing background processes. It provides staged startup with dependency ordering, crash recovery, and a dashboard UI.
+supervisor.el is an Emacs Lisp package for managing background processes. It provides staged startup with dependency ordering, crash recovery, and a dashboard UI.
+
+## Module Structure
+
+The package is split into focused modules:
+
+| File | Purpose |
+|------|---------|
+| `supervisor-core.el` | Engine, parsing, scheduling, process lifecycle, state management |
+| `supervisor-dashboard.el` | UI rendering, keymaps, interactive commands |
+| `supervisor-cli.el` | CLI dispatcher, formatters, command handlers |
+| `supervisor.el` | Facade that loads all modules and provides the `supervisor` feature |
+
+**Load order:** core → dashboard → cli → facade.
+
+**Dependency rules:**
+- `supervisor-core.el` has no dependencies on dashboard or CLI (can load standalone)
+- `supervisor-dashboard.el` requires only `supervisor-core`
+- `supervisor-cli.el` requires only `supervisor-core`
+- `supervisor.el` requires all modules
+
+Cross-module calls use `declare-function` for proper byte-compilation.
 
 ## Emacs Lisp Standards (MANDATORY)
 
@@ -138,8 +159,9 @@ make check   # Must pass before commits (runs lint + test)
 - Follow Emacs Lisp naming conventions (`supervisor-` public, `supervisor--` private)
 
 ### Package Structure
-- Lexical binding required (already present)
-- Standard headers: Author, Version, Package-Requires, Keywords, URL
+- Lexical binding required in all module files
+- Standard headers: Author, Version, Package-Requires, Keywords, URL (in facade)
 - GPL-compatible license with boilerplate above `;;; Commentary:`
 - Must include LICENSE file
-- Feature name must match filename (`(provide 'supervisor)`)
+- Main feature provided by facade: `(provide 'supervisor)`
+- Each module provides its own feature: `supervisor-core`, `supervisor-dashboard`, `supervisor-cli`

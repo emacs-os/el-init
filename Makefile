@@ -1,7 +1,9 @@
 EMACS ?= emacs
-BATCH = $(EMACS) -Q --batch
+BATCH = $(EMACS) -Q --batch -L .
 
-EL = supervisor.el
+EL_MAIN = supervisor.el
+EL_MODULES = supervisor-core.el supervisor-dashboard.el supervisor-cli.el
+EL_ALL = $(EL_MODULES) $(EL_MAIN)
 TEST_EL = supervisor-test.el
 
 .PHONY: all check lint test byte-compile checkdoc package-lint clean
@@ -12,34 +14,38 @@ check: lint test
 
 lint: byte-compile checkdoc package-lint
 
-byte-compile: $(EL)
+byte-compile: $(EL_ALL)
 	@echo "=== byte-compile ==="
 	@$(BATCH) --eval "(setq byte-compile-error-on-warn t)" \
-		-f batch-byte-compile $(EL)
+		-f batch-byte-compile $(EL_MODULES)
+	@$(BATCH) --eval "(setq byte-compile-error-on-warn t)" \
+		-f batch-byte-compile $(EL_MAIN)
 	@rm -f *.elc
 
-checkdoc: $(EL)
+checkdoc: $(EL_ALL)
 	@echo "=== checkdoc ==="
-	@output=$$($(BATCH) --eval "(checkdoc-file \"$(EL)\")" 2>&1); \
-	if [ -n "$$output" ]; then echo "$$output"; exit 1; fi
+	@for f in $(EL_ALL); do \
+		output=$$($(BATCH) --eval "(checkdoc-file \"$$f\")" 2>&1); \
+		if [ -n "$$output" ]; then echo "$$f:"; echo "$$output"; exit 1; fi; \
+	done
 
-package-lint: $(EL)
+package-lint: $(EL_MAIN)
 	@echo "=== package-lint ==="
 	@$(BATCH) --eval "(progn (package-initialize) (require 'package-lint))" \
-		--eval "(let ((errs (with-current-buffer (find-file-noselect \"$(EL)\") (package-lint-buffer)))) \
+		--eval "(let ((errs (with-current-buffer (find-file-noselect \"$(EL_MAIN)\") (package-lint-buffer)))) \
 			(dolist (e errs) (message \"%d:%d: %s\" (nth 0 e) (nth 1 e) (nth 3 e))) \
 			(kill-emacs (if errs 1 0)))"
 
-test: $(EL) $(TEST_EL)
+test: $(EL_ALL) $(TEST_EL)
 	@echo "=== ERT tests ==="
-	@$(BATCH) -l $(EL) -l $(TEST_EL) -f ert-run-tests-batch-and-exit
+	@$(BATCH) -l $(EL_MAIN) -l $(TEST_EL) -f ert-run-tests-batch-and-exit
 
-test-verbose: $(EL) $(TEST_EL)
-	@$(BATCH) -l $(EL) -l $(TEST_EL) --eval "(ert-run-tests-batch-and-exit t)"
+test-verbose: $(EL_ALL) $(TEST_EL)
+	@$(BATCH) -l $(EL_MAIN) -l $(TEST_EL) --eval "(ert-run-tests-batch-and-exit t)"
 
 # Run a single test: make test-one TEST=test-name
-test-one: $(EL) $(TEST_EL)
-	@$(BATCH) -l $(EL) -l $(TEST_EL) --eval "(ert-run-tests-batch-and-exit '$(TEST))"
+test-one: $(EL_ALL) $(TEST_EL)
+	@$(BATCH) -l $(EL_MAIN) -l $(TEST_EL) --eval "(ert-run-tests-batch-and-exit '$(TEST))"
 
 clean:
 	rm -f *.elc

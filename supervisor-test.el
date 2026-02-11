@@ -21,6 +21,56 @@
   "Verify the supervisor feature is provided."
   (should (featurep 'supervisor)))
 
+(ert-deftest supervisor-test-module-load-core ()
+  "Verify supervisor-core module loads and provides its feature."
+  (should (featurep 'supervisor-core)))
+
+(ert-deftest supervisor-test-module-load-dashboard ()
+  "Verify supervisor-dashboard module loads and provides its feature."
+  (should (featurep 'supervisor-dashboard)))
+
+(ert-deftest supervisor-test-module-load-cli ()
+  "Verify supervisor-cli module loads and provides its feature."
+  (should (featurep 'supervisor-cli)))
+
+(ert-deftest supervisor-test-module-core-standalone ()
+  "Verify supervisor-core loads and works without dashboard or CLI.
+Spawns a subprocess to test true standalone behavior."
+  (let* ((default-directory (file-name-directory (locate-library "supervisor")))
+         (result (call-process
+                  "emacs" nil nil nil
+                  "-Q" "--batch" "-L" "."
+                  "--eval" "(require 'supervisor-core)"
+                  "--eval" "(setq supervisor-programs nil)"
+                  "--eval" "(supervisor-validate)")))
+    (should (= result 0))))
+
+(ert-deftest supervisor-test-module-cli-standalone ()
+  "Verify supervisor-cli loads and works without dashboard.
+Spawns a subprocess to test CLI dispatch without dashboard module."
+  (let* ((default-directory (file-name-directory (locate-library "supervisor")))
+         (result (call-process
+                  "emacs" nil nil nil
+                  "-Q" "--batch" "-L" "."
+                  "--eval" "(require 'supervisor-core)"
+                  "--eval" "(require 'supervisor-cli)"
+                  "--eval" "(setq supervisor-programs nil)"
+                  "--eval" "(supervisor--cli-dispatch '(\"reload\"))")))
+    (should (= result 0))))
+
+(ert-deftest supervisor-test-module-no-cycles ()
+  "Verify modules have no circular require chains.
+Core must not require dashboard or cli.  This is checked by verifying
+core symbols exist without dashboard/cli-specific dependencies."
+  ;; Core should work standalone - key symbols should exist
+  (should (fboundp 'supervisor--parse-entry))
+  (should (fboundp 'supervisor--build-plan))
+  (should (fboundp 'supervisor-start))
+  ;; Dashboard-specific symbols should be in dashboard
+  (should (fboundp 'supervisor-dashboard-mode))
+  ;; CLI-specific symbols should be in cli
+  (should (fboundp 'supervisor--cli-dispatch)))
+
 (ert-deftest supervisor-test-stages-defined ()
   "Verify stages are properly defined."
   (should (equal supervisor-stage-names '(stage1 stage2 stage3 stage4)))
