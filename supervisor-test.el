@@ -3566,6 +3566,34 @@ at minute boundaries."
       (should-not triggered))
     (clrhash supervisor--timer-state)))
 
+(ert-deftest supervisor-test-timer-scheduler-tick-simultaneous-order ()
+  "Scheduler tick processes simultaneous due timers in list order."
+  (let* ((timer1 (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+         (timer2 (supervisor-timer--create :id "t2" :target "s2" :enabled t))
+         (timer3 (supervisor-timer--create :id "t3" :target "s3" :enabled t))
+         ;; List order is t1, t2, t3
+         (supervisor--timer-list (list timer1 timer2 timer3))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--timer-scheduler nil)
+         (supervisor--shutting-down nil)
+         (trigger-order nil))
+    ;; All timers due at same time
+    (puthash "t1" '(:next-run-at 999.0) supervisor--timer-state)
+    (puthash "t2" '(:next-run-at 999.0) supervisor--timer-state)
+    (puthash "t3" '(:next-run-at 999.0) supervisor--timer-state)
+    ;; Capture trigger order
+    (cl-letf (((symbol-function 'supervisor--timer-trigger)
+               (lambda (timer _reason)
+                 (push (supervisor-timer-id timer) trigger-order)))
+              ((symbol-function 'supervisor--timer-update-next-run)
+               (lambda (_id) nil))
+              ((symbol-function 'float-time) (lambda () 1000.0))
+              ((symbol-function 'run-at-time) (lambda (&rest _) nil)))
+      (supervisor--timer-scheduler-tick)
+      ;; Should process in list order: t1, t2, t3
+      (should (equal '("t1" "t2" "t3") (nreverse trigger-order))))
+    (clrhash supervisor--timer-state)))
+
 (ert-deftest supervisor-test-cli-relative-time-formatter ()
   "Relative time formatter handles various time differences."
   ;; Test with mock time at 100000
@@ -3581,6 +3609,24 @@ at minute boundaries."
     (should (string-match "\\`in [0-9]+m\\'" (supervisor--cli-format-relative-time 100200.0)))
     ;; Nil returns dash
     (should (equal "-" (supervisor--cli-format-relative-time nil)))))
+
+(ert-deftest supervisor-test-cli-relative-time-boundaries ()
+  "Relative time formatter handles exact boundaries correctly."
+  (cl-letf (((symbol-function 'float-time) (lambda () 100000.0)))
+    ;; Exactly 60 seconds (boundary between s and m)
+    (should (string-match "\\`1m ago\\'" (supervisor--cli-format-relative-time 99940.0)))
+    ;; 59 seconds (should be seconds)
+    (should (string-match "\\`59s ago\\'" (supervisor--cli-format-relative-time 99941.0)))
+    ;; Exactly 3600 seconds (boundary between m and h)
+    (should (string-match "\\`1h ago\\'" (supervisor--cli-format-relative-time 96400.0)))
+    ;; 3599 seconds (should be minutes)
+    (should (string-match "\\`60m ago\\'" (supervisor--cli-format-relative-time 96401.0)))
+    ;; Exactly 86400 seconds (boundary between h and d)
+    (should (string-match "\\`1d ago\\'" (supervisor--cli-format-relative-time 13600.0)))
+    ;; Day path works for large values
+    (should (string-match "\\`2d ago\\'" (supervisor--cli-format-relative-time (- 100000.0 (* 2 86400)))))
+    ;; Future day path
+    (should (string-match "\\`in 2d\\'" (supervisor--cli-format-relative-time (+ 100000.0 (* 2 86400)))))))
 
 (ert-deftest supervisor-test-timer-state-load-merges-correctly ()
   "Load timer state merges with existing runtime state."
@@ -3959,6 +4005,56 @@ at minute boundaries."
       ;; Entry is a vector: [id type target enabled status restart log pid reason]
       ;; Status is at index 4
       (should (string-match-p "failed" (aref entry 4))))))
+
+(ert-deftest supervisor-test-cli-timers-full-field-mapping ()
+  "CLI timers output includes all required fields per Phase 5 contract."
+  (let* ((timer (supervisor-timer--create :id "test-timer" :target "test-target"
+                                          :enabled t :persistent t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    ;; Set up comprehensive state (note: :last-missed-at is the state key)
+    (puthash "test-timer" '(:last-run-at 1000.0
+                            :last-success-at 900.0
+                            :last-failure-at 950.0
+                            :last-exit 1
+                            :next-run-at 2000.0
+                            :last-missed-at 850.0
+                            :last-miss-reason overlap)
+             supervisor--timer-state)
+    ;; Test human format includes all fields
+    (let ((result (supervisor--cli-dispatch '("timers"))))
+      (should (supervisor-cli-result-p result))
+      (let ((output (supervisor-cli-result-output result)))
+        ;; ID and target
+        (should (string-match-p "test-timer" output))
+        (should (string-match-p "test-target" output))
+        ;; Enabled (yes/no)
+        (should (string-match-p "yes" output))
+        ;; Exit code
+        (should (string-match-p "1" output))
+        ;; Miss reason
+        (should (string-match-p "overlap" output))))
+    ;; Test JSON format includes all fields with correct values
+    (let ((result (supervisor--cli-dispatch '("--json" "timers"))))
+      (should (supervisor-cli-result-p result))
+      (let* ((json-object-type 'alist)
+             (json-array-type 'list)
+             (data (json-read-from-string (supervisor-cli-result-output result)))
+             (timers (alist-get 'timers data))
+             (entry (car timers)))
+        ;; Verify all required fields present and mapped correctly
+        (should (equal "test-timer" (alist-get 'id entry)))
+        (should (equal "test-target" (alist-get 'target entry)))
+        (should (eq t (alist-get 'enabled entry)))
+        (should (eq t (alist-get 'persistent entry)))
+        (should (= 1000.0 (alist-get 'last_run_at entry)))
+        (should (= 900.0 (alist-get 'last_success_at entry)))
+        (should (= 950.0 (alist-get 'last_failure_at entry)))
+        (should (= 1 (alist-get 'last_exit entry)))
+        (should (= 2000.0 (alist-get 'next_run_at entry)))
+        (should (= 850.0 (alist-get 'last_miss_at entry)))
+        (should (equal "overlap" (alist-get 'miss_reason entry)))))))
 
 (ert-deftest supervisor-test-cli-timers-rejects-extra-args ()
   "Timers with extra args returns invalid-args exit code."
