@@ -36,55 +36,54 @@
 set -e
 
 # Exit codes (must match supervisor-cli-exit-* constants)
-EXIT_SUCCESS=0
-EXIT_FAILURE=1
-EXIT_INVALID_ARGS=2
-EXIT_SERVER_UNAVAILABLE=3
+exit_failure=1
+exit_invalid_args=2
+exit_server_unavailable=3
 
 # Default options
-SOCKET_NAME=""
-SERVER_FILE=""
-TIMEOUT=""
-JSON_FLAG=""
+socket_name=""
+server_file=""
+timeout=""
+json_flag=""
 
 # Print help
 show_help() {
-    sed -n '2,/^$/p' "$0" | sed 's/^# *//'
+    sed -n '2,/^$/p' "${0}" | sed 's/^# *//'
     exit 0
 }
 
 # Parse our options (before command)
-while [ $# -gt 0 ]; do
-    case "$1" in
+while [ "${#}" -gt 0 ]; do
+    case "${1}" in
         --help|-h)
             show_help
             ;;
         --json)
-            JSON_FLAG="--json"
+            json_flag="--json"
             shift
             ;;
         --socket|--socket-name|-s)
-            if [ -z "$2" ]; then
+            [ -n "${2-}" ] || {
                 echo "Error: --socket requires a name" >&2
-                exit $EXIT_INVALID_ARGS
-            fi
-            SOCKET_NAME="$2"
+                exit "${exit_invalid_args}"
+            }
+            socket_name="${2}"
             shift 2
             ;;
         --server-file|-f)
-            if [ -z "$2" ]; then
+            [ -n "${2-}" ] || {
                 echo "Error: --server-file requires a path" >&2
-                exit $EXIT_INVALID_ARGS
-            fi
-            SERVER_FILE="$2"
+                exit "${exit_invalid_args}"
+            }
+            server_file="${2}"
             shift 2
             ;;
         --timeout|-t)
-            if [ -z "$2" ]; then
+            [ -n "${2-}" ] || {
                 echo "Error: --timeout requires a number" >&2
-                exit $EXIT_INVALID_ARGS
-            fi
-            TIMEOUT="$2"
+                exit "${exit_invalid_args}"
+            }
+            timeout="${2}"
             shift 2
             ;;
         -*)
@@ -101,15 +100,14 @@ done
 # === Transport validation ===
 
 # Reject conflicting transport options
-if [ -n "$SOCKET_NAME" ] && [ -n "$SERVER_FILE" ]; then
+[ -z "${socket_name}" ] || [ -z "${server_file}" ] || {
     echo "Error: --socket and --server-file are mutually exclusive" >&2
-    exit $EXIT_INVALID_ARGS
-fi
+    exit "${exit_invalid_args}"
+}
 
 # Warn about TCP transport (server-file implies TCP, not local socket)
-if [ -n "$SERVER_FILE" ]; then
-    echo "Warning: Using TCP transport via --server-file. Ensure server is localhost-only." >&2
-fi
+[ -n "${server_file}" ] \
+    && echo "Warning: Using TCP transport via --server-file. Ensure server is localhost-only." >&2
 
 # === Build command ===
 
@@ -117,82 +115,77 @@ fi
 # We need to escape the arguments properly for Elisp string parsing
 escape_for_elisp() {
     # Escape backslashes first, then double quotes
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+    printf '%s' "${1}" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
 # Build a Lisp list of quoted strings from remaining args
 build_args_list() {
     result=""
-    for arg in "$@"; do
-        escaped=$(escape_for_elisp "$arg")
-        if [ -z "$result" ]; then
-            result="\"$escaped\""
-        else
-            result="$result \"$escaped\""
-        fi
+    for arg in "${@}"; do
+        escaped="$(escape_for_elisp "${arg}")"
+        [ -z "${result}" ] && {
+            result="\"${escaped}\""
+            continue
+        }
+        result="${result} \"${escaped}\""
     done
-    printf '%s' "$result"
+    printf '%s' "${result}"
 }
 
 # Add --json to args if set
-if [ -n "$JSON_FLAG" ]; then
-    ARGS_LIST=$(build_args_list "$@" "--json")
-else
-    ARGS_LIST=$(build_args_list "$@")
-fi
+case "${json_flag}" in
+    "")
+        args_list="$(build_args_list "${@}")"
+        ;;
+    *)
+        args_list="$(build_args_list "${@}" "--json")"
+        ;;
+esac
 
 # Build emacsclient command
-EMACSCLIENT_ARGS=""
-if [ -n "$SOCKET_NAME" ]; then
-    EMACSCLIENT_ARGS="$EMACSCLIENT_ARGS -s $SOCKET_NAME"
-fi
-if [ -n "$SERVER_FILE" ]; then
-    EMACSCLIENT_ARGS="$EMACSCLIENT_ARGS -f $SERVER_FILE"
-fi
-if [ -n "$TIMEOUT" ]; then
-    EMACSCLIENT_ARGS="$EMACSCLIENT_ARGS -w $TIMEOUT"
-fi
+set -- emacsclient
+[ -n "${socket_name}" ] && set -- "${@}" -s "${socket_name}"
+[ -n "${server_file}" ] && set -- "${@}" -f "${server_file}"
+[ -n "${timeout}" ] && set -- "${@}" -w "${timeout}"
 
 # The Elisp expression to evaluate
 # supervisor--cli-dispatch-for-wrapper returns EXITCODE:BASE64OUTPUT
-ELISP_EXPR="(supervisor--cli-dispatch-for-wrapper (list $ARGS_LIST))"
+elisp_expr="(supervisor--cli-dispatch-for-wrapper (list ${args_list}))"
+set -- "${@}" --eval "${elisp_expr}"
 
 # Run emacsclient and capture output
 # Use --eval to evaluate Elisp and return the result
-# shellcheck disable=SC2086
-if ! OUTPUT=$(emacsclient $EMACSCLIENT_ARGS --eval "$ELISP_EXPR" 2>&1); then
-    # emacsclient failed (server unavailable, etc.)
+# emacsclient failed (server unavailable, etc.)
+output="$("${@}" 2>&1)" || {
     echo "Error: Cannot connect to Emacs server" >&2
-    if [ -n "$OUTPUT" ]; then
-        echo "$OUTPUT" >&2
-    fi
-    exit $EXIT_SERVER_UNAVAILABLE
-fi
+    [ -z "${output}" ] || echo "${output}" >&2
+    exit "${exit_server_unavailable}"
+}
 
 # The dispatcher returns format: EXITCODE:BASE64OUTPUT
 # emacsclient --eval wraps strings in quotes, so we strip those first
 
 # Remove outer quotes from emacsclient output
-STRIPPED=$(printf '%s' "$OUTPUT" | sed 's/^"//; s/"$//')
+stripped="$(printf '%s' "${output}" | sed 's/^"//; s/"$//')"
 
 # Extract exit code (everything before first colon)
-EXIT_CODE=$(printf '%s' "$STRIPPED" | cut -d: -f1)
+exit_code="${stripped%%:*}"
 
 # Validate exit code is a number
-if ! printf '%s' "$EXIT_CODE" | grep -qE '^[0-9]+$'; then
+printf '%s' "${exit_code}" | grep -qE '^[0-9]+$' || {
     # Fallback: output raw and exit with failure
-    echo "$OUTPUT"
-    exit $EXIT_FAILURE
-fi
+    echo "${output}"
+    exit "${exit_failure}"
+}
 
 # Extract base64 output (everything after first colon) and decode
-BASE64_OUTPUT=$(printf '%s' "$STRIPPED" | cut -d: -f2-)
-FINAL_OUTPUT=$(printf '%s' "$BASE64_OUTPUT" | base64 -d 2>/dev/null) || {
+base64_output="${stripped#*:}"
+final_output="$(printf '%s' "${base64_output}" | base64 -d 2>/dev/null)" || {
     echo "Error: Failed to decode output" >&2
-    echo "$OUTPUT" >&2
-    exit $EXIT_FAILURE
+    echo "${output}" >&2
+    exit "${exit_failure}"
 }
 
 # Print output and exit
-printf '%s' "$FINAL_OUTPUT"
-exit "$EXIT_CODE"
+printf '%s' "${final_output}"
+exit "${exit_code}"
