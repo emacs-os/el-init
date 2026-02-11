@@ -35,12 +35,14 @@
 
 (ert-deftest supervisor-test-module-core-standalone ()
   "Verify supervisor-core loads and works without dashboard or CLI.
-Spawns a subprocess to test true standalone behavior."
+Spawns a subprocess to test true standalone behavior.
+Note: core requires timer module for timer subsystem functions."
   (let* ((default-directory (file-name-directory (locate-library "supervisor")))
          (result (call-process
                   "emacs" nil nil nil
                   "-Q" "--batch" "-L" "."
                   "--eval" "(require 'supervisor-core)"
+                  "--eval" "(require 'supervisor-timer)"
                   "--eval" "(setq supervisor-programs nil)"
                   "--eval" "(supervisor-validate)")))
     (should (= result 0))))
@@ -53,6 +55,7 @@ Spawns a subprocess to test CLI dispatch without dashboard module."
                   "emacs" nil nil nil
                   "-Q" "--batch" "-L" "."
                   "--eval" "(require 'supervisor-core)"
+                  "--eval" "(require 'supervisor-timer)"
                   "--eval" "(require 'supervisor-cli)"
                   "--eval" "(setq supervisor-programs nil)"
                   "--eval" "(supervisor--cli-dispatch '(\"reload\"))")))
@@ -2572,56 +2575,56 @@ Regression test: stderr pipe processes used to pollute the process list."
 
 (ert-deftest supervisor-test-timer-validate-missing-id ()
   "Timer without :id is rejected."
-  (let ((err (supervisor--validate-timer '(:target "foo" :on-startup-sec 60) nil)))
+  (let ((err (supervisor-timer--validate '(:target "foo" :on-startup-sec 60) nil)))
     (should (string-match-p ":id must be" err))))
 
 (ert-deftest supervisor-test-timer-validate-missing-target ()
   "Timer without :target is rejected."
-  (let ((err (supervisor--validate-timer '(:id "t" :on-startup-sec 60) nil)))
+  (let ((err (supervisor-timer--validate '(:id "t" :on-startup-sec 60) nil)))
     (should (string-match-p ":target must be" err))))
 
 (ert-deftest supervisor-test-timer-validate-empty-id ()
   "Timer with empty string :id is rejected."
-  (let ((err (supervisor--validate-timer '(:id "" :target "foo" :on-startup-sec 60) nil)))
+  (let ((err (supervisor-timer--validate '(:id "" :target "foo" :on-startup-sec 60) nil)))
     (should (string-match-p ":id must be a non-empty string" err))))
 
 (ert-deftest supervisor-test-timer-validate-empty-target ()
   "Timer with empty string :target is rejected."
-  (let ((err (supervisor--validate-timer '(:id "t" :target "" :on-startup-sec 60) nil)))
+  (let ((err (supervisor-timer--validate '(:id "t" :target "" :on-startup-sec 60) nil)))
     (should (string-match-p ":target must be a non-empty string" err))))
 
 (ert-deftest supervisor-test-timer-validate-no-trigger ()
   "Timer without any trigger is rejected."
-  (let ((err (supervisor--validate-timer '(:id "t" :target "foo") nil)))
+  (let ((err (supervisor-timer--validate '(:id "t" :target "foo") nil)))
     (should (string-match-p "at least one trigger" err))))
 
 (ert-deftest supervisor-test-timer-validate-unknown-keyword ()
   "Timer with unknown keyword is rejected."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-startup-sec 60 :bogus t) nil)))
     (should (string-match-p "unknown keyword" err))))
 
 (ert-deftest supervisor-test-timer-validate-startup-sec-type ()
   "Timer with non-integer :on-startup-sec is rejected."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-startup-sec "60") nil)))
     (should (string-match-p ":on-startup-sec must be" err))))
 
 (ert-deftest supervisor-test-timer-validate-unit-active-sec-positive ()
   "Timer with zero :on-unit-active-sec is rejected."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-unit-active-sec 0) nil)))
     (should (string-match-p ":on-unit-active-sec must be a positive" err))))
 
 (ert-deftest supervisor-test-timer-validate-startup-sec-nil ()
   "Timer with only nil :on-startup-sec has no valid trigger."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-startup-sec nil) nil)))
     (should (string-match-p "at least one trigger" err))))
 
 (ert-deftest supervisor-test-timer-validate-unit-active-sec-nil ()
   "Timer with only nil :on-unit-active-sec has no valid trigger."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-unit-active-sec nil) nil)))
     (should (string-match-p "at least one trigger" err))))
 
@@ -2629,7 +2632,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Timer with nil :on-startup-sec but valid :on-calendar still validates."
   (let* ((programs '(("script" :type oneshot :id "script")))
          (plan (supervisor--build-plan programs))
-         (err (supervisor--validate-timer
+         (err (supervisor-timer--validate
                '(:id "t" :target "script" :on-startup-sec nil
                  :on-calendar (:hour 3))
                plan)))
@@ -2638,19 +2641,19 @@ Regression test: stderr pipe processes used to pollute the process list."
 
 (ert-deftest supervisor-test-timer-validate-calendar-unknown-field ()
   "Timer with unknown calendar field is rejected."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-calendar (:bogus 5)) nil)))
     (should (string-match-p "unknown field" err))))
 
 (ert-deftest supervisor-test-timer-validate-calendar-bad-value ()
   "Timer with invalid calendar value type is rejected."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-calendar (:hour "3")) nil)))
     (should (string-match-p "must be integer" err))))
 
 (ert-deftest supervisor-test-timer-validate-enabled-boolean ()
   "Timer with non-boolean :enabled is rejected."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-startup-sec 60 :enabled "yes") nil)))
     (should (string-match-p ":enabled must be a boolean" err))))
 
@@ -2658,7 +2661,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Timer targeting nonexistent service is rejected."
   (let* ((programs '(("real" :type oneshot :id "real")))
          (plan (supervisor--build-plan programs))
-         (err (supervisor--validate-timer
+         (err (supervisor-timer--validate
                '(:id "t" :target "missing" :on-startup-sec 60) plan)))
     (should (string-match-p "not found" err))))
 
@@ -2666,7 +2669,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Timer targeting simple service is rejected."
   (let* ((programs '(("daemon" :type simple :id "daemon")))
          (plan (supervisor--build-plan programs))
-         (err (supervisor--validate-timer
+         (err (supervisor-timer--validate
                '(:id "t" :target "daemon" :on-startup-sec 60) plan)))
     (should (string-match-p "must be a oneshot" err))))
 
@@ -2674,7 +2677,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Valid timer passes validation."
   (let* ((programs '(("script" :type oneshot :id "script")))
          (plan (supervisor--build-plan programs))
-         (err (supervisor--validate-timer
+         (err (supervisor-timer--validate
                '(:id "t" :target "script" :on-startup-sec 60) plan)))
     (should-not err)))
 
@@ -2682,7 +2685,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Valid calendar schedule passes validation."
   (let* ((programs '(("script" :type oneshot :id "script")))
          (plan (supervisor--build-plan programs))
-         (err (supervisor--validate-timer
+         (err (supervisor-timer--validate
                '(:id "t" :target "script"
                  :on-calendar (:hour 3 :minute 0 :day-of-week *))
                plan)))
@@ -2692,7 +2695,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Valid list of calendar schedules passes validation."
   (let* ((programs '(("script" :type oneshot :id "script")))
          (plan (supervisor--build-plan programs))
-         (err (supervisor--validate-timer
+         (err (supervisor-timer--validate
                '(:id "t" :target "script"
                  :on-calendar ((:hour 3 :minute 0)
                                (:hour 15 :minute 30)))
@@ -2703,7 +2706,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Invalid entry in list of calendar schedules is rejected."
   (let* ((programs '(("script" :type oneshot :id "script")))
          (plan (supervisor--build-plan programs))
-         (err (supervisor--validate-timer
+         (err (supervisor-timer--validate
                '(:id "t" :target "script"
                  :on-calendar ((:hour 3 :minute 0)
                                (:bogus 15)))
@@ -2714,7 +2717,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Empty calendar list with no other trigger has no valid trigger."
   (let* ((programs '(("script" :type oneshot :id "script")))
          (plan (supervisor--build-plan programs))
-         (err (supervisor--validate-timer
+         (err (supervisor-timer--validate
                '(:id "t" :target "script" :on-calendar ())
                plan)))
     ;; Empty list is falsy so fails trigger check first
@@ -2724,7 +2727,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Dotted pair calendar is rejected, not crash."
   (let* ((programs '(("script" :type oneshot :id "script")))
          (plan (supervisor--build-plan programs))
-         (err (supervisor--validate-timer
+         (err (supervisor-timer--validate
                '(:id "t" :target "script" :on-calendar (:hour . 3))
                plan)))
     (should (string-match-p "proper plist" err))))
@@ -2733,7 +2736,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Empty calendar with valid :on-startup-sec fails on empty calendar."
   (let* ((programs '(("script" :type oneshot :id "script")))
          (plan (supervisor--build-plan programs))
-         (err (supervisor--validate-timer
+         (err (supervisor-timer--validate
                '(:id "t" :target "script" :on-calendar () :on-startup-sec 60)
                plan)))
     (should (string-match-p "cannot be empty" err))))
@@ -2742,7 +2745,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Non-plist entry in calendar list is rejected."
   (let* ((programs '(("script" :type oneshot :id "script")))
          (plan (supervisor--build-plan programs))
-         (err (supervisor--validate-timer
+         (err (supervisor-timer--validate
                '(:id "t" :target "script"
                  :on-calendar ((:hour 3) foo))
                plan)))
@@ -2750,7 +2753,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 
 (ert-deftest supervisor-test-timer-parse ()
   "Timer parsing produces correct struct."
-  (let ((timer (supervisor--parse-timer
+  (let ((timer (supervisor-timer--parse
                 '(:id "backup" :target "backup-script"
                   :on-calendar (:hour 3 :minute 0)
                   :enabled nil :persistent nil))))
@@ -2762,7 +2765,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 
 (ert-deftest supervisor-test-timer-parse-defaults ()
   "Timer parsing applies correct defaults."
-  (let ((timer (supervisor--parse-timer
+  (let ((timer (supervisor-timer--parse
                 '(:id "t" :target "foo" :on-startup-sec 60))))
     (should (eq t (supervisor-timer-enabled timer)))
     (should (eq t (supervisor-timer-persistent timer)))))
@@ -2774,7 +2777,7 @@ Regression test: stderr pipe processes used to pollute the process list."
          (programs '(("s1" :type oneshot :id "s1")
                      ("s2" :type oneshot :id "s2")))
          (plan (supervisor--build-plan programs))
-         (timers (supervisor--build-timer-list plan)))
+         (timers (supervisor-timer-build-list plan)))
     (should (= 2 (length timers)))
     (should (= 0 (hash-table-count supervisor--invalid-timers)))))
 
@@ -2784,7 +2787,7 @@ Regression test: stderr pipe processes used to pollute the process list."
                               (:id "invalid" :target "missing" :on-startup-sec 60)))
          (programs '(("s1" :type oneshot :id "s1")))
          (plan (supervisor--build-plan programs))
-         (timers (supervisor--build-timer-list plan)))
+         (timers (supervisor-timer-build-list plan)))
     (should (= 1 (length timers)))
     (should (= 1 (hash-table-count supervisor--invalid-timers)))
     (should (gethash "invalid" supervisor--invalid-timers))))
@@ -2795,7 +2798,7 @@ Regression test: stderr pipe processes used to pollute the process list."
                               (:id "dup" :target "s1" :on-startup-sec 120)))
          (programs '(("s1" :type oneshot :id "s1")))
          (plan (supervisor--build-plan programs))
-         (timers (supervisor--build-timer-list plan)))
+         (timers (supervisor-timer-build-list plan)))
     (should (= 1 (length timers)))
     (should (= 1 (hash-table-count supervisor--invalid-timers)))))
 
@@ -2806,7 +2809,7 @@ Second valid occurrence should not activate when first invalid occurrence used t
                               (:id "dup" :target "s1" :on-startup-sec 120)))    ; valid but duplicate
          (programs '(("s1" :type oneshot :id "s1")))
          (plan (supervisor--build-plan programs))
-         (timers (supervisor--build-timer-list plan)))
+         (timers (supervisor-timer-build-list plan)))
     ;; No active timers (first invalid, second duplicate)
     (should (= 0 (length timers)))
     ;; One invalid entry (hash key = "dup", first error preserved)
@@ -2816,63 +2819,63 @@ Second valid occurrence should not activate when first invalid occurrence used t
 
 (ert-deftest supervisor-test-timer-validate-startup-sec-zero-rejected ()
   "Timer with zero :on-startup-sec is rejected (must be positive)."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-startup-sec 0) nil)))
     (should err)
     (should (string-match-p ":on-startup-sec must be a positive" err))))
 
 (ert-deftest supervisor-test-timer-validate-calendar-field-range-minute ()
   "Calendar :minute field rejects values outside 0-59."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-calendar (:minute 60)) nil)))
     (should err)
     (should (string-match-p "out of range" err))))
 
 (ert-deftest supervisor-test-timer-validate-calendar-field-range-hour ()
   "Calendar :hour field rejects values outside 0-23."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-calendar (:hour 24)) nil)))
     (should err)
     (should (string-match-p "out of range" err))))
 
 (ert-deftest supervisor-test-timer-validate-calendar-field-range-day ()
   "Calendar :day-of-month field rejects values outside 1-31."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-calendar (:day-of-month 0)) nil)))
     (should err)
     (should (string-match-p "out of range" err))))
 
 (ert-deftest supervisor-test-timer-validate-calendar-field-range-month ()
   "Calendar :month field rejects values outside 1-12."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-calendar (:month 13)) nil)))
     (should err)
     (should (string-match-p "out of range" err))))
 
 (ert-deftest supervisor-test-timer-validate-calendar-field-range-dow ()
   "Calendar :day-of-week field rejects values outside 0-6."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-calendar (:day-of-week 7)) nil)))
     (should err)
     (should (string-match-p "out of range" err))))
 
 (ert-deftest supervisor-test-timer-validate-calendar-field-range-list ()
   "Calendar field list with out-of-range value is rejected."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-calendar (:minute (0 30 61))) nil)))
     (should err)
     (should (string-match-p "out of range" err))))
 
 (ert-deftest supervisor-test-timer-validate-calendar-dotted-pair-rejected ()
   "Calendar field dotted pair is rejected (not crash)."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-calendar (:minute (0 . 1))) nil)))
     (should err)
     (should (string-match-p "non-empty list of integers" err))))
 
 (ert-deftest supervisor-test-timer-validate-calendar-empty-list-rejected ()
   "Calendar field empty list is rejected."
-  (let ((err (supervisor--validate-timer
+  (let ((err (supervisor-timer--validate
               '(:id "t" :target "foo" :on-calendar (:minute ())) nil)))
     (should err)
     (should (string-match-p "non-empty list of integers" err))))
@@ -2881,48 +2884,48 @@ Second valid occurrence should not activate when first invalid occurrence used t
 
 (ert-deftest supervisor-test-calendar-field-matches-star ()
   "Calendar field * matches any value."
-  (should (supervisor--calendar-field-matches-p '* 0))
-  (should (supervisor--calendar-field-matches-p '* 23))
-  (should (supervisor--calendar-field-matches-p '* 59)))
+  (should (supervisor-timer--calendar-field-matches-p '* 0))
+  (should (supervisor-timer--calendar-field-matches-p '* 23))
+  (should (supervisor-timer--calendar-field-matches-p '* 59)))
 
 (ert-deftest supervisor-test-calendar-field-matches-integer ()
   "Calendar field integer matches exact value."
-  (should (supervisor--calendar-field-matches-p 3 3))
-  (should-not (supervisor--calendar-field-matches-p 3 4))
-  (should-not (supervisor--calendar-field-matches-p 3 0)))
+  (should (supervisor-timer--calendar-field-matches-p 3 3))
+  (should-not (supervisor-timer--calendar-field-matches-p 3 4))
+  (should-not (supervisor-timer--calendar-field-matches-p 3 0)))
 
 (ert-deftest supervisor-test-calendar-field-matches-list ()
   "Calendar field list matches any value in list."
-  (should (supervisor--calendar-field-matches-p '(1 3 5) 1))
-  (should (supervisor--calendar-field-matches-p '(1 3 5) 3))
-  (should (supervisor--calendar-field-matches-p '(1 3 5) 5))
-  (should-not (supervisor--calendar-field-matches-p '(1 3 5) 2))
-  (should-not (supervisor--calendar-field-matches-p '(1 3 5) 4)))
+  (should (supervisor-timer--calendar-field-matches-p '(1 3 5) 1))
+  (should (supervisor-timer--calendar-field-matches-p '(1 3 5) 3))
+  (should (supervisor-timer--calendar-field-matches-p '(1 3 5) 5))
+  (should-not (supervisor-timer--calendar-field-matches-p '(1 3 5) 2))
+  (should-not (supervisor-timer--calendar-field-matches-p '(1 3 5) 4)))
 
 (ert-deftest supervisor-test-calendar-matches-time ()
   "Calendar spec matches decoded time correctly."
   ;; Create a decoded time for 2025-01-15 03:30:00 (Wednesday)
   (let ((decoded (decode-time (encode-time 0 30 3 15 1 2025))))
     ;; Exact match
-    (should (supervisor--calendar-matches-time-p
+    (should (supervisor-timer--calendar-matches-time-p
              '(:hour 3 :minute 30) decoded))
     ;; Wildcards
-    (should (supervisor--calendar-matches-time-p
+    (should (supervisor-timer--calendar-matches-time-p
              '(:hour 3 :minute *) decoded))
     ;; Lists
-    (should (supervisor--calendar-matches-time-p
+    (should (supervisor-timer--calendar-matches-time-p
              '(:hour (1 2 3) :minute 30) decoded))
     ;; Mismatch
-    (should-not (supervisor--calendar-matches-time-p
+    (should-not (supervisor-timer--calendar-matches-time-p
                  '(:hour 4 :minute 30) decoded))
-    (should-not (supervisor--calendar-matches-time-p
+    (should-not (supervisor-timer--calendar-matches-time-p
                  '(:hour 3 :minute 0) decoded))))
 
 (ert-deftest supervisor-test-calendar-next-minute-finds-match ()
   "Calendar next minute finds matching time."
   ;; From 2025-01-15 00:00:00, find next 03:30
   (let* ((from (encode-time 0 0 0 15 1 2025))
-         (next (supervisor--calendar-next-minute
+         (next (supervisor-timer--calendar-next-minute
                 from '(:hour 3 :minute 30) 2)))  ; 2 days max
     (should next)
     ;; Should be 03:30
@@ -2934,7 +2937,7 @@ Second valid occurrence should not activate when first invalid occurrence used t
   "Calendar next minute respects iteration limit."
   ;; Looking for hour 25 (impossible) with small limit
   (let* ((from (encode-time 0 0 0 15 1 2025))
-         (next (supervisor--calendar-next-minute
+         (next (supervisor-timer--calendar-next-minute
                 from '(:hour 25 :minute 0) 7)))  ; 7 days max
     (should-not next)))
 
@@ -2942,7 +2945,7 @@ Second valid occurrence should not activate when first invalid occurrence used t
   "Calendar next minute finds leap day across multi-year gap.
 From March 2025, next Feb 29 is in 2028 (~3 years away)."
   (let* ((from (encode-time 0 0 0 1 3 2025))  ; 2025-03-01 00:00:00
-         (next (supervisor--calendar-next-minute
+         (next (supervisor-timer--calendar-next-minute
                 from '(:month 2 :day-of-month 29 :hour 0 :minute 0) 10228)))  ; 28 years
     (should next)
     (let ((decoded (decode-time next)))
@@ -2954,7 +2957,7 @@ From March 2025, next Feb 29 is in 2028 (~3 years away)."
   "Calendar next minute finds leap day + weekday across long gap.
 From March 2025, next Feb 29 that is Sunday (dow=0) is in 2032 (~7 years away)."
   (let* ((from (encode-time 0 0 0 1 3 2025))  ; 2025-03-01 00:00:00
-         (next (supervisor--calendar-next-minute
+         (next (supervisor-timer--calendar-next-minute
                 from '(:month 2 :day-of-month 29 :day-of-week 0 :hour 0 :minute 0) 10228)))
     (should next)
     (let ((decoded (decode-time next)))
@@ -2969,7 +2972,7 @@ From March 2025, next Feb 29 that is Sunday (dow=0) is in 2032 (~7 years away)."
 When from-time is exactly at a matching minute boundary, should return next occurrence."
   ;; From 2025-01-15 03:30:00 exactly (matches :hour 3 :minute 30)
   (let* ((from (encode-time 0 30 3 15 1 2025))
-         (next (supervisor--calendar-next-minute
+         (next (supervisor-timer--calendar-next-minute
                 from '(:hour 3 :minute 30) 2)))  ; 2 days max
     (should next)
     ;; Should be next day's 03:30, not the same time
@@ -2986,7 +2989,7 @@ Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
   (let ((process-environment (cons "TZ=America/New_York" process-environment)))
     ;; From March 9, 2025 00:00:00 (before DST transition)
     (let* ((from (encode-time 0 0 0 9 3 2025))
-           (next (supervisor--calendar-next-minute
+           (next (supervisor-timer--calendar-next-minute
                   from '(:hour 2 :minute 30) 7)))  ; 7 days max
       (should next)
       (let ((decoded (decode-time next)))
@@ -3002,10 +3005,10 @@ Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
          (supervisor--scheduler-startup-time 1000.0)
          (supervisor--timer-state (make-hash-table :test 'equal)))
     ;; No previous run - should return startup + delay
-    (should (= 1120.0 (supervisor--timer-next-startup-time timer)))
+    (should (= 1120.0 (supervisor-timer--next-startup-time timer)))
     ;; After startup trigger has fired - should return nil
     (puthash "t1" '(:startup-triggered t) supervisor--timer-state)
-    (should-not (supervisor--timer-next-startup-time timer))))
+    (should-not (supervisor-timer--next-startup-time timer))))
 
 (ert-deftest supervisor-test-timer-next-unit-active-time ()
   "Unit-active trigger computes time relative to last success."
@@ -3013,10 +3016,10 @@ Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
                  :id "t1" :target "s1" :on-unit-active-sec 300))
          (supervisor--timer-state (make-hash-table :test 'equal)))
     ;; No previous success - should return nil
-    (should-not (supervisor--timer-next-unit-active-time timer))
+    (should-not (supervisor-timer--next-unit-active-time timer))
     ;; After a successful run
     (puthash "t1" '(:last-success-at 2000.0) supervisor--timer-state)
-    (should (= 2300.0 (supervisor--timer-next-unit-active-time timer)))))
+    (should (= 2300.0 (supervisor-timer--next-unit-active-time timer)))))
 
 (ert-deftest supervisor-test-timer-compute-next-run-picks-earliest ()
   "Timer picks earliest trigger when multiple are configured."
@@ -3027,22 +3030,22 @@ Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
          (supervisor--scheduler-startup-time 1000.0)
          (supervisor--timer-state (make-hash-table :test 'equal)))
     ;; Only startup is available (no previous success)
-    (should (= 1060.0 (supervisor--timer-compute-next-run timer 1000.0)))
+    (should (= 1060.0 (supervisor-timer--compute-next-run timer 1000.0)))
     ;; After startup trigger has fired and a success recorded, unit-active becomes available
     (puthash "t1" '(:last-success-at 1050.0 :startup-triggered t) supervisor--timer-state)
     ;; Startup already fired, unit-active at 1350
-    (should (= 1350.0 (supervisor--timer-compute-next-run timer 1100.0)))))
+    (should (= 1350.0 (supervisor-timer--compute-next-run timer 1100.0)))))
 
 (ert-deftest supervisor-test-timer-overlap-detection ()
   "Timer detects when target is still running."
   (let* ((timer (supervisor-timer--create :id "t1" :target "s1"))
          (supervisor--processes (make-hash-table :test 'equal)))
     ;; No process - not active
-    (should-not (supervisor--timer-target-active-p timer))
+    (should-not (supervisor-timer--target-active-p timer))
     ;; Dead process - not active
     (puthash "s1" (start-process "test" nil "true") supervisor--processes)
     (sleep-for 0.1) ; Let it die
-    (should-not (supervisor--timer-target-active-p timer))
+    (should-not (supervisor-timer--target-active-p timer))
     ;; Cleanup
     (clrhash supervisor--processes)))
 
@@ -3190,14 +3193,14 @@ Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
     ;; Simulate a calendar trigger having fired (sets :last-run-at)
     (puthash "t1" (list :last-run-at 1010.0) supervisor--timer-state)
     ;; Startup trigger should still return a time (not cancelled by calendar)
-    (let ((next (supervisor--timer-next-startup-time timer)))
+    (let ((next (supervisor-timer--next-startup-time timer)))
       (should next)
       (should (= 1060.0 next)))
     ;; Now mark startup as triggered
     (puthash "t1" (list :last-run-at 1010.0 :startup-triggered t)
              supervisor--timer-state)
     ;; Now startup trigger should return nil
-    (should-not (supervisor--timer-next-startup-time timer))
+    (should-not (supervisor-timer--next-startup-time timer))
     ;; Cleanup
     (clrhash supervisor--timer-state)))
 
@@ -3222,7 +3225,7 @@ Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
       (let ((state (gethash "t1" supervisor--timer-state)))
         (should (plist-get state :startup-triggered)))
       ;; Next startup time should now be nil (consumed)
-      (should-not (supervisor--timer-next-startup-time timer)))
+      (should-not (supervisor-timer--next-startup-time timer)))
     ;; Cleanup
     (clrhash supervisor--timer-state)
     (clrhash supervisor--processes)
@@ -3236,7 +3239,7 @@ Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
         (supervisor-programs '(("true" :id "s1" :type oneshot)))
         (scheduler-started nil))
     ;; Mock the scheduler start function
-    (cl-letf (((symbol-function 'supervisor--timer-scheduler-start)
+    (cl-letf (((symbol-function 'supervisor-timer-scheduler-start)
                (lambda () (setq scheduler-started t))))
       ;; Simulate stage completion with no remaining stages
       (supervisor--start-stages-from-plan nil)
@@ -3247,15 +3250,15 @@ Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
 
 (ert-deftest supervisor-test-timer-failure-retryable-positive-exit ()
   "Positive exit codes are retryable."
-  (should (supervisor--timer-failure-retryable-p 1))
-  (should (supervisor--timer-failure-retryable-p 127)))
+  (should (supervisor-timer--failure-retryable-p 1))
+  (should (supervisor-timer--failure-retryable-p 127)))
 
 (ert-deftest supervisor-test-timer-failure-not-retryable-signal ()
   "Signal deaths (stored as negative values) are not retryable.
 Emacs provides signal numbers as positive values with process-status='signal.
 The oneshot exit handler encodes these as negative for retry gating."
-  (should-not (supervisor--timer-failure-retryable-p -9))   ; SIGKILL
-  (should-not (supervisor--timer-failure-retryable-p -15))) ; SIGTERM
+  (should-not (supervisor-timer--failure-retryable-p -9))   ; SIGKILL
+  (should-not (supervisor-timer--failure-retryable-p -15))) ; SIGTERM
 
 (ert-deftest supervisor-test-oneshot-exit-encodes-signal-as-negative ()
   "Signal deaths are stored as negative values in oneshot-completed.
@@ -3272,7 +3275,7 @@ This ensures retry eligibility correctly rejects signal deaths."
     ;; Should be stored as -9
     (should (= -9 (gethash "test-oneshot" supervisor--oneshot-completed)))
     ;; Therefore not retryable
-    (should-not (supervisor--timer-failure-retryable-p
+    (should-not (supervisor-timer--failure-retryable-p
                  (gethash "test-oneshot" supervisor--oneshot-completed)))))
 
 (ert-deftest supervisor-test-oneshot-exit-preserves-normal-exit-code ()
@@ -3289,16 +3292,16 @@ This ensures retry eligibility correctly rejects signal deaths."
     ;; Should be stored as 1 (positive)
     (should (= 1 (gethash "test-oneshot" supervisor--oneshot-completed)))
     ;; Therefore retryable
-    (should (supervisor--timer-failure-retryable-p
+    (should (supervisor-timer--failure-retryable-p
              (gethash "test-oneshot" supervisor--oneshot-completed)))))
 
 (ert-deftest supervisor-test-timer-failure-not-retryable-zero ()
   "Zero exit (success) is not retryable."
-  (should-not (supervisor--timer-failure-retryable-p 0)))
+  (should-not (supervisor-timer--failure-retryable-p 0)))
 
 (ert-deftest supervisor-test-timer-failure-not-retryable-nil ()
   "Nil exit code is not retryable."
-  (should-not (supervisor--timer-failure-retryable-p nil)))
+  (should-not (supervisor-timer--failure-retryable-p nil)))
 
 (ert-deftest supervisor-test-signal-death-status-is-failed ()
   "Signal deaths (negative exit codes) are classified as failed in status.
@@ -3333,7 +3336,7 @@ This is a regression test: signals are non-retryable but still failed."
         (state nil))
     (puthash "t1" state supervisor--timer-state)
     (cl-letf (((symbol-function 'float-time) (lambda () 1000.0)))
-      (let ((updated (supervisor--timer-schedule-retry "t1" state)))
+      (let ((updated (supervisor-timer--schedule-retry "t1" state)))
         (should updated)
         (should (= 1 (plist-get updated :retry-attempt)))
         (should (= 1030.0 (plist-get updated :retry-next-at)))))
@@ -3346,7 +3349,7 @@ This is a regression test: signals are non-retryable but still failed."
         (state '(:retry-attempt 1)))
     (puthash "t1" state supervisor--timer-state)
     (cl-letf (((symbol-function 'float-time) (lambda () 1000.0)))
-      (let ((updated (supervisor--timer-schedule-retry "t1" state)))
+      (let ((updated (supervisor-timer--schedule-retry "t1" state)))
         (should updated)
         (should (= 2 (plist-get updated :retry-attempt)))
         (should (= 1120.0 (plist-get updated :retry-next-at)))))
@@ -3358,7 +3361,7 @@ This is a regression test: signals are non-retryable but still failed."
         (supervisor--timer-state (make-hash-table :test 'equal))
         (state '(:retry-attempt 3)))
     (puthash "t1" state supervisor--timer-state)
-    (should-not (supervisor--timer-schedule-retry "t1" state))
+    (should-not (supervisor-timer--schedule-retry "t1" state))
     (clrhash supervisor--timer-state)))
 
 (ert-deftest supervisor-test-timer-schedule-retry-disabled ()
@@ -3367,7 +3370,7 @@ This is a regression test: signals are non-retryable but still failed."
         (supervisor--timer-state (make-hash-table :test 'equal))
         (state nil))
     (puthash "t1" state supervisor--timer-state)
-    (should-not (supervisor--timer-schedule-retry "t1" state))
+    (should-not (supervisor-timer--schedule-retry "t1" state))
     (clrhash supervisor--timer-state)))
 
 (ert-deftest supervisor-test-timer-catch-up-needed ()
@@ -3381,10 +3384,10 @@ This is a regression test: signals are non-retryable but still failed."
     ;; Last run was 2 hours ago, missed the hourly schedule
     (puthash "t1" '(:last-run-at 900.0) supervisor--timer-state)
     ;; Mock calendar computation to return a time in the past
-    (cl-letf (((symbol-function 'supervisor--timer-compute-next-run)
+    (cl-letf (((symbol-function 'supervisor-timer--compute-next-run)
                (lambda (_timer _from) 950.0))
               ((symbol-function 'float-time) (lambda () 1000.0)))
-      (should (supervisor--timer-needs-catch-up-p timer)))
+      (should (supervisor-timer--needs-catch-up-p timer)))
     (clrhash supervisor--timer-state)))
 
 (ert-deftest supervisor-test-timer-catch-up-not-needed-recent ()
@@ -3398,10 +3401,10 @@ This is a regression test: signals are non-retryable but still failed."
     ;; Last run was just now
     (puthash "t1" '(:last-run-at 999.0) supervisor--timer-state)
     ;; Mock calendar computation to return a time in the future
-    (cl-letf (((symbol-function 'supervisor--timer-compute-next-run)
+    (cl-letf (((symbol-function 'supervisor-timer--compute-next-run)
                (lambda (_timer _from) 1060.0))
               ((symbol-function 'float-time) (lambda () 1000.0)))
-      (should-not (supervisor--timer-needs-catch-up-p timer)))
+      (should-not (supervisor-timer--needs-catch-up-p timer)))
     (clrhash supervisor--timer-state)))
 
 (ert-deftest supervisor-test-timer-catch-up-not-needed-non-persistent ()
@@ -3413,7 +3416,7 @@ This is a regression test: signals are non-retryable but still failed."
          (supervisor--scheduler-startup-time 1000.0)
          (supervisor-timer-catch-up-limit 86400))
     (puthash "t1" '(:last-run-at 900.0) supervisor--timer-state)
-    (should-not (supervisor--timer-needs-catch-up-p timer))
+    (should-not (supervisor-timer--needs-catch-up-p timer))
     (clrhash supervisor--timer-state)))
 
 (ert-deftest supervisor-test-timer-catch-up-not-needed-too-old ()
@@ -3427,10 +3430,10 @@ This is a regression test: signals are non-retryable but still failed."
     ;; Last run was way before catch-up window
     (puthash "t1" '(:last-run-at 1000.0) supervisor--timer-state)
     ;; Mock calendar computation to return a time before catch-up window
-    (cl-letf (((symbol-function 'supervisor--timer-compute-next-run)
+    (cl-letf (((symbol-function 'supervisor-timer--compute-next-run)
                (lambda (_timer _from) 2000.0))  ; Before cutoff
               ((symbol-function 'float-time) (lambda () 100000.0)))
-      (should-not (supervisor--timer-needs-catch-up-p timer)))
+      (should-not (supervisor-timer--needs-catch-up-p timer)))
     (clrhash supervisor--timer-state)))
 
 (ert-deftest supervisor-test-timer-catch-up-boundary-no-false-trigger ()
@@ -3451,14 +3454,14 @@ at minute boundaries."
     ;; Mock compute-next-run to return 900.0 when called with 900.0,
     ;; but return future time 1800.0 when called with 901.0
     ;; This simulates the boundary condition we fixed
-    (cl-letf (((symbol-function 'supervisor--timer-compute-next-run)
+    (cl-letf (((symbol-function 'supervisor-timer--compute-next-run)
                (lambda (_timer from)
                  (setq call-count (1+ call-count))
                  (push from from-times)
                  (if (= from 900.0) 900.0 1800.0)))
               ((symbol-function 'float-time) (lambda () 1000.0)))
       ;; Should NOT need catch-up because next run is in the future
-      (should-not (supervisor--timer-needs-catch-up-p timer))
+      (should-not (supervisor-timer--needs-catch-up-p timer))
       ;; Verify we called with 901.0 (last-run + 1), not 900.0
       (should (= call-count 1))
       (should (= (car from-times) 901.0)))
@@ -3497,10 +3500,10 @@ at minute boundaries."
                    supervisor--timer-state)
           (puthash "t2" '(:last-failure-at 900.0 :last-exit 1)
                    supervisor--timer-state)
-          (should (supervisor--save-timer-state))
+          (should (supervisor-timer--save-state))
           ;; Clear and reload
           (clrhash supervisor--timer-state)
-          (should (supervisor--load-timer-state))
+          (should (supervisor-timer--load-state))
           ;; Verify state restored
           (let ((t1 (gethash "t1" supervisor--timer-state))
                 (t2 (gethash "t2" supervisor--timer-state)))
@@ -3522,7 +3525,7 @@ at minute boundaries."
         (progn
           (with-temp-file temp-file
             (insert "this is not valid lisp data"))
-          (should-not (supervisor--load-timer-state))
+          (should-not (supervisor-timer--load-state))
           ;; Hash should remain unchanged
           (should (= (hash-table-count supervisor--timer-state) 0)))
       (delete-file temp-file)
@@ -3535,9 +3538,9 @@ at minute boundaries."
         (supervisor--timer-state (make-hash-table :test 'equal)))
     (puthash "t1" '(:last-run-at 1000.0) supervisor--timer-state)
     ;; Save returns nil when disabled
-    (should-not (supervisor--save-timer-state))
+    (should-not (supervisor-timer--save-state))
     ;; Load returns nil when disabled
-    (should-not (supervisor--load-timer-state))
+    (should-not (supervisor-timer--load-state))
     (clrhash supervisor--timer-state)))
 
 (ert-deftest supervisor-test-timer-state-file-path ()
@@ -3561,7 +3564,7 @@ at minute boundaries."
             (insert (format "((version . %d) (timestamp . \"test\") (timers . ((\"t1\" :last-run-at 1000.0))))"
                             (1+ supervisor-timer-state-schema-version))))
           ;; Load should fail
-          (should-not (supervisor--load-timer-state))
+          (should-not (supervisor-timer--load-state))
           ;; Hash should remain empty (data not merged)
           (should (= (hash-table-count supervisor--timer-state) 0)))
       (delete-file temp-file)
@@ -3584,9 +3587,9 @@ at minute boundaries."
     (puthash "active" '(:last-run-at 900.0) supervisor--timer-state)
     ;; Mock to prevent actual scheduling
     (cl-letf (((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
-              ((symbol-function 'supervisor--timer-process-catch-ups) #'ignore)
+              ((symbol-function 'supervisor-timer--process-catch-ups) #'ignore)
               ((symbol-function 'float-time) (lambda () 1000.0)))
-      (supervisor--timer-scheduler-start))
+      (supervisor-timer-scheduler-start))
     ;; Stale ID should be pruned
     (should-not (gethash "stale-removed" supervisor--timer-state))
     ;; Active ID should remain
@@ -3617,18 +3620,17 @@ at minute boundaries."
             (insert (format "((version . %d) (timestamp . \"test\") (timers . ((\"t1\" :last-run-at 900.0 :last-success-at 900.0))))"
                             supervisor-timer-state-schema-version)))
           ;; Mock to track catch-up and prevent actual scheduling
-          ;; Note: uses supervisor--timer-trigger because core's scheduler-start
-          ;; calls supervisor--timer-process-catch-ups which uses funcall on that symbol
+          ;; Timer module's process-catch-ups uses funcall on supervisor-timer--trigger
           (cl-letf (((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
-                    ((symbol-function 'supervisor--timer-trigger)
+                    ((symbol-function 'supervisor-timer--trigger)
                      (lambda (_timer reason)
                        (when (eq reason 'catch-up)
                          (setq catch-up-triggered t))))
                     ;; Mock calendar to return a time between last-run and now
-                    ((symbol-function 'supervisor--timer-compute-next-run)
+                    ((symbol-function 'supervisor-timer--compute-next-run)
                      (lambda (_timer _from) 950.0))
                     ((symbol-function 'float-time) (lambda () 1000.0)))
-            (supervisor--timer-scheduler-start))
+            (supervisor-timer-scheduler-start))
           ;; Verify state was loaded from file
           (should supervisor--timer-state-loaded)
           ;; Verify catch-up was triggered
@@ -3806,7 +3808,7 @@ at minute boundaries."
           (puthash "t1" '(:next-run-at 2000.0 :retry-attempt 1)
                    supervisor--timer-state)
           ;; Load should merge
-          (should (supervisor--load-timer-state))
+          (should (supervisor-timer--load-state))
           (let ((state (gethash "t1" supervisor--timer-state)))
             ;; Should have persisted keys from file
             (should (equal (plist-get state :last-run-at) 500.0))
@@ -3828,7 +3830,7 @@ at minute boundaries."
     (puthash "t1" '(:last-success-at 900.0) supervisor--timer-state)
     ;; Startup trigger: 1000 + 60 = 1060
     ;; Unit-active trigger: 900 + 120 = 1020 (earlier)
-    (let ((next (supervisor--timer-compute-next-run timer 1001.0)))
+    (let ((next (supervisor-timer--compute-next-run timer 1001.0)))
       (should (= 1020.0 next)))
     (clrhash supervisor--timer-state)))
 
@@ -3846,7 +3848,7 @@ at minute boundaries."
         (supervisor--timer-state-loaded nil)
         (supervisor-timer-state-file nil))
     ;; Start should do nothing when gated off
-    (supervisor--timer-scheduler-start)
+    (supervisor-timer-scheduler-start)
     ;; Timer list should remain empty
     (should (null supervisor--timer-list))
     ;; Scheduler should not be running
@@ -3865,7 +3867,7 @@ at minute boundaries."
         (progn
           (puthash "t1" '(:last-run-at 1000.0) supervisor--timer-state)
           ;; Save should return nil when gated off
-          (should-not (supervisor--save-timer-state))
+          (should-not (supervisor-timer--save-state))
           ;; File should NOT be created
           (should-not (file-exists-p temp-file)))
       (when (file-exists-p temp-file) (delete-file temp-file))
@@ -3884,7 +3886,7 @@ at minute boundaries."
             (insert (format "((version . %d) (timestamp . \"test\") (timers . ((\"t1\" :last-run-at 1000.0))))"
                             supervisor-timer-state-schema-version)))
           ;; Load should return nil when gated off
-          (should-not (supervisor--load-timer-state))
+          (should-not (supervisor-timer--load-state))
           ;; State should NOT be populated
           (should (= 0 (hash-table-count supervisor--timer-state))))
       (delete-file temp-file)

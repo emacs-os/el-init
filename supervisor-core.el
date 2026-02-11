@@ -50,13 +50,11 @@
 Use `supervisor-timer-subsystem-mode' command to toggle.
 See supervisor-timer.el for the full mode definition.")
 
-(defun supervisor-timer-subsystem-active-p ()
-  "Return non-nil if timer subsystem is active.
-The timer subsystem is active when both `supervisor-timer-subsystem-mode'
-and `supervisor-mode' are enabled.  If parent mode is off, timer subsystem
-is a no-op even if `supervisor-timer-subsystem-mode' is non-nil."
-  (and supervisor-timer-subsystem-mode
-       (bound-and-true-p supervisor-mode)))
+;; Forward declarations - implementations in supervisor-timer.el
+(declare-function supervisor-timer-subsystem-active-p "supervisor-timer" ())
+(declare-function supervisor-timer-build-list "supervisor-timer" (plan))
+(declare-function supervisor-timer-scheduler-start "supervisor-timer" ())
+(declare-function supervisor-timer-scheduler-stop "supervisor-timer" ())
 
 ;; Forward declarations for optional features
 (declare-function file-notify-add-watch "filenotify" (file flags callback))
@@ -498,7 +496,7 @@ and `supervisor--invalid-timers' so the dashboard reflects validation state."
                (push (format "INVALID %s: %s" id reason) entry-results))
              (supervisor-plan-invalid plan))
     ;; Validate timers using plan (for target checking)
-    (let* ((timers (supervisor--build-timer-list plan))
+    (let* ((timers (supervisor-timer-build-list plan))
            (timer-valid (length timers))
            (timer-invalid (hash-table-count supervisor--invalid-timers))
            (timer-results nil))
@@ -540,7 +538,7 @@ cycle fallback behavior.  Uses the pure plan builder internally."
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
              (supervisor-plan-deps plan))
     ;; Validate timers
-    (let ((timers (supervisor--build-timer-list plan)))
+    (let ((timers (supervisor-timer-build-list plan)))
       ;; Display from plan artifact
       (with-output-to-temp-buffer "*supervisor-dry-run*"
         (princ "=== Supervisor Dry Run ===\n\n")
@@ -1197,180 +1195,7 @@ A value of :defer means the default is resolved at runtime.")
   "Return the requirement dependencies of parsed ENTRY."
   (nth 12 entry))
 
-;;; Timer Validation and Parsing
-
-(defun supervisor--calendar-plist-p (obj)
-  "Return non-nil if OBJ is a valid calendar plist structure.
-Must be a proper (non-dotted) list starting with a keyword."
-  (and (proper-list-p obj)
-       obj
-       (keywordp (car obj))))
-
-(defun supervisor--validate-single-calendar (calendar)
-  "Validate a single CALENDAR schedule plist.
-Return nil if valid, or an error message string."
-  ;; Check for proper list structure before iterating
-  (cond
-   ((not (proper-list-p calendar))
-    ":on-calendar must be a proper plist, not a dotted pair")
-   ((null calendar)
-    ":on-calendar entry cannot be empty")
-   ((not (keywordp (car calendar)))
-    ":on-calendar entry must start with a keyword")
-   (t
-    (let ((valid-fields supervisor-timer-calendar-fields)
-          (field-ranges '((:minute 0 59)
-                          (:hour 0 23)
-                          (:day-of-month 1 31)
-                          (:month 1 12)
-                          (:day-of-week 0 6))))
-      (cl-loop for (key val) on calendar by #'cddr
-               unless (memq key valid-fields)
-               return (format ":on-calendar has unknown field %s" key)
-               unless (or (eq val '*)
-                          (integerp val)
-                          (and (proper-list-p val) val (cl-every #'integerp val)))
-               return (format ":on-calendar field %s must be integer, non-empty list of integers, or *" key)
-               ;; Range validation
-               for range = (cdr (assq key field-ranges))
-               for min-val = (car range)
-               for max-val = (cadr range)
-               when (and range (not (eq val '*)))
-               unless (if (proper-list-p val)
-                          (cl-every (lambda (v) (and (>= v min-val) (<= v max-val))) val)
-                        (and (>= val min-val) (<= val max-val)))
-               return (format ":on-calendar field %s value out of range (%d-%d)" key min-val max-val))))))
-
-(defun supervisor--validate-timer-calendar (calendar)
-  "Validate CALENDAR schedule (single plist or list of plists).
-Return nil if valid, or an error message string."
-  (cond
-   ((not (listp calendar))
-    ":on-calendar must be a plist or list of plists")
-   ;; Empty list is invalid (no schedule)
-   ((null calendar)
-    ":on-calendar cannot be empty")
-   ;; Single calendar plist (starts with keyword)
-   ((keywordp (car calendar))
-    (supervisor--validate-single-calendar calendar))
-   ;; List of calendar plists - validate each entry is a plist
-   ((listp (car calendar))
-    (cl-loop for entry in calendar
-             unless (supervisor--calendar-plist-p entry)
-             return (format ":on-calendar list entry must be a plist, got %S" entry)
-             for err = (supervisor--validate-single-calendar entry)
-             when err return err))
-   (t
-    ":on-calendar must be a plist or list of plists")))
-
-(defun supervisor--validate-timer (timer-plist plan)
-  "Validate TIMER-PLIST against PLAN.
-Return nil if valid, or an error message string.
-PLAN is used to verify the target exists and is a oneshot."
-  (catch 'invalid
-    (let ((id (plist-get timer-plist :id))
-          (target (plist-get timer-plist :target)))
-      ;; Check for unknown keywords
-      (let ((unknown-err
-             (cl-loop for (key _val) on timer-plist by #'cddr
-                      unless (memq key supervisor-timer-valid-keywords)
-                      return (format "unknown keyword %s" key))))
-        (when unknown-err (throw 'invalid unknown-err)))
-      ;; Check required fields
-      (unless (and id (stringp id) (not (string-empty-p id)))
-        (throw 'invalid ":id must be a non-empty string"))
-      (unless (and target (stringp target) (not (string-empty-p target)))
-        (throw 'invalid ":target must be a non-empty string"))
-      ;; Check at least one trigger with non-nil value
-      (unless (or (plist-get timer-plist :on-calendar)
-                  (plist-get timer-plist :on-startup-sec)
-                  (plist-get timer-plist :on-unit-active-sec))
-        (throw 'invalid
-               "at least one trigger required (:on-calendar, :on-startup-sec, or :on-unit-active-sec)"))
-      ;; Validate trigger field types (explicit nil is invalid when key is present)
-      (when (plist-member timer-plist :on-startup-sec)
-        (let ((startup-sec (plist-get timer-plist :on-startup-sec)))
-          (unless (and startup-sec (integerp startup-sec) (> startup-sec 0))
-            (throw 'invalid ":on-startup-sec must be a positive integer"))))
-      (when (plist-member timer-plist :on-unit-active-sec)
-        (let ((active-sec (plist-get timer-plist :on-unit-active-sec)))
-          (unless (and active-sec (integerp active-sec) (> active-sec 0))
-            (throw 'invalid ":on-unit-active-sec must be a positive integer"))))
-      ;; Validate calendar schedule (use plist-member since empty list is valid to detect)
-      (when (plist-member timer-plist :on-calendar)
-        (let ((calendar (plist-get timer-plist :on-calendar)))
-          (when-let* ((err (supervisor--validate-timer-calendar calendar)))
-            (throw 'invalid err))))
-      ;; Validate enabled field
-      (when (plist-member timer-plist :enabled)
-        (unless (booleanp (plist-get timer-plist :enabled))
-          (throw 'invalid ":enabled must be a boolean")))
-      ;; Validate persistent field
-      (when (plist-member timer-plist :persistent)
-        (unless (booleanp (plist-get timer-plist :persistent))
-          (throw 'invalid ":persistent must be a boolean")))
-      ;; Validate target exists and is oneshot
-      (when plan
-        (let* ((entries (supervisor-plan-entries plan))
-               (target-entry (cl-find target entries
-                                      :key #'supervisor-entry-id
-                                      :test #'equal)))
-          (unless target-entry
-            (throw 'invalid
-                   (format ":target '%s' not found in supervisor-programs" target)))
-          (unless (eq (supervisor-entry-type target-entry) 'oneshot)
-            (throw 'invalid
-                   (format ":target '%s' must be a oneshot service, not %s"
-                           target (supervisor-entry-type target-entry))))))
-      ;; Valid
-      nil)))
-
-(defun supervisor--parse-timer (timer-plist)
-  "Parse TIMER-PLIST into a supervisor-timer struct.
-Assumes validation has already passed."
-  (supervisor-timer--create
-   :id (plist-get timer-plist :id)
-   :target (plist-get timer-plist :target)
-   :enabled (if (plist-member timer-plist :enabled)
-                (plist-get timer-plist :enabled)
-              t)
-   :on-calendar (plist-get timer-plist :on-calendar)
-   :on-startup-sec (plist-get timer-plist :on-startup-sec)
-   :on-unit-active-sec (plist-get timer-plist :on-unit-active-sec)
-   :persistent (if (plist-member timer-plist :persistent)
-                   (plist-get timer-plist :persistent)
-                 t)))
-
-(defun supervisor--build-timer-list (plan)
-  "Build list of validated timer structs from `supervisor-timers'.
-Invalid timers are added to `supervisor--invalid-timers' hash.
-PLAN is used for target validation."
-  (clrhash supervisor--invalid-timers)
-  (let ((timers nil)
-        (seen-ids (make-hash-table :test 'equal)))
-    (dolist (timer-plist supervisor-timers)
-      (let* ((id (or (plist-get timer-plist :id)
-                     (format "timer#%d" (hash-table-count supervisor--invalid-timers)))))
-        (cond
-         ;; Check for duplicates first (before validation) for deterministic rejection
-         ((gethash id seen-ids)
-          ;; Only add to invalid if not already there (preserve first error)
-          (unless (gethash id supervisor--invalid-timers)
-            (puthash id "duplicate timer ID" supervisor--invalid-timers))
-          (supervisor--log 'warning "duplicate timer ID '%s', skipping" id))
-         ;; Then validate
-         (t
-          ;; Mark ID as seen regardless of validity
-          (puthash id t seen-ids)
-          (let ((error-reason (supervisor--validate-timer timer-plist plan)))
-            (if error-reason
-                (progn
-                  (puthash id error-reason supervisor--invalid-timers)
-                  (supervisor--log 'warning "INVALID timer %s - %s" id error-reason))
-              (push (supervisor--parse-timer timer-plist) timers)))))))
-    (nreverse timers)))
-
-;;; Timer Scheduler State
+;;; Timer Scheduler State (shared with supervisor-timer.el)
 
 (defvar supervisor--timer-state (make-hash-table :test 'equal)
   "Hash table mapping timer ID to runtime state plist.
@@ -1397,597 +1222,6 @@ All timestamps are float seconds since epoch.")
 
 (defvar supervisor--timer-state-loaded nil
   "Non-nil when timer state has been loaded from file.")
-
-;;; Timer State Persistence
-
-(defun supervisor--timer-state-file-path ()
-  "Return the path to the timer state file, or nil if disabled."
-  supervisor-timer-state-file)
-
-(defun supervisor--ensure-timer-state-dir ()
-  "Ensure the directory for the timer state file exists."
-  (when-let* ((path (supervisor--timer-state-file-path)))
-    (let ((dir (file-name-directory path)))
-      (unless (file-directory-p dir)
-        (make-directory dir t)))))
-
-(defconst supervisor--timer-state-persist-keys
-  '(:last-run-at :last-success-at :last-failure-at :last-exit
-    :last-missed-at :last-miss-reason)
-  "State keys that should be persisted across restarts.
-Excludes transient keys like :next-run-at, :retry-attempt, :retry-next-at,
-and :startup-triggered which are computed fresh each session.")
-
-(defun supervisor--timer-state-to-alist ()
-  "Convert timer state hash to alist for persistence.
-Only includes keys from `supervisor--timer-state-persist-keys'."
-  (let (result)
-    (maphash
-     (lambda (id state)
-       (when state
-         (let (filtered)
-           (dolist (key supervisor--timer-state-persist-keys)
-             (when-let* ((val (plist-get state key)))
-               (setq filtered (plist-put filtered key val))))
-           (when filtered
-             (push (cons id filtered) result)))))
-     supervisor--timer-state)
-    (nreverse result)))
-
-(cl-defun supervisor--save-timer-state ()
-  "Save timer state to file using atomic write.
-Uses temp file + rename pattern for crash safety.
-Returns t on success, nil on failure.
-Does nothing if timer subsystem is not active."
-  (unless (supervisor-timer-subsystem-active-p)
-    (cl-return-from supervisor--save-timer-state nil))
-  (let ((path (supervisor--timer-state-file-path)))
-    (when path
-      (supervisor--ensure-timer-state-dir)
-      (let* ((state-alist (supervisor--timer-state-to-alist))
-             (data `((version . ,supervisor-timer-state-schema-version)
-                     (timestamp . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
-                     (timers . ,state-alist)))
-             (temp-file (concat path ".tmp"))
-             (coding-system-for-write 'utf-8-unix))
-        (condition-case err
-            (progn
-              (with-temp-file temp-file
-                (insert ";; Supervisor timer state - do not edit manually\n")
-                (insert ";; Schema version: "
-                        (number-to-string supervisor-timer-state-schema-version)
-                        "\n")
-                (pp data (current-buffer)))
-              (rename-file temp-file path t)
-              t)
-          (error
-           (supervisor--log 'warning "Failed to save timer state: %s"
-                            (error-message-string err))
-           (when (file-exists-p temp-file)
-             (delete-file temp-file))
-           nil))))))
-
-(cl-defun supervisor--load-timer-state ()
-  "Load timer state from file into memory.
-Returns t on success, nil on failure or if file does not exist.
-Merges loaded state with existing in-memory state, preferring file values
-for persisted keys while preserving runtime-computed keys.
-Does nothing if timer subsystem is not active."
-  (unless (supervisor-timer-subsystem-active-p)
-    (cl-return-from supervisor--load-timer-state nil))
-  (let ((path (supervisor--timer-state-file-path)))
-    (when (and path (file-exists-p path))
-      (condition-case err
-          (let* ((data (with-temp-buffer
-                         (insert-file-contents path)
-                         (read (current-buffer))))
-                 (version (alist-get 'version data))
-                 (timers (alist-get 'timers data)))
-            ;; Check version compatibility - skip loading if incompatible
-            (when (or (null version)
-                      (> version supervisor-timer-state-schema-version))
-              (supervisor--log 'warning
-                               "Timer state file version %s is incompatible (supported: %s), skipping"
-                               version supervisor-timer-state-schema-version)
-              (signal 'error (list "Incompatible timer state schema version")))
-            ;; Merge loaded state into hash
-            (dolist (entry timers)
-              (let ((id (car entry))
-                    (saved-state (cdr entry)))
-                (let ((current (or (gethash id supervisor--timer-state) nil)))
-                  ;; Merge saved keys into current state
-                  (dolist (key supervisor--timer-state-persist-keys)
-                    (when-let* ((val (plist-get saved-state key)))
-                      (setq current (plist-put current key val))))
-                  (puthash id current supervisor--timer-state))))
-            (setq supervisor--timer-state-loaded t)
-            (supervisor--log 'info "Loaded timer state for %d timers from %s"
-                             (length timers) path)
-            t)
-        (error
-         (supervisor--log 'warning "Failed to load timer state from %s: %s"
-                          path (error-message-string err))
-         nil)))))
-
-;;; Calendar Trigger Computation
-
-(defun supervisor--calendar-field-matches-p (field-value time-value)
-  "Return non-nil if FIELD-VALUE matches TIME-VALUE.
-FIELD-VALUE can be *, an integer, or a list of integers."
-  (cond
-   ((eq field-value '*) t)
-   ((integerp field-value) (= field-value time-value))
-   ((listp field-value) (memq time-value field-value))
-   (t nil)))
-
-(defun supervisor--calendar-matches-time-p (calendar decoded-time)
-  "Return non-nil if CALENDAR spec matches DECODED-TIME.
-DECODED-TIME is from `decode-time'.  CALENDAR is a plist with
-:minute, :hour, :day-of-month, :month, :day-of-week fields."
-  (let ((minute (plist-get calendar :minute))
-        (hour (plist-get calendar :hour))
-        (day-of-month (plist-get calendar :day-of-month))
-        (month (plist-get calendar :month))
-        (day-of-week (plist-get calendar :day-of-week)))
-    (and (or (null minute)
-             (supervisor--calendar-field-matches-p minute (decoded-time-minute decoded-time)))
-         (or (null hour)
-             (supervisor--calendar-field-matches-p hour (decoded-time-hour decoded-time)))
-         (or (null day-of-month)
-             (supervisor--calendar-field-matches-p day-of-month (decoded-time-day decoded-time)))
-         (or (null month)
-             (supervisor--calendar-field-matches-p month (decoded-time-month decoded-time)))
-         (or (null day-of-week)
-             (supervisor--calendar-field-matches-p day-of-week (decoded-time-weekday decoded-time))))))
-
-(defun supervisor--calendar-field-to-list (field min-val max-val)
-  "Convert calendar FIELD to sorted list of integers.
-FIELD can be *, an integer, or a list of integers.
-For *, returns range from MIN-VAL to MAX-VAL."
-  (sort (cond ((eq field '*) (number-sequence min-val max-val))
-              ((listp field) (copy-sequence field))
-              (t (list field)))
-        #'<))
-
-(defun supervisor--calendar-find-time-on-day (year month day cal-hour cal-minute min-hour min-minute)
-  "Find first time matching CAL-HOUR:CAL-MINUTE on YEAR-MONTH-DAY.
-YEAR, MONTH, and DAY specify the date to search.
-CAL-HOUR and CAL-MINUTE are calendar field specs (*, int, or list).
-Only consider times at or after MIN-HOUR:MIN-MINUTE.
-Return timestamp or nil if no valid time on this day.
-
-Handles DST gaps by validating that encoded time matches requested fields."
-  (when (< min-hour 24)
-    (let ((hours (supervisor--calendar-field-to-list cal-hour 0 23))
-          (minutes (supervisor--calendar-field-to-list cal-minute 0 59)))
-      ;; Filter to valid ranges (hour 0-23, minute 0-59)
-      (setq hours (cl-remove-if-not (lambda (h) (and (>= h 0) (<= h 23))) hours))
-      (setq minutes (cl-remove-if-not (lambda (m) (and (>= m 0) (<= m 59))) minutes))
-      (catch 'found
-        (dolist (h hours)
-          (when (>= h min-hour)
-            (let ((start-m (if (= h min-hour) min-minute 0)))
-              (dolist (m minutes)
-                (when (>= m start-m)
-                  ;; Encode the candidate time
-                  (let* ((candidate (encode-time 0 m h day month year))
-                         (decoded (decode-time candidate))
-                         (actual-hour (decoded-time-hour decoded))
-                         (actual-minute (decoded-time-minute decoded)))
-                    ;; DST gap check: verify encode-time didn't shift the time
-                    ;; (e.g., 2:30 AM on spring-forward day becomes 3:30 AM)
-                    (when (and (= actual-hour h) (= actual-minute m))
-                      (throw 'found (float-time candidate)))))))))
-        nil))))
-
-(defun supervisor--calendar-next-minute (from-time calendar max-days)
-  "Find next time matching CALENDAR starting strictly after FROM-TIME.
-Search at most MAX-DAYS days into the future.
-Return timestamp or nil if not found within limit.
-
-Uses day-by-day iteration for efficiency (vs minute-by-minute)."
-  (let* ((decoded (decode-time from-time))
-         (from-year (decoded-time-year decoded))
-         (from-month (decoded-time-month decoded))
-         (from-day (decoded-time-day decoded))
-         (from-hour (decoded-time-hour decoded))
-         (from-min (decoded-time-minute decoded))
-         ;; Calendar constraints (default to * which matches anything)
-         (cal-hour (or (plist-get calendar :hour) '*))
-         (cal-minute (or (plist-get calendar :minute) '*))
-         (cal-month (or (plist-get calendar :month) '*))
-         (cal-dom (or (plist-get calendar :day-of-month) '*))
-         (cal-dow (or (plist-get calendar :day-of-week) '*)))
-    (catch 'found
-      (dotimes (day-offset max-days)
-        ;; Compute the date for this day
-        (let* ((day-time (encode-time 0 0 0 (+ from-day day-offset) from-month from-year))
-               (day-dec (decode-time day-time))
-               (year (decoded-time-year day-dec))
-               (month (decoded-time-month day-dec))
-               (day (decoded-time-day day-dec))
-               (dow (decoded-time-weekday day-dec)))
-          ;; Check day-level constraints
-          (when (and (supervisor--calendar-field-matches-p cal-month month)
-                     (supervisor--calendar-field-matches-p cal-dom day)
-                     (supervisor--calendar-field-matches-p cal-dow dow))
-            ;; Day matches - find first valid hour:minute
-            (let* ((is-from-day (= day-offset 0))
-                   ;; On first day, need time strictly after from-time
-                   (min-hour (if is-from-day from-hour 0))
-                   (min-minute (if is-from-day (1+ from-min) 0)))
-              ;; Handle minute overflow
-              (when (> min-minute 59)
-                (setq min-minute 0)
-                (setq min-hour (1+ min-hour)))
-              (let ((match-time (supervisor--calendar-find-time-on-day
-                                 year month day cal-hour cal-minute min-hour min-minute)))
-                (when match-time
-                  (throw 'found match-time)))))))
-      nil)))
-
-(defun supervisor--timer-next-calendar-time (timer from-time)
-  "Compute next calendar trigger time for TIMER after FROM-TIME.
-Return timestamp or nil if no calendar trigger configured."
-  (let ((calendar (supervisor-timer-on-calendar timer)))
-    (when calendar
-      ;; Handle list of calendars - find earliest match
-      ;; Search limit: 28 years (10228 days) covers full leap-day + weekday cycle
-      ;; (Feb 29 on a specific weekday repeats every 28 years worst case)
-      (if (and (listp calendar) (listp (car calendar)))
-          ;; List of calendar plists
-          (let ((times (cl-loop for cal in calendar
-                                for next = (supervisor--calendar-next-minute
-                                            from-time cal 10228)
-                                when next collect next)))
-            (when times (apply #'min times)))
-        ;; Single calendar plist
-        (supervisor--calendar-next-minute from-time calendar 10228)))))
-
-;;; Monotonic Trigger Computation
-
-(defun supervisor--timer-next-startup-time (timer)
-  "Compute next startup trigger time for TIMER.
-Return timestamp or nil if no startup trigger or already fired."
-  (when-let* ((delay (supervisor-timer-on-startup-sec timer)))
-    (when supervisor--scheduler-startup-time
-      (let* ((id (supervisor-timer-id timer))
-             (state (gethash id supervisor--timer-state))
-             (startup-triggered (plist-get state :startup-triggered))
-             (trigger-time (+ supervisor--scheduler-startup-time delay)))
-        ;; Only return if startup trigger hasn't fired yet this session
-        ;; Use dedicated flag to avoid calendar/unit-active triggers cancelling startup
-        (unless startup-triggered
-          trigger-time)))))
-
-(defun supervisor--timer-next-unit-active-time (timer)
-  "Compute next unit-active trigger time for TIMER.
-Return timestamp or nil if no unit-active trigger configured."
-  (when-let* ((interval (supervisor-timer-on-unit-active-sec timer)))
-    (let* ((id (supervisor-timer-id timer))
-           (state (gethash id supervisor--timer-state))
-           (last-success (plist-get state :last-success-at)))
-      ;; Trigger interval seconds after last successful completion
-      (when last-success
-        (+ last-success interval)))))
-
-;;; Next Due Time Computation
-
-(defun supervisor--timer-compute-next-run (timer from-time)
-  "Compute next run time for TIMER after FROM-TIME.
-Return timestamp or nil if no trigger is due."
-  (let ((calendar-next (supervisor--timer-next-calendar-time timer from-time))
-        (startup-next (supervisor--timer-next-startup-time timer))
-        (unit-active-next (supervisor--timer-next-unit-active-time timer)))
-    ;; Return earliest non-nil time
-    (let ((candidates (delq nil (list calendar-next startup-next unit-active-next))))
-      (when candidates
-        (apply #'min candidates)))))
-
-(defun supervisor--timer-update-next-run (timer-id)
-  "Update the :next-run-at for TIMER-ID in state table."
-  (when-let* ((timer (cl-find timer-id supervisor--timer-list
-                              :key #'supervisor-timer-id :test #'equal)))
-    (let* ((state (or (gethash timer-id supervisor--timer-state)
-                      (puthash timer-id nil supervisor--timer-state)))
-           (next-run (supervisor--timer-compute-next-run timer (float-time))))
-      (puthash timer-id (plist-put state :next-run-at next-run)
-               supervisor--timer-state))))
-
-;;; Overlap Detection
-
-(defun supervisor--timer-target-active-p (timer)
-  "Return non-nil if TIMER's target oneshot is currently active."
-  (let* ((target-id (supervisor-timer-target timer))
-         (proc (gethash target-id supervisor--processes)))
-    (and proc (process-live-p proc))))
-
-;;; Timer Execution
-
-(defun supervisor--timer-maybe-mark-startup-consumed (timer)
-  "Mark TIMER's startup trigger as consumed if due.
-Call early in trigger flow to prevent retry loops on skipped runs.
-Returns non-nil if startup trigger was just consumed."
-  (when-let* ((startup-sec (supervisor-timer-on-startup-sec timer))
-              (startup-time supervisor--scheduler-startup-time))
-    (let* ((id (supervisor-timer-id timer))
-           (state (gethash id supervisor--timer-state))
-           (trigger-time (+ startup-time startup-sec))
-           (now (float-time)))
-      (when (and (>= now trigger-time)
-                 (not (plist-get state :startup-triggered)))
-        (setq state (plist-put state :startup-triggered t))
-        (puthash id state supervisor--timer-state)
-        t))))
-
-(cl-defun supervisor--timer-trigger (timer reason)
-  "Trigger TIMER's target oneshot.
-REASON is a symbol describing why: scheduled, retry, manual, catch-up.
-Returns t if triggered, nil if skipped."
-  (let* ((id (supervisor-timer-id timer))
-         (target-id (supervisor-timer-target timer))
-         (now (float-time)))
-    ;; Check if timer is enabled
-    (unless (supervisor-timer-enabled timer)
-      (supervisor--timer-record-miss id 'disabled)
-      (supervisor--log 'info "timer %s: skipped (disabled)" id)
-      (cl-return-from supervisor--timer-trigger nil))
-    ;; Mark startup trigger consumed early to prevent retry loops
-    ;; Must happen before any skippable checks (overlap, disabled-target, etc.)
-    (supervisor--timer-maybe-mark-startup-consumed timer)
-    ;; Check for overlap
-    (when (supervisor--timer-target-active-p timer)
-      (supervisor--timer-record-miss id 'overlap)
-      (supervisor--log 'info "timer %s: skipped (target %s still active)"
-                       id target-id)
-      (supervisor--emit-event 'timer-overlap id nil
-                              (list :target target-id :reason reason))
-      (cl-return-from supervisor--timer-trigger nil))
-    ;; Get the parsed entry for the target
-    (let ((entry (supervisor--get-entry-for-id target-id)))
-      (unless entry
-        (supervisor--log 'warning "timer %s: target %s not found" id target-id)
-        (cl-return-from supervisor--timer-trigger nil))
-      ;; Check if target is disabled (config or runtime override)
-      (let ((enabled-p (supervisor-entry-enabled-p entry)))
-        (unless (supervisor--get-effective-enabled target-id enabled-p)
-          (supervisor--timer-record-miss id 'disabled-target)
-          (supervisor--log 'info "timer %s: skipped (target %s disabled)"
-                           id target-id)
-          (cl-return-from supervisor--timer-trigger nil)))
-      ;; Start the target oneshot
-      (supervisor--log 'info "timer %s: triggering target %s (%s)"
-                       id target-id reason)
-      ;; Update state before triggering
-      (let ((state (or (gethash id supervisor--timer-state) nil)))
-        (setq state (plist-put state :last-run-at now))
-        (puthash id state supervisor--timer-state))
-      ;; Persist state so last-run-at survives crash during execution
-      (supervisor--save-timer-state)
-      ;; Emit event
-      (supervisor--emit-event 'timer-trigger id nil
-                              (list :target target-id :reason reason))
-      ;; Start the oneshot using existing infrastructure
-      (supervisor--start-entry-async
-       entry
-       (lambda (success)
-         (supervisor--timer-on-target-complete id target-id success)))
-      t)))
-
-(defun supervisor--timer-failure-retryable-p (exit-code)
-  "Return non-nil if EXIT-CODE represents a retryable failure.
-Positive exit codes (normal process exits with non-zero status) are retryable.
-Signal deaths are stored as negative values (negated signal number) and are
-not retryable per PLAN-2 spec."
-  (and exit-code
-       (integerp exit-code)
-       (> exit-code 0)))
-
-(defun supervisor--timer-schedule-retry (timer-id state)
-  "Schedule a retry for TIMER-ID based on current STATE.
-Returns updated state with :retry-attempt and :retry-next-at set,
-or nil if no retry should be scheduled."
-  (when supervisor-timer-retry-intervals
-    (let* ((attempt (or (plist-get state :retry-attempt) 0))
-           (max-attempts (length supervisor-timer-retry-intervals)))
-      (when (< attempt max-attempts)
-        (let ((delay (nth attempt supervisor-timer-retry-intervals))
-              (now (float-time)))
-          (setq state (plist-put state :retry-attempt (1+ attempt)))
-          (setq state (plist-put state :retry-next-at (+ now delay)))
-          (supervisor--log 'info "timer %s: retry %d/%d in %ds"
-                           timer-id (1+ attempt) max-attempts delay)
-          state)))))
-
-(defun supervisor--timer-on-target-complete (timer-id target-id success)
-  "Handle completion of TIMER-ID's target TARGET-ID.
-SUCCESS is t if completed successfully, nil otherwise."
-  (let* ((now (float-time))
-         (state (or (gethash timer-id supervisor--timer-state) nil))
-         (exit-code (gethash target-id supervisor--oneshot-completed)))
-    ;; Update state based on result
-    (if (and success (or (null exit-code) (= exit-code 0)))
-        (progn
-          (setq state (plist-put state :last-success-at now))
-          (setq state (plist-put state :last-exit 0))
-          (setq state (plist-put state :retry-attempt 0))
-          (setq state (plist-put state :retry-next-at nil))
-          (supervisor--emit-event 'timer-success timer-id nil
-                                  (list :target target-id)))
-      ;; Failure - check if retryable
-      (setq state (plist-put state :last-failure-at now))
-      (setq state (plist-put state :last-exit (or exit-code -1)))
-      (supervisor--emit-event 'timer-failure timer-id nil
-                              (list :target target-id :exit exit-code))
-      ;; Schedule retry if eligible
-      (when (supervisor--timer-failure-retryable-p exit-code)
-        (when-let* ((updated (supervisor--timer-schedule-retry timer-id state)))
-          (setq state updated))))
-    (puthash timer-id state supervisor--timer-state)
-    ;; Persist state on completion (success or failure is significant)
-    (supervisor--save-timer-state)
-    ;; Update next run time (includes unit-active recalculation)
-    (supervisor--timer-update-next-run timer-id)
-    ;; Reschedule the scheduler tick
-    (supervisor--timer-scheduler-tick)))
-
-(defun supervisor--timer-record-miss (timer-id reason)
-  "Record a missed run for TIMER-ID with REASON symbol."
-  (let ((state (or (gethash timer-id supervisor--timer-state) nil)))
-    (setq state (plist-put state :last-missed-at (float-time)))
-    (setq state (plist-put state :last-miss-reason reason))
-    (puthash timer-id state supervisor--timer-state)))
-
-;;; Scheduler Loop
-
-(cl-defun supervisor--timer-scheduler-tick ()
-  "Check for due timers and trigger them.
-Reschedules itself for the next due time.
-Does nothing if timer subsystem is not active."
-  ;; Cancel any existing scheduler
-  (when (timerp supervisor--timer-scheduler)
-    (cancel-timer supervisor--timer-scheduler)
-    (setq supervisor--timer-scheduler nil))
-  ;; Gate check
-  (unless (supervisor-timer-subsystem-active-p)
-    (cl-return-from supervisor--timer-scheduler-tick nil))
-  ;; Don't run if shutting down
-  (when supervisor--shutting-down
-    (cl-return-from supervisor--timer-scheduler-tick nil))
-  (let ((now (float-time))
-        (next-check nil))
-    ;; Check each timer
-    (dolist (timer supervisor--timer-list)
-      (when (supervisor-timer-enabled timer)
-        (let* ((id (supervisor-timer-id timer))
-               (state (gethash id supervisor--timer-state))
-               (next-run (plist-get state :next-run-at))
-               (retry-at (plist-get state :retry-next-at)))
-          (cond
-           ;; Retry is due (takes priority over regular schedule)
-           ((and retry-at (<= retry-at now))
-            (funcall 'supervisor--timer-trigger timer 'retry)
-            ;; Clear retry on trigger (will be rescheduled on failure)
-            (setq state (gethash id supervisor--timer-state))
-            (setq state (plist-put state :retry-next-at nil))
-            (puthash id state supervisor--timer-state)
-            ;; Get next time to check
-            (setq next-run (plist-get state :next-run-at))
-            (when next-run
-              (setq next-check (if next-check (min next-check next-run) next-run))))
-           ;; Timer is due
-           ((and next-run (<= next-run now))
-            ;; Reset retry budget for fresh scheduled execution
-            (setq state (plist-put state :retry-attempt 0))
-            (setq state (plist-put state :retry-next-at nil))
-            (puthash id state supervisor--timer-state)
-            (funcall 'supervisor--timer-trigger timer 'scheduled)
-            ;; Update next run time
-            (supervisor--timer-update-next-run id)
-            ;; Get updated next-run for scheduling
-            (setq state (gethash id supervisor--timer-state))
-            (setq next-run (plist-get state :next-run-at))
-            (when next-run
-              (setq next-check (if next-check (min next-check next-run) next-run))))
-           ;; Not due yet - track next check time (retry or scheduled)
-           (t
-            (when retry-at
-              (setq next-check (if next-check (min next-check retry-at) retry-at)))
-            (when next-run
-              (setq next-check (if next-check (min next-check next-run) next-run))))))))
-    ;; Schedule next tick
-    (when next-check
-      (let ((delay (max 1 (- next-check now)))) ; At least 1 second
-        (setq supervisor--timer-scheduler
-              (run-at-time delay nil #'supervisor--timer-scheduler-tick))))))
-
-(defun supervisor--timer-needs-catch-up-p (timer)
-  "Return non-nil if TIMER needs a catch-up run after downtime.
-Checks if timer is persistent and missed a run within catch-up limit.
-
-NOTE: This requires :last-run-at to be persisted across restarts.
-Without timer state persistence (Phase 4), catch-up only works within
-a single Emacs session.  See `supervisor-timer-state-file'."
-  (when (and (supervisor-timer-persistent timer)
-             (> supervisor-timer-catch-up-limit 0))
-    (let* ((id (supervisor-timer-id timer))
-           (state (gethash id supervisor--timer-state))
-           (last-run (plist-get state :last-run-at))
-           (now (float-time))
-           (cutoff (- now supervisor-timer-catch-up-limit)))
-      ;; Need catch-up if: had a previous run, and it's old enough that
-      ;; we likely missed at least one scheduled run
-      (when last-run
-        ;; Check if there was a scheduled run between last-run and now
-        ;; that we missed (for calendar triggers)
-        ;; Use last-run + 1 to get strictly-after time, avoiding boundary
-        ;; where compute-next-run returns the same minute as last-run
-        (let ((would-have-run (supervisor--timer-compute-next-run timer (1+ last-run))))
-          (and would-have-run
-               (< would-have-run now)        ; Run was due before now
-               (>= would-have-run cutoff)))))))  ; Run is within catch-up window
-
-(defun supervisor--timer-process-catch-ups ()
-  "Process catch-up triggers for persistent timers after downtime.
-Called during scheduler start."
-  (let ((catch-up-count 0))
-    (dolist (timer supervisor--timer-list)
-      (when (and (supervisor-timer-enabled timer)
-                 (supervisor--timer-needs-catch-up-p timer))
-        (let ((id (supervisor-timer-id timer)))
-          (supervisor--log 'info "timer %s: triggering catch-up run" id)
-          (funcall 'supervisor--timer-trigger timer 'catch-up)
-          (cl-incf catch-up-count))))
-    (when (> catch-up-count 0)
-      (supervisor--log 'info "processed %d catch-up runs" catch-up-count))))
-
-(cl-defun supervisor--timer-scheduler-start ()
-  "Start the timer scheduler.
-Call after supervisor-start has completed stage startup.
-Does nothing if timer subsystem is not active."
-  (unless (supervisor-timer-subsystem-active-p)
-    (supervisor--log 'info "timer subsystem disabled, skipping scheduler start")
-    (cl-return-from supervisor--timer-scheduler-start nil))
-  (setq supervisor--scheduler-startup-time (float-time))
-  ;; Build timer list from config
-  (let ((plan (supervisor--build-plan supervisor-programs)))
-    (setq supervisor--timer-list (supervisor--build-timer-list plan)))
-  ;; Load persisted state before initialization
-  (supervisor--load-timer-state)
-  ;; Initialize state for each timer
-  (let ((active-ids (make-hash-table :test 'equal)))
-    (dolist (timer supervisor--timer-list)
-      (let ((id (supervisor-timer-id timer)))
-        (puthash id t active-ids)
-        ;; Preserve existing state or create new
-        (unless (gethash id supervisor--timer-state)
-          (puthash id nil supervisor--timer-state))
-        ;; Compute initial next-run
-        (supervisor--timer-update-next-run id)))
-    ;; Prune stale timer IDs not in current config
-    (let ((stale-ids nil))
-      (maphash (lambda (id _state)
-                 (unless (gethash id active-ids)
-                   (push id stale-ids)))
-               supervisor--timer-state)
-      (dolist (id stale-ids)
-        (remhash id supervisor--timer-state))
-      (when stale-ids
-        (supervisor--log 'info "pruned %d stale timer IDs from state"
-                         (length stale-ids)))))
-  ;; Process catch-up runs for persistent timers
-  (supervisor--timer-process-catch-ups)
-  ;; Start the scheduler tick
-  (supervisor--timer-scheduler-tick)
-  (supervisor--log 'info "timer scheduler started with %d timers"
-                   (length supervisor--timer-list)))
-
-(defun supervisor--timer-scheduler-stop ()
-  "Stop the timer scheduler."
-  (when (timerp supervisor--timer-scheduler)
-    (cancel-timer supervisor--timer-scheduler)
-    (setq supervisor--timer-scheduler nil))
-  (supervisor--log 'info "timer scheduler stopped"))
 
 (defun supervisor--get-entry-for-id (id)
   "Get the parsed entry for ID.
@@ -3338,7 +2572,7 @@ Ready semantics (when dependents are unblocked):
                (cancel-timer timer)))
            supervisor--restart-timers)
   ;; Stop any existing timer scheduler
-  (supervisor--timer-scheduler-stop)
+  (supervisor-timer-scheduler-stop)
   ;; Reset runtime state for clean session
   (clrhash supervisor--restart-override)
   (clrhash supervisor--enabled-override)
@@ -3376,7 +2610,7 @@ Ready semantics (when dependents are unblocked):
              (supervisor-plan-deps plan))
     ;; Validate timers only when timer subsystem is active
     (when (supervisor-timer-subsystem-active-p)
-      (supervisor--build-timer-list plan))
+      (supervisor-timer-build-list plan))
     ;; Initialize all entry states to stage-not-started via FSM
     (dolist (entry (supervisor-plan-entries plan))
       (supervisor--transition-state (car entry) 'stage-not-started))
@@ -3394,7 +2628,7 @@ Entries are already validated and topologically sorted."
         (supervisor--log 'info "startup complete")
         ;; Start timer scheduler after all stages complete (but not during shutdown)
         (when (and supervisor-timers (not supervisor--shutting-down))
-          (supervisor--timer-scheduler-start)))
+          (supervisor-timer-scheduler-start)))
     (let* ((stage-pair (car remaining-stages))
            (rest (cdr remaining-stages))
            (stage-int (car stage-pair))
@@ -3418,7 +2652,7 @@ briefly for processes to terminate, ensuring a clean exit."
   (interactive)
   (setq supervisor--shutting-down t)
   ;; Stop timer scheduler
-  (supervisor--timer-scheduler-stop)
+  (supervisor-timer-scheduler-stop)
   ;; Cancel all timers
   (dolist (timer supervisor--timers)
     (when (timerp timer)
@@ -3460,7 +2694,7 @@ For `kill-emacs-hook', use `supervisor-stop-now' instead."
   (interactive)
   (setq supervisor--shutting-down t)
   ;; Stop timer scheduler
-  (supervisor--timer-scheduler-stop)
+  (supervisor-timer-scheduler-stop)
   ;; Cancel any pending delayed starts
   (dolist (timer supervisor--timers)
     (when (timerp timer)
@@ -3654,7 +2888,7 @@ Does not restart changed entries - use dashboard kill/start for that."
              (supervisor-plan-invalid plan))
     ;; Validate timers only when timer subsystem is active
     (when (supervisor-timer-subsystem-active-p)
-      (supervisor--build-timer-list plan))
+      (supervisor-timer-build-list plan))
     (supervisor--maybe-refresh-dashboard)
     (message "Supervisor reload: stopped %d, started %d" stopped started)))
 

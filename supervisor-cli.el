@@ -38,6 +38,14 @@
 (require 'json)
 (require 'supervisor-core)
 
+;; Forward declarations for timer subsystem (defined in supervisor-timer.el)
+(declare-function supervisor-timer-subsystem-active-p "supervisor-timer" ())
+(declare-function supervisor-timer-build-list "supervisor-timer" (plan))
+(declare-function supervisor-timer-id "supervisor-timer" (timer))
+(declare-function supervisor-timer-target "supervisor-timer" (timer))
+(declare-function supervisor-timer-enabled "supervisor-timer" (timer))
+(declare-function supervisor-timer-persistent "supervisor-timer" (timer))
+
 
 ;;; CLI Control Plane
 ;;
@@ -442,7 +450,7 @@ Empty lists are encoded as arrays, not null."
                     (lambda (a b)
                       (string< (alist-get 'id a) (alist-get 'id b)))))
         ;; Validate timers
-        (let* ((timers (supervisor--build-timer-list plan))
+        (let* ((timers (supervisor-timer-build-list plan))
                (timer-valid (length timers))
                (timer-invalid-list nil))
           (maphash (lambda (id reason)

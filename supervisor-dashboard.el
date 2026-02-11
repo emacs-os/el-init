@@ -45,6 +45,13 @@
 ;; Forward declaration for proced function
 (declare-function proced-toggle-auto-update "proced" (&optional arg))
 
+;; Forward declarations for timer subsystem (defined in supervisor-timer.el)
+(declare-function supervisor-timer-subsystem-active-p "supervisor-timer" ())
+(declare-function supervisor-timer-id "supervisor-timer" (timer))
+(declare-function supervisor-timer-target "supervisor-timer" (timer))
+(declare-function supervisor-timer-enabled "supervisor-timer" (timer))
+(declare-function supervisor-timer--target-active-p "supervisor-timer" (timer))
+
 ;;; Dashboard Faces
 
 (defface supervisor-status-running
@@ -401,7 +408,7 @@ If SNAPSHOT is provided, read runtime state from it."
          (last-exit (plist-get state :last-exit))
          (miss-reason (plist-get state :last-miss-reason))
          ;; Compute status: pending, active (target running), or based on last result
-         (target-active (supervisor--timer-target-active-p timer))
+         (target-active (supervisor-timer--target-active-p timer))
          (status (cond
                   (target-active "active")
                   ((and last-exit (= last-exit 0)) "done")
