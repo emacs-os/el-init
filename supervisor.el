@@ -39,6 +39,7 @@
 ;;; Code:
 
 (require 'supervisor-core)
+(require 'supervisor-timer)
 (require 'supervisor-dashboard)
 (require 'supervisor-cli)
 

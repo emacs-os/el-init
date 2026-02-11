@@ -52,8 +52,11 @@ See supervisor-timer.el for the full mode definition.")
 
 (defun supervisor-timer-subsystem-active-p ()
   "Return non-nil if timer subsystem is active.
-The timer subsystem is active when `supervisor-timer-subsystem-mode' is enabled."
-  supervisor-timer-subsystem-mode)
+The timer subsystem is active when both `supervisor-timer-subsystem-mode'
+and `supervisor-mode' are enabled.  If parent mode is off, timer subsystem
+is a no-op even if `supervisor-timer-subsystem-mode' is non-nil."
+  (and supervisor-timer-subsystem-mode
+       (bound-and-true-p supervisor-mode)))
 
 ;; Forward declarations for optional features
 (declare-function file-notify-add-watch "filenotify" (file flags callback))
@@ -1863,7 +1866,7 @@ Does nothing if timer subsystem is not active."
           (cond
            ;; Retry is due (takes priority over regular schedule)
            ((and retry-at (<= retry-at now))
-            (supervisor--timer-trigger timer 'retry)
+            (funcall 'supervisor--timer-trigger timer 'retry)
             ;; Clear retry on trigger (will be rescheduled on failure)
             (setq state (gethash id supervisor--timer-state))
             (setq state (plist-put state :retry-next-at nil))
@@ -1878,7 +1881,7 @@ Does nothing if timer subsystem is not active."
             (setq state (plist-put state :retry-attempt 0))
             (setq state (plist-put state :retry-next-at nil))
             (puthash id state supervisor--timer-state)
-            (supervisor--timer-trigger timer 'scheduled)
+            (funcall 'supervisor--timer-trigger timer 'scheduled)
             ;; Update next run time
             (supervisor--timer-update-next-run id)
             ;; Get updated next-run for scheduling
@@ -1933,7 +1936,7 @@ Called during scheduler start."
                  (supervisor--timer-needs-catch-up-p timer))
         (let ((id (supervisor-timer-id timer)))
           (supervisor--log 'info "timer %s: triggering catch-up run" id)
-          (supervisor--timer-trigger timer 'catch-up)
+          (funcall 'supervisor--timer-trigger timer 'catch-up)
           (cl-incf catch-up-count))))
     (when (> catch-up-count 0)
       (supervisor--log 'info "processed %d catch-up runs" catch-up-count))))
@@ -3371,8 +3374,9 @@ Ready semantics (when dependents are unblocked):
              (supervisor-plan-cycle-fallback-ids plan))
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
              (supervisor-plan-deps plan))
-    ;; Validate timers (populates supervisor--invalid-timers)
-    (supervisor--build-timer-list plan)
+    ;; Validate timers only when timer subsystem is active
+    (when (supervisor-timer-subsystem-active-p)
+      (supervisor--build-timer-list plan))
     ;; Initialize all entry states to stage-not-started via FSM
     (dolist (entry (supervisor-plan-entries plan))
       (supervisor--transition-state (car entry) 'stage-not-started))
@@ -3648,8 +3652,9 @@ Does not restart changed entries - use dashboard kill/start for that."
     (clrhash supervisor--invalid-timers)
     (maphash (lambda (k v) (puthash k v supervisor--invalid))
              (supervisor-plan-invalid plan))
-    ;; Validate timers (populates supervisor--invalid-timers)
-    (supervisor--build-timer-list plan)
+    ;; Validate timers only when timer subsystem is active
+    (when (supervisor-timer-subsystem-active-p)
+      (supervisor--build-timer-list plan))
     (supervisor--maybe-refresh-dashboard)
     (message "Supervisor reload: stopped %d, started %d" stopped started)))
 

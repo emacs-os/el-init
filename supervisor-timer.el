@@ -85,13 +85,17 @@ When disabled (the default), timer code will not:
 - Emit timer-specific events
 - Load or save timer-state persistence data"
   :global t
+  :group 'supervisor-timer
   :init-value nil
   :lighter nil
   (if supervisor-timer-subsystem-mode
-      (supervisor--log 'info "timer subsystem mode enabled (experimental)")
+      (when (fboundp 'supervisor--log)
+        (supervisor--log 'info "timer subsystem mode enabled (experimental)"))
     ;; When disabling, stop the scheduler immediately
-    (supervisor-timer-scheduler-stop)
-    (supervisor--log 'info "timer subsystem mode disabled")))
+    (when (fboundp 'supervisor-timer-scheduler-stop)
+      (supervisor-timer-scheduler-stop))
+    (when (fboundp 'supervisor--log)
+      (supervisor--log 'info "timer subsystem mode disabled"))))
 
 (defun supervisor-timer-subsystem-active-p ()
   "Return non-nil if timer subsystem is active.
@@ -494,7 +498,7 @@ Assumes validation has already passed."
   "Build list of validated timer structs from `supervisor-timers'.
 Invalid timers are added to `supervisor--invalid-timers' hash.
 PLAN is used for target validation.
-Note: No gate check here - validation should work even when subsystem is disabled."
+Note: No gate check - validation should work even when subsystem is off."
   (clrhash supervisor--invalid-timers)
   (let ((timers nil)
         (seen-ids (make-hash-table :test 'equal)))
@@ -738,7 +742,7 @@ For malformed entries, returns \"malformed#IDX\" for consistency."
 
 (defun supervisor-timer--parse-entry (entry)
   "Parse ENTRY into tuple format for timer use.
-Simplified parsing - returns (id cmd delay enabled-p restart-p logging-p type ...)."
+Simplified parsing - returns (id cmd delay enabled-p ...)."
   ;; This delegates to supervisor-core's parsing
   ;; We need to forward declare this
   (declare-function supervisor--parse-entry "supervisor-core" (entry))
@@ -1043,37 +1047,6 @@ Called during supervisor-start to reset state."
 (defun supervisor-timer-get-invalid ()
   "Return hash table of invalid timer IDs to reason strings."
   supervisor--invalid-timers)
-
-;;; Backward Compatibility Aliases
-;;
-;; These aliases provide names expected by supervisor-core.el and tests.
-;; The timer module uses supervisor-timer-xxx naming internally, but
-;; supervisor-core.el historically used supervisor--timer-xxx naming.
-
-(defalias 'supervisor--build-timer-list 'supervisor-timer-build-list)
-(defalias 'supervisor--save-timer-state 'supervisor-timer--save-state)
-(defalias 'supervisor--load-timer-state 'supervisor-timer--load-state)
-(defalias 'supervisor--validate-timer 'supervisor-timer--validate)
-(defalias 'supervisor--parse-timer 'supervisor-timer--parse)
-(defalias 'supervisor--timer-next-startup-time 'supervisor-timer--next-startup-time)
-(defalias 'supervisor--timer-next-unit-active-time 'supervisor-timer--next-unit-active-time)
-(defalias 'supervisor--timer-compute-next-run 'supervisor-timer--compute-next-run)
-(defalias 'supervisor--timer-update-next-run 'supervisor-timer--update-next-run)
-(defalias 'supervisor--timer-target-active-p 'supervisor-timer--target-active-p)
-(defalias 'supervisor--timer-trigger 'supervisor-timer--trigger)
-(defalias 'supervisor--timer-failure-retryable-p 'supervisor-timer--failure-retryable-p)
-(defalias 'supervisor--timer-schedule-retry 'supervisor-timer--schedule-retry)
-(defalias 'supervisor--timer-on-target-complete 'supervisor-timer--on-target-complete)
-(defalias 'supervisor--timer-record-miss 'supervisor-timer--record-miss)
-(defalias 'supervisor--timer-needs-catch-up-p 'supervisor-timer--needs-catch-up-p)
-(defalias 'supervisor--timer-process-catch-ups 'supervisor-timer--process-catch-ups)
-(defalias 'supervisor--timer-scheduler-start 'supervisor-timer-scheduler-start)
-(defalias 'supervisor--timer-scheduler-stop 'supervisor-timer-scheduler-stop)
-;; Calendar validation aliases
-(defalias 'supervisor--timer-validate-calendar 'supervisor-timer--validate-calendar)
-(defalias 'supervisor--timer-calendar-matches-time-p 'supervisor-timer--calendar-matches-time-p)
-(defalias 'supervisor--timer-calendar-next-minute 'supervisor-timer--calendar-next-minute)
-(defalias 'supervisor--timer-calendar-find-time-on-day 'supervisor-timer--calendar-find-time-on-day)
 
 (provide 'supervisor-timer)
 
