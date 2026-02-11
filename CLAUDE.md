@@ -138,7 +138,13 @@ A stage is complete only when:
 
 ## Documentation Files
 
-- **README.org**: Documents what the code *currently does*. Must accurately reflect the actual implementation - no aspirational features or future plans. Keep it truthful and human-readable.
+- **README.org**: The authoritative user handbook. Requirements:
+  - **Source of truth**: Must accurately reflect the codebase (the actual source of truth)
+  - **Handbook style**: Thorough reference work, not a quick-start guide
+  - **Complete coverage**: Document every single feature, option, and configuration possible
+  - **Indexed and searchable**: Well-organized with clear headings for navigation
+  - **No aspirational content**: Only document what currently exists in the code
+  - **Human-readable**: Clear prose suitable for end users, not developer notes
 - **ROADMAP.md**: Future plans and ideas. Not yet implemented.
 - **CLAUDE.md**: Development guidance for AI assistants.
 - **STANDARDS.md**: Emacs Lisp coding standards (mandatory).
