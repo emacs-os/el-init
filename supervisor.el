@@ -352,6 +352,11 @@ Return nil if valid, or a reason string if invalid."
             (push ":stage must be a symbol, not a string" errors))
            ((not (assq stage supervisor-stages))
             (push (format ":stage must be one of %s" supervisor-stage-names) errors)))))
+      ;; Check :id is a string when provided
+      (when (plist-member plist :id)
+        (let ((id (plist-get plist :id)))
+          (unless (stringp id)
+            (push ":id must be a string" errors))))
       ;; Check :delay is a non-negative number
       (when (plist-member plist :delay)
         (let ((delay (plist-get plist :delay)))
@@ -1805,59 +1810,132 @@ For `kill-emacs-hook', use `supervisor-stop-now' instead."
                  (setq supervisor--shutdown-complete-flag t)
                  (when cb (funcall cb)))))))))
 
+;;; Declarative Reconciler (Phase 4)
+
+(defun supervisor--compute-actions (plan snapshot)
+  "Compute reconciliation actions from PLAN and SNAPSHOT.
+This is a pure function that returns a list of action plists.
+Each action has :op, :id, and :reason keys.
+
+Action ops:
+  - `stop'   : stop a running process
+  - `start'  : start a new process
+  - `noop'   : no action needed (already converged)
+  - `skip'   : skip due to failed/completed state
+
+This function does not modify any state."
+  (let ((actions nil)
+        (plan-entries (supervisor-plan-entries plan))
+        (plan-ids (mapcar #'car (supervisor-plan-entries plan)))
+        (process-alive (supervisor-snapshot-process-alive snapshot))
+        (failed-hash (supervisor-snapshot-failed snapshot))
+        (oneshot-hash (supervisor-snapshot-oneshot-exit snapshot))
+        (enabled-override (supervisor-snapshot-enabled-override snapshot)))
+    ;; Collect running IDs from snapshot
+    (let ((running-ids nil))
+      (maphash (lambda (id _) (push id running-ids)) process-alive)
+      ;; Check for processes to stop (running but not in plan, or now disabled)
+      (dolist (id running-ids)
+        (let ((in-plan (member id plan-ids)))
+          (if (not in-plan)
+              ;; Removed from config
+              (push (list :op 'stop :id id :reason 'removed) actions)
+            ;; Check if now disabled
+            (let* ((entry (cl-find id plan-entries :key #'car :test #'equal))
+                   (enabled-p (nth 3 entry))
+                   (override (gethash id enabled-override))
+                   (effective-enabled (cond ((eq override 'enabled) t)
+                                            ((eq override 'disabled) nil)
+                                            (t enabled-p))))
+              (if (not effective-enabled)
+                  (push (list :op 'stop :id id :reason 'disabled) actions)
+                (push (list :op 'noop :id id :reason 'already-running) actions)))))))
+    ;; Check for processes to start (in plan but not running)
+    (dolist (entry plan-entries)
+      (let* ((id (car entry))
+             (enabled-p (nth 3 entry))
+             (type (nth 6 entry))
+             (override (gethash id enabled-override))
+             (effective-enabled (cond ((eq override 'enabled) t)
+                                      ((eq override 'disabled) nil)
+                                      (t enabled-p)))
+             (is-running (gethash id process-alive))
+             (is-failed (gethash id failed-hash))
+             (oneshot-done (gethash id oneshot-hash)))
+        (cond
+         (is-running
+          ;; Already handled in running-ids loop
+          nil)
+         ((not effective-enabled)
+          (push (list :op 'skip :id id :reason 'disabled) actions))
+         (is-failed
+          (push (list :op 'skip :id id :reason 'failed) actions))
+         ((and (eq type 'oneshot) oneshot-done)
+          (push (list :op 'skip :id id :reason 'oneshot-completed) actions))
+         (t
+          (push (list :op 'start :id id :reason 'new-entry) actions)))))
+    ;; Return actions in stable order (by ID)
+    (sort (nreverse actions)
+          (lambda (a b) (string< (plist-get a :id) (plist-get b :id))))))
+
+(defun supervisor--apply-actions (actions plan)
+  "Apply reconciliation ACTIONS using entry data from PLAN.
+Returns a plist with :stopped and :started counts."
+  (let ((stopped 0)
+        (started 0)
+        (plan-entries (supervisor-plan-entries plan)))
+    (dolist (action actions)
+      (let ((op (plist-get action :op))
+            (id (plist-get action :id))
+            (reason (plist-get action :reason)))
+        (pcase op
+          ('stop
+           (when-let* ((proc (gethash id supervisor--processes)))
+             (when (process-live-p proc)
+               (supervisor--log 'info "reload: stopping %s entry %s" reason id)
+               (puthash id 'disabled supervisor--restart-override)
+               (kill-process proc)
+               (cl-incf stopped))))
+          ('start
+           (when-let* ((entry (cl-find id plan-entries :key #'car :test #'equal)))
+             (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p
+                                 ,type ,_stage ,_after ,_owait ,_otimeout ,_tags)
+                          entry))
+               (when (supervisor--get-effective-enabled id enabled-p)
+                 (let ((args (split-string-and-unquote cmd)))
+                   (if (not (executable-find (car args)))
+                       (supervisor--log 'warning "reload: executable not found for %s: %s"
+                                        id (car args))
+                     (supervisor--log 'info "reload: starting %s entry %s" reason id)
+                     (supervisor--start-process id cmd logging-p type restart-p)
+                     (cl-incf started)))))))
+          ;; noop and skip actions require no work
+          (_ nil))))
+    (list :stopped stopped :started started)))
+
 ;;;###autoload
 (defun supervisor-reload ()
   "Reload configuration and reconcile running processes.
+Uses declarative reconciliation: build plan, build snapshot, compute
+actions, then apply.  The action list can be inspected before apply
+by calling `supervisor--compute-actions' directly.
+
 Stops processes removed from config or now disabled, starts new processes.
 Does not restart changed entries - use dashboard kill/start for that."
   (interactive)
-  (let* ((new-entries (supervisor--all-parsed-entries))
-         (new-ids (mapcar #'car new-entries))
-         (running-ids (hash-table-keys supervisor--processes))
-         ;; IDs to stop: running but not in new config
-         (removed-ids (cl-remove-if (lambda (id) (member id new-ids)) running-ids))
-         ;; IDs to stop: running but now disabled in config
-         (disabled-ids
-          (cl-remove-if-not
-           (lambda (id)
-             (let ((entry (cl-find id new-entries :key #'car :test #'equal)))
-               (when entry
-                 (pcase-let ((`(,_id ,_cmd ,_delay ,enabled-p ,_restart-p
-                                     ,_logging-p ,_type ,_stage ,_after
-                                     ,_owait ,_otimeout ,_tags) entry))
-                   (not (supervisor--get-effective-enabled id enabled-p))))))
-           running-ids))
-         (to-stop (cl-union removed-ids disabled-ids :test #'equal))
-         ;; IDs to start: in new config but not running (and not failed/completed oneshot)
-         (to-start (cl-remove-if
-                    (lambda (id)
-                      (or (gethash id supervisor--processes)
-                          (gethash id supervisor--failed)
-                          (gethash id supervisor--oneshot-completed)))
-                    new-ids))
-         (stopped 0)
-         (started 0))
-    ;; Stop removed/disabled processes
-    (dolist (id to-stop)
-      (when-let* ((proc (gethash id supervisor--processes)))
-        (when (process-live-p proc)
-          (supervisor--log 'info "reload: stopping %s entry %s"
-                           (if (member id removed-ids) "removed" "disabled") id)
-          (puthash id 'disabled supervisor--restart-override)  ; prevent restart
-          (kill-process proc)
-          (cl-incf stopped))))
-    ;; Start new processes (respect runtime override)
-    (dolist (id to-start)
-      (let ((entry (cl-find id new-entries :key #'car :test #'equal)))
-        (when entry
-          (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
-            (when (supervisor--get-effective-enabled id enabled-p)
-              (let ((args (split-string-and-unquote cmd)))
-                (if (not (executable-find (car args)))
-                    (supervisor--log 'warning "reload: executable not found for %s: %s" id (car args))
-                  (supervisor--log 'info "reload: starting new entry %s" id)
-                  (supervisor--start-process id cmd logging-p type restart-p)
-                  (cl-incf started))))))))
+  ;; Build plan and snapshot
+  (let* ((plan (supervisor--build-plan supervisor-programs))
+         (snapshot (supervisor--build-snapshot))
+         ;; Compute actions (pure)
+         (actions (supervisor--compute-actions plan snapshot))
+         ;; Apply actions
+         (result (supervisor--apply-actions actions plan))
+         (stopped (plist-get result :stopped))
+         (started (plist-get result :started)))
+    ;; Populate legacy globals from plan for dashboard
+    (clrhash supervisor--invalid)
+    (maphash (lambda (k v) (puthash k v supervisor--invalid))
+             (supervisor-plan-invalid plan))
     (supervisor--refresh-dashboard)
     (message "Supervisor reload: stopped %d, started %d" stopped started)))
 
