@@ -110,36 +110,8 @@ and `supervisor-mode' are enabled."
   "Timer subsystem for supervisor.el."
   :group 'supervisor)
 
-(defcustom supervisor-timers nil
-  "List of timer definitions for scheduled oneshot execution.
-Each entry is a plist with required keys :id and :target.
-
-Required keys:
-  :id       - string, unique timer identifier
-  :target   - string, ID of oneshot service in `supervisor-programs'
-
-Trigger keys (at least one required):
-  :on-calendar      - calendar schedule (see below)
-  :on-startup-sec   - seconds after supervisor-start to run
-  :on-unit-active-sec - seconds after target completes to run again
-
-Optional keys:
-  :enabled    - boolean, default t
-  :persistent - boolean, default t (enables catch-up after downtime)
-
-Calendar schedule format:
-  (:minute M :hour H :day-of-month D :month MO :day-of-week DOW)
-  Each field is an integer, list of integers, or \\='* for any.
-
-Example:
-  \\='((:id \"backup-daily\"
-     :target \"backup-script\"
-     :on-calendar (:hour 3 :minute 0))
-    (:id \"cleanup-startup\"
-     :target \"cleanup-script\"
-     :on-startup-sec 60))"
-  :type '(repeat plist)
-  :group 'supervisor-timer)
+;; supervisor-timers defcustom is defined in supervisor-core.el
+(defvar supervisor-timers)
 
 (defcustom supervisor-timer-state-file
   (expand-file-name "supervisor/timer-state.eld"

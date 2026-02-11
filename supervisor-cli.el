@@ -46,6 +46,11 @@
 (declare-function supervisor-timer-enabled "supervisor-timer" (timer))
 (declare-function supervisor-timer-persistent "supervisor-timer" (timer))
 
+;; Forward declarations for timer state variables (defined in supervisor-timer.el)
+(defvar supervisor--invalid-timers)
+(defvar supervisor--timer-list)
+(defvar supervisor--timer-state)
+
 
 ;;; CLI Control Plane
 ;;

@@ -52,6 +52,11 @@
 (declare-function supervisor-timer-enabled "supervisor-timer" (timer))
 (declare-function supervisor-timer--target-active-p "supervisor-timer" (timer))
 
+;; Forward declarations for timer state variables (defined in supervisor-timer.el)
+(defvar supervisor--timer-state)
+(defvar supervisor--timer-list)
+(defvar supervisor--invalid-timers)
+
 ;;; Dashboard Faces
 
 (defface supervisor-status-running

@@ -51,10 +51,14 @@ Use `supervisor-timer-subsystem-mode' command to toggle.
 See supervisor-timer.el for the full mode definition.")
 
 ;; Forward declarations - implementations in supervisor-timer.el
+;; These are optional; core guards calls with fboundp for standalone operation.
 (declare-function supervisor-timer-subsystem-active-p "supervisor-timer" ())
 (declare-function supervisor-timer-build-list "supervisor-timer" (plan))
 (declare-function supervisor-timer-scheduler-start "supervisor-timer" ())
 (declare-function supervisor-timer-scheduler-stop "supervisor-timer" ())
+(declare-function supervisor-timer-id "supervisor-timer" (timer))
+(declare-function supervisor-timer-enabled "supervisor-timer" (timer))
+(declare-function supervisor-timer-target "supervisor-timer" (timer))
 
 ;; Forward declarations for optional features
 (declare-function file-notify-add-watch "filenotify" (file flags callback))
@@ -109,31 +113,6 @@ Example:
      :target \"cleanup-script\"
      :on-startup-sec 60))"
   :type '(repeat plist)
-  :group 'supervisor)
-
-(defcustom supervisor-timer-state-file
-  (expand-file-name "supervisor/timer-state.eld"
-                    (or (getenv "XDG_STATE_HOME")
-                        (expand-file-name "~/.local/state")))
-  "File path for persisting timer state.
-Set to nil to disable timer state persistence."
-  :type '(choice file (const nil))
-  :group 'supervisor)
-
-(defcustom supervisor-timer-retry-intervals '(30 120 600)
-  "List of retry intervals in seconds for failed timer runs.
-Each element is the delay before the next retry attempt.
-Default is 30s, 2m, 10m (3 attempts total).
-Set to nil to disable retries."
-  :type '(repeat integer)
-  :group 'supervisor)
-
-(defcustom supervisor-timer-catch-up-limit (* 24 60 60)
-  "Maximum age in seconds for catch-up runs after downtime.
-When scheduler starts, timers with `:persistent t' that missed
-runs within this window will trigger a catch-up run.
-Default is 24 hours.  Set to 0 to disable catch-up."
-  :type 'integer
   :group 'supervisor)
 
 (defcustom supervisor-log-directory
@@ -418,46 +397,6 @@ Return nil if valid, or a reason string if invalid."
 (defvar supervisor--cycle-fallback-ids)
 (defvar supervisor--computed-deps)
 
-;;; Timer Definition Schema (early for use in validate/dry-run)
-
-(defconst supervisor-timer-schema-version 1
-  "Schema version for timer definitions.")
-
-(cl-defstruct (supervisor-timer (:constructor supervisor-timer--create)
-                                (:copier nil))
-  "Timer definition for scheduled oneshot execution.
-
-Field documentation:
-  id              - Unique identifier string (required)
-  target          - ID of oneshot service to trigger (required)
-  enabled         - Whether this timer is active (boolean, default t)
-  on-calendar     - Calendar schedule plist (optional)
-  on-startup-sec  - Seconds after startup to trigger (optional)
-  on-unit-active-sec - Seconds after target completes to trigger again (optional)
-  persistent      - Enable catch-up after downtime (boolean, default t)"
-  (id nil :type string :documentation "Unique timer identifier (required)")
-  (target nil :type string :documentation "Target oneshot service ID (required)")
-  (enabled t :type boolean :documentation "Whether timer is active")
-  (on-calendar nil :type (or null list) :documentation "Calendar schedule plist")
-  (on-startup-sec nil :type (or null integer) :documentation "Startup delay seconds")
-  (on-unit-active-sec nil :type (or null integer) :documentation "Repeat interval seconds")
-  (persistent t :type boolean :documentation "Enable catch-up after downtime"))
-
-(defconst supervisor-timer-required-fields '(id target)
-  "List of required fields in a timer definition.")
-
-(defconst supervisor-timer-trigger-fields
-  '(on-calendar on-startup-sec on-unit-active-sec)
-  "List of trigger fields.  At least one must be specified.")
-
-(defconst supervisor-timer-valid-keywords
-  '(:id :target :enabled :on-calendar :on-startup-sec :on-unit-active-sec :persistent)
-  "List of valid timer keywords.")
-
-(defconst supervisor-timer-calendar-fields
-  '(:minute :hour :day-of-month :month :day-of-week)
-  "Valid fields in an :on-calendar schedule.")
-
 (defun supervisor--extract-id (entry idx)
   "Extract a stable ID from ENTRY at position IDX in `supervisor-programs'.
 For valid entries, returns the configured or derived ID.
@@ -480,7 +419,8 @@ Display results in a temporary buffer and populate `supervisor--invalid'
 and `supervisor--invalid-timers' so the dashboard reflects validation state."
   (interactive)
   (clrhash supervisor--invalid)
-  (clrhash supervisor--invalid-timers)
+  (when (boundp 'supervisor--invalid-timers)
+    (clrhash supervisor--invalid-timers))
   ;; Build plan to get entry validation results
   (let* ((plan (supervisor--build-plan supervisor-programs))
          (entry-valid (length (supervisor-plan-entries plan)))
@@ -495,23 +435,28 @@ and `supervisor--invalid-timers' so the dashboard reflects validation state."
     (maphash (lambda (id reason)
                (push (format "INVALID %s: %s" id reason) entry-results))
              (supervisor-plan-invalid plan))
-    ;; Validate timers using plan (for target checking)
-    (let* ((timers (supervisor-timer-build-list plan))
+    ;; Validate timers using plan (only if timer module is loaded)
+    (let* ((timers (when (fboundp 'supervisor-timer-build-list)
+                     (supervisor-timer-build-list plan)))
            (timer-valid (length timers))
-           (timer-invalid (hash-table-count supervisor--invalid-timers))
+           (timer-invalid (if (boundp 'supervisor--invalid-timers)
+                              (hash-table-count supervisor--invalid-timers)
+                            0))
            (timer-results nil))
-      ;; Collect timer results
-      (dolist (timer timers)
-        (push (format "OK      %s" (supervisor-timer-id timer)) timer-results))
-      (maphash (lambda (id reason)
-                 (push (format "INVALID %s: %s" id reason) timer-results))
-               supervisor--invalid-timers)
+      ;; Collect timer results (only if timer module loaded)
+      (when (fboundp 'supervisor-timer-id)
+        (dolist (timer timers)
+          (push (format "OK      %s" (supervisor-timer-id timer)) timer-results)))
+      (when (boundp 'supervisor--invalid-timers)
+        (maphash (lambda (id reason)
+                   (push (format "INVALID %s: %s" id reason) timer-results))
+                 supervisor--invalid-timers))
       ;; Display results
       (with-output-to-temp-buffer "*supervisor-validate*"
         (princ (format "Services: %d valid, %d invalid\n" entry-valid entry-invalid))
         (dolist (line (nreverse entry-results))
           (princ (format "  %s\n" line)))
-        (when supervisor-timers
+        (when (and supervisor-timers (fboundp 'supervisor-timer-build-list))
           (princ (format "\nTimers: %d valid, %d invalid\n" timer-valid timer-invalid))
           (dolist (line (nreverse timer-results))
             (princ (format "  %s\n" line)))))))
@@ -528,7 +473,8 @@ cycle fallback behavior.  Uses the pure plan builder internally."
   (let ((plan (supervisor--build-plan supervisor-programs)))
     ;; Populate legacy globals for dashboard compatibility
     (clrhash supervisor--invalid)
-    (clrhash supervisor--invalid-timers)
+    (when (boundp 'supervisor--invalid-timers)
+      (clrhash supervisor--invalid-timers))
     (clrhash supervisor--cycle-fallback-ids)
     (clrhash supervisor--computed-deps)
     (maphash (lambda (k v) (puthash k v supervisor--invalid))
@@ -537,18 +483,21 @@ cycle fallback behavior.  Uses the pure plan builder internally."
              (supervisor-plan-cycle-fallback-ids plan))
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
              (supervisor-plan-deps plan))
-    ;; Validate timers
-    (let ((timers (supervisor-timer-build-list plan)))
+    ;; Validate timers (only if timer module loaded)
+    (let ((timers (when (fboundp 'supervisor-timer-build-list)
+                    (supervisor-timer-build-list plan))))
       ;; Display from plan artifact
       (with-output-to-temp-buffer "*supervisor-dry-run*"
         (princ "=== Supervisor Dry Run ===\n\n")
         (princ (format "Services: %d valid, %d invalid\n"
                        (length (supervisor-plan-entries plan))
                        (hash-table-count (supervisor-plan-invalid plan))))
-        (when supervisor-timers
+        (when (and supervisor-timers (fboundp 'supervisor-timer-build-list))
           (princ (format "Timers: %d valid, %d invalid\n"
                          (length timers)
-                         (hash-table-count supervisor--invalid-timers))))
+                         (if (boundp 'supervisor--invalid-timers)
+                             (hash-table-count supervisor--invalid-timers)
+                           0))))
         (princ "\n")
         ;; Show invalid entries first
         (when (> (hash-table-count (supervisor-plan-invalid plan)) 0)
@@ -557,8 +506,9 @@ cycle fallback behavior.  Uses the pure plan builder internally."
                      (princ (format "  %s: %s\n" id reason)))
                    (supervisor-plan-invalid plan))
           (princ "\n"))
-        ;; Show invalid timers
-        (when (> (hash-table-count supervisor--invalid-timers) 0)
+        ;; Show invalid timers (only if timer module loaded)
+        (when (and (boundp 'supervisor--invalid-timers)
+                   (> (hash-table-count supervisor--invalid-timers) 0))
           (princ "--- Invalid Timers (skipped) ---\n")
           (maphash (lambda (id reason)
                      (princ (format "  %s: %s\n" id reason)))
@@ -1132,9 +1082,6 @@ Field documentation:
   "Alist of optional fields with their default values.
 A value of :defer means the default is resolved at runtime.")
 
-(defvar supervisor--invalid-timers (make-hash-table :test 'equal)
-  "Hash table mapping invalid timer IDs to reason strings.")
-
 ;;; Parsed Entry Accessors (Schema v1)
 ;;
 ;; These functions abstract the internal tuple representation.
@@ -1195,33 +1142,13 @@ A value of :defer means the default is resolved at runtime.")
   "Return the requirement dependencies of parsed ENTRY."
   (nth 12 entry))
 
-;;; Timer Scheduler State (shared with supervisor-timer.el)
-
-(defvar supervisor--timer-state (make-hash-table :test 'equal)
-  "Hash table mapping timer ID to runtime state plist.
-State keys:
-  :last-run-at      - timestamp of last trigger
-  :last-success-at  - timestamp of last successful completion
-  :last-failure-at  - timestamp of last failed completion
-  :last-exit        - exit code of last run (0 = success)
-  :retry-attempt    - current retry attempt number (0 = not retrying)
-  :retry-next-at    - timestamp of next retry (nil if not pending)
-  :last-missed-at   - timestamp of last missed run
-  :last-miss-reason - symbol: overlap, downtime, disabled
-  :next-run-at      - timestamp of next scheduled run
-All timestamps are float seconds since epoch.")
-
-(defvar supervisor--timer-scheduler nil
-  "Timer object for the scheduler loop.")
-
-(defvar supervisor--timer-list nil
-  "List of validated timer structs for active scheduling.")
-
-(defvar supervisor--scheduler-startup-time nil
-  "Timestamp when scheduler was started (for monotonic triggers).")
-
-(defvar supervisor--timer-state-loaded nil
-  "Non-nil when timer state has been loaded from file.")
+;; Forward declarations for timer state variables (defined in supervisor-timer.el)
+;; These are only accessed when timer module is loaded.
+(defvar supervisor--timer-state)
+(defvar supervisor--timer-scheduler)
+(defvar supervisor--timer-list)
+(defvar supervisor--scheduler-startup-time)
+(defvar supervisor--timer-state-loaded)
 
 (defun supervisor--get-entry-for-id (id)
   "Get the parsed entry for ID.
@@ -2571,15 +2498,17 @@ Ready semantics (when dependents are unblocked):
              (when (timerp timer)
                (cancel-timer timer)))
            supervisor--restart-timers)
-  ;; Stop any existing timer scheduler
-  (supervisor-timer-scheduler-stop)
+  ;; Stop any existing timer scheduler (if timer module loaded)
+  (when (fboundp 'supervisor-timer-scheduler-stop)
+    (supervisor-timer-scheduler-stop))
   ;; Reset runtime state for clean session
   (clrhash supervisor--restart-override)
   (clrhash supervisor--enabled-override)
   (clrhash supervisor--manually-stopped)
   (clrhash supervisor--failed)
   (clrhash supervisor--invalid)
-  (clrhash supervisor--invalid-timers)
+  (when (boundp 'supervisor--invalid-timers)
+    (clrhash supervisor--invalid-timers))
   (clrhash supervisor--logging)
   (clrhash supervisor--restart-times)
   (clrhash supervisor--restart-timers)
@@ -2589,10 +2518,15 @@ Ready semantics (when dependents are unblocked):
   (clrhash supervisor--cycle-fallback-ids)
   (clrhash supervisor--computed-deps)
   (clrhash supervisor--entry-state)
-  (clrhash supervisor--timer-state)
-  (setq supervisor--timer-state-loaded nil)
-  (setq supervisor--timer-list nil)
-  (setq supervisor--scheduler-startup-time nil)
+  ;; Reset timer state (if timer module loaded)
+  (when (boundp 'supervisor--timer-state)
+    (clrhash supervisor--timer-state))
+  (when (boundp 'supervisor--timer-state-loaded)
+    (setq supervisor--timer-state-loaded nil))
+  (when (boundp 'supervisor--timer-list)
+    (setq supervisor--timer-list nil))
+  (when (boundp 'supervisor--scheduler-startup-time)
+    (setq supervisor--scheduler-startup-time nil))
   (setq supervisor--current-stage nil)
   (setq supervisor--completed-stages nil)
   ;; Load persisted overrides (restores enabled/restart/logging overrides)
@@ -2608,8 +2542,10 @@ Ready semantics (when dependents are unblocked):
              (supervisor-plan-cycle-fallback-ids plan))
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
              (supervisor-plan-deps plan))
-    ;; Validate timers only when timer subsystem is active
-    (when (supervisor-timer-subsystem-active-p)
+    ;; Validate timers only when timer subsystem is active (and timer module loaded)
+    (when (and (fboundp 'supervisor-timer-subsystem-active-p)
+               (supervisor-timer-subsystem-active-p)
+               (fboundp 'supervisor-timer-build-list))
       (supervisor-timer-build-list plan))
     ;; Initialize all entry states to stage-not-started via FSM
     (dolist (entry (supervisor-plan-entries plan))
@@ -2626,8 +2562,10 @@ Entries are already validated and topologically sorted."
         (supervisor--dag-cleanup)
         (setq supervisor--current-stage nil)
         (supervisor--log 'info "startup complete")
-        ;; Start timer scheduler after all stages complete (but not during shutdown)
-        (when (and supervisor-timers (not supervisor--shutting-down))
+        ;; Start timer scheduler after all stages complete (if timer module loaded)
+        (when (and supervisor-timers
+                   (not supervisor--shutting-down)
+                   (fboundp 'supervisor-timer-scheduler-start))
           (supervisor-timer-scheduler-start)))
     (let* ((stage-pair (car remaining-stages))
            (rest (cdr remaining-stages))
@@ -2651,8 +2589,9 @@ Unlike `supervisor-stop', it sends SIGKILL immediately and waits
 briefly for processes to terminate, ensuring a clean exit."
   (interactive)
   (setq supervisor--shutting-down t)
-  ;; Stop timer scheduler
-  (supervisor-timer-scheduler-stop)
+  ;; Stop timer scheduler (if timer module loaded)
+  (when (fboundp 'supervisor-timer-scheduler-stop)
+    (supervisor-timer-scheduler-stop))
   ;; Cancel all timers
   (dolist (timer supervisor--timers)
     (when (timerp timer)
@@ -2883,11 +2822,14 @@ Does not restart changed entries - use dashboard kill/start for that."
          (started (plist-get result :started)))
     ;; Populate legacy globals from plan for dashboard
     (clrhash supervisor--invalid)
-    (clrhash supervisor--invalid-timers)
+    (when (boundp 'supervisor--invalid-timers)
+      (clrhash supervisor--invalid-timers))
     (maphash (lambda (k v) (puthash k v supervisor--invalid))
              (supervisor-plan-invalid plan))
-    ;; Validate timers only when timer subsystem is active
-    (when (supervisor-timer-subsystem-active-p)
+    ;; Validate timers only when timer subsystem is active (and timer module loaded)
+    (when (and (fboundp 'supervisor-timer-subsystem-active-p)
+               (supervisor-timer-subsystem-active-p)
+               (fboundp 'supervisor-timer-build-list))
       (supervisor-timer-build-list plan))
     (supervisor--maybe-refresh-dashboard)
     (message "Supervisor reload: stopped %d, started %d" stopped started)))
