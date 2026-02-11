@@ -54,60 +54,31 @@ The control plane is a security boundary. If we use `emacsclient --eval` for
 control, any client that can connect can execute code as the Emacs process.
 We must treat server access as privileged and lock it down.
 
-## Roadmap (Required Sequence)
+## Roadmap (Remaining Required Sequence)
 
-All items below are mandatory. There are no optional phases. Do them in order.
+Completed milestones (already shipped):
 
-1. Service definition layer: formal schema, versioning, persistent overrides,
-   migration plan, and validation coverage.
-2. Control plane implementation: ship `supervisorctl` and the POSIX wrappers
-   planned in `sbin/README.md`, with human + JSON output, stable schema, exit
-   codes, and tests.
-3. Modularize codebase: split core engine, dashboard UI, and CLI/control plane
-   into separate files with clear boundaries and stable APIs.
-4. Security hardening: restricted control channel, explicit auth model, and a
+1. Service definition layer.
+2. Control plane implementation.
+3. Modularized codebase split (core/dashboard/CLI + facade).
+
+Remaining mandatory milestones (do in order):
+
+1. Security hardening: restricted control channel, explicit auth model, and a
    documented threat model.
-5. PID 1 engineering: child reaping, signal handling, safe shutdown semantics,
+2. PID 1 engineering: child reaping, signal handling, safe shutdown semantics,
    crash safety, and tests.
-6. Parity and expansion: systemd-timer-equivalent scheduling, socket
+3. Parity and expansion: systemd-timer-equivalent scheduling, socket
    activation, advanced readiness, and remaining capability additions.
 
-**Roadmap Requirements (Detailed)**
+**Remaining Roadmap Requirements (Detailed)**
 
-**1. Service Definition Layer**
-- Define a versioned schema for entries and overrides.
-- Separate requirement dependencies from ordering dependencies (systemd-style).
-- Provide a migration strategy for existing configs.
-- Ensure validation errors are explicit and test-covered.
-- Consider an optional DSL for unit definitions (Shepherd-style) that compiles
-  to the schema, while preserving `setq supervisor-programs` as a supported
-  baseline for simple configs.
-
-**2. Control Plane (CLI + Minimal Shim)**
-- Implement `supervisorctl` with human-readable defaults and `--json`.
-- Keep parsing/dispatch/output in Elisp; the shim is transport only.
-- Use a single minimal shim (not per-command scripts). If shell must be
-  avoided, allow a tiny compiled launcher, still transport-only.
-- Define a stable JSON schema and exit codes; add tests for all outputs.
-- Use `emacsclient --eval` with explicit server selection flags (`-s`/`-f`).
-- Treat server access as privileged; document socket and auth handling.
-
-**3. Modularization (Core/UI/CLI Split)**
-- Split core engine into `supervisor-core.el` (parsing, validation, DAG,
-  scheduling, process management, state).
-- Split dashboard into `supervisor-dashboard.el` (tabulated UI, filters,
-  keybindings, blame/graph views).
-- Prepare `supervisor-cli.el` for control plane dispatcher and formatters.
-- If warranted by size, split doc/UX helpers into `supervisor-doc.el`
-  (help text, banner strings, formatted output helpers).
-- Keep public entry points stable; update tests and `provide`/`require` edges.
-
-**4. Security Hardening**
+**1. Security Hardening**
 - Lock down control channels (local socket by default).
 - If TCP is enabled, require strong auth and protect server files.
 - Document the threat model and safe deployment guidance.
 
-**5. PID 1 Engineering**
+**2. PID 1 Engineering**
 - Implement child reaping and SIGCHLD handling.
 - Define explicit signal handling for shutdown and reboot flows.
 - Ensure safe shutdown order and crash safety under PID 1 semantics.
@@ -137,7 +108,7 @@ Shim approach (preferred):
   requires Emacs to be PID 1, the shim logic must be integrated into Emacs
   (or Emacs must be patched to reap all children itself).
 
-**6. Parity and Expansion**
+**3. Parity and Expansion**
 - Add systemd-timer-equivalent timers (calendar + monotonic triggers,
   persistence/catch-up behavior, and jitter/accuracy controls) and socket
   activation.

@@ -16,10 +16,33 @@ It manages background programs from inside Emacs with:
 
 This is user-session supervision, not a system init replacement.
 
+** Codebase Layout
+
+The package is modular, with `supervisor.el` as a stable facade:
+
+| File | Role |
+| `supervisor.el` | Facade. Requires all modules and provides `supervisor` |
+| `supervisor-core.el` | Parsing, validation, planning, scheduler, runtime state, process lifecycle, persistence |
+| `supervisor-dashboard.el` | Dashboard UI, keymaps, rendering, dashboard actions |
+| `supervisor-cli.el` | CLI parsing/dispatch/formatting and wrapper transport adapter |
+
+Dependency rules in code:
+
+- `supervisor-core.el` does not require dashboard or CLI modules
+- `supervisor-dashboard.el` requires only `supervisor-core.el`
+- `supervisor-cli.el` requires only `supervisor-core.el`
+- `supervisor.el` requires all modules in load order: core -> dashboard -> cli
+
+Standalone module loading is supported:
+
+- `(require 'supervisor-core)` works in headless/batch contexts
+- `(require 'supervisor-cli)` works without loading dashboard
+
 ** Requirements
 
 - Emacs 28.1+
-- `supervisor.el` available in `load-path`
+- `supervisor.el`, `supervisor-core.el`, `supervisor-dashboard.el`, `supervisor-cli.el` available in `load-path`
+- Optional: `transient` package for dashboard action menu (`?`)
 
 ** Install And Enable
 
@@ -56,6 +79,10 @@ When Emacs is your session owner (for example EXWM), typical hooks are:
 | `M-x supervisor` | Open dashboard buffer `*supervisor*` |
 | `M-x supervisor-validate` | Validate config and show errors without starting |
 | `M-x supervisor-dry-run` | Show computed startup order and metadata without starting |
+| `M-x supervisor-migrate-config` | Show canonical schema v1 view of current config |
+| `M-x supervisor-overrides-load` | Reload persisted runtime overrides from disk |
+| `M-x supervisor-overrides-save` | Save current runtime overrides to disk |
+| `M-x supervisor-overrides-clear` | Clear runtime overrides in memory and on disk |
 
 ** CLI Control Plane (`supervisorctl`)
 
@@ -76,6 +103,7 @@ sbin/supervisorctl [OPTIONS] COMMAND [ARGS...]
 *** Options
 
 | Option | Purpose |
+| `--help` | Show wrapper help text |
 | `--json` | Output JSON instead of human-readable text |
 | `--socket NAME` | Use specific Emacs server socket |
 | `--server-file PATH` | Use server file for TCP |
@@ -129,7 +157,7 @@ Utilities:
 *** JSON Output
 
 When `--json` is passed, all output is JSON with a stable schema.
-Status output includes an `entries` array and optional `invalid` array.
+Status output always includes `entries` and `invalid` arrays (empty arrays when no data).
 
 ** Configuration Model
 
@@ -422,6 +450,7 @@ Notes:
 - separator rows reject process actions with user error
 - dependency graph and blame need startup metadata from `supervisor-start`
 - invalid entries are shown when stage filter is not active
+- `?` requires `transient`; if missing, dashboard reports a user error
 
 ** Logging
 
@@ -518,6 +547,7 @@ Legacy hooks are still supported and dispatched by the event adapter:
 | `supervisor-watch-config` | `nil` | Config file watch and auto-reload |
 | `supervisor-stage-descriptions` | `((stage1 . "X Setup") (stage2 . "System") (stage3 . "Services") (stage4 . "Applets"))` | Stage labels in grouped dashboard |
 | `supervisor-dashboard-group-by-stage` | `t` | Show stage separator rows |
+| `supervisor-dashboard-show-header-hints` | `nil` | Show key hints in dashboard header |
 | `supervisor-auto-refresh-interval` | `2` | Dashboard live-refresh interval |
 | `supervisor-overrides-file` | `~/.local/state/supervisor/overrides.eld` | Override persistence file (nil to disable) |
 
