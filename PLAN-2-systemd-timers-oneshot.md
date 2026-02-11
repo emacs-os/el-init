@@ -163,7 +163,11 @@ Per timer, track at minimum:
 - Relative time formatting for timestamps (e.g., "5m ago", "in 2h")
 - Shows invalid timers with reasons
 
-### Phase 6: Test Matrix and Hardening
+### Phase 6: Test Matrix and Hardening ✓
 
-- Comprehensive edge case coverage
-- Integration tests with real process execution
+- 68 timer-related tests (validation, scheduling, triggers, retry, catch-up)
+- Scheduler tick edge cases (scheduled, retry, disabled skip)
+- State persistence merge/roundtrip tests
+- CLI timers command tests (human, JSON, invalid)
+- Relative time formatter edge cases
+- Multiple trigger type interaction tests

@@ -3384,6 +3384,104 @@ at minute boundaries."
         (should-not (plist-get state :retry-next-at))))
     (clrhash supervisor--timer-state)))
 
+(ert-deftest supervisor-test-timer-scheduler-tick-scheduled ()
+  "Scheduler tick triggers scheduled run when due."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--timer-scheduler nil)
+         (supervisor--shutting-down nil)
+         (triggered-reason nil))
+    ;; Set up state with scheduled run due
+    (puthash "t1" '(:next-run-at 999.0) supervisor--timer-state)
+    ;; Mock trigger to capture reason
+    (cl-letf (((symbol-function 'supervisor--timer-trigger)
+               (lambda (_timer reason) (setq triggered-reason reason)))
+              ((symbol-function 'float-time) (lambda () 1000.0)))
+      (supervisor--timer-scheduler-tick)
+      (should (eq 'scheduled triggered-reason)))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-scheduler-tick-disabled-skips ()
+  "Scheduler tick skips disabled timers."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled nil))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--timer-scheduler nil)
+         (supervisor--shutting-down nil)
+         (triggered nil))
+    ;; Set up state with scheduled run due
+    (puthash "t1" '(:next-run-at 999.0) supervisor--timer-state)
+    ;; Mock trigger to detect if called
+    (cl-letf (((symbol-function 'supervisor--timer-trigger)
+               (lambda (_timer _reason) (setq triggered t)))
+              ((symbol-function 'float-time) (lambda () 1000.0))
+              ((symbol-function 'run-at-time) (lambda (&rest _) nil)))
+      (supervisor--timer-scheduler-tick)
+      ;; Should not trigger disabled timer
+      (should-not triggered))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-cli-relative-time-formatter ()
+  "Relative time formatter handles various time differences."
+  ;; Test with mock time at 100000
+  (cl-letf (((symbol-function 'float-time) (lambda () 100000.0)))
+    ;; Recent past (seconds)
+    (should (string-match "\\`[0-9]+s ago\\'" (supervisor--cli-format-relative-time 99990.0)))
+    ;; Minutes ago
+    (should (string-match "\\`[0-9]+m ago\\'" (supervisor--cli-format-relative-time 99800.0)))
+    ;; Hours ago (2h = 7200s, so 100000 - 10000 = 90000)
+    (should (string-match "\\`[0-9]+h ago\\'" (supervisor--cli-format-relative-time 90000.0)))
+    ;; Future (in X)
+    (should (string-match "\\`in [0-9]+s\\'" (supervisor--cli-format-relative-time 100010.0)))
+    (should (string-match "\\`in [0-9]+m\\'" (supervisor--cli-format-relative-time 100200.0)))
+    ;; Nil returns dash
+    (should (equal "-" (supervisor--cli-format-relative-time nil)))))
+
+(ert-deftest supervisor-test-timer-state-load-merges-correctly ()
+  "Load timer state merges with existing runtime state."
+  (let* ((temp-file (make-temp-file "supervisor-test-merge-" nil ".eld"))
+         (supervisor-timer-state-file temp-file)
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          ;; Create state file with persisted data
+          (with-temp-file temp-file
+            (insert ";; Test state\n")
+            (pp '((version . 1)
+                  (timestamp . "2024-01-01T00:00:00")
+                  (timers . (("t1" :last-run-at 500.0 :last-success-at 500.0))))
+                (current-buffer)))
+          ;; Pre-populate runtime state
+          (puthash "t1" '(:next-run-at 2000.0 :retry-attempt 1)
+                   supervisor--timer-state)
+          ;; Load should merge
+          (should (supervisor--load-timer-state))
+          (let ((state (gethash "t1" supervisor--timer-state)))
+            ;; Should have persisted keys from file
+            (should (equal (plist-get state :last-run-at) 500.0))
+            (should (equal (plist-get state :last-success-at) 500.0))
+            ;; Should preserve runtime keys
+            (should (equal (plist-get state :next-run-at) 2000.0))
+            (should (equal (plist-get state :retry-attempt) 1))))
+      (delete-file temp-file)
+      (clrhash supervisor--timer-state))))
+
+(ert-deftest supervisor-test-timer-multiple-triggers-earliest-wins ()
+  "Timer with multiple triggers uses earliest due time."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1"
+                                          :on-startup-sec 60
+                                          :on-unit-active-sec 120))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--scheduler-startup-time 1000.0))
+    ;; Set last success for unit-active calculation
+    (puthash "t1" '(:last-success-at 900.0) supervisor--timer-state)
+    ;; Startup trigger: 1000 + 60 = 1060
+    ;; Unit-active trigger: 900 + 120 = 1020 (earlier)
+    (let ((next (supervisor--timer-compute-next-run timer 1001.0)))
+      (should (= 1020.0 next)))
+    (clrhash supervisor--timer-state)))
+
 ;;; CLI Control Plane tests
 
 (ert-deftest supervisor-test-cli-result-structure ()
