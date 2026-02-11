@@ -696,6 +696,12 @@ to legacy hooks for backward compatibility."
                      :data data)))
     ;; Run unified event hook
     (run-hook-with-args 'supervisor-event-hook event)
+    ;; Log stage transitions to *Messages*
+    (pcase type
+      ('stage-start
+       (supervisor--log 'info "stage %s starting" stage))
+      ('stage-complete
+       (supervisor--log 'info "stage %s complete" stage)))
     ;; Dispatch to legacy hooks for backward compatibility
     (pcase type
       ('stage-start
@@ -2127,9 +2133,7 @@ nil means show all entries, otherwise a tag symbol or string.")
   "Supervisor dashboard actions."
   [:description
    (lambda ()
-     (let ((snapshot (supervisor--build-snapshot)))
-       (concat (supervisor--stage-progress-banner)
-               " | " (supervisor--health-summary snapshot))))
+     (supervisor--health-summary (supervisor--build-snapshot)))
    ["Entry Actions"
     ("s" "Start" supervisor-dashboard-start)
     ("k" "Kill" supervisor-dashboard-kill)
@@ -2414,25 +2418,6 @@ If SNAPSHOT is provided, read runtime state from it."
         (supervisor--group-entries-by-stage entries)
       (mapcar (lambda (e) (list (car e) (cadr e))) entries))))
 
-(defun supervisor--stage-progress-banner ()
-  "Return ASCII banner showing stage progress."
-  (let ((all-stages '(stage1 stage2 stage3 stage4))
-        (parts nil))
-    (dolist (stage all-stages)
-      (let* ((face (pcase stage
-                     ('stage1 'supervisor-stage-1)
-                     ('stage2 'supervisor-stage-2)
-                     ('stage3 'supervisor-stage-3)
-                     ('stage4 'supervisor-stage-4)))
-             (text (cond ((member stage supervisor--completed-stages)
-                          (format "[%s *]" stage))
-                         ((eq stage supervisor--current-stage)
-                          (format "[%s >]" stage))
-                         (t
-                          (format "[%s  ]" stage)))))
-        (push (propertize text 'face face) parts)))
-    (mapconcat #'identity (nreverse parts) " ")))
-
 (defun supervisor--health-summary (&optional snapshot)
   "Return compact health summary string.
 If SNAPSHOT is provided, read state from it; otherwise read from globals."
@@ -2504,8 +2489,7 @@ ensuring consistency within a single refresh cycle."
         (setq tabulated-list-entries (supervisor--get-entries snapshot))
         (tabulated-list-print t)
         (setq header-line-format
-              (concat (supervisor--stage-progress-banner)
-                      " | " (supervisor--health-summary snapshot)
+              (concat (supervisor--health-summary snapshot)
                       (when supervisor-dashboard-show-header-hints
                         (concat "  " supervisor--help-text))))
         (goto-char (min pos (point-max)))))))
@@ -2957,8 +2941,7 @@ Builds a single snapshot for both entries and header to ensure consistency."
         (setq tabulated-list-entries (supervisor--get-entries snapshot))
         (tabulated-list-print)
         (setq-local header-line-format
-                    (concat (supervisor--stage-progress-banner)
-                            " | " (supervisor--health-summary snapshot)
+                    (concat (supervisor--health-summary snapshot)
                             (when supervisor-dashboard-show-header-hints
                               (concat "  " supervisor--help-text))))))
     (pop-to-buffer buf)))
