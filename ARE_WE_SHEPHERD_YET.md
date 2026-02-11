@@ -1,16 +1,5 @@
 # Are We Shepherd Yet?
 
-> NOTE: This document describes the long-term vision and roadmap. The current
-> release of supervisor.el is a user-session supervisor, not an init system or
-> PID 1 replacement. See README.org for current scope and capabilities.
-
-We are building a complete PID 1 init and supervision system inside Emacs,
-securely and robustly. This is a serious engineering goal. The question is
-not "is it funny". The question is "what do we need to build to be correct".
-
-Short answer today: not yet. The rest of this document is the plan, the spec,
-and the path to get there.
-
 ## Why
 
 - We want a transparent, hackable init with the power of Emacs.
@@ -32,6 +21,9 @@ These are baseline requirements for an init process, not optional features.
 The GNU Shepherd provides a baseline we must match:
 
 - Shepherd can run as a system-wide daemon or a per-user service manager.
+- `supervisor.el` today is only a per-user service manager.
+- We want to experimentally offer an opt-in path toward PID 1 for tinkerers,
+  while keeping per-user mode as the default supported path.
 - The `herd` command controls the daemon and provides start/stop/restart/status,
   enable/disable, and dependency graph inspection.
 - Services declare provisions and requirements and can be inspected and
@@ -48,29 +40,7 @@ Systemd distinguishes two concepts:
 
 We must model both explicitly for deterministic orchestration.
 
-## Control Plane and Security
-
-The control plane is a security boundary. If we use `emacsclient --eval` for
-control, any client that can connect can execute code as the Emacs process.
-We must treat server access as privileged and lock it down.
-
 ## Roadmap (Remaining Required Sequence)
-
-Completed milestones (already shipped):
-
-1. Service definition layer.
-2. Control plane implementation.
-3. Modularized codebase split (core/dashboard/CLI + facade).
-
-Active roadmap milestone:
-
-1. PID 1 engineering: child reaping, signal handling, safe shutdown semantics,
-   crash safety, and tests.
-
-Tracked in dedicated plan files (intentionally not listed as active roadmap milestones):
-
-- `PLAN-1-security-hardening-control-channel.md`
-- `PLAN-2-systemd-timers-oneshot.md`
 
 **Remaining Roadmap Requirements (Detailed)**
 
@@ -103,24 +73,3 @@ Shim approach (preferred):
 - Explicit rule: if the shim is PID 1, Emacs is **not** PID 1. If the project
   requires Emacs to be PID 1, the shim logic must be integrated into Emacs
   (or Emacs must be patched to reap all children itself).
-
-## Definition of Done
-
-We are "Shepherd yet" when:
-
-- PID 1 responsibilities are implemented and tested.
-- The CLI is complete and stable, with JSON output.
-- Service definitions are validated, versioned, and documented.
-- Security posture is explicit and enforced.
-- The interactive UI is optional, not required.
-
-## Sources Consulted
-
-- https://www.gnu.org/software/shepherd/manual/shepherd.html
-- https://www.gnu.org/software/emacs/manual/html_node/emacs/Emacs-Server.html
-- https://www.gnu.org/software/emacs/manual/html_node/emacs/emacsclient-Options.html
-- https://man7.org/linux/man-pages/man1/systemd-nspawn.1.html
-- https://man7.org/linux/man-pages/man5/systemd.unit.5.html
-- https://man7.org/linux/man-pages/man2/waitpid.2.html
-- https://man7.org/linux/man-pages/man7/signal.7.html
-- Emacs source: `src/process.c`, `src/sysdep.c`
