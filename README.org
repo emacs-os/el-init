@@ -1,35 +1,25 @@
 * supervisor.el
 
-`supervisor.el` is a user-session process supervisor for Emacs.
+`supervisor.el` is an Emacs user-session process supervisor.
 
-It starts, monitors, and stops background programs (for example EXWM session
-services), with staged startup, dependency ordering, crash recovery, and a
-dashboard UI.
+It manages background programs from inside Emacs with:
 
-Scope: this package supervises user-session processes from inside Emacs. It is
-not PID 1 and not a system init replacement.
+- validated config parsing
+- staged startup (`stage1 -> stage2 -> stage3 -> stage4`)
+- intra-stage dependency ordering (`:after`)
+- restart/crash-loop handling for long-running processes
+- oneshot orchestration with wait/timeout semantics
+- a tabulated dashboard for control and inspection
+- structured events and legacy compatibility hooks
 
-** What It Does Today
-
-- Parses and validates `supervisor-programs` entries.
-- Starts valid entries in `stage1 -> stage2 -> stage3 -> stage4`.
-- Resolves `:after` dependencies within each stage.
-- Detects dependency cycles and falls back to list order.
-- Supports `simple` and `oneshot` process types.
-- Supports delayed starts, oneshot timeout, and stage timeout.
-- Tracks runtime state (running, crash-loop failed, oneshot completion).
-- Provides a tabulated dashboard for control and inspection.
-- Logs per-process stdout/stderr to files.
-- Supports graceful async stop (`supervisor-stop`) and synchronous hard stop
-  (`supervisor-stop-now`).
-- Supports config-file watching and auto-reload.
+This is user-session supervision, not a system init replacement.
 
 ** Requirements
 
 - Emacs 27.1+
-- `supervisor.el` in `load-path`
+- `supervisor.el` available in `load-path`
 
-** Quick Start
+** Install And Enable
 
 #+begin_src emacs-lisp
 (require 'supervisor)
@@ -44,7 +34,7 @@ not PID 1 and not a system init replacement.
 (supervisor-mode 1)
 #+end_src
 
-Recommended exit hooks when Emacs is your session:
+When Emacs is your session owner (for example EXWM), typical hooks are:
 
 #+begin_src emacs-lisp
 (add-hook 'elpaca-after-init-hook #'supervisor-start)
@@ -55,185 +45,203 @@ Recommended exit hooks when Emacs is your session:
 
 ** Public Commands
 
-| Command | Behavior |
-| `M-x supervisor-mode` | Global mode. On enable: `supervisor-start`; on disable: `supervisor-stop` |
-| `M-x supervisor-start` | Validate, parse, stage, and start all valid entries |
-| `M-x supervisor-stop` | Async shutdown: `SIGTERM`, then `SIGKILL` after timeout |
-| `M-x supervisor-stop-now` | Sync shutdown: immediate `SIGKILL`, brief wait, cleanup |
-| `M-x supervisor-reload` | Reconcile running state with current config |
-| `M-x supervisor` | Open dashboard buffer (`*supervisor*`) |
-| `M-x supervisor-validate` | Validate config and show report without starting |
-| `M-x supervisor-dry-run` | Show computed startup plan without starting |
+| Command | What it does |
+| `M-x supervisor-mode` | Global mode. Enable -> `supervisor-start`; disable -> `supervisor-stop`; also starts/stops config watch |
+| `M-x supervisor-start` | Build plan, validate, and start entries by stage |
+| `M-x supervisor-stop` | Asynchronous graceful shutdown (`SIGTERM`, then timeout `SIGKILL`) |
+| `M-x supervisor-stop-now` | Synchronous hard shutdown (`SIGKILL` + brief wait) |
+| `M-x supervisor-reload` | Reconcile runtime state against current config |
+| `M-x supervisor` | Open dashboard buffer `*supervisor*` |
+| `M-x supervisor-validate` | Validate config and show errors without starting |
+| `M-x supervisor-dry-run` | Show computed startup order and metadata without starting |
 
 ** Configuration Model
 
-Set `supervisor-programs` to a list of entries. Each entry is either:
+Set `supervisor-programs` to a list of entries.
 
-- A command string: `"nm-applet"`
-- A list: `("command" :keyword value ...)`
+Entry forms:
 
-*** Normalized Internal Shape
+- String command: `"nm-applet"`
+- List command + plist: `("nm-applet" :id "nm" :stage stage3 ...)`
 
-Every valid entry is normalized to:
+*** Entry Keywords
+
+| Keyword | Type | Default | Notes |
+| `:id` | string | executable basename | Must be string when provided |
+| `:type` | symbol | `simple` | `simple` or `oneshot` |
+| `:stage` | symbol | `stage3` | `stage1`, `stage2`, `stage3`, `stage4` |
+| `:delay` | number | `0` | Non-negative seconds |
+| `:after` | string or list of strings | `nil` | Dependencies in same stage |
+| `:enabled` | boolean | `t` | Enable entry |
+| `:disabled` | boolean | `nil` | Inverse form of `:enabled` |
+| `:restart` | boolean | `t` for `simple` | Invalid for `oneshot` |
+| `:no-restart` | boolean | `nil` | Inverse form of `:restart` |
+| `:logging` | boolean | `t` | Per-process stdout/stderr logging |
+| `:oneshot-wait` | boolean | `supervisor-oneshot-default-wait` | Invalid for `simple` |
+| `:async` | boolean | `nil` | Alias for non-blocking oneshot |
+| `:oneshot-timeout` | number or `nil` | `supervisor-oneshot-timeout` | Invalid for `simple` |
+| `:tags` | symbol/string/list | `nil` | Dashboard tag filtering labels |
+
+*** Validation Rules
+
+Entries are validated before startup and in validate/dry-run.
+
+- unknown keywords are rejected
+- `:id` must be a string
+- `:type` must be symbol and one of `simple`/`oneshot`
+- `:stage` must be symbol and one of `stage1..stage4`
+- `:delay` must be non-negative number
+- `:oneshot-timeout` must be number or `nil`
+- mutually exclusive pairs are rejected:
+- `:enabled` with `:disabled`
+- `:restart` with `:no-restart`
+- `:oneshot-wait` with `:async`
+- type-specific restrictions are enforced:
+- `oneshot` rejects `:restart` and `:no-restart`
+- `simple` rejects `:oneshot-wait`, `:async`, `:oneshot-timeout`
+
+Invalid entries are skipped by startup/reload and shown as `invalid` in dashboard with reason.
+
+Duplicate IDs: first valid occurrence wins; later duplicates are skipped.
+
+*** Internal Normalized Shape
+
+Every valid entry is normalized internally to:
 
 #+begin_src elisp
 (id cmd delay enabled-p restart-p logging-p type stage after
     oneshot-wait oneshot-timeout tags)
 #+end_src
 
-*** Entry Keywords
+** Startup Execution Model
 
-| Keyword | Type | Default | Meaning |
-| `:id` | string | basename of executable | Stable entry identifier |
-| `:type` | symbol | `simple` | `simple` or `oneshot` |
-| `:stage` | symbol | `stage3` | `stage1`, `stage2`, `stage3`, or `stage4` |
-| `:delay` | number | `0` | Seconds before spawn |
-| `:after` | string or list of strings | `nil` | Dependencies inside same stage |
-| `:enabled` | boolean | `t` | Whether entry is startable by supervisor |
-| `:disabled` | boolean | `nil` | Inverse form of `:enabled` |
-| `:restart` | boolean | `t` | Restart on crash (simple only) |
-| `:no-restart` | boolean | `nil` | Inverse form of `:restart` |
-| `:logging` | boolean | `t` | Log stdout/stderr |
-| `:oneshot-wait` | boolean | `supervisor-oneshot-default-wait` | Whether oneshot blocks stage completion |
-| `:async` | boolean | `nil` | Alias for `:oneshot-wait nil` |
-| `:oneshot-timeout` | number or `nil` | `supervisor-oneshot-timeout` | Timeout for blocking oneshots |
-| `:tags` | list/symbol/string | `nil` | Dashboard tag filtering labels |
+`supervisor-start` runs an asynchronous staged DAG scheduler.
 
-*** Validation Rules
+*** Plan Build (Before Scheduling)
 
-Validation runs before startup and during dry-run/validate.
+1. Parse/validate all entries.
+2. Deduplicate IDs.
+3. Partition by stage.
+4. Validate `:after` dependencies against same-stage IDs.
+5. Ignore missing/cross-stage deps with warning.
+6. Topologically sort each stage with stable input-order tie-break.
+7. If cycle detected, clear all `:after` edges in that stage and use list order.
 
-- Unknown keywords are rejected.
-- `:type` must be a symbol and one of `simple`/`oneshot`.
-- `:stage` must be a symbol and one of `stage1..stage4`.
-- `:delay` must be a non-negative number.
-- `:oneshot-timeout` must be a number or `nil`.
-- Mutually exclusive pairs are rejected: `:enabled` + `:disabled`,
-  `:restart` + `:no-restart`, `:oneshot-wait` + `:async`.
-- Type restrictions are enforced:
-- `oneshot` rejects `:restart` and `:no-restart`.
-- `simple` rejects `:oneshot-wait`, `:async`, and `:oneshot-timeout`.
+*** Stage Scheduling
 
-Invalid entries are skipped for startup and shown in the dashboard as
-`status=invalid` with a reason.
-
-Duplicate IDs are skipped after the first entry.
-
-** Startup Semantics
-
-`supervisor-start` is asynchronous and stage-based.
-
-*** Stage Execution
-
-1. Parse/validate entries and partition by stage.
-2. Run stages sequentially: `stage1`, `stage2`, `stage3`, `stage4`.
-3. For each stage, validate `:after` references against same-stage IDs only.
-4. Ignore cross-stage or missing dependencies (warning logged).
-5. Apply stable topological sort (original list order is tie-break).
-6. If a cycle is detected, clear all `:after` edges in that stage and continue
-   in original list order.
+- Stages run sequentially: `stage1`, `stage2`, `stage3`, `stage4`.
+- Entries inside a stage may start in parallel (dependency constrained).
+- Optional `supervisor-max-concurrent-starts` limits concurrent spawn attempts.
 
 *** Ready Semantics
 
-An entry is considered "ready" when:
+Readiness (used to unblock dependents and complete stages):
 
-- `simple`: spawned successfully.
-- `oneshot`: exits (success or failure), or times out.
-- disabled: immediately ready.
-- spawn failure: immediately ready.
+- `simple`: ready when spawned successfully
+- `oneshot`: ready when exited (success/failure) or timed out
+- disabled: treated as ready immediately
+- failed spawn: treated as ready immediately
 
 *** Stage Completion Criteria
 
-A stage completes only when all are true:
+A stage is complete only when all are true:
 
-- Every stage entry has reached "started" state (including delayed entries that
-  actually spawned or failed spawn).
-- No pending delay timers remain.
-- No blocking oneshots remain.
+- all stage entries reached started/skipped/failed-to-spawn accounting
+- no pending delay timers
+- no pending blocking oneshots
 
-*** Delay, Timeout, and Concurrency Controls
+*** Timeouts
 
-- `:delay N` schedules start with a timer.
-- Blocking oneshots can be bounded by `:oneshot-timeout` or
-  `supervisor-oneshot-timeout`.
-- Optional `supervisor-stage-timeout` forces stage completion and marks
-  unstarted entries as `stage-timeout`.
-- Optional `supervisor-max-concurrent-starts` limits parallel spawn attempts
-  within a stage.
+- Per-entry oneshot timeout via `:oneshot-timeout` (or `supervisor-oneshot-timeout` default)
+- Optional `supervisor-stage-timeout` can force stage completion and mark unstarted entries as `stage-timeout`
 
-** Process Lifecycle
+** Entry Lifecycle State Machine
 
-*** Start Behavior
+`supervisor--entry-state` tracks normalized lifecycle state.
 
-- Commands are executed with `make-process` and
-  `split-string-and-unquote`.
-- No shell interpolation is performed automatically.
-- If you need shell behavior (`$VAR`, redirection, pipes), run an explicit
-  shell command (for example `sh -c '...'`).
+States:
 
-*** Logging
+- `stage-not-started`
+- `waiting-on-deps`
+- `delayed`
+- `disabled`
+- `started`
+- `failed-to-spawn`
+- `stage-timeout`
 
-- Per-process logs are written to `supervisor-log-directory` as
-  `log-<id>.log`.
-- Session start rotates existing `log-*.log` to timestamped names.
-- Dashboard `l` toggles logging override for next start.
+Transitions are validated by a central helper. Invalid transitions error unless forced.
 
-*** Restart and Crash Loop Handling (`simple` only)
+** Process Lifecycle And Restart
 
-- Restart happens only when effective restart policy is enabled.
-- Restarts are delayed by `supervisor-restart-delay`.
-- Crash tracking window: `supervisor-restart-window`.
-- Threshold: when recent crashes reach `supervisor-max-restarts`, the process is
-  marked failed (`dead`) and restart stops.
+*** Spawn Model
 
-`oneshot` entries never restart.
+Processes start via `make-process` with argv from `split-string-and-unquote`.
+No implicit shell interpretation is performed.
+
+If shell behavior is needed (pipes, redirects, expansion), call a shell explicitly,
+for example `"sh -c '..."`.
+
+*** Restart Model (`simple` only)
+
+- restart allowed only when effective restart policy is enabled
+- restart delay uses `supervisor-restart-delay`
+- crash loop window uses `supervisor-restart-window`
+- when crash count reaches `supervisor-max-restarts`, entry is marked failed (`dead`) and restart stops
+
+`oneshot` entries do not restart.
 
 *** Runtime Overrides
 
-Dashboard actions can override config values at runtime:
+Dashboard toggles set runtime overrides for next starts/restarts:
 
-- enabled state override (`e`)
-- restart policy override (`r`)
+- enabled override (`e`)
+- restart override (`r`)
 - logging override (`l`)
 
-Overrides affect subsequent starts/restarts.
+** Reload Reconciler
 
-** Shutdown and Reload
+`supervisor-reload` uses a declarative reconcile pipeline:
 
-*** `supervisor-stop` (async graceful)
+1. build plan
+2. build runtime snapshot
+3. compute actions (`start`, `stop`, `noop`, `skip`)
+4. apply actions
 
-- Sets shutdown mode.
-- Cancels pending start/restart timers.
-- Runs `supervisor-cleanup-hook`.
-- Sends `SIGTERM` to live supervised processes.
-- Completes via sentinels.
-- After `supervisor-shutdown-timeout`, sends `SIGKILL` to survivors.
-- Optional callback is called when shutdown completes.
+Behavior:
 
-*** `supervisor-stop-now` (sync hard stop)
+- stop running entries removed from config
+- stop running entries now effectively disabled
+- start eligible entries present in config but not running
+- skip failed entries and completed oneshots
+- keep already converged entries as `noop`
 
-- Intended for `kill-emacs-hook`.
-- Sets shutdown mode.
-- Cancels pending timers.
-- Runs `supervisor-cleanup-hook`.
-- Sends immediate `SIGKILL` to all live supervised processes.
-- Waits briefly (up to ~0.5s) for processes to exit.
-- Clears process table and marks shutdown complete.
+It does not auto-restart already-running entries because command/plist changed.
 
-*** `supervisor-reload`
+** Stop Semantics
 
-Reload does a reconcile pass:
+*** `supervisor-stop` (asynchronous)
 
-- Stops running entries that were removed from config.
-- Stops running entries that are now disabled.
-- Starts entries present in config but not running and not in failed/completed
-  oneshot state.
-- Does not automatically restart changed command lines for already running
-  entries.
+- enters shutdown mode
+- cancels delayed/restart timers and DAG state
+- emits cleanup event
+- sends `SIGTERM` to live supervised processes
+- completes by sentinel accounting
+- after `supervisor-shutdown-timeout`, sends `SIGKILL` to survivors
+
+*** `supervisor-stop-now` (synchronous)
+
+- enters shutdown mode
+- cancels delayed/restart timers and DAG state
+- emits cleanup event
+- sends immediate `SIGKILL`
+- waits briefly (up to ~0.5s) for process death
+- clears process table and sets completion flag
 
 ** Dashboard (`M-x supervisor`)
 
-`supervisor` opens `*supervisor*` using `tabulated-list-mode`.
+Dashboard is `tabulated-list-mode` in buffer `*supervisor*`.
+
+Rows and header are built from a shared runtime snapshot per refresh.
 
 *** Columns
 
@@ -250,14 +258,14 @@ Reload does a reconcile pass:
 *** Status Values
 
 - `running`
-- `stopped`
-- `pending`
 - `done`
 - `failed`
 - `dead`
+- `pending`
+- `stopped`
 - `invalid`
 
-*** Reason Values (when applicable)
+*** Reason Values
 
 - `disabled`
 - `delayed`
@@ -267,51 +275,92 @@ Reload does a reconcile pass:
 - `stage-timeout`
 - `crash-loop`
 
-*** Keybindings
+*** Dashboard Keys
 
 | Key | Action |
 | `e` | Toggle enabled override |
 | `f` | Cycle stage filter |
 | `t` | Cycle tag filter |
+| `s` | Start entry |
+| `k` | Kill entry (confirm) |
+| `K` | Kill entry (no confirm) |
 | `r` | Toggle restart override |
-| `k` | Kill process at point and disable restart |
-| `s` | Start process at point |
 | `l` | Toggle logging override |
-| `L` | Open process log file |
+| `L` | View entry log file |
 | `p` | Open `proced` |
-| `P` | Toggle `proced` auto-update |
-| `?` | Show resolved entry details |
-| `d` | Show dependencies/dependents for entry |
+| `P` | Toggle proced auto-update |
+| `d` | Show dependency info for entry |
 | `D` | Show full dependency graph |
-| `B` | Show startup timing blame view |
-| `g` | Refresh |
-| `q` | Quit dashboard window |
+| `B` | Show startup blame timings |
+| `g` | Refresh dashboard |
+| `G` | Toggle dashboard auto-refresh |
+| `?` | Show entry details (`C-u ?` shows status legend) |
+| `h` | Open full dashboard help |
+| `q` | Quit dashboard |
 
 Notes:
 
-- Dependency graph/blame views require startup data (`supervisor-start` run).
-- Invalid entries are visible when no stage filter is active.
+- separator rows reject process actions with user error
+- dependency graph and blame need startup metadata from `supervisor-start`
+- invalid entries are shown when stage filter is not active
 
-** Config Watch
+** Logging
 
-`supervisor-watch-config` controls file-watch reload behavior:
+Two logging layers exist:
+
+- Supervisor-level log (`supervisor.log`) controlled by `supervisor-log-to-file`
+- Per-process logs `log-<id>.log` controlled by entry/effective logging
+
+On session start, existing per-process `log-*.log` files are rotated to timestamped names.
+
+** Config File Watch
+
+`supervisor-watch-config` options:
 
 - `nil`: disabled
 - `t`: watch `user-init-file`
 - string path: watch that file
 
-When a watched file changes, supervisor debounces for 1 second and runs
-`supervisor-reload`.
+On file change, reload is debounced by 1 second, then `supervisor-reload` runs.
+`supervisor-mode` starts/stops watching automatically.
 
-`supervisor-mode` starts/stops the watcher automatically.
+** Structured Events And Hooks
 
-** Hooks
+*** Unified Event Hook
 
-| Hook | Arguments | When |
-| `supervisor-cleanup-hook` | none | Before shutdown kills/signals processes |
-| `supervisor-stage-start-hook` | `stage-name` | At stage start |
-| `supervisor-stage-complete-hook` | `stage-name` | At stage completion |
-| `supervisor-process-exit-hook` | `id status code` | On supervised process exit |
+`supervisor-event-hook` receives one plist argument:
+
+- `:type` event type symbol
+- `:ts` float timestamp
+- `:id` process ID or `nil`
+- `:stage` stage symbol or `nil`
+- `:data` event-specific payload plist
+
+Event types:
+
+- `stage-start`
+- `stage-complete`
+- `process-started`
+- `process-ready`
+- `process-exit`
+- `process-failed`
+- `cleanup`
+
+`process-ready` semantics:
+
+- simple process spawned and ready
+- oneshot exited (success/failure) or timed out
+- not emitted for disabled entries
+- not emitted for failed spawn attempts
+
+*** Legacy Hooks (Compatibility)
+
+Legacy hooks are still supported and dispatched by the event adapter:
+
+- `supervisor-cleanup-hook`
+- `supervisor-stage-start-hook`
+- `supervisor-stage-complete-hook`
+- `supervisor-process-exit-hook` (`id status code`)
 
 `supervisor-process-exit-hook` status values:
 
@@ -321,20 +370,23 @@ When a watched file changes, supervisor debounces for 1 second and runs
 
 ** Customization Variables
 
-| Variable | Default |
-| `supervisor-programs` | `nil` |
-| `supervisor-log-directory` | `~/.emacs.d/supervisor/` |
-| `supervisor-restart-delay` | `2` |
-| `supervisor-max-restarts` | `3` |
-| `supervisor-restart-window` | `60` |
-| `supervisor-shutdown-timeout` | `3` |
-| `supervisor-oneshot-default-wait` | `t` |
-| `supervisor-oneshot-timeout` | `30` |
-| `supervisor-stage-timeout` | `nil` |
-| `supervisor-max-concurrent-starts` | `nil` |
-| `supervisor-verbose` | `nil` |
-| `supervisor-log-to-file` | `nil` |
-| `supervisor-watch-config` | `nil` |
+| Variable | Default | Purpose |
+| `supervisor-programs` | `nil` | Entry list to supervise |
+| `supervisor-log-directory` | `~/.emacs.d/supervisor/` | Directory for logs |
+| `supervisor-restart-delay` | `2` | Delay before restart |
+| `supervisor-max-restarts` | `3` | Crash-loop threshold |
+| `supervisor-restart-window` | `60` | Crash-loop time window (seconds) |
+| `supervisor-shutdown-timeout` | `3` | Graceful stop timeout before SIGKILL |
+| `supervisor-oneshot-default-wait` | `t` | Default blocking mode for oneshots |
+| `supervisor-oneshot-timeout` | `30` | Default oneshot timeout |
+| `supervisor-stage-timeout` | `nil` | Optional per-stage timeout |
+| `supervisor-max-concurrent-starts` | `nil` | Optional start concurrency limit |
+| `supervisor-verbose` | `nil` | Show info-level messages |
+| `supervisor-log-to-file` | `nil` | Enable supervisor-level log file |
+| `supervisor-watch-config` | `nil` | Config file watch and auto-reload |
+| `supervisor-stage-descriptions` | `((stage1 . "X Setup") (stage2 . "System") (stage3 . "Services") (stage4 . "Applets"))` | Stage labels in grouped dashboard |
+| `supervisor-dashboard-group-by-stage` | `t` | Show stage separator rows |
+| `supervisor-auto-refresh-interval` | `2` | Dashboard live-refresh interval |
 
 ** Development Commands
 
