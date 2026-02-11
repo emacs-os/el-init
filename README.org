@@ -1,5 +1,14 @@
 [[https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml][https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml/badge.svg]]
 
+A userspace service manager for Emacs sessions.
+
+This project provides deterministic process supervision, staged startup,
+dependency management, crash recovery, and observability from within Emacs.
+
+It can serve as an alternative to ~systemctl --user~ on systemd-based systems,
+and is particularly well-suited to EXWM or highly customized desktop
+environments where multiple independent services must be coordinated reliably.
+
 * Navigation
 
 - [[#about-supervisorel][About supervisor.el]]
