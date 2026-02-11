@@ -3632,6 +3632,53 @@ at minute boundaries."
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
+(ert-deftest supervisor-test-cli-timers-no-timers ()
+  "Timers command with no timers configured."
+  (let ((supervisor--timer-list nil)
+        (supervisor--timer-state (make-hash-table :test 'equal))
+        (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    (let ((result (supervisor--cli-dispatch '("timers"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (string-match "No timers" (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-timers-shows-state ()
+  "Timers command shows timer state."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    (puthash "t1" '(:last-run-at 1000.0 :next-run-at 2000.0)
+             supervisor--timer-state)
+    (let ((result (supervisor--cli-dispatch '("timers"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (string-match "t1" (supervisor-cli-result-output result)))
+      (should (string-match "s1" (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-timers-json ()
+  "Timers command with --json outputs JSON."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    (let ((result (supervisor--cli-dispatch '("--json" "timers"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (eq 'json (supervisor-cli-result-format result)))
+      ;; Should be valid JSON
+      (let ((json-object-type 'alist))
+        (should (json-read-from-string (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-timers-rejects-extra-args ()
+  "Timers with extra args returns invalid-args exit code."
+  (let ((supervisor--timer-list nil)
+        (supervisor--timer-state (make-hash-table :test 'equal))
+        (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    (let ((result (supervisor--cli-dispatch '("timers" "extra"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result))))))
+
 (ert-deftest supervisor-test-cli-blame-rejects-extra-args ()
   "Blame with extra args returns invalid-args exit code."
   (let ((supervisor--start-times (make-hash-table :test 'equal)))

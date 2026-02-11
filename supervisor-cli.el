@@ -1034,6 +1034,139 @@ Options must come before --.  Use -- before IDs that start with hyphen."
                                  (format "Process '%s' not running" id)
                                  (if json-p 'json 'human))))))))
 
+;;; Timer Status Output
+
+(defun supervisor--cli-gather-timer-info ()
+  "Gather timer info from supervisor state.
+Returns a list of alists, one per timer."
+  (let ((result nil))
+    (dolist (timer supervisor--timer-list)
+      (let* ((id (supervisor-timer-id timer))
+             (target (supervisor-timer-target timer))
+             (enabled (supervisor-timer-enabled timer))
+             (persistent (supervisor-timer-persistent timer))
+             (state (gethash id supervisor--timer-state))
+             (last-run (plist-get state :last-run-at))
+             (last-success (plist-get state :last-success-at))
+             (last-failure (plist-get state :last-failure-at))
+             (last-exit (plist-get state :last-exit))
+             (next-run (plist-get state :next-run-at))
+             (last-miss (plist-get state :last-missed-at))
+             (miss-reason (plist-get state :last-miss-reason))
+             (retry-at (plist-get state :retry-next-at)))
+        (push `((id . ,id)
+                (target . ,target)
+                (enabled . ,enabled)
+                (persistent . ,persistent)
+                (last-run . ,last-run)
+                (last-success . ,last-success)
+                (last-failure . ,last-failure)
+                (last-exit . ,last-exit)
+                (next-run . ,next-run)
+                (last-miss . ,last-miss)
+                (miss-reason . ,miss-reason)
+                (retry-at . ,retry-at))
+              result)))
+    (nreverse result)))
+
+(defun supervisor--cli-format-relative-time (timestamp)
+  "Format TIMESTAMP as relative time string like \"5m ago\" or \"in 5m\"."
+  (if (null timestamp)
+      "-"
+    (let* ((now (float-time))
+           (diff (- now timestamp))
+           (abs-diff (abs diff))
+           (suffix (if (> diff 0) " ago" ""))
+           (prefix (if (< diff 0) "in " "")))
+      (cond
+       ((< abs-diff 60) (format "%s%ds%s" prefix (round abs-diff) suffix))
+       ((< abs-diff 3600) (format "%s%dm%s" prefix (round (/ abs-diff 60)) suffix))
+       ((< abs-diff 86400) (format "%s%dh%s" prefix (round (/ abs-diff 3600)) suffix))
+       (t (format "%s%dd%s" prefix (round (/ abs-diff 86400)) suffix))))))
+
+(defun supervisor--cli-format-timer-line (info)
+  "Format single timer INFO alist as status line."
+  (let ((id (alist-get 'id info))
+        (target (alist-get 'target info))
+        (enabled (alist-get 'enabled info))
+        (last-run (alist-get 'last-run info))
+        (next-run (alist-get 'next-run info))
+        (last-exit (alist-get 'last-exit info))
+        (miss-reason (alist-get 'miss-reason info)))
+    (format "%-16s %-16s %-8s %-12s %-12s %-8s %s\n"
+            (or id "-")
+            (or target "-")
+            (if enabled "yes" "no")
+            (supervisor--cli-format-relative-time last-run)
+            (supervisor--cli-format-relative-time next-run)
+            (if (null last-exit) "-" (number-to-string last-exit))
+            (if miss-reason (symbol-name miss-reason) "-"))))
+
+(defun supervisor--cli-timers-human (timers invalid)
+  "Format TIMERS and INVALID as human-readable timer status table."
+  (if (and (null timers) (null invalid))
+      "No timers configured.\n"
+    (let ((header (format "%-16s %-16s %-8s %-12s %-12s %-8s %s\n"
+                          "ID" "TARGET" "ENABLED" "LAST-RUN" "NEXT-RUN" "EXIT" "MISS"))
+          (sep (make-string 90 ?-)))
+      (concat header sep "\n"
+              (mapconcat #'supervisor--cli-format-timer-line timers "")
+              (when invalid
+                (concat "\nInvalid timers:\n"
+                        (mapconcat (lambda (inv)
+                                     (format "  %s: %s\n"
+                                             (plist-get inv :id)
+                                             (plist-get inv :reason)))
+                                   invalid "")))))))
+
+(defun supervisor--cli-timer-to-json-obj (info)
+  "Convert timer INFO alist to JSON-compatible alist."
+  `((id . ,(alist-get 'id info))
+    (target . ,(alist-get 'target info))
+    (enabled . ,(if (alist-get 'enabled info) t :json-false))
+    (persistent . ,(if (alist-get 'persistent info) t :json-false))
+    (last_run_at . ,(alist-get 'last-run info))
+    (last_success_at . ,(alist-get 'last-success info))
+    (last_failure_at . ,(alist-get 'last-failure info))
+    (last_exit . ,(alist-get 'last-exit info))
+    (next_run_at . ,(alist-get 'next-run info))
+    (last_miss_at . ,(alist-get 'last-miss info))
+    (miss_reason . ,(if (alist-get 'miss-reason info)
+                        (symbol-name (alist-get 'miss-reason info))
+                      :json-null))
+    (retry_at . ,(alist-get 'retry-at info))))
+
+(defun supervisor--cli-invalid-timer-to-json-obj (info)
+  "Convert invalid timer INFO plist to JSON-compatible alist."
+  `((id . ,(plist-get info :id))
+    (reason . ,(plist-get info :reason))))
+
+(defun supervisor--cli-timers-json (timers invalid)
+  "Format TIMERS and INVALID as JSON timer status object."
+  (let ((obj `((timers . ,(supervisor--cli-ensure-array
+                           (mapcar #'supervisor--cli-timer-to-json-obj timers)))
+               (invalid . ,(supervisor--cli-ensure-array
+                            (mapcar #'supervisor--cli-invalid-timer-to-json-obj invalid))))))
+    (json-encode obj)))
+
+(defun supervisor--cli-cmd-timers (args json-p)
+  "Handle `timers' command with ARGS.  JSON-P enables JSON output."
+  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+    (if unknown
+        (supervisor--cli-error supervisor-cli-exit-invalid-args
+                               (format "Unknown option: %s" unknown)
+                               (if json-p 'json 'human))
+      (if args
+          (supervisor--cli-error supervisor-cli-exit-invalid-args
+                                 "timers command does not accept arguments"
+                                 (if json-p 'json 'human))
+        (let* ((timers (supervisor--cli-gather-timer-info))
+               (invalid (hash-table-values supervisor--invalid-timers))
+               (output (if json-p
+                           (supervisor--cli-timers-json timers invalid)
+                         (supervisor--cli-timers-human timers invalid))))
+          (supervisor--cli-success output (if json-p 'json 'human)))))))
+
 ;;; CLI Dispatcher
 
 (defun supervisor--cli-parse-args (argv)
@@ -1064,7 +1197,8 @@ Returns a `supervisor-cli-result' struct."
            (concat "Usage: supervisorctl COMMAND [ARGS...]\n\n"
                    "Commands: status, list, describe, start, stop, restart,\n"
                    "          reload, validate, enable, disable, restart-policy,\n"
-                   "          logging, blame, graph, logs, kill, ping, version\n\n"
+                   "          logging, blame, graph, logs, kill, ping, version,\n"
+                   "          timers\n\n"
                    "Options: --json (output as JSON)\n")
            (if json-p 'json 'human)))
          ((equal command "status")
@@ -1103,6 +1237,8 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-ping args json-p))
          ((equal command "version")
           (supervisor--cli-cmd-version args json-p))
+         ((equal command "timers")
+          (supervisor--cli-cmd-timers args json-p))
          (t
           (supervisor--cli-error supervisor-cli-exit-invalid-args
                                  (format "Unknown command: %s" command)

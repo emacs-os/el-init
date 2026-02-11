@@ -156,10 +156,12 @@ Per timer, track at minimum:
 - Transient keys (retry state, next-run-at) computed fresh each session
 - Enable catch-up across Emacs restarts
 
-### Phase 5: Dashboard and CLI
+### Phase 5: Dashboard and CLI ✓
 
-- Timer visibility in status surfaces
-- Timer state in CLI output
+- CLI `timers` command with human and JSON output
+- Displays timer ID, target, enabled, last-run, next-run, exit code, miss reason
+- Relative time formatting for timestamps (e.g., "5m ago", "in 2h")
+- Shows invalid timers with reasons
 
 ### Phase 6: Test Matrix and Hardening
 
