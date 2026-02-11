@@ -2895,6 +2895,7 @@ Return a cons cell (STATUS . PID)."
 
 (defun supervisor--compute-entry-reason (id type &optional snapshot)
   "Compute reason string for entry ID of TYPE.
+Returns a reason string, or nil if no specific reason applies.
 If SNAPSHOT is provided, read from it; otherwise read from globals."
   (let* ((alive (if snapshot
                     (gethash id (supervisor-snapshot-process-alive snapshot))
@@ -2912,8 +2913,8 @@ If SNAPSHOT is provided, read from it; otherwise read from globals."
                                       (supervisor-snapshot-entry-state snapshot)
                                     supervisor--entry-state))))
     (cond
-     (alive "")
-     ((and oneshot-p oneshot-done) "")
+     (alive nil)
+     ((and oneshot-p oneshot-done) nil)
      ((eq entry-state 'disabled) "disabled")
      ((eq entry-state 'delayed) "delayed")
      ((eq entry-state 'waiting-on-deps) "waiting-on-deps")
@@ -2921,7 +2922,7 @@ If SNAPSHOT is provided, read from it; otherwise read from globals."
      ((eq entry-state 'failed-to-spawn) "failed-to-spawn")
      ((eq entry-state 'stage-timeout) "stage-timeout")
      (failed "crash-loop")
-     (t ""))))
+     (t nil))))
 
 (defun supervisor--make-dashboard-entry (id type stage enabled-p restart-p logging-p
                                             &optional snapshot)
@@ -2974,8 +2975,8 @@ If SNAPSHOT is provided, read runtime state from it."
             restart-str
             (if effective-logging "yes" "no")
             pid
-            (if (string-empty-p reason)
-                reason
+            (if (or (null reason) (string-empty-p reason))
+                ""
               (propertize reason 'face 'supervisor-reason)))))
 
 (defun supervisor--group-entries-by-stage (entries)
@@ -3728,6 +3729,41 @@ If no \"--\" is present, returns (ARGS . nil)."
               (cl-subseq args (1+ pos)))
       (cons args nil))))
 
+(defun supervisor--cli-parse-option (args option)
+  "Parse OPTION and its value from ARGS by position.
+OPTION is a string like \"--tail\".
+Returns a plist with :value, :missing, :duplicate, :positional.
+:value is the option value if present and valid, nil otherwise.
+:missing is t if option is present but value is missing or looks like a flag.
+:duplicate is t if option appears more than once.
+:positional is the remaining args with option and its value removed by position."
+  (let ((positional nil)
+        (value nil)
+        (missing nil)
+        (duplicate nil)
+        (seen nil)
+        (skip-next nil)
+        (rest args))
+    (while rest
+      (let ((arg (car rest)))
+        (cond
+         (skip-next
+          (setq skip-next nil))
+         ((equal arg option)
+          (if seen
+              (setq duplicate t)
+            (setq seen t))
+          (let ((next (cadr rest)))
+            (if (or (null next) (string-prefix-p "-" next))
+                (setq missing t)
+              (setq value next)
+              (setq skip-next t))))
+         (t
+          (push arg positional))))
+      (setq rest (cdr rest)))
+    (list :value value :missing missing :duplicate duplicate
+          :positional (nreverse positional))))
+
 (defun supervisor--cli-has-unknown-flags (args &optional known-flags)
   "Check if ARGS contain unknown flags (starting with - or --).
 KNOWN-FLAGS is a list of exact allowed flags like \"--tail\" \"--signal\".
@@ -4429,24 +4465,18 @@ Options must come before --.  Use -- before IDs that start with hyphen."
          (after (cdr split))
          ;; Check for unknown flags in before-part only
          (unknown (supervisor--cli-has-unknown-flags before '("--tail")))
-         ;; Parse --tail from before-part only
-         (tail-arg (member "--tail" before))
-         (tail-val (cadr tail-arg))
+         ;; Parse --tail by position (not value) to avoid collision bugs
+         (parsed (supervisor--cli-parse-option before "--tail"))
+         (tail-val (plist-get parsed :value))
+         (tail-missing (plist-get parsed :missing))
+         (tail-duplicate (plist-get parsed :duplicate))
+         (before-positional (plist-get parsed :positional))
          ;; Validate --tail value if present
-         (tail-missing (and tail-arg
-                            (or (null tail-val)
-                                (string-prefix-p "-" tail-val))))
-         (tail-invalid (and tail-arg tail-val (not tail-missing)
+         (tail-invalid (and tail-val
                             (not (string-match-p "\\`[0-9]+\\'" tail-val))))
-         (tail-n (if (and tail-arg tail-val (not tail-missing) (not tail-invalid))
+         (tail-n (if (and tail-val (not tail-invalid))
                      (string-to-number tail-val)
                    50))
-         ;; Remove --tail and its value from before-part to get non-option args
-         (before-positional (cl-remove-if (lambda (a) (or (equal a "--tail")
-                                                          (and tail-arg tail-val
-                                                               (not tail-missing)
-                                                               (equal a tail-val))))
-                                          before))
          ;; ID is first positional from before or first from after
          (id (or (car after) (car before-positional)))
          ;; Extra args check: should have at most 1 ID total
@@ -4455,6 +4485,10 @@ Options must come before --.  Use -- before IDs that start with hyphen."
      (unknown
       (supervisor--cli-error supervisor-cli-exit-invalid-args
                              (format "Unknown option: %s" unknown)
+                             (if json-p 'json 'human)))
+     (tail-duplicate
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "--tail specified multiple times"
                              (if json-p 'json 'human)))
      (tail-missing
       (supervisor--cli-error supervisor-cli-exit-invalid-args
@@ -4535,27 +4569,19 @@ Options must come before --.  Use -- before IDs that start with hyphen."
          (after (cdr split))
          ;; Check for unknown flags in before-part only
          (unknown (supervisor--cli-has-unknown-flags before '("--signal")))
-         ;; Parse --signal from before-part only
-         (sig-arg (member "--signal" before))
-         (sig-val (cadr sig-arg))
-         ;; Validate --signal value if present
-         (sig-missing (and sig-arg
-                           (or (null sig-val)
-                               (string-prefix-p "-" sig-val))))
+         ;; Parse --signal by position (not value) to avoid collision bugs
+         (parsed (supervisor--cli-parse-option before "--signal"))
+         (sig-val (plist-get parsed :value))
+         (sig-missing (plist-get parsed :missing))
+         (sig-duplicate (plist-get parsed :duplicate))
+         (before-positional (plist-get parsed :positional))
          ;; Normalize signal name: accept both TERM and SIGTERM forms
-         (sig-name (when (and sig-arg sig-val (not sig-missing))
+         (sig-name (when sig-val
                      (let ((upper (upcase sig-val)))
                        (if (string-prefix-p "SIG" upper) upper (concat "SIG" upper)))))
          (sig-sym (when sig-name (intern sig-name)))
-         (sig-invalid (and sig-arg sig-val (not sig-missing)
-                           (not (memq sig-sym supervisor--valid-signals))))
+         (sig-invalid (and sig-val (not (memq sig-sym supervisor--valid-signals))))
          (sig (if sig-sym sig-sym 'SIGTERM))
-         ;; Remove --signal and its value from before-part to get non-option args
-         (before-positional (cl-remove-if (lambda (a) (or (equal a "--signal")
-                                                          (and sig-arg sig-val
-                                                               (not sig-missing)
-                                                               (equal a sig-val))))
-                                          before))
          ;; ID is first positional from before or first from after
          (id (or (car after) (car before-positional)))
          ;; Extra args check: should have at most 1 ID total
@@ -4564,6 +4590,10 @@ Options must come before --.  Use -- before IDs that start with hyphen."
      (unknown
       (supervisor--cli-error supervisor-cli-exit-invalid-args
                              (format "Unknown option: %s" unknown)
+                             (if json-p 'json 'human)))
+     (sig-duplicate
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "--signal specified multiple times"
                              (if json-p 'json 'human)))
      (sig-missing
       (supervisor--cli-error supervisor-cli-exit-invalid-args

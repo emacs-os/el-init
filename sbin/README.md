@@ -111,9 +111,9 @@ nm-applet      1692133234.12    1692133235.01    0.89s
 blueman        1692133234.20    1692133236.40    2.20s
 ```
 
-## JSON Output (Proposal)
+## JSON Output
 
-All JSON should be a single object with a stable schema and sorted keys.
+All JSON is a single object with a stable schema. Key order is fixed by construction.
 
 Example `status --json`:
 
@@ -123,15 +123,16 @@ Example `status --json`:
     {
       "id": "nm-applet",
       "type": "simple",
-      "stage": "session",
+      "stage": "stage3",
       "enabled": true,
       "status": "running",
       "restart": true,
       "logging": true,
       "pid": 1234,
       "reason": null,
-      "after": ["dbus", "gpg-agent"],
       "delay": 0,
+      "after": ["dbus", "gpg-agent"],
+      "requires": [],
       "start_time": 1692133234.12,
       "ready_time": 1692133235.01,
       "duration": 0.89
@@ -139,21 +140,25 @@ Example `status --json`:
   ],
   "invalid": [
     {"id": "malformed#0", "reason": ":type must be a symbol"}
-  ],
-  "stage": {
-    "current": "session",
-    "completed": ["early", "services"]
-  }
+  ]
 }
 ```
 
-Example `graph --json`:
+Example `graph ID --json` (single entry):
 
 ```
 {
   "id": "nm-applet",
-  "depends_on": ["dbus", "gpg-agent"],
-  "blocks": ["tray"],
+  "after": ["dbus", "gpg-agent"],
+  "requires": [],
+  "blocks": ["tray"]
+}
+```
+
+Example `graph --json` (full graph):
+
+```
+{
   "edges": [
     ["dbus", "nm-applet"],
     ["gpg-agent", "nm-applet"],

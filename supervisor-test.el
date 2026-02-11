@@ -2837,6 +2837,57 @@ Regression test: stderr pipe processes used to pollute the process list."
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
     (should (string-match "must be a number" (supervisor-cli-result-output result)))))
 
+(ert-deftest supervisor-test-cli-logs-id-matches-tail-value ()
+  "Logs with ID that matches --tail value should not collide."
+  ;; ("logs" "5" "--tail" "5") - ID is "5", tail value is also "5"
+  ;; Should NOT reject the ID just because it matches the tail value
+  (let ((result (supervisor--cli-dispatch '("logs" "5" "--tail" "5"))))
+    (should (supervisor-cli-result-p result))
+    ;; Should fail because log file doesn't exist, not because ID is missing
+    (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
+    (should (string-match "No log file for '5'" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-logs-extra-arg-matches-tail-value ()
+  "Logs with extra arg matching --tail value should be rejected."
+  ;; ("logs" "foo" "--tail" "5" "5") - extra "5" should not be hidden
+  (let ((result (supervisor--cli-dispatch '("logs" "foo" "--tail" "5" "5"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "got extra" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-kill-id-matches-signal-value ()
+  "Kill with ID that matches --signal value should not collide."
+  ;; ("kill" "TERM" "--signal" "TERM") - ID is "TERM", signal value is also "TERM"
+  ;; Should NOT reject the ID just because it matches the signal value
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("kill" "TERM" "--signal" "TERM"))))
+    (should (supervisor-cli-result-p result))
+    ;; Should fail because process not running, not because ID is missing
+    (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
+    (should (string-match "not running" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-kill-extra-arg-matches-signal-value ()
+  "Kill with extra arg matching --signal value should be rejected."
+  ;; ("kill" "foo" "--signal" "TERM" "TERM") - extra "TERM" should not be hidden
+  (let ((result (supervisor--cli-dispatch '("kill" "foo" "--signal" "TERM" "TERM"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "got extra" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-logs-duplicate-tail ()
+  "Logs with --tail specified twice returns invalid-args."
+  (let ((result (supervisor--cli-dispatch '("logs" "foo" "--tail" "10" "--tail" "20"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "multiple times" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-kill-duplicate-signal ()
+  "Kill with --signal specified twice returns invalid-args."
+  (let ((result (supervisor--cli-dispatch '("kill" "foo" "--signal" "TERM" "--signal" "KILL"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "multiple times" (supervisor-cli-result-output result)))))
+
 (ert-deftest supervisor-test-cli-kill-signal-missing-value ()
   "Kill with --signal but no value returns invalid-args."
   (let ((result (supervisor--cli-dispatch '("kill" "test" "--signal"))))
@@ -2924,6 +2975,43 @@ Regression test: stderr pipe processes used to pollute the process list."
                  '("a" "b")))
   (should (equal (supervisor--cli-strip-separator '("--" "-svc"))
                  '("-svc"))))
+
+(ert-deftest supervisor-test-cli-parse-option ()
+  "Parse option and value by position, not by value."
+  ;; Option with value
+  (let ((result (supervisor--cli-parse-option '("foo" "--opt" "val" "bar") "--opt")))
+    (should (equal (plist-get result :value) "val"))
+    (should (null (plist-get result :missing)))
+    (should (equal (plist-get result :positional) '("foo" "bar"))))
+  ;; Option with missing value (end of args)
+  (let ((result (supervisor--cli-parse-option '("foo" "--opt") "--opt")))
+    (should (null (plist-get result :value)))
+    (should (plist-get result :missing))
+    (should (equal (plist-get result :positional) '("foo"))))
+  ;; Option with missing value (next arg is flag)
+  (let ((result (supervisor--cli-parse-option '("--opt" "--other") "--opt")))
+    (should (null (plist-get result :value)))
+    (should (plist-get result :missing))
+    (should (equal (plist-get result :positional) '("--other"))))
+  ;; No option present
+  (let ((result (supervisor--cli-parse-option '("foo" "bar") "--opt")))
+    (should (null (plist-get result :value)))
+    (should (null (plist-get result :missing)))
+    (should (equal (plist-get result :positional) '("foo" "bar"))))
+  ;; Value collision: positional arg equals option value
+  (let ((result (supervisor--cli-parse-option '("5" "--tail" "5") "--tail")))
+    (should (equal (plist-get result :value) "5"))
+    (should (null (plist-get result :missing)))
+    ;; Positional "5" should NOT be removed by value collision
+    (should (equal (plist-get result :positional) '("5"))))
+  ;; Duplicate option detection
+  (let ((result (supervisor--cli-parse-option '("--opt" "val1" "--opt" "val2") "--opt")))
+    (should (plist-get result :duplicate))
+    ;; Value is the last one seen
+    (should (equal (plist-get result :value) "val2")))
+  ;; Single option is not duplicate
+  (let ((result (supervisor--cli-parse-option '("--opt" "val") "--opt")))
+    (should (null (plist-get result :duplicate)))))
 
 (ert-deftest supervisor-test-cli-enable-hyphen-id-with-separator ()
   "Enable allows hyphen-prefixed ID after -- separator."
