@@ -61,7 +61,9 @@ Load order in facade: core -> timer -> dashboard -> cli.
 
 Module dependency rules:
 
-- ~supervisor-core.el~ has no hard dependency on dashboard or CLI.
+- ~supervisor-core.el~ has no hard dependency on timer/dashboard/CLI modules.
+  Optional timer and dashboard calls are guarded with ~fboundp~/~boundp~ so core
+  can run standalone.
 - ~supervisor-timer.el~ depends on core.
 - ~supervisor-dashboard.el~ depends on core (+ optional timer symbols).
 - ~supervisor-cli.el~ depends on core (+ optional timer symbols).
@@ -96,7 +98,11 @@ Module dependency rules:
 Suggested hooks when Emacs is your session owner:
 
 #+begin_src emacs-lisp
-(add-hook 'elpaca-after-init-hook #'supervisor-start)
+(add-hook 'after-init-hook #'supervisor-start)
+;; Alternative for some init flows:
+;; (add-hook 'emacs-startup-hook #'supervisor-start)
+;; Example package-manager-specific hook:
+;; (add-hook 'elpaca-after-init-hook #'supervisor-start)
 (add-hook 'kill-emacs-hook #'supervisor-stop-now)
 #+end_src
 
@@ -150,13 +156,11 @@ Validation is performed by ~supervisor--validate-entry~ and plan building.
 - ~:delay~ must be non-negative number.
 - ~:oneshot-timeout~ must be number or ~nil~.
 - ~:after~ and ~:requires~ must be string or proper list of strings.
-- Mutually exclusive pairs are rejected:
-- ~:enabled~ with ~:disabled~
-- ~:restart~ with ~:no-restart~
-- ~:oneshot-wait~ with ~:async~
-- Type restrictions are enforced:
-- ~oneshot~ rejects ~:restart~ and ~:no-restart~
-- ~simple~ rejects ~:oneshot-wait~, ~:async~, ~:oneshot-timeout~
+- Mutually exclusive pairs are rejected: ~:enabled~ with ~:disabled~, ~:restart~
+  with ~:no-restart~, and ~:oneshot-wait~ with ~:async~.
+- Type restrictions are enforced: ~oneshot~ rejects ~:restart~ and
+  ~:no-restart~; ~simple~ rejects ~:oneshot-wait~, ~:async~, and
+  ~:oneshot-timeout~.
 
 Invalid entries are skipped at start/reload and shown as ~invalid~ in dashboard
 and CLI status/validate output.
@@ -266,6 +270,9 @@ States:
 - ~failed-to-spawn~
 - ~stage-timeout~
 
+~invalid~ is a surfaced status (from validation hash tables), not a lifecycle FSM
+state in ~supervisor--entry-state~.
+
 Invalid transitions signal errors unless forced by internal maintenance paths.
 
 ** Process Spawn and Command Execution
@@ -274,7 +281,9 @@ Processes are created via ~make-process~.
 
 - Command arguments are parsed by ~split-string-and-unquote~.
 - No implicit shell is used.
-- Use explicit shell (~sh -c ...~) if shell semantics are required.
+- Use explicit shell (~sh -c ...~) when shell semantics are required (for
+  example pipelines ~cmd1 | cmd2~, redirects ~> file~, or shell expansion like
+  ~$HOME~).
 
 ** Restart and Crash Loop Policy (~simple~)
 
@@ -345,7 +354,8 @@ Interactive helpers:
 
 Dashboard toggles for enabled/restart persist immediately.
 Dashboard logging toggle updates runtime state; use explicit save command (or CLI
-logging command) when you want persistence written immediately.
+logging command) when you want persistence written immediately. In other words:
+dashboard logging toggle does not auto-save, but CLI ~logging on|off ...~ does.
 
 ** Reload Reconciler (~supervisor-reload~)
 
@@ -437,7 +447,8 @@ Field values:
 Semantics:
 
 - next run is computed strictly after current time
-- day-by-day search with bounded horizon (28-year cycle coverage)
+- day-by-day search with bounded horizon (28-year coverage for full leap-day +
+  weekday combinations)
 - DST gaps are handled by validating encoded/decoded wall clock fields
 
 ** Trigger Semantics
@@ -518,6 +529,7 @@ Dashboard:
 - Timer section is shown only when
 - ~supervisor-dashboard-show-timers~ is non-nil
 - timer subsystem is active
+- no stage filter is active
 - there are timer rows or invalid timer definitions
 
 CLI:
@@ -554,6 +566,8 @@ Dashboard buffer: ~*supervisor*~, major mode ~supervisor-dashboard-mode~
 - ~pending~
 - ~stopped~
 - ~invalid~
+
+~invalid~ here means configuration/validation failure, not a runtime FSM state.
 
 ** Service Reason Values
 
@@ -611,6 +625,43 @@ Notes:
 - ~?~ requires the ~transient~ package.
 - Full ID is echoed in minibuffer when current row ID exceeds table width.
 
+** Mode Interaction and Buffer-Local State
+
+- ~supervisor-mode~ is the parent global mode; enabling it runs
+  ~supervisor-start~, disabling it runs ~supervisor-stop~.
+- ~supervisor-timer-subsystem-mode~ is an experimental global gate and only
+  becomes active when ~supervisor-mode~ is also enabled.
+- ~supervisor-dashboard-mode~ is the major mode for ~*supervisor*~ and can be
+  opened independently of whether supervision is currently running.
+- Dashboard filters are buffer-local:
+  ~supervisor--dashboard-stage-filter~ and ~supervisor--dashboard-tag-filter~.
+- Dashboard auto-refresh timer (~supervisor--auto-refresh-timer~) is buffer-local
+  and defaults to off until toggled with ~G~ / ~M-x supervisor-dashboard-toggle-auto-refresh~.
+
+** Dashboard Faces
+
+All dashboard faces are in customization group ~supervisor~:
+
+| Face | Used for |
+| ~supervisor-status-running~ | Status ~running~ |
+| ~supervisor-status-done~ | Status ~done~ |
+| ~supervisor-status-failed~ | Status ~failed~ |
+| ~supervisor-status-dead~ | Status ~dead~ |
+| ~supervisor-status-invalid~ | Status ~invalid~ |
+| ~supervisor-status-pending~ | Status ~pending~ |
+| ~supervisor-status-stopped~ | Status ~stopped~ |
+| ~supervisor-type-simple~ | Type ~simple~ |
+| ~supervisor-type-oneshot~ | Type ~oneshot~ |
+| ~supervisor-type-timer~ | Type ~timer~ rows |
+| ~supervisor-stage-1~ | Stage column ~stage1~ |
+| ~supervisor-stage-2~ | Stage column ~stage2~ |
+| ~supervisor-stage-3~ | Stage column ~stage3~ |
+| ~supervisor-stage-4~ | Stage column ~stage4~ |
+| ~supervisor-enabled-yes~ | Enabled column (~yes~) |
+| ~supervisor-enabled-no~ | Enabled column (~no~) |
+| ~supervisor-reason~ | Reason column values |
+| ~supervisor-stage-separator~ | Stage separator rows |
+
 * CLI Handbook (~sbin/supervisorctl~)
 :PROPERTIES:
 :CUSTOM_ID: cli-handbook-sbinsupervisorctl
@@ -638,6 +689,12 @@ Wrapper transport rules:
 
 - ~--socket~ and ~--server-file~ are mutually exclusive.
 - ~--server-file~ emits a TCP transport warning.
+
+Wrapper/dispatcher usage behavior:
+
+- Wrapper ~--help~ prints wrapper option help.
+- Calling ~supervisorctl~ with no command prints dispatcher usage text and
+  command list.
 
 ** CLI Commands
 
@@ -784,6 +841,15 @@ Still supported and dispatched from event adapter:
 
 Existing ~log-*.log~ files are rotated on ~supervisor-start~.
 
+** Logging Semantics
+
+~supervisor--log~ emits levels:
+
+- ~error~ and ~warning~ are always shown in minibuffer/log output.
+- ~info~ is shown when ~supervisor-verbose~ is non-nil.
+- When ~supervisor-log-to-file~ is non-nil, all levels are written to
+  ~supervisor.log~ regardless of ~supervisor-verbose~.
+
 ** Overrides File
 
 - Path: ~supervisor-overrides-file~
@@ -817,7 +883,7 @@ All user options (defcustom) are listed below.
 | ~supervisor-shutdown-timeout~ | ~3~ | Graceful shutdown timeout |
 | ~supervisor-oneshot-default-wait~ | ~t~ | Default oneshot blocking behavior |
 | ~supervisor-oneshot-timeout~ | ~30~ | Default oneshot timeout |
-| ~supervisor-stage-timeout~ | ~nil~ | Per-stage timeout |
+| ~supervisor-stage-timeout~ | ~nil~ | Per-stage timeout (~nil~ means disabled) |
 | ~supervisor-max-concurrent-starts~ | ~nil~ | Max concurrent stage spawns |
 | ~supervisor-verbose~ | ~nil~ | Show info-level messages |
 | ~supervisor-log-to-file~ | ~nil~ | Write supervisor events to file |
@@ -890,96 +956,41 @@ All user options (defcustom) are listed below.
 :CUSTOM_ID: indexes
 :END:
 
-These indexes are intentionally redundant for searchability.
+This is a topical index for targeted lookup of less-obvious behavior.
 
-** Index: Entry Keywords
+** Topical Index
 
-- ~:id~
-- ~:type~
-- ~:stage~
-- ~:delay~
-- ~:after~
-- ~:requires~
-- ~:enabled~
-- ~:disabled~
-- ~:restart~
-- ~:no-restart~
-- ~:logging~
-- ~:oneshot-wait~
-- ~:async~
-- ~:oneshot-timeout~
-- ~:tags~
-
-** Index: Timer Keywords
-
-- ~:id~
-- ~:target~
-- ~:enabled~
-- ~:persistent~
-- ~:on-calendar~
-- ~:on-startup-sec~
-- ~:on-unit-active-sec~
-- ~:minute~
-- ~:hour~
-- ~:day-of-month~
-- ~:month~
-- ~:day-of-week~
-
-** Index: CLI Commands
-
-- ~status~
-- ~list~
-- ~describe~
-- ~start~
-- ~stop~
-- ~restart~
-- ~reload~
-- ~validate~
-- ~enable~
-- ~disable~
-- ~restart-policy~
-- ~logging~
-- ~blame~
-- ~graph~
-- ~logs~
-- ~kill~
-- ~ping~
-- ~version~
-- ~timers~
-
-** Index: Customization Variables
-
-- ~supervisor-programs~
-- ~supervisor-timers~
-- ~supervisor-log-directory~
-- ~supervisor-restart-delay~
-- ~supervisor-max-restarts~
-- ~supervisor-restart-window~
-- ~supervisor-shutdown-timeout~
-- ~supervisor-oneshot-default-wait~
-- ~supervisor-oneshot-timeout~
-- ~supervisor-stage-timeout~
-- ~supervisor-max-concurrent-starts~
-- ~supervisor-verbose~
-- ~supervisor-log-to-file~
-- ~supervisor-watch-config~
-- ~supervisor-overrides-file~
-- ~supervisor-timer-state-file~
-- ~supervisor-timer-retry-intervals~
-- ~supervisor-timer-catch-up-limit~
-- ~supervisor-stage-descriptions~
-- ~supervisor-dashboard-group-by-stage~
-- ~supervisor-dashboard-show-header-hints~
-- ~supervisor-dashboard-show-timers~
-- ~supervisor-auto-refresh-interval~
-
-** Index: Hook Variables
-
-- ~supervisor-event-hook~
-- ~supervisor-cleanup-hook~
-- ~supervisor-stage-start-hook~
-- ~supervisor-stage-complete-hook~
-- ~supervisor-process-exit-hook~
+- Async oneshots (~:async~, ~:oneshot-wait~): [[#service-definition-handbook-supervisor-programs][Service Definition Handbook]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Blocking oneshot timeout (~:oneshot-timeout~, ~supervisor-oneshot-timeout~): [[#service-definition-handbook-supervisor-programs][Service Definition Handbook]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Command parsing (no implicit shell, use ~sh -c~ when needed): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Config file watch and debounce (~supervisor-watch-config~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
+- Crash-loop detection (~supervisor-max-restarts~, ~supervisor-restart-window~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Cycle fallback behavior for dependencies: [[#service-definition-handbook-supervisor-programs][Service Definition Handbook]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Dashboard filtering (stage/tag): [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook (~M-x supervisor~)]]
+- Dashboard live updates (~supervisor-auto-refresh-interval~): [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook (~M-x supervisor~)]], [[#customization-reference][Customization Reference]]
+- Dashboard mode/filter state (buffer-local stage/tag/auto-refresh): [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook (~M-x supervisor~)]]
+- Dashboard visual customization (status/type/stage faces): [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook (~M-x supervisor~)]]
+- Dependency semantics split (~:after~ vs ~:requires~): [[#service-definition-handbook-supervisor-programs][Service Definition Handbook]]
+- Event API (~supervisor-event-hook~ and event types): [[#events-and-hooks][Events and Hooks]]
+- Exit code semantics for oneshots (signals stored negative): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Graceful vs hard stop (~supervisor-stop~ vs ~supervisor-stop-now~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#command-reference][Command Reference]]
+- Hyphen-prefixed IDs in CLI (use ~--~ separator): [[#cli-handbook-sbinsupervisorctl][CLI Handbook (~sbin/supervisorctl~)]]
+- JSON contracts (status/validate/timers + error shape): [[#cli-handbook-sbinsupervisorctl][CLI Handbook (~sbin/supervisorctl~)]]
+- Log rotation and log file paths: [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
+- Logging pipeline (~supervisor--log~, ~supervisor-verbose~, ~supervisor-log-to-file~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
+- Manual stop behavior and restart suppression: [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
+- Max concurrent stage starts (~supervisor-max-concurrent-starts~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Override precedence (runtime override vs config default): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
+- Override persistence (~supervisor-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
+- Reload reconciler action model (~start~, ~stop~, ~noop~, ~skip~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
+- Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
+- Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI Handbook (~sbin/supervisorctl~)]]
+- Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Timer catch-up window (~supervisor-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook-experimental][Timer Subsystem Handbook (Experimental)]], [[#customization-reference][Customization Reference]]
+- Timer disabled/gated behavior (~supervisor-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook-experimental][Timer Subsystem Handbook (Experimental)]], [[#command-reference][Command Reference]]
+- Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~): [[#timer-subsystem-handbook-experimental][Timer Subsystem Handbook (Experimental)]], [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook (~M-x supervisor~)]]
+- Timer retry policy (~supervisor-timer-retry-intervals~, signal non-retry): [[#timer-subsystem-handbook-experimental][Timer Subsystem Handbook (Experimental)]], [[#customization-reference][Customization Reference]]
+- Timer state persistence and schema compatibility (~supervisor-timer-state-file~): [[#timer-subsystem-handbook-experimental][Timer Subsystem Handbook (Experimental)]], [[#persistence-and-files][Persistence and Files]]
 
 * Security
 :PROPERTIES:
