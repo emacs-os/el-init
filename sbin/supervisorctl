@@ -1,4 +1,19 @@
 #!/bin/sh
+# Stay POSIX shell; GNU coreutils assumptions are fine.
+# No bashisms.
+# CRITICAL: Must pass ShellCheck.
+# Maintainer shell style:
+# - Only environment variables should be uppercase.
+# - Use set -eu by default; use pipefail only where supported and needed.
+# - Use ${...} form for variable expansion.
+# - Prefer short-circuit guards (for example: [ "${foo}" = "bar" ] && { ...; })
+#   instead of if/then/fi when behavior is equivalent.
+# - Prefer case/esac when there is more than one branch.
+# - Prefer shell parameter expansion over sed/cut/awk when simple.
+# - Use printf for messages and output (avoid echo for non-trivial output).
+# - Check external dependencies early with command -v.
+# - For temp files, use mktemp and cleanup with trap.
+# - Use if/then/fi only when required for correctness or clarity.
 # supervisorctl - CLI wrapper for supervisor.el
 #
 # This is a minimal transport shim that calls supervisor--cli-dispatch via
@@ -33,7 +48,7 @@
 #   ping             Check if supervisor is responsive
 #   version          Show version info
 
-set -e
+set -eu
 
 # Exit codes (must match supervisor-cli-exit-* constants)
 exit_failure=1
@@ -46,9 +61,24 @@ server_file=""
 timeout=""
 json_flag=""
 
+warn() {
+    printf 'Warning: %s\n' "${1}" >&2
+}
+
+die() {
+    code="${1}"
+    shift
+    printf 'Error: %s\n' "${*}" >&2
+    exit "${code}"
+}
+
+require_command() {
+    command -v "${1}" >/dev/null 2>&1 || die "${exit_failure}" "Required command not found: ${1}"
+}
+
 # Print help
 show_help() {
-    sed -n '2,/^$/p' "${0}" | sed 's/^# *//'
+    sed -n '/^# Usage:/,/^$/p' "${0}" | sed 's/^# *//'
     exit 0
 }
 
@@ -64,24 +94,21 @@ while [ "${#}" -gt 0 ]; do
             ;;
         --socket|--socket-name|-s)
             [ -n "${2-}" ] || {
-                echo "Error: --socket requires a name" >&2
-                exit "${exit_invalid_args}"
+                die "${exit_invalid_args}" "--socket requires a name"
             }
             socket_name="${2}"
             shift 2
             ;;
         --server-file|-f)
             [ -n "${2-}" ] || {
-                echo "Error: --server-file requires a path" >&2
-                exit "${exit_invalid_args}"
+                die "${exit_invalid_args}" "--server-file requires a path"
             }
             server_file="${2}"
             shift 2
             ;;
         --timeout|-t)
             [ -n "${2-}" ] || {
-                echo "Error: --timeout requires a number" >&2
-                exit "${exit_invalid_args}"
+                die "${exit_invalid_args}" "--timeout requires a number"
             }
             timeout="${2}"
             shift 2
@@ -99,15 +126,18 @@ done
 
 # === Transport validation ===
 
+require_command "emacsclient"
+require_command "base64"
+require_command "sed"
+
 # Reject conflicting transport options
 [ -z "${socket_name}" ] || [ -z "${server_file}" ] || {
-    echo "Error: --socket and --server-file are mutually exclusive" >&2
-    exit "${exit_invalid_args}"
+    die "${exit_invalid_args}" "--socket and --server-file are mutually exclusive"
 }
 
 # Warn about TCP transport (server-file implies TCP, not local socket)
 [ -n "${server_file}" ] \
-    && echo "Warning: Using TCP transport via --server-file. Ensure server is localhost-only." >&2
+    && warn "Using TCP transport via --server-file. Ensure server is localhost-only."
 
 # === Build command ===
 
@@ -157,8 +187,8 @@ set -- "${@}" --eval "${elisp_expr}"
 # Use --eval to evaluate Elisp and return the result
 # emacsclient failed (server unavailable, etc.)
 output="$("${@}" 2>&1)" || {
-    echo "Error: Cannot connect to Emacs server" >&2
-    [ -z "${output}" ] || echo "${output}" >&2
+    printf '%s\n' "Error: Cannot connect to Emacs server" >&2
+    [ -z "${output-}" ] || printf '%s\n' "${output}" >&2
     exit "${exit_server_unavailable}"
 }
 
@@ -166,23 +196,26 @@ output="$("${@}" 2>&1)" || {
 # emacsclient --eval wraps strings in quotes, so we strip those first
 
 # Remove outer quotes from emacsclient output
-stripped="$(printf '%s' "${output}" | sed 's/^"//; s/"$//')"
+stripped="${output#\"}"
+stripped="${stripped%\"}"
 
 # Extract exit code (everything before first colon)
 exit_code="${stripped%%:*}"
 
 # Validate exit code is a number
-printf '%s' "${exit_code}" | grep -qE '^[0-9]+$' || {
-    # Fallback: output raw and exit with failure
-    echo "${output}"
-    exit "${exit_failure}"
-}
+case "${exit_code}" in
+    ''|*[!0-9]*)
+        # Fallback: output raw and exit with failure
+        printf '%s\n' "${output}"
+        exit "${exit_failure}"
+        ;;
+esac
 
 # Extract base64 output (everything after first colon) and decode
 base64_output="${stripped#*:}"
 final_output="$(printf '%s' "${base64_output}" | base64 -d 2>/dev/null)" || {
-    echo "Error: Failed to decode output" >&2
-    echo "${output}" >&2
+    printf '%s\n' "Error: Failed to decode output" >&2
+    printf '%s\n' "${output}" >&2
     exit "${exit_failure}"
 }
 
