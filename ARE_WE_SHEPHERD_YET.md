@@ -69,8 +69,8 @@ All items below are mandatory. There are no optional phases. Do them in order.
    documented threat model.
 5. PID 1 engineering: child reaping, signal handling, safe shutdown semantics,
    crash safety, and tests.
-6. Parity and expansion: timers, socket activation, advanced readiness, and
-   remaining capability additions.
+6. Parity and expansion: systemd-timer-equivalent scheduling, socket
+   activation, advanced readiness, and remaining capability additions.
 
 **Roadmap Requirements (Detailed)**
 
@@ -138,7 +138,9 @@ Shim approach (preferred):
   (or Emacs must be patched to reap all children itself).
 
 **6. Parity and Expansion**
-- Add timers and socket activation.
+- Add systemd-timer-equivalent timers (calendar + monotonic triggers,
+  persistence/catch-up behavior, and jitter/accuracy controls) and socket
+  activation.
 - Add advanced readiness semantics as needed.
 - Keep CLI parity with the interactive UI.
 

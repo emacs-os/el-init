@@ -31,11 +31,11 @@
 
 (require 'cl-lib)
 (require 'subr-x)
-(require 'transient)
 
 ;; Forward declarations for optional features
 (declare-function file-notify-add-watch "filenotify" (file flags callback))
 (declare-function file-notify-rm-watch "filenotify" (descriptor))
+(declare-function supervisor-dashboard-menu "supervisor" ())
 
 (defgroup supervisor nil
   "Emacs Lisp process supervisor."
@@ -2124,42 +2124,61 @@ nil means show all entries, otherwise a tag symbol or string.")
     (define-key map "d" #'supervisor-dashboard-show-deps)
     (define-key map "D" #'supervisor-dashboard-show-graph)
     (define-key map "B" #'supervisor-dashboard-blame)
-    (define-key map "?" #'supervisor-dashboard-menu)
+    (define-key map "?" #'supervisor-dashboard-menu-open)
     (define-key map "q" #'supervisor-dashboard-quit)
     map)
   "Keymap for `supervisor-dashboard-mode'.")
 
-(transient-define-prefix supervisor-dashboard-menu ()
-  "Supervisor dashboard actions."
-  [:description
-   (lambda ()
-     (supervisor--health-summary (supervisor--build-snapshot)))
-   ["Entry Actions"
-    ("s" "Start" supervisor-dashboard-start)
-    ("k" "Kill" supervisor-dashboard-kill)
-    ("K" "Kill (force)" supervisor-dashboard-kill-force)]
-   ["Toggles"
-    ("e" "Enabled" supervisor-dashboard-toggle-enabled)
-    ("r" "Restart" supervisor-dashboard-toggle-restart)
-    ("l" "Logging" supervisor-dashboard-toggle-logging)]
-   ["Views"
-    ("L" "View log" supervisor-dashboard-view-log)
-    ("d" "Dependencies" supervisor-dashboard-show-deps)
-    ("D" "Dep graph" supervisor-dashboard-show-graph)
-    ("B" "Blame" supervisor-dashboard-blame)]]
-  [["Filter"
-    ("f" "Cycle stage" supervisor-dashboard-cycle-filter)
-    ("t" "Cycle tag" supervisor-dashboard-cycle-tag-filter)]
-   ["Refresh"
-    ("g" "Refresh" supervisor-dashboard-refresh)
-    ("G" "Auto-refresh" supervisor-dashboard-toggle-auto-refresh)]
-   ["System"
-    ("p" "Proced" proced)
-    ("P" "Proced auto" supervisor-dashboard-toggle-proced-auto-update)]
-   ["Help"
-    ("i" "Entry info" supervisor-dashboard-describe-entry)
-    ("h" "Full help" supervisor-dashboard-help)
-    ("q" "Quit" supervisor-dashboard-quit)]])
+(defvar supervisor--dashboard-menu-defined nil
+  "Non-nil if the transient menu has been defined.")
+
+(defun supervisor--define-dashboard-menu ()
+  "Define the transient menu for the dashboard.
+This is called on first use to avoid loading transient at package load time."
+  (unless supervisor--dashboard-menu-defined
+    (require 'transient)
+    (eval
+     '(transient-define-prefix supervisor-dashboard-menu ()
+        "Supervisor dashboard actions."
+        [:description
+         (lambda ()
+           (supervisor--health-summary (supervisor--build-snapshot)))
+         ["Entry Actions"
+          ("s" "Start" supervisor-dashboard-start)
+          ("k" "Kill" supervisor-dashboard-kill)
+          ("K" "Kill (force)" supervisor-dashboard-kill-force)]
+         ["Toggles"
+          ("e" "Enabled" supervisor-dashboard-toggle-enabled)
+          ("r" "Restart" supervisor-dashboard-toggle-restart)
+          ("l" "Logging" supervisor-dashboard-toggle-logging)]
+         ["Views"
+          ("L" "View log" supervisor-dashboard-view-log)
+          ("d" "Dependencies" supervisor-dashboard-show-deps)
+          ("D" "Dep graph" supervisor-dashboard-show-graph)
+          ("B" "Blame" supervisor-dashboard-blame)]]
+        [["Filter"
+          ("f" "Cycle stage" supervisor-dashboard-cycle-filter)
+          ("t" "Cycle tag" supervisor-dashboard-cycle-tag-filter)]
+         ["Refresh"
+          ("g" "Refresh" supervisor-dashboard-refresh)
+          ("G" "Auto-refresh" supervisor-dashboard-toggle-auto-refresh)]
+         ["System"
+          ("p" "Proced" proced)
+          ("P" "Proced auto" supervisor-dashboard-toggle-proced-auto-update)]
+         ["Help"
+          ("i" "Entry info" supervisor-dashboard-describe-entry)
+          ("h" "Full help" supervisor-dashboard-help)
+          ("q" "Quit" supervisor-dashboard-quit)]]))
+    (setq supervisor--dashboard-menu-defined t)))
+
+(defun supervisor-dashboard-menu-open ()
+  "Open the supervisor dashboard transient menu.
+Requires the `transient' package to be installed."
+  (interactive)
+  (unless (require 'transient nil t)
+    (user-error "The `transient' package is required for this feature"))
+  (supervisor--define-dashboard-menu)
+  (call-interactively #'supervisor-dashboard-menu))
 
 (defvar-local supervisor--dashboard-last-id nil
   "Last echoed entry ID, to avoid repeated messages.")

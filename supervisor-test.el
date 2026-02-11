@@ -2064,9 +2064,9 @@ Regression test: stderr pipe processes used to pollute the process list."
       (delete-directory supervisor-log-directory t))))
 
 (ert-deftest supervisor-test-dashboard-menu-keybinding ()
-  "Dashboard ? key is bound to transient menu."
+  "Dashboard ? key is bound to transient menu wrapper."
   (should (eq (lookup-key supervisor-dashboard-mode-map "?")
-              'supervisor-dashboard-menu)))
+              'supervisor-dashboard-menu-open)))
 
 (ert-deftest supervisor-test-dashboard-info-keybinding ()
   "Dashboard i key is bound to entry info."
@@ -2078,10 +2078,16 @@ Regression test: stderr pipe processes used to pollute the process list."
   (should-not supervisor-dashboard-show-header-hints))
 
 (ert-deftest supervisor-test-transient-menu-defined ()
-  "Transient menu is properly defined."
-  (should (fboundp 'supervisor-dashboard-menu))
-  ;; Should be a transient prefix command
-  (should (get 'supervisor-dashboard-menu 'transient--prefix)))
+  "Transient menu wrapper is defined and helper function exists."
+  ;; The wrapper function should always be defined
+  (should (fboundp 'supervisor-dashboard-menu-open))
+  ;; The helper that defines the menu should exist
+  (should (fboundp 'supervisor--define-dashboard-menu))
+  ;; After calling the helper with transient loaded, the menu should exist
+  (when (require 'transient nil t)
+    (supervisor--define-dashboard-menu)
+    (should (fboundp 'supervisor-dashboard-menu))
+    (should (get 'supervisor-dashboard-menu 'transient--prefix))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
