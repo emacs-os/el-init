@@ -108,6 +108,7 @@ sbin/supervisorctl [OPTIONS] COMMAND [ARGS...]
 | `--socket NAME` | Use specific Emacs server socket |
 | `--server-file PATH` | Use server file for TCP |
 | `--timeout N` | Wait at most N seconds for response |
+| `--strict` | Fail on security warnings instead of continuing |
 
 *** Commands
 
@@ -153,6 +154,7 @@ Utilities:
 | `2` | Invalid arguments |
 | `3` | Emacs server unavailable |
 | `4` | Validation failed |
+| `5` | Security policy violation (strict mode) |
 
 *** JSON Output
 
@@ -550,6 +552,74 @@ Legacy hooks are still supported and dispatched by the event adapter:
 | `supervisor-dashboard-show-header-hints` | `nil` | Show key hints in dashboard header |
 | `supervisor-auto-refresh-interval` | `2` | Dashboard live-refresh interval |
 | `supervisor-overrides-file` | `~/.local/state/supervisor/overrides.eld` | Override persistence file (nil to disable) |
+
+** Security
+
+*** Scope and Trust Model
+
+This is a user-session supervisor, not a hardened system init.  The CLI
+control plane (`supervisorctl`) uses `emacsclient --eval` to execute Elisp
+on the Emacs server.  Any principal that can connect to the server socket
+can execute arbitrary code as the Emacs user.
+
+Trust boundary: the Emacs server socket is the security perimeter.
+
+*** Threat Model
+
+| Threat | Mitigation |
+| Local unprivileged user on same host | Unix socket permissions (Emacs creates socket dir mode 0700) |
+| Compromised process as same user | Out of scope - same-user access is trusted |
+| Misconfigured TCP server exposure | Use local sockets; if TCP required, bind localhost only |
+
+*** Transport Options
+
+The wrapper validates transport options:
+
+- `--socket` and `--server-file` are mutually exclusive (error if both specified)
+- `--server-file` (TCP transport) emits a warning to use localhost-only binding
+- `--strict` flag converts warnings to fatal errors
+
+*** Assumptions
+
+This package assumes default Emacs server behavior:
+
+- Socket directory created with mode 0700 (owner-only access)
+- No TCP server enabled unless explicitly configured
+
+Custom `server-auth-dir`, `server-socket-dir`, or TCP server configurations
+are the operator's responsibility to secure.  The wrapper does not validate
+filesystem permissions on these paths.
+
+*** Secure Deployment
+
+Recommended (local socket):
+
+#+begin_src bash
+# Default behavior - uses local Unix socket
+supervisorctl status
+#+end_src
+
+If TCP is required:
+
+- Bind to localhost only: `(setq server-host "127.0.0.1")`
+- Keep `server-auth-dir` private (mode 0700)
+- Use explicit `--server-file` rather than ambient environment
+
+For system-level deployments:
+
+- Run Emacs under a dedicated service account
+- Restrict socket directory permissions
+- Consider MAC policy (SELinux/AppArmor) for socket access
+
+*** Incident Response
+
+If socket or auth files may have been exposed:
+
+1. Stop supervisor: `supervisorctl stop`
+2. Kill Emacs server: `emacsclient -e '(kill-emacs)'`
+3. Remove and regenerate server auth files
+4. Restart Emacs server with correct permissions
+5. Verify socket permissions before reconnecting
 
 ** Development Commands
 

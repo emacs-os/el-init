@@ -60,6 +60,9 @@
 (defconst supervisor-cli-exit-validation-failed 4
   "Exit code when config validation fails.")
 
+(defconst supervisor-cli-exit-security 5
+  "Exit code for security policy violation (strict mode).")
+
 (defconst supervisor-cli-version "1.0.0"
   "CLI version string.")
 

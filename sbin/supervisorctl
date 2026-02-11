@@ -11,6 +11,7 @@
 #   --socket NAME    Use specific Emacs server socket (emacsclient -s)
 #   --server-file P  Use server file for TCP (emacsclient -f)
 #   --timeout N      Wait at most N seconds for response
+#   --strict         Fail on security warnings instead of continuing
 #   --help           Show this help message
 #
 # Commands:
@@ -40,17 +41,29 @@ EXIT_SUCCESS=0
 EXIT_FAILURE=1
 EXIT_INVALID_ARGS=2
 EXIT_SERVER_UNAVAILABLE=3
+EXIT_SECURITY=5
 
-# Default emacsclient options
+# Default options
 SOCKET_NAME=""
 SERVER_FILE=""
 TIMEOUT=""
 JSON_FLAG=""
+STRICT_MODE=""
 
 # Print help
 show_help() {
     sed -n '2,/^$/p' "$0" | sed 's/^# *//'
     exit 0
+}
+
+# Emit security warning or fail in strict mode
+security_warn() {
+    if [ -n "$STRICT_MODE" ]; then
+        echo "Error (strict mode): $1" >&2
+        exit $EXIT_SECURITY
+    else
+        echo "Warning: $1" >&2
+    fi
 }
 
 # Parse our options (before command)
@@ -61,6 +74,10 @@ while [ $# -gt 0 ]; do
             ;;
         --json)
             JSON_FLAG="--json"
+            shift
+            ;;
+        --strict)
+            STRICT_MODE="1"
             shift
             ;;
         --socket|--socket-name|-s)
@@ -97,6 +114,21 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# === Transport validation ===
+
+# Reject conflicting transport options
+if [ -n "$SOCKET_NAME" ] && [ -n "$SERVER_FILE" ]; then
+    echo "Error: --socket and --server-file are mutually exclusive" >&2
+    exit $EXIT_INVALID_ARGS
+fi
+
+# Warn about TCP transport (server-file implies TCP, not local socket)
+if [ -n "$SERVER_FILE" ]; then
+    security_warn "Using TCP transport via --server-file. Ensure server is localhost-only."
+fi
+
+# === Build command ===
 
 # Build the argument list for the Elisp dispatcher
 # We need to escape the arguments properly for Elisp string parsing

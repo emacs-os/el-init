@@ -62,6 +62,7 @@ Low-level control:
 - `--socket-name NAME` Use a specific Emacs server socket (emacsclient `-s`)
 - `--server-file PATH` Use a server file path for TCP (emacsclient `-f`)
 - `--timeout N` Wait at most N seconds for Emacs response (emacsclient `-w`)
+- `--strict` Fail on security warnings instead of continuing
 
 ## Output (Human-Readable Defaults)
 
@@ -228,6 +229,7 @@ If needed, pass `-s NAME` or `--server-file PATH` for server selection.
 - `2` invalid args
 - `3` Emacs server unavailable
 - `4` validation failed
+- `5` security policy violation (strict mode)
 
 ## Notes
 
@@ -260,3 +262,4 @@ Practical guidance:
 - Consider running Emacs under a dedicated user account for system-level use.
 - Use explicit `--socket-name` or `--server-file` instead of trusting ambient
   environment variables in scripts.
+- Use `--strict` flag to convert security warnings into fatal errors.

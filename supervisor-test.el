@@ -2562,7 +2562,8 @@ Regression test: stderr pipe processes used to pollute the process list."
   (should (= 1 supervisor-cli-exit-failure))
   (should (= 2 supervisor-cli-exit-invalid-args))
   (should (= 3 supervisor-cli-exit-server-unavailable))
-  (should (= 4 supervisor-cli-exit-validation-failed)))
+  (should (= 4 supervisor-cli-exit-validation-failed))
+  (should (= 5 supervisor-cli-exit-security)))
 
 (ert-deftest supervisor-test-cli-dispatch-unknown-command ()
   "Unknown CLI command returns exit code 2."
