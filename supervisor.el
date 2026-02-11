@@ -31,6 +31,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'json)
 
 ;; Forward declarations for optional features
 (declare-function file-notify-add-watch "filenotify" (file flags callback))
@@ -2264,24 +2265,24 @@ Uses sentinel-driven notification instead of polling."
 
 (defun supervisor--start-entry-async (entry callback)
   "Start ENTRY asynchronously for dashboard manual start.
-CALLBACK is called with t on success, nil on error."
+CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
   (pcase-let ((`(,id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,otimeout ,_tags) entry))
     (if (not (supervisor--get-effective-enabled id enabled-p))
         (progn
           (supervisor--log 'info "%s disabled (config or override), skipping" id)
-          (funcall callback t))
+          (when callback (funcall callback t)))
       (let ((args (split-string-and-unquote cmd)))
         (if (not (executable-find (car args)))
             (progn
               (supervisor--log 'warning "executable not found for %s: %s" id (car args))
               (supervisor--emit-event 'process-failed id nil nil)
-              (funcall callback nil))
+              (when callback (funcall callback nil)))
           ;; Start the process
           (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
             (if (not proc)
                 (progn
                   (supervisor--emit-event 'process-failed id nil nil)
-                  (funcall callback nil))
+                  (when callback (funcall callback nil)))
               (supervisor--emit-event 'process-started id nil (list :type type))
               (if (eq type 'oneshot)
                   ;; Wait for oneshot via timer (no polling loop)
@@ -2294,11 +2295,11 @@ CALLBACK is called with t on success, nil on error."
                        (if completed
                            (supervisor--log 'info "oneshot %s completed" id)
                          (supervisor--log 'warning "oneshot %s timed out" id))
-                       (funcall callback completed))))
+                       (when callback (funcall callback completed)))))
                 ;; Simple process: spawned = ready
                 (supervisor--log 'info "started %s" id)
                 (supervisor--emit-event 'process-ready id nil (list :type type))
-                (funcall callback t)))))))))
+                (when callback (funcall callback t))))))))))
 
 (defun supervisor--dag-force-stage-complete ()
   "Force stage completion due to timeout.
@@ -3653,6 +3654,769 @@ Use `M-x supervisor-validate' to check config without starting processes."
         (supervisor--start-config-watch))
     (supervisor--stop-config-watch)
     (supervisor-stop)))
+
+;;; CLI Control Plane
+;;
+;; Non-interactive command-line interface for controlling supervisor
+;; via emacsclient. All business logic remains in Elisp; the external
+;; wrapper (sbin/supervisorctl) is transport-only.
+
+(defconst supervisor-cli-exit-success 0
+  "Exit code for successful operation.")
+
+(defconst supervisor-cli-exit-failure 1
+  "Exit code for runtime failure.")
+
+(defconst supervisor-cli-exit-invalid-args 2
+  "Exit code for invalid arguments.")
+
+(defconst supervisor-cli-exit-server-unavailable 3
+  "Exit code when Emacs server is unavailable.")
+
+(defconst supervisor-cli-exit-validation-failed 4
+  "Exit code when config validation fails.")
+
+(defconst supervisor-cli-version "1.0.0"
+  "CLI version string.")
+
+(cl-defstruct (supervisor-cli-result (:constructor supervisor-cli-result--create))
+  "Result returned from CLI dispatcher.
+EXITCODE is an integer (0=success, 1=failure, 2=invalid args, etc).
+FORMAT is `human' or `json'.
+OUTPUT is the string to print."
+  (exitcode 0 :type integer)
+  (format 'human :type symbol)
+  (output "" :type string))
+
+(defun supervisor--cli-make-result (exitcode format output)
+  "Create CLI result with EXITCODE, FORMAT, and OUTPUT."
+  (supervisor-cli-result--create :exitcode exitcode :format format :output output))
+
+(defun supervisor--cli-success (output &optional format)
+  "Create success result with OUTPUT and optional FORMAT (default human)."
+  (supervisor--cli-make-result supervisor-cli-exit-success
+                               (or format 'human) output))
+
+(defun supervisor--cli-error (exitcode message &optional format)
+  "Create error result with EXITCODE, MESSAGE, and optional FORMAT.
+When FORMAT is `json', the error is returned as a JSON object."
+  (let ((fmt (or format 'human)))
+    (supervisor--cli-make-result
+     exitcode fmt
+     (if (eq fmt 'json)
+         (json-encode `((error . t) (message . ,message) (exitcode . ,exitcode)))
+       (format "Error: %s\n" message)))))
+
+;;; CLI Status/List helpers
+
+(defun supervisor--cli-entry-info (entry &optional snapshot)
+  "Build info alist for parsed ENTRY, using optional SNAPSHOT for state.
+Returns alist with all fields needed for status display."
+  (let* ((id (supervisor-entry-id entry))
+         (type (supervisor-entry-type entry))
+         (stage (supervisor-entry-stage entry))
+         (enabled-cfg (supervisor-entry-enabled-p entry))
+         (restart-cfg (supervisor-entry-restart-p entry))
+         (logging-cfg (supervisor-entry-logging-p entry))
+         (delay (supervisor-entry-delay entry))
+         (after (supervisor-entry-after entry))
+         (requires (supervisor-entry-requires entry))
+         (status-result (supervisor--compute-entry-status id type snapshot))
+         (status (car status-result))
+         (reason (supervisor--compute-entry-reason id type snapshot))
+         ;; Get effective values with overrides
+         (enabled-eff (supervisor--get-effective-enabled id enabled-cfg))
+         (restart-eff (if (eq type 'oneshot) nil
+                        (supervisor--get-effective-restart id restart-cfg)))
+         (logging-eff (supervisor--get-effective-logging id logging-cfg))
+         ;; Get PID if running
+         (pid (when snapshot
+                (gethash id (supervisor-snapshot-process-pids snapshot))))
+         (pid-global (unless snapshot
+                       (let ((proc (gethash id supervisor--processes)))
+                         (when (and proc (process-live-p proc))
+                           (process-id proc)))))
+         ;; Get timing info
+         (start-time (gethash id supervisor--start-times))
+         (ready-time (gethash id supervisor--ready-times)))
+    `((id . ,id)
+      (type . ,type)
+      (stage . ,stage)
+      (enabled . ,enabled-eff)
+      (enabled-config . ,enabled-cfg)
+      (restart . ,restart-eff)
+      (restart-config . ,restart-cfg)
+      (logging . ,logging-eff)
+      (logging-config . ,logging-cfg)
+      (delay . ,delay)
+      (after . ,after)
+      (requires . ,requires)
+      (status . ,status)
+      (reason . ,reason)
+      (pid . ,(or pid pid-global))
+      (start-time . ,start-time)
+      (ready-time . ,ready-time)
+      (duration . ,(when (and start-time ready-time)
+                     (- ready-time start-time))))))
+
+(defun supervisor--cli-all-entries-info (&optional snapshot)
+  "Build info alists for all valid entries, using optional SNAPSHOT.
+Returns (entries invalid) where entries is list of alists and
+invalid is list of (id . reason) pairs."
+  (let* ((plan (supervisor--build-plan supervisor-programs))
+         (entries (supervisor-plan-entries plan))
+         (invalid-hash (supervisor-plan-invalid plan))
+         (invalid-list nil)
+         (entry-infos nil))
+    ;; Collect invalid entries
+    (maphash (lambda (id reason)
+               (push `((id . ,id) (reason . ,reason)) invalid-list))
+             invalid-hash)
+    ;; Collect valid entries info
+    (dolist (entry entries)
+      (push (supervisor--cli-entry-info entry snapshot) entry-infos))
+    (list (nreverse entry-infos) (nreverse invalid-list))))
+
+;;; CLI Human Formatters
+
+(defun supervisor--cli-format-bool (val)
+  "Format boolean VAL as yes/no string."
+  (if val "yes" "no"))
+
+(defun supervisor--cli-format-status-line (info)
+  "Format single entry INFO alist as status table row."
+  (let ((id (alist-get 'id info))
+        (type (alist-get 'type info))
+        (stage (alist-get 'stage info))
+        (enabled (alist-get 'enabled info))
+        (status (alist-get 'status info))
+        (restart (alist-get 'restart info))
+        (logging (alist-get 'logging info))
+        (pid (alist-get 'pid info))
+        (reason (alist-get 'reason info)))
+    (format "%-16s %-8s %-8s %-8s %-10s %-8s %-5s %-7s %s\n"
+            (truncate-string-to-width (or id "-") 16)
+            (or (symbol-name type) "-")
+            (if stage (symbol-name stage) "-")
+            (supervisor--cli-format-bool enabled)
+            (or status "-")
+            (if (eq type 'oneshot) "n/a"
+              (supervisor--cli-format-bool restart))
+            (supervisor--cli-format-bool logging)
+            (if pid (number-to-string pid) "-")
+            (or reason "-"))))
+
+(defun supervisor--cli-format-invalid-line (info)
+  "Format invalid entry INFO as status table row."
+  (let ((id (alist-get 'id info))
+        (reason (alist-get 'reason info)))
+    (format "%-16s %-8s %-8s %-8s %-10s %-8s %-5s %-7s %s\n"
+            (truncate-string-to-width (or id "-") 16)
+            "-" "-" "-" "invalid" "-" "-" "-"
+            (or reason "-"))))
+
+(defun supervisor--cli-status-human (entries invalid)
+  "Format ENTRIES and INVALID as human-readable status table."
+  (let ((header (format "%-16s %-8s %-8s %-8s %-10s %-8s %-5s %-7s %s\n"
+                        "ID" "TYPE" "STAGE" "ENABLED" "STATUS" "RESTART" "LOG" "PID" "REASON"))
+        (sep (make-string 100 ?-)))
+    (concat header sep "\n"
+            (mapconcat #'supervisor--cli-format-status-line entries "")
+            (when invalid
+              (mapconcat #'supervisor--cli-format-invalid-line invalid "")))))
+
+(defun supervisor--cli-describe-human (info)
+  "Format single entry INFO as human-readable detail view."
+  (let ((id (alist-get 'id info))
+        (type (alist-get 'type info))
+        (stage (alist-get 'stage info))
+        (enabled (alist-get 'enabled info))
+        (enabled-cfg (alist-get 'enabled-config info))
+        (restart (alist-get 'restart info))
+        (restart-cfg (alist-get 'restart-config info))
+        (logging (alist-get 'logging info))
+        (logging-cfg (alist-get 'logging-config info))
+        (delay (alist-get 'delay info))
+        (after (alist-get 'after info))
+        (requires (alist-get 'requires info))
+        (status (alist-get 'status info))
+        (reason (alist-get 'reason info))
+        (pid (alist-get 'pid info))
+        (start-time (alist-get 'start-time info))
+        (ready-time (alist-get 'ready-time info))
+        (duration (alist-get 'duration info)))
+    (concat
+     (format "ID: %s\n" id)
+     (format "Type: %s\n" type)
+     (format "Stage: %s\n" stage)
+     (format "Status: %s%s\n" status (if reason (format " (%s)" reason) ""))
+     (format "Enabled: %s%s\n"
+             (supervisor--cli-format-bool enabled)
+             (if (not (eq enabled enabled-cfg)) " (override)" ""))
+     (when (not (eq type 'oneshot))
+       (format "Restart: %s%s\n"
+               (supervisor--cli-format-bool restart)
+               (if (not (eq restart restart-cfg)) " (override)" "")))
+     (format "Logging: %s%s\n"
+             (supervisor--cli-format-bool logging)
+             (if (not (eq logging logging-cfg)) " (override)" ""))
+     (format "Delay: %s\n" delay)
+     (format "After: %s\n" (if after (mapconcat #'identity after ", ") "none"))
+     (format "Requires: %s\n" (if requires (mapconcat #'identity requires ", ") "none"))
+     (when pid (format "PID: %d\n" pid))
+     (when start-time (format "Start time: %.3f\n" start-time))
+     (when ready-time (format "Ready time: %.3f\n" ready-time))
+     (when duration (format "Duration: %.3fs\n" duration)))))
+
+;;; CLI JSON Formatters
+
+(defun supervisor--cli-entry-to-json-obj (info)
+  "Convert entry INFO alist to JSON-compatible alist."
+  `((id . ,(alist-get 'id info))
+    (type . ,(symbol-name (alist-get 'type info)))
+    (stage . ,(symbol-name (alist-get 'stage info)))
+    (enabled . ,(if (alist-get 'enabled info) t :json-false))
+    (status . ,(alist-get 'status info))
+    (restart . ,(if (alist-get 'restart info) t :json-false))
+    (logging . ,(if (alist-get 'logging info) t :json-false))
+    (pid . ,(or (alist-get 'pid info) :null))
+    (reason . ,(or (alist-get 'reason info) :null))
+    (delay . ,(alist-get 'delay info))
+    (after . ,(or (alist-get 'after info) []))
+    (requires . ,(or (alist-get 'requires info) []))
+    (start_time . ,(or (alist-get 'start-time info) :null))
+    (ready_time . ,(or (alist-get 'ready-time info) :null))
+    (duration . ,(or (alist-get 'duration info) :null))))
+
+(defun supervisor--cli-invalid-to-json-obj (info)
+  "Convert invalid entry INFO to JSON-compatible alist."
+  `((id . ,(alist-get 'id info))
+    (reason . ,(alist-get 'reason info))))
+
+(defun supervisor--cli-status-json (entries invalid)
+  "Format ENTRIES and INVALID as JSON status object."
+  (let ((obj `((entries . ,(mapcar #'supervisor--cli-entry-to-json-obj entries))
+               (invalid . ,(mapcar #'supervisor--cli-invalid-to-json-obj invalid)))))
+    (json-encode obj)))
+
+;;; CLI Subcommand Handlers
+
+(defun supervisor--cli-cmd-status (args json-p)
+  "Handle `status' command with ARGS.  JSON-P enables JSON output."
+  (let* ((snapshot (supervisor--build-snapshot))
+         (result (supervisor--cli-all-entries-info snapshot))
+         (entries (car result))
+         (invalid (cadr result))
+         ;; Filter by IDs if specified
+         (filter-ids (and args (mapcar #'identity args)))
+         (entries (if filter-ids
+                      (cl-remove-if-not
+                       (lambda (e) (member (alist-get 'id e) filter-ids))
+                       entries)
+                    entries)))
+    (supervisor--cli-success
+     (if json-p
+         (supervisor--cli-status-json entries invalid)
+       (supervisor--cli-status-human entries invalid))
+     (if json-p 'json 'human))))
+
+(defun supervisor--cli-cmd-list (args json-p)
+  "Handle `list' command with ARGS.  JSON-P enables JSON output."
+  ;; list is alias for status
+  (supervisor--cli-cmd-status args json-p))
+
+(defun supervisor--cli-cmd-describe (args json-p)
+  "Handle `describe ID' command with ARGS.  JSON-P enables JSON output."
+  (if (null args)
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "describe requires an ID argument"
+                             (if json-p 'json 'human))
+    (let* ((id (car args))
+           (snapshot (supervisor--build-snapshot))
+           (result (supervisor--cli-all-entries-info snapshot))
+           (entries (car result))
+           (info (cl-find id entries :key (lambda (e) (alist-get 'id e)) :test #'equal)))
+      (if info
+          (supervisor--cli-success
+           (if json-p
+               (json-encode (supervisor--cli-entry-to-json-obj info))
+             (supervisor--cli-describe-human info))
+           (if json-p 'json 'human))
+        (supervisor--cli-error supervisor-cli-exit-failure
+                               (format "No entry with ID '%s'" id)
+                               (if json-p 'json 'human))))))
+
+(defun supervisor--cli-cmd-validate (_args json-p)
+  "Handle `validate' command.  JSON-P enables JSON output."
+  (let* ((plan (supervisor--build-plan supervisor-programs))
+         (valid-count (length (supervisor-plan-entries plan)))
+         (invalid-hash (supervisor-plan-invalid plan))
+         (invalid-list nil))
+    (maphash (lambda (id reason)
+               (push `((id . ,id) (reason . ,reason)) invalid-list))
+             invalid-hash)
+    (let ((invalid-count (length invalid-list)))
+      (if json-p
+          (supervisor--cli-make-result
+           (if (> invalid-count 0) supervisor-cli-exit-validation-failed
+             supervisor-cli-exit-success)
+           'json
+           (json-encode `((valid . ,valid-count)
+                          (invalid . ,invalid-count)
+                          (errors . ,(mapcar #'supervisor--cli-invalid-to-json-obj
+                                             invalid-list)))))
+        (supervisor--cli-make-result
+         (if (> invalid-count 0) supervisor-cli-exit-validation-failed
+           supervisor-cli-exit-success)
+         'human
+         (concat (format "Validation: %d valid, %d invalid\n" valid-count invalid-count)
+                 (mapconcat (lambda (e)
+                              (format "INVALID %s: %s\n"
+                                      (alist-get 'id e)
+                                      (alist-get 'reason e)))
+                            invalid-list "")))))))
+
+(defun supervisor--cli-cmd-start (args json-p)
+  "Handle `start [ID...]' command with ARGS.  JSON-P enables JSON output."
+  (if args
+      ;; Start specific entries
+      (let ((started nil)
+            (errors nil))
+        (dolist (id args)
+          (let ((entry (supervisor--get-entry-for-id id)))
+            (if entry
+                (progn
+                  (supervisor--start-entry-async entry nil)
+                  (push id started))
+              (push id errors))))
+        (let ((msg (concat
+                    (when started
+                      (format "Started: %s\n" (mapconcat #'identity (nreverse started) ", ")))
+                    (when errors
+                      (format "Not found: %s\n" (mapconcat #'identity errors ", "))))))
+          (if errors
+              (supervisor--cli-make-result supervisor-cli-exit-failure
+                                           (if json-p 'json 'human)
+                                           (if json-p
+                                               (json-encode `((started . ,(nreverse started))
+                                                              (errors . ,errors)))
+                                             msg))
+            (supervisor--cli-success
+             (if json-p
+                 (json-encode `((started . ,(nreverse started))))
+               msg)
+             (if json-p 'json 'human)))))
+    ;; Start all via supervisor-start
+    (supervisor-start)
+    (supervisor--cli-success
+     (if json-p
+         (json-encode '((message . "Supervisor started")))
+       "Supervisor started\n")
+     (if json-p 'json 'human))))
+
+(defun supervisor--cli-cmd-stop (args json-p)
+  "Handle `stop [ID...]' command with ARGS.  JSON-P enables JSON output."
+  (if args
+      ;; Stop specific entries
+      (let ((stopped nil)
+            (errors nil))
+        (dolist (id args)
+          (let ((proc (gethash id supervisor--processes)))
+            (if (and proc (process-live-p proc))
+                (progn
+                  (delete-process proc)
+                  (push id stopped))
+              (push id errors))))
+        (let ((msg (concat
+                    (when stopped
+                      (format "Stopped: %s\n" (mapconcat #'identity (nreverse stopped) ", ")))
+                    (when errors
+                      (format "Not running: %s\n" (mapconcat #'identity errors ", "))))))
+          (supervisor--cli-success
+           (if json-p
+               (json-encode `((stopped . ,(nreverse stopped))
+                              (not_running . ,errors)))
+             msg)
+           (if json-p 'json 'human))))
+    ;; Stop all via supervisor-stop-now (synchronous for CLI)
+    (supervisor-stop-now)
+    (supervisor--cli-success
+     (if json-p
+         (json-encode '((message . "Supervisor stopped")))
+       "Supervisor stopped\n")
+     (if json-p 'json 'human))))
+
+(defun supervisor--cli-cmd-restart (args json-p)
+  "Handle `restart [ID...]' command with ARGS.  JSON-P enables JSON output."
+  (if args
+      ;; Restart specific entries
+      (let ((restarted nil)
+            (errors nil))
+        (dolist (id args)
+          (let* ((proc (gethash id supervisor--processes))
+                 (entry (supervisor--get-entry-for-id id)))
+            (cond
+             ((not entry)
+              (push id errors))
+             ((and proc (process-live-p proc))
+              ;; Kill then restart
+              (delete-process proc)
+              (supervisor--start-entry-async entry nil)
+              (push id restarted))
+             (t
+              ;; Just start
+              (supervisor--start-entry-async entry nil)
+              (push id restarted)))))
+        (let ((msg (concat
+                    (when restarted
+                      (format "Restarted: %s\n" (mapconcat #'identity (nreverse restarted) ", ")))
+                    (when errors
+                      (format "Not found: %s\n" (mapconcat #'identity errors ", "))))))
+          (if errors
+              (supervisor--cli-make-result supervisor-cli-exit-failure
+                                           (if json-p 'json 'human)
+                                           (if json-p
+                                               (json-encode `((restarted . ,(nreverse restarted))
+                                                              (errors . ,errors)))
+                                             msg))
+            (supervisor--cli-success
+             (if json-p
+                 (json-encode `((restarted . ,(nreverse restarted))))
+               msg)
+             (if json-p 'json 'human)))))
+    ;; Restart all: stop then start
+    (supervisor-stop-now)
+    (supervisor-start)
+    (supervisor--cli-success
+     (if json-p
+         (json-encode '((message . "Supervisor restarted")))
+       "Supervisor restarted\n")
+     (if json-p 'json 'human))))
+
+(defun supervisor--cli-cmd-reload (_args json-p)
+  "Handle `reload' command.  JSON-P enables JSON output."
+  (supervisor-reload)
+  (supervisor--cli-success
+   (if json-p
+       (json-encode '((message . "Reload complete")))
+     "Reload complete\n")
+   (if json-p 'json 'human)))
+
+(defun supervisor--cli-cmd-enable (args json-p)
+  "Handle `enable ID...' command with ARGS.  JSON-P enables JSON output."
+  (if (null args)
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "enable requires at least one ID"
+                             (if json-p 'json 'human))
+    (dolist (id args)
+      (puthash id 'enabled supervisor--enabled-override))
+    (supervisor--save-overrides)
+    (supervisor--cli-success
+     (if json-p
+         (json-encode `((enabled . ,args)))
+       (format "Enabled: %s\n" (mapconcat #'identity args ", ")))
+     (if json-p 'json 'human))))
+
+(defun supervisor--cli-cmd-disable (args json-p)
+  "Handle `disable ID...' command with ARGS.  JSON-P enables JSON output."
+  (if (null args)
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "disable requires at least one ID"
+                             (if json-p 'json 'human))
+    (dolist (id args)
+      (puthash id 'disabled supervisor--enabled-override))
+    (supervisor--save-overrides)
+    (supervisor--cli-success
+     (if json-p
+         (json-encode `((disabled . ,args)))
+       (format "Disabled: %s\n" (mapconcat #'identity args ", ")))
+     (if json-p 'json 'human))))
+
+(defun supervisor--cli-cmd-restart-policy (args json-p)
+  "Handle `restart-policy (on|off) ID...' command with ARGS.  JSON-P for JSON."
+  (cond
+   ((< (length args) 2)
+    (supervisor--cli-error supervisor-cli-exit-invalid-args
+                           "restart-policy requires (on|off) and at least one ID"
+                           (if json-p 'json 'human)))
+   (t
+    (let* ((policy (car args))
+           (ids (cdr args))
+           (value (cond ((equal policy "on") 'enabled)
+                        ((equal policy "off") 'disabled)
+                        (t nil))))
+      (if (null value)
+          (supervisor--cli-error supervisor-cli-exit-invalid-args
+                                 "restart-policy requires 'on' or 'off'"
+                                 (if json-p 'json 'human))
+        (dolist (id ids)
+          (puthash id value supervisor--restart-override))
+        (supervisor--save-overrides)
+        (supervisor--cli-success
+         (if json-p
+             (json-encode `((restart_policy . ,policy) (ids . ,ids)))
+           (format "Restart policy %s: %s\n" policy (mapconcat #'identity ids ", ")))
+         (if json-p 'json 'human)))))))
+
+(defun supervisor--cli-cmd-logging (args json-p)
+  "Handle `logging (on|off) ID...' command with ARGS.  JSON-P for JSON."
+  (cond
+   ((< (length args) 2)
+    (supervisor--cli-error supervisor-cli-exit-invalid-args
+                           "logging requires (on|off) and at least one ID"
+                           (if json-p 'json 'human)))
+   (t
+    (let* ((policy (car args))
+           (ids (cdr args))
+           (value (cond ((equal policy "on") 'enabled)
+                        ((equal policy "off") 'disabled)
+                        (t nil))))
+      (if (null value)
+          (supervisor--cli-error supervisor-cli-exit-invalid-args
+                                 "logging requires 'on' or 'off'"
+                                 (if json-p 'json 'human))
+        (dolist (id ids)
+          (puthash id value supervisor--logging))
+        (supervisor--save-overrides)
+        (supervisor--cli-success
+         (if json-p
+             (json-encode `((logging . ,policy) (ids . ,ids)))
+           (format "Logging %s: %s\n" policy (mapconcat #'identity ids ", ")))
+         (if json-p 'json 'human)))))))
+
+(defun supervisor--cli-cmd-blame (_args json-p)
+  "Handle `blame' command.  JSON-P enables JSON output."
+  (let ((blame-data nil))
+    (maphash (lambda (id start-time)
+               (let ((ready-time (gethash id supervisor--ready-times)))
+                 (push `((id . ,id)
+                         (start_time . ,start-time)
+                         (ready_time . ,(or ready-time :null))
+                         (duration . ,(if ready-time (- ready-time start-time) :null)))
+                       blame-data)))
+             supervisor--start-times)
+    ;; Sort by start time
+    (setq blame-data (sort blame-data
+                           (lambda (a b)
+                             (< (alist-get 'start_time a)
+                                (alist-get 'start_time b)))))
+    (supervisor--cli-success
+     (if json-p
+         (json-encode `((blame . ,blame-data)))
+       (concat
+        (format "%-20s %-18s %-18s %s\n" "ID" "START" "READY" "DURATION")
+        (make-string 70 ?-)
+        "\n"
+        (mapconcat (lambda (e)
+                     (format "%-20s %-18.3f %-18s %s\n"
+                             (alist-get 'id e)
+                             (alist-get 'start_time e)
+                             (let ((r (alist-get 'ready_time e)))
+                               (if (eq r :null) "-" (format "%.3f" r)))
+                             (let ((d (alist-get 'duration e)))
+                               (if (eq d :null) "-" (format "%.3fs" d)))))
+                   blame-data "")))
+     (if json-p 'json 'human))))
+
+(defun supervisor--cli-cmd-graph (args json-p)
+  "Handle `graph [ID]' command with ARGS.  JSON-P enables JSON output."
+  (let* ((plan (supervisor--build-plan supervisor-programs))
+         (deps (supervisor-plan-deps plan))
+         (requires (supervisor-plan-requires-deps plan))
+         (dependents (supervisor-plan-dependents plan))
+         (id (car args)))
+    (if id
+        ;; Graph for single ID
+        (let ((after-deps (gethash id deps))
+              (req-deps (gethash id requires))
+              (blocks (gethash id dependents)))
+          (supervisor--cli-success
+           (if json-p
+               (json-encode `((id . ,id)
+                              (after . ,(or after-deps []))
+                              (requires . ,(or req-deps []))
+                              (blocks . ,(or blocks []))))
+             (concat
+              (format "ID: %s\n" id)
+              (format "After: %s\n" (if after-deps (mapconcat #'identity after-deps ", ") "none"))
+              (format "Requires: %s\n" (if req-deps (mapconcat #'identity req-deps ", ") "none"))
+              (format "Blocks: %s\n" (if blocks (mapconcat #'identity blocks ", ") "none"))))
+           (if json-p 'json 'human)))
+      ;; Full graph
+      (let ((edges nil))
+        (maphash (lambda (id dep-list)
+                   (dolist (dep dep-list)
+                     (push `(,dep ,id) edges)))
+                 dependents)
+        (supervisor--cli-success
+         (if json-p
+             (json-encode `((edges . ,edges)))
+           (concat "Dependency Graph (dep -> dependent):\n"
+                   (mapconcat (lambda (e)
+                                (format "  %s -> %s\n" (car e) (cadr e)))
+                              edges "")))
+         (if json-p 'json 'human))))))
+
+(defun supervisor--cli-cmd-logs (args json-p)
+  "Handle `logs ID [--tail N]' command with ARGS.  JSON-P enables JSON output."
+  (if (null args)
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "logs requires an ID argument"
+                             (if json-p 'json 'human))
+    (let* ((id (car args))
+           (tail-arg (member "--tail" args))
+           (tail-n (if (and tail-arg (cadr tail-arg))
+                       (string-to-number (cadr tail-arg))
+                     50))
+           (log-file (supervisor--log-file id)))
+      (if (file-exists-p log-file)
+          (let ((content (with-temp-buffer
+                           (insert-file-contents log-file)
+                           (let ((lines (split-string (buffer-string) "\n" t)))
+                             (if (> (length lines) tail-n)
+                                 (mapconcat #'identity (last lines tail-n) "\n")
+                               (buffer-string))))))
+            (supervisor--cli-success
+             (if json-p
+                 (json-encode `((id . ,id) (log_file . ,log-file) (content . ,content)))
+               (concat (format "=== Log for %s (%s) ===\n" id log-file)
+                       content "\n"))
+             (if json-p 'json 'human)))
+        (supervisor--cli-error supervisor-cli-exit-failure
+                               (format "No log file for '%s'" id)
+                               (if json-p 'json 'human))))))
+
+(defun supervisor--cli-cmd-ping (_args json-p)
+  "Handle `ping' command.  JSON-P enables JSON output."
+  (supervisor--cli-success
+   (if json-p
+       (json-encode `((status . "ok") (server . "supervisor")))
+     "pong\n")
+   (if json-p 'json 'human)))
+
+(defun supervisor--cli-cmd-version (_args json-p)
+  "Handle `version' command.  JSON-P enables JSON output."
+  (supervisor--cli-success
+   (if json-p
+       (json-encode `((version . ,supervisor-cli-version)
+                      (emacs . ,emacs-version)))
+     (format "supervisorctl %s (Emacs %s)\n" supervisor-cli-version emacs-version))
+   (if json-p 'json 'human)))
+
+(defun supervisor--cli-cmd-kill (args json-p)
+  "Handle `kill ID [--signal SIG]' command with ARGS.  JSON-P enables JSON output."
+  (if (null args)
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "kill requires an ID argument"
+                             (if json-p 'json 'human))
+    (let* ((id (car args))
+           (sig-arg (member "--signal" args))
+           (sig (if (and sig-arg (cadr sig-arg))
+                    (intern (upcase (cadr sig-arg)))
+                  'SIGTERM))
+           (proc (gethash id supervisor--processes)))
+      (if (and proc (process-live-p proc))
+          (progn
+            (signal-process proc sig)
+            (supervisor--cli-success
+             (if json-p
+                 (json-encode `((id . ,id) (signal . ,(symbol-name sig))))
+               (format "Sent %s to %s\n" sig id))
+             (if json-p 'json 'human)))
+        (supervisor--cli-error supervisor-cli-exit-failure
+                               (format "Process '%s' not running" id)
+                               (if json-p 'json 'human))))))
+
+;;; CLI Dispatcher
+
+(defun supervisor--cli-parse-args (argv)
+  "Parse ARGV into (command args json-p).
+ARGV is either a string or a list of strings.
+Returns a list (COMMAND ARGS JSON-P)."
+  (let* ((argv (if (stringp argv)
+                   (split-string-and-unquote argv)
+                 argv))
+         (json-p (member "--json" argv))
+         (argv (cl-remove "--json" argv :test #'equal))
+         (command (car argv))
+         (args (cdr argv)))
+    (list command args (if json-p t nil))))
+
+(defun supervisor--cli-dispatch (argv)
+  "Dispatch CLI command from ARGV.
+ARGV is a list of strings (command and arguments).
+Returns a `supervisor-cli-result' struct."
+  (let* ((parsed (supervisor--cli-parse-args argv))
+         (command (nth 0 parsed))
+         (args (nth 1 parsed))
+         (json-p (nth 2 parsed)))
+    (condition-case err
+        (cond
+         ((null command)
+          (supervisor--cli-success
+           (concat "Usage: supervisorctl COMMAND [ARGS...]\n\n"
+                   "Commands: status, list, describe, start, stop, restart,\n"
+                   "          reload, validate, enable, disable, restart-policy,\n"
+                   "          logging, blame, graph, logs, kill, ping, version\n\n"
+                   "Options: --json (output as JSON)\n")
+           (if json-p 'json 'human)))
+         ((equal command "status")
+          (supervisor--cli-cmd-status args json-p))
+         ((equal command "list")
+          (supervisor--cli-cmd-list args json-p))
+         ((equal command "describe")
+          (supervisor--cli-cmd-describe args json-p))
+         ((equal command "validate")
+          (supervisor--cli-cmd-validate args json-p))
+         ((equal command "start")
+          (supervisor--cli-cmd-start args json-p))
+         ((equal command "stop")
+          (supervisor--cli-cmd-stop args json-p))
+         ((equal command "restart")
+          (supervisor--cli-cmd-restart args json-p))
+         ((equal command "reload")
+          (supervisor--cli-cmd-reload args json-p))
+         ((equal command "enable")
+          (supervisor--cli-cmd-enable args json-p))
+         ((equal command "disable")
+          (supervisor--cli-cmd-disable args json-p))
+         ((equal command "restart-policy")
+          (supervisor--cli-cmd-restart-policy args json-p))
+         ((equal command "logging")
+          (supervisor--cli-cmd-logging args json-p))
+         ((equal command "blame")
+          (supervisor--cli-cmd-blame args json-p))
+         ((equal command "graph")
+          (supervisor--cli-cmd-graph args json-p))
+         ((equal command "logs")
+          (supervisor--cli-cmd-logs args json-p))
+         ((equal command "kill")
+          (supervisor--cli-cmd-kill args json-p))
+         ((equal command "ping")
+          (supervisor--cli-cmd-ping args json-p))
+         ((equal command "version")
+          (supervisor--cli-cmd-version args json-p))
+         (t
+          (supervisor--cli-error supervisor-cli-exit-invalid-args
+                                 (format "Unknown command: %s" command)
+                                 (if json-p 'json 'human))))
+      (error
+       (supervisor--cli-error supervisor-cli-exit-failure
+                              (format "Internal error: %s" (error-message-string err))
+                              (if json-p 'json 'human))))))
+
+(defun supervisor--cli-dispatch-for-wrapper (argv-list)
+  "Dispatch CLI command for external wrapper.
+ARGV-LIST is a list of strings passed from the shell wrapper.
+Returns a string in format \"EXITCODE:BASE64OUTPUT\" for the wrapper to parse.
+Exit code and base64-encoded output are separated by colon.
+Base64 encoding avoids escaping issues with newlines and special characters."
+  (let ((result (supervisor--cli-dispatch argv-list)))
+    (format "%d:%s"
+            (supervisor-cli-result-exitcode result)
+            (base64-encode-string
+             (encode-coding-string (supervisor-cli-result-output result) 'utf-8)
+             t))))
 
 (provide 'supervisor)
 ;;; supervisor.el ends here

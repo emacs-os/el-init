@@ -6,7 +6,7 @@ policy live in Elisp. The goal is a systemctl-like UX that covers all
 supervisor features so the interactive dashboard (`M-x supervisor`) remains
 optional.
 
-Status: design plan only, not yet implemented.
+Status: implemented. See `supervisorctl` wrapper in this directory.
 
 ## Principles
 
@@ -42,8 +42,6 @@ State and inspect:
 - `supervisorctl graph [ID]`
 - `supervisorctl blame`
 - `supervisorctl logs ID [--tail N]`
-- `supervisorctl stage`
-- `supervisorctl wait [--stage STAGE|--all] [--timeout N]`
 
 Runtime overrides (dashboard parity):
 
@@ -57,9 +55,6 @@ Low-level control:
 - `supervisorctl kill ID [--signal SIG]`
 - `supervisorctl ping`
 - `supervisorctl version`
-
-Note: some commands map to P1 items (reload, wait, runtime enable/disable) and
-will be no-ops until implemented.
 
 ## Options
 
@@ -170,37 +165,58 @@ Example `graph --json`:
 }
 ```
 
-## Emacs Functions Required (to back the CLI)
+## Emacs Functions (Implementation)
 
-These should return structured data instead of only `message` output.
-Prefer a single dispatcher plus small helpers.
+The CLI is backed by a single dispatcher with private command handlers:
 
-- `supervisor-cli-status` -> list/alist for all entries
-- `supervisor-cli-describe` -> alist for one entry
-- `supervisor-cli-graph` -> dependency edges
-- `supervisor-cli-blame` -> startup timing info
-- `supervisor-cli-logs` -> recent log lines
-- `supervisor-cli-set-enabled` -> enable/disable by id(s)
-- `supervisor-cli-set-restart` -> runtime restart override by id(s)
-- `supervisor-cli-set-logging` -> runtime logging override by id(s)
-- `supervisor-cli-signal` -> send signal to a process
-- `supervisor-cli-validate` -> validation summary and invalid list
-- `supervisor-cli-reload` -> reconcile config without restart
+- `supervisor--cli-dispatch` - parses argv and routes to handlers
+- `supervisor--cli-dispatch-for-wrapper` - wrapper entry point, returns simple format
+
+Command handlers (all private, `supervisor--cli-cmd-*`):
+
+- `supervisor--cli-cmd-status` - status/list command
+- `supervisor--cli-cmd-describe` - describe command
+- `supervisor--cli-cmd-start` - start command
+- `supervisor--cli-cmd-stop` - stop command
+- `supervisor--cli-cmd-restart` - restart command
+- `supervisor--cli-cmd-reload` - reload command
+- `supervisor--cli-cmd-validate` - validate command
+- `supervisor--cli-cmd-enable` - enable command
+- `supervisor--cli-cmd-disable` - disable command
+- `supervisor--cli-cmd-restart-policy` - restart-policy command
+- `supervisor--cli-cmd-logging` - logging command
+- `supervisor--cli-cmd-blame` - blame command
+- `supervisor--cli-cmd-graph` - graph command
+- `supervisor--cli-cmd-logs` - logs command
+- `supervisor--cli-cmd-kill` - kill command
+- `supervisor--cli-cmd-ping` - ping command
+- `supervisor--cli-cmd-version` - version command
+
+Result structure: `supervisor-cli-result` struct with exitcode, format, and output.
 
 ## Transport
 
-The shim encodes argv and invokes a single Elisp dispatcher:
+The shim encodes argv as a Lisp list and invokes `supervisor--cli-dispatch-for-wrapper`:
 
 ```
-emacsclient --eval "(supervisor--dispatch \"<encoded-argv>\")"
+emacsclient --eval "(supervisor--cli-dispatch-for-wrapper (list \"cmd\" \"arg1\" ...))"
 ```
 
-The dispatcher returns a structured payload containing:
-- `exit` (integer)
-- `format` (`human` or `json`)
-- `output` (string)
+The dispatcher returns a string in the format:
 
-The shim prints `output` and exits with `exit`.
+```
+EXITCODE:BASE64OUTPUT
+```
+
+Where `EXITCODE` is a numeric exit code and `BASE64OUTPUT` is base64-encoded output.
+Base64 encoding avoids escaping issues with newlines and special characters in JSON.
+
+The shim:
+1. Strips the outer quotes from `emacsclient --eval` output
+2. Extracts the exit code (before the colon)
+3. Decodes the base64 output (after the colon)
+4. Prints decoded output and exits with the extracted code
+
 If needed, pass `-s NAME` or `--server-file PATH` for server selection.
 
 ## Exit Codes

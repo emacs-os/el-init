@@ -57,6 +57,80 @@ When Emacs is your session owner (for example EXWM), typical hooks are:
 | `M-x supervisor-validate` | Validate config and show errors without starting |
 | `M-x supervisor-dry-run` | Show computed startup order and metadata without starting |
 
+** CLI Control Plane (`supervisorctl`)
+
+A shell wrapper in `sbin/supervisorctl` provides command-line control via `emacsclient`.
+This allows scripting and terminal-based management without the interactive dashboard.
+
+*** Requirements
+
+- Emacs server running (`M-x server-start` or `(server-start)`)
+- `emacsclient` available in `PATH`
+
+*** Usage
+
+#+begin_src bash
+sbin/supervisorctl [OPTIONS] COMMAND [ARGS...]
+#+end_src
+
+*** Options
+
+| Option | Purpose |
+| `--json` | Output JSON instead of human-readable text |
+| `--socket NAME` | Use specific Emacs server socket |
+| `--server-file PATH` | Use server file for TCP |
+| `--timeout N` | Wait at most N seconds for response |
+
+*** Commands
+
+Lifecycle:
+
+| Command | Purpose |
+| `start [ID...]` | Start entries (or all if none specified) |
+| `stop [ID...]` | Stop entries (or all if none specified) |
+| `restart [ID...]` | Restart entries (or all if none specified) |
+| `reload` | Reconcile config without full restart |
+| `validate` | Validate config and show errors |
+
+Inspection:
+
+| Command | Purpose |
+| `status [ID...]` | Show status of entries |
+| `list [ID...]` | Alias for status |
+| `describe ID` | Show detailed info for an entry |
+| `graph [ID]` | Show dependency graph |
+| `blame` | Show startup timing info |
+| `logs ID [--tail N]` | View entry log file |
+
+Runtime policy:
+
+| Command | Purpose |
+| `enable ID...` | Enable entries |
+| `disable ID...` | Disable entries |
+| `restart-policy (on\vert{}off) ID...` | Set restart policy |
+| `logging (on\vert{}off) ID...` | Set logging policy |
+
+Utilities:
+
+| Command | Purpose |
+| `kill ID [--signal SIG]` | Send signal to process |
+| `ping` | Check if supervisor is responsive |
+| `version` | Show version info |
+
+*** Exit Codes
+
+| Code | Meaning |
+| `0` | Success |
+| `1` | Runtime failure |
+| `2` | Invalid arguments |
+| `3` | Emacs server unavailable |
+| `4` | Validation failed |
+
+*** JSON Output
+
+When `--json` is passed, all output is JSON with a stable schema.
+Status output includes an `entries` array and optional `invalid` array.
+
 ** Configuration Model
 
 Set `supervisor-programs` to a list of entries.

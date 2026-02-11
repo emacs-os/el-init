@@ -2496,5 +2496,190 @@ Regression test: stderr pipe processes used to pollute the process list."
     (let ((stage3-entry (assoc 2 (supervisor-plan-by-stage plan))))
       (should-not stage3-entry))))
 
+;;; CLI Control Plane tests
+
+(ert-deftest supervisor-test-cli-result-structure ()
+  "CLI result struct has required fields."
+  (let ((result (supervisor--cli-make-result 0 'human "output")))
+    (should (supervisor-cli-result-p result))
+    (should (= 0 (supervisor-cli-result-exitcode result)))
+    (should (eq 'human (supervisor-cli-result-format result)))
+    (should (equal "output" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-exit-codes ()
+  "CLI exit code constants are defined."
+  (should (= 0 supervisor-cli-exit-success))
+  (should (= 1 supervisor-cli-exit-failure))
+  (should (= 2 supervisor-cli-exit-invalid-args))
+  (should (= 3 supervisor-cli-exit-server-unavailable))
+  (should (= 4 supervisor-cli-exit-validation-failed)))
+
+(ert-deftest supervisor-test-cli-dispatch-unknown-command ()
+  "Unknown CLI command returns exit code 2."
+  (let ((result (supervisor--cli-dispatch '("unknown-cmd"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-dispatch-empty-args ()
+  "Empty args returns help text."
+  (let ((result (supervisor--cli-dispatch '())))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    (should (string-match "Usage:" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-ping ()
+  "Ping command returns pong."
+  (let ((result (supervisor--cli-dispatch '("ping"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    (should (string-match "pong" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-ping-json ()
+  "Ping command with --json returns JSON."
+  (let ((result (supervisor--cli-dispatch '("ping" "--json"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    (should (eq 'json (supervisor-cli-result-format result)))
+    (should (string-match "\"status\"" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-version ()
+  "Version command returns version info."
+  (let ((result (supervisor--cli-dispatch '("version"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    (should (string-match "supervisorctl" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-validate-no-programs ()
+  "Validate with no programs returns success."
+  (let ((supervisor-programs nil)
+        (result (supervisor--cli-dispatch '("validate"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    (should (string-match "0 valid" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-validate-invalid-entry ()
+  "Validate with invalid entry returns validation-failed exit code."
+  (let* ((supervisor-programs '(("cmd" :type "bad")))
+         (result (supervisor--cli-dispatch '("validate"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-validation-failed (supervisor-cli-result-exitcode result)))
+    (should (string-match "1 invalid" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-status-human-format ()
+  "Status command returns human-readable table."
+  (let* ((supervisor-programs '(("test-cmd" :id "test" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("status"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    (should (eq 'human (supervisor-cli-result-format result)))
+    ;; Should contain header row
+    (should (string-match "ID" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-status-json-format ()
+  "Status --json returns JSON array."
+  (let* ((supervisor-programs '(("test-cmd" :id "test" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("status" "--json"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    (should (eq 'json (supervisor-cli-result-format result)))
+    ;; Should be valid JSON with entries array
+    (should (string-match "\"entries\"" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-describe-requires-id ()
+  "Describe without ID returns invalid-args exit code."
+  (let ((result (supervisor--cli-dispatch '("describe"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-enable-requires-id ()
+  "Enable without ID returns invalid-args exit code."
+  (let ((result (supervisor--cli-dispatch '("enable"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-enable-sets-override ()
+  "Enable command sets enabled override."
+  (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))  ; disable auto-save
+    (supervisor--cli-dispatch '("enable" "test-id"))
+    (should (eq 'enabled (gethash "test-id" supervisor--enabled-override)))))
+
+(ert-deftest supervisor-test-cli-disable-sets-override ()
+  "Disable command sets disabled override."
+  (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))  ; disable auto-save
+    (supervisor--cli-dispatch '("disable" "test-id"))
+    (should (eq 'disabled (gethash "test-id" supervisor--enabled-override)))))
+
+(ert-deftest supervisor-test-cli-restart-policy-on ()
+  "Restart-policy on sets override."
+  (let ((supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))
+    (supervisor--cli-dispatch '("restart-policy" "on" "test-id"))
+    (should (eq 'enabled (gethash "test-id" supervisor--restart-override)))))
+
+(ert-deftest supervisor-test-cli-restart-policy-off ()
+  "Restart-policy off sets override."
+  (let ((supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))
+    (supervisor--cli-dispatch '("restart-policy" "off" "test-id"))
+    (should (eq 'disabled (gethash "test-id" supervisor--restart-override)))))
+
+(ert-deftest supervisor-test-cli-logging-on ()
+  "Logging on sets override."
+  (let ((supervisor--logging (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))
+    (supervisor--cli-dispatch '("logging" "on" "test-id"))
+    (should (eq 'enabled (gethash "test-id" supervisor--logging)))))
+
+(ert-deftest supervisor-test-cli-logging-off ()
+  "Logging off sets override."
+  (let ((supervisor--logging (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))
+    (supervisor--cli-dispatch '("logging" "off" "test-id"))
+    (should (eq 'disabled (gethash "test-id" supervisor--logging)))))
+
+(ert-deftest supervisor-test-cli-logs-requires-id ()
+  "Logs without ID returns invalid-args exit code."
+  (let ((result (supervisor--cli-dispatch '("logs"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-kill-requires-id ()
+  "Kill without ID returns invalid-args exit code."
+  (let ((result (supervisor--cli-dispatch '("kill"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-graph-full ()
+  "Graph command without ID returns full graph."
+  (let* ((supervisor-programs '(("a" :id "a") ("b" :id "b" :after "a")))
+         (result (supervisor--cli-dispatch '("graph"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-graph-single ()
+  "Graph command with ID returns single entry graph."
+  (let* ((supervisor-programs '(("a" :id "a") ("b" :id "b" :after "a")))
+         (result (supervisor--cli-dispatch '("graph" "b"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    (should (string-match "ID: b" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-blame ()
+  "Blame command returns timing info."
+  (let ((supervisor--start-times (make-hash-table :test 'equal))
+        (supervisor--ready-times (make-hash-table :test 'equal)))
+    (puthash "test" 1000.0 supervisor--start-times)
+    (puthash "test" 1001.5 supervisor--ready-times)
+    (let ((result (supervisor--cli-dispatch '("blame"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (string-match "DURATION" (supervisor-cli-result-output result))))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

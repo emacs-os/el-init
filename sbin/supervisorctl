@@ -1,0 +1,183 @@
+#!/bin/sh
+# supervisorctl - CLI wrapper for supervisor.el
+#
+# This is a minimal transport shim that calls supervisor--cli-dispatch via
+# emacsclient. All parsing, dispatch, and output formatting happens in Elisp.
+#
+# Usage: supervisorctl [OPTIONS] COMMAND [ARGS...]
+#
+# Options:
+#   --json           Output JSON instead of human-readable text
+#   --socket NAME    Use specific Emacs server socket (emacsclient -s)
+#   --server-file P  Use server file for TCP (emacsclient -f)
+#   --timeout N      Wait at most N seconds for response
+#   --help           Show this help message
+#
+# Commands:
+#   status [ID...]   Show status of entries
+#   list [ID...]     Alias for status
+#   describe ID      Show detailed info for an entry
+#   start [ID...]    Start entries (or all if none specified)
+#   stop [ID...]     Stop entries (or all if none specified)
+#   restart [ID...]  Restart entries (or all if none specified)
+#   reload           Reconcile config without full restart
+#   validate         Validate config and show errors
+#   enable ID...     Enable entries
+#   disable ID...    Disable entries
+#   restart-policy (on|off) ID...  Set restart policy
+#   logging (on|off) ID...         Set logging policy
+#   blame            Show startup timing info
+#   graph [ID]       Show dependency graph
+#   logs ID [--tail N]  View entry log file
+#   kill ID [--signal SIG]  Send signal to process
+#   ping             Check if supervisor is responsive
+#   version          Show version info
+
+set -e
+
+# Exit codes (must match supervisor-cli-exit-* constants)
+EXIT_SUCCESS=0
+EXIT_FAILURE=1
+EXIT_INVALID_ARGS=2
+EXIT_SERVER_UNAVAILABLE=3
+
+# Default emacsclient options
+SOCKET_NAME=""
+SERVER_FILE=""
+TIMEOUT=""
+JSON_FLAG=""
+
+# Print help
+show_help() {
+    sed -n '2,/^$/p' "$0" | sed 's/^# *//'
+    exit 0
+}
+
+# Parse our options (before command)
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --help|-h)
+            show_help
+            ;;
+        --json)
+            JSON_FLAG="--json"
+            shift
+            ;;
+        --socket|--socket-name|-s)
+            if [ -z "$2" ]; then
+                echo "Error: --socket requires a name" >&2
+                exit $EXIT_INVALID_ARGS
+            fi
+            SOCKET_NAME="$2"
+            shift 2
+            ;;
+        --server-file|-f)
+            if [ -z "$2" ]; then
+                echo "Error: --server-file requires a path" >&2
+                exit $EXIT_INVALID_ARGS
+            fi
+            SERVER_FILE="$2"
+            shift 2
+            ;;
+        --timeout|-t)
+            if [ -z "$2" ]; then
+                echo "Error: --timeout requires a number" >&2
+                exit $EXIT_INVALID_ARGS
+            fi
+            TIMEOUT="$2"
+            shift 2
+            ;;
+        -*)
+            # Unknown option - pass it through to dispatcher
+            break
+            ;;
+        *)
+            # First non-option argument (the command)
+            break
+            ;;
+    esac
+done
+
+# Build the argument list for the Elisp dispatcher
+# We need to escape the arguments properly for Elisp string parsing
+escape_for_elisp() {
+    # Escape backslashes first, then double quotes
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# Build a Lisp list of quoted strings from remaining args
+build_args_list() {
+    result=""
+    for arg in "$@"; do
+        escaped=$(escape_for_elisp "$arg")
+        if [ -z "$result" ]; then
+            result="\"$escaped\""
+        else
+            result="$result \"$escaped\""
+        fi
+    done
+    printf '%s' "$result"
+}
+
+# Add --json to args if set
+if [ -n "$JSON_FLAG" ]; then
+    ARGS_LIST=$(build_args_list "$@" "--json")
+else
+    ARGS_LIST=$(build_args_list "$@")
+fi
+
+# Build emacsclient command
+EMACSCLIENT_ARGS=""
+if [ -n "$SOCKET_NAME" ]; then
+    EMACSCLIENT_ARGS="$EMACSCLIENT_ARGS -s $SOCKET_NAME"
+fi
+if [ -n "$SERVER_FILE" ]; then
+    EMACSCLIENT_ARGS="$EMACSCLIENT_ARGS -f $SERVER_FILE"
+fi
+if [ -n "$TIMEOUT" ]; then
+    EMACSCLIENT_ARGS="$EMACSCLIENT_ARGS -w $TIMEOUT"
+fi
+
+# The Elisp expression to evaluate
+# supervisor--cli-dispatch-for-wrapper returns EXITCODE:BASE64OUTPUT
+ELISP_EXPR="(supervisor--cli-dispatch-for-wrapper (list $ARGS_LIST))"
+
+# Run emacsclient and capture output
+# Use --eval to evaluate Elisp and return the result
+# shellcheck disable=SC2086
+if ! OUTPUT=$(emacsclient $EMACSCLIENT_ARGS --eval "$ELISP_EXPR" 2>&1); then
+    # emacsclient failed (server unavailable, etc.)
+    echo "Error: Cannot connect to Emacs server" >&2
+    if [ -n "$OUTPUT" ]; then
+        echo "$OUTPUT" >&2
+    fi
+    exit $EXIT_SERVER_UNAVAILABLE
+fi
+
+# The dispatcher returns format: EXITCODE:BASE64OUTPUT
+# emacsclient --eval wraps strings in quotes, so we strip those first
+
+# Remove outer quotes from emacsclient output
+STRIPPED=$(printf '%s' "$OUTPUT" | sed 's/^"//; s/"$//')
+
+# Extract exit code (everything before first colon)
+EXIT_CODE=$(printf '%s' "$STRIPPED" | cut -d: -f1)
+
+# Validate exit code is a number
+if ! printf '%s' "$EXIT_CODE" | grep -qE '^[0-9]+$'; then
+    # Fallback: output raw and exit with failure
+    echo "$OUTPUT"
+    exit $EXIT_FAILURE
+fi
+
+# Extract base64 output (everything after first colon) and decode
+BASE64_OUTPUT=$(printf '%s' "$STRIPPED" | cut -d: -f2-)
+FINAL_OUTPUT=$(printf '%s' "$BASE64_OUTPUT" | base64 -d 2>/dev/null) || {
+    echo "Error: Failed to decode output" >&2
+    echo "$OUTPUT" >&2
+    exit $EXIT_FAILURE
+}
+
+# Print output and exit
+printf '%s' "$FINAL_OUTPUT"
+exit "$EXIT_CODE"
