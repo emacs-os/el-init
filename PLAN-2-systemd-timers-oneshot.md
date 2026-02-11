@@ -54,10 +54,9 @@ implementation simplicity.
 
 - Timer state persistence file (enables catch-up across restarts).
 
-## Deferred to Phase 5
+## Deferred (Future Work)
 
-- Timer visibility in dashboard/CLI status surfaces.
-- Timer control subcommands/actions.
+- Timer control subcommands/actions (enable/disable timers at runtime).
 
 ## Configuration Model
 

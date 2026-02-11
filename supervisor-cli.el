@@ -1161,7 +1161,12 @@ Returns a list of alists, one per timer."
                                  "timers command does not accept arguments"
                                  (if json-p 'json 'human))
         (let* ((timers (supervisor--cli-gather-timer-info))
-               (invalid (hash-table-values supervisor--invalid-timers))
+               ;; Convert hash table entries (id -> reason) to plists
+               (invalid (let (result)
+                          (maphash (lambda (id reason)
+                                     (push (list :id id :reason reason) result))
+                                   supervisor--invalid-timers)
+                          (nreverse result)))
                (output (if json-p
                            (supervisor--cli-timers-json timers invalid)
                          (supervisor--cli-timers-human timers invalid))))

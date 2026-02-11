@@ -405,7 +405,7 @@ If SNAPSHOT is provided, read runtime state from it."
          (status (cond
                   (target-active "active")
                   ((and last-exit (= last-exit 0)) "done")
-                  ((and last-exit (> last-exit 0)) "failed")
+                  ((and last-exit (/= last-exit 0)) "failed")
                   (t "pending")))
          ;; Reason shows next run time or last miss
          (reason (cond

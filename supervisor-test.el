@@ -3912,6 +3912,54 @@ at minute boundaries."
       (let ((json-object-type 'alist))
         (should (json-read-from-string (supervisor-cli-result-output result)))))))
 
+(ert-deftest supervisor-test-cli-timers-invalid-human-format ()
+  "Timers command shows invalid timers with correct id and reason."
+  (let ((supervisor--timer-list nil)
+        (supervisor--timer-state (make-hash-table :test 'equal))
+        (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    ;; Add invalid timer with known id and reason
+    (puthash "bad-timer" ":target 'missing' not found" supervisor--invalid-timers)
+    (let ((result (supervisor--cli-dispatch '("timers"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      ;; Should show id and reason correctly
+      (should (string-match-p "bad-timer" (supervisor-cli-result-output result)))
+      (should (string-match-p ":target 'missing' not found"
+                              (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-timers-invalid-json-format ()
+  "Timers --json outputs invalid timers with correct structure."
+  (let ((supervisor--timer-list nil)
+        (supervisor--timer-state (make-hash-table :test 'equal))
+        (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    ;; Add invalid timer
+    (puthash "bad-timer" "test reason" supervisor--invalid-timers)
+    (let ((result (supervisor--cli-dispatch '("--json" "timers"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      ;; Parse JSON and check invalid array structure
+      (let* ((json-object-type 'alist)
+             (json-array-type 'list)
+             (data (json-read-from-string (supervisor-cli-result-output result)))
+             (invalid (alist-get 'invalid data))
+             (entry (car invalid)))
+        (should invalid)
+        (should (equal "bad-timer" (alist-get 'id entry)))
+        (should (equal "test reason" (alist-get 'reason entry)))))))
+
+(ert-deftest supervisor-test-dashboard-timer-signal-exit-is-failed ()
+  "Dashboard timer status classifies signal exits as failed."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal)))
+    ;; Simulate signal death stored as negative exit code
+    (puthash "t1" '(:last-exit -9 :next-run-at 2000.0) supervisor--timer-state)
+    (let ((entry (supervisor--make-timer-dashboard-entry timer)))
+      ;; Entry is a vector: [id type target enabled status restart log pid reason]
+      ;; Status is at index 4
+      (should (string-match-p "failed" (aref entry 4))))))
+
 (ert-deftest supervisor-test-cli-timers-rejects-extra-args ()
   "Timers with extra args returns invalid-args exit code."
   (let ((supervisor--timer-list nil)
