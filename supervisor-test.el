@@ -2681,5 +2681,202 @@ Regression test: stderr pipe processes used to pollute the process list."
       (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
       (should (string-match "DURATION" (supervisor-cli-result-output result))))))
 
+;;; CLI Arg Validation Tests
+
+(ert-deftest supervisor-test-cli-validate-rejects-extra-args ()
+  "Validate with extra args returns invalid-args exit code."
+  (let ((result (supervisor--cli-dispatch '("validate" "extra"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-reload-rejects-extra-args ()
+  "Reload with extra args returns invalid-args exit code."
+  (let ((result (supervisor--cli-dispatch '("reload" "extra"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-ping-rejects-extra-args ()
+  "Ping with extra args returns invalid-args exit code."
+  (let ((result (supervisor--cli-dispatch '("ping" "extra"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-version-rejects-extra-args ()
+  "Version with extra args returns invalid-args exit code."
+  (let ((result (supervisor--cli-dispatch '("version" "extra"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-blame-rejects-extra-args ()
+  "Blame with extra args returns invalid-args exit code."
+  (let ((supervisor--start-times (make-hash-table :test 'equal)))
+    (let ((result (supervisor--cli-dispatch '("blame" "extra"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result))))))
+
+(ert-deftest supervisor-test-cli-describe-rejects-extra-args ()
+  "Describe with extra args returns invalid-args exit code."
+  (let* ((supervisor-programs '(("cmd" :id "test")))
+         (result (supervisor--cli-dispatch '("describe" "test" "extra"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-status-rejects-unknown-flags ()
+  "Status with unknown flag returns invalid-args exit code."
+  (let ((result (supervisor--cli-dispatch '("status" "--bogus"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-graph-rejects-extra-args ()
+  "Graph with multiple args returns invalid-args exit code."
+  (let* ((supervisor-programs '(("a" :id "a")))
+         (result (supervisor--cli-dispatch '("graph" "a" "b"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+;;; CLI JSON Schema Tests
+
+(ert-deftest supervisor-test-cli-status-json-empty-arrays ()
+  "Status JSON returns arrays, not null, for empty results."
+  (let* ((supervisor-programs nil)
+         (result (supervisor--cli-dispatch '("status" "--json"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    ;; Should have [] not null
+    (should (string-match "\"entries\":\\[\\]" (supervisor-cli-result-output result)))
+    (should (string-match "\"invalid\":\\[\\]" (supervisor-cli-result-output result)))))
+
+;;; CLI Wrapper Transport Tests
+
+(ert-deftest supervisor-test-cli-wrapper-dispatch-format ()
+  "Wrapper dispatch returns base64-encoded format."
+  (let* ((supervisor-programs nil)
+         (result (supervisor--cli-dispatch-for-wrapper '("ping"))))
+    ;; Format is EXITCODE:BASE64OUTPUT
+    (should (stringp result))
+    (should (string-match "^0:" result))
+    ;; Decode the base64 part
+    (let ((b64 (substring result 2)))
+      (should (string-match "pong" (decode-coding-string (base64-decode-string b64) 'utf-8))))))
+
+(ert-deftest supervisor-test-cli-wrapper-dispatch-error ()
+  "Wrapper dispatch returns non-zero exit code for errors."
+  (let ((result (supervisor--cli-dispatch-for-wrapper '("unknown-cmd"))))
+    ;; Should start with 2: (invalid args)
+    (should (stringp result))
+    (should (string-match "^2:" result))))
+
+;;; CLI Malformed Option Tests
+
+(ert-deftest supervisor-test-cli-status-rejects-short-unknown-flag ()
+  "Status with single-letter unknown flag returns invalid-args."
+  (let ((result (supervisor--cli-dispatch '("status" "-x"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-logs-rejects-malformed-tail ()
+  "Logs with --tailx (prefix match) returns invalid-args."
+  (let ((result (supervisor--cli-dispatch '("logs" "test" "--tailx" "5"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-kill-rejects-malformed-signal ()
+  "Kill with --signalx (prefix match) returns invalid-args."
+  (let ((result (supervisor--cli-dispatch '("kill" "test" "--signalx" "TERM"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-logs-option-before-id ()
+  "Logs with option before ID returns invalid-args (exit 2)."
+  (let ((result (supervisor--cli-dispatch '("logs" "--tail" "5"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "ID as first argument" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-kill-option-before-id ()
+  "Kill with option before ID returns invalid-args (exit 2)."
+  (let ((result (supervisor--cli-dispatch '("kill" "--signal" "TERM"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "ID as first argument" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-start-rejects-unknown-flags ()
+  "Start with unknown flag returns invalid-args (exit 2)."
+  (let ((result (supervisor--cli-dispatch '("start" "--bogus"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-stop-rejects-unknown-flags ()
+  "Stop with unknown flag returns invalid-args (exit 2)."
+  (let ((result (supervisor--cli-dispatch '("stop" "--bogus"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-restart-rejects-unknown-flags ()
+  "Restart with unknown flag returns invalid-args (exit 2)."
+  (let ((result (supervisor--cli-dispatch '("restart" "--bogus"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-enable-rejects-unknown-flags ()
+  "Enable with unknown flag returns invalid-args (exit 2)."
+  (let ((result (supervisor--cli-dispatch '("enable" "--bogus"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-disable-rejects-unknown-flags ()
+  "Disable with unknown flag returns invalid-args (exit 2)."
+  (let ((result (supervisor--cli-dispatch '("disable" "--bogus"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-restart-policy-rejects-unknown-flags ()
+  "Restart-policy with unknown flag returns invalid-args (exit 2)."
+  (let ((result (supervisor--cli-dispatch '("restart-policy" "--bogus" "id"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-logging-rejects-unknown-flags ()
+  "Logging with unknown flag returns invalid-args (exit 2)."
+  (let ((result (supervisor--cli-dispatch '("logging" "--bogus" "id"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+;;; CLI -- Separator Tests (POSIX end-of-options)
+
+(ert-deftest supervisor-test-cli-split-at-separator ()
+  "Split at -- separator correctly."
+  (should (equal (supervisor--cli-split-at-separator '("a" "--" "b"))
+                 '(("a") . ("b"))))
+  (should (equal (supervisor--cli-split-at-separator '("a" "b"))
+                 '(("a" "b") . nil)))
+  (should (equal (supervisor--cli-split-at-separator '("--" "-svc"))
+                 '(nil . ("-svc")))))
+
+(ert-deftest supervisor-test-cli-strip-separator ()
+  "Strip separator and concatenate."
+  (should (equal (supervisor--cli-strip-separator '("a" "--" "b"))
+                 '("a" "b")))
+  (should (equal (supervisor--cli-strip-separator '("--" "-svc"))
+                 '("-svc"))))
+
+(ert-deftest supervisor-test-cli-enable-hyphen-id-with-separator ()
+  "Enable allows hyphen-prefixed ID after -- separator."
+  (let ((supervisor--enabled-override (make-hash-table :test 'equal)))
+    (let ((result (supervisor--cli-dispatch '("enable" "--" "-svc"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (eq 'enabled (gethash "-svc" supervisor--enabled-override))))))
+
+(ert-deftest supervisor-test-cli-logs-hyphen-id-with-separator ()
+  "Logs allows hyphen-prefixed ID after -- separator."
+  ;; Without separator, should fail with "ID as first argument"
+  (let ((result (supervisor--cli-dispatch '("logs" "-svc"))))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result))))
+  ;; With separator, should proceed (will fail with "No log file" but that's exit 1, not 2)
+  (let ((result (supervisor--cli-dispatch '("logs" "--" "-svc"))))
+    (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
+    (should (string-match "No log file" (supervisor-cli-result-output result)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

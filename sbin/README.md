@@ -62,9 +62,6 @@ Low-level control:
 - `--socket-name NAME` Use a specific Emacs server socket (emacsclient `-s`)
 - `--server-file PATH` Use a server file path for TCP (emacsclient `-f`)
 - `--timeout N` Wait at most N seconds for Emacs response (emacsclient `-w`)
-- `--verbose` Verbose CLI output (not the same as `supervisor-verbose`)
-- `--quiet` Minimal output (errors only)
-- `--no-color` Disable ANSI color (if used)
 
 ## Output (Human-Readable Defaults)
 
