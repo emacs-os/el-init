@@ -22,18 +22,8 @@
 
 ;;; Commentary:
 
-;; Core engine for supervisor.el.  This module provides:
-;; - Entry parsing, validation, and schema definitions
-;; - Plan building and dependency resolution
-;; - DAG scheduler for staged startup
-;; - Process lifecycle management (start, stop, restart)
-;; - Runtime state tables and snapshots
-;; - Persistent override storage
-;; - Configuration watch and reload
-;;
-;; This module has no hard dependencies on supervisor-dashboard or supervisor-cli.
-;; It can be loaded standalone for headless/batch operation.
-;; When dashboard is loaded, core will refresh it on state changes.
+;; Core engine for supervisor.el.
+;; Run M-x supervisor-handbook for full documentation.
 
 ;;; Code:
 
@@ -411,6 +401,19 @@ For malformed entries, returns \"malformed#IDX\" for consistency."
         (file-name-nondirectory (car (split-string-and-unquote (car entry))))))
    ;; Malformed - use index-based ID
    (t (format "malformed#%d" idx))))
+
+;;;###autoload
+(defun supervisor-handbook ()
+  "Open the supervisor.el handbook (README.org) in a read-only buffer."
+  (interactive)
+  (let* ((lib-file (locate-library "supervisor"))
+         (dir (and lib-file (file-name-directory lib-file)))
+         (readme (and dir (expand-file-name "README.org" dir))))
+    (if (and readme (file-exists-p readme))
+        (with-current-buffer (find-file-noselect readme)
+          (read-only-mode 1)
+          (switch-to-buffer (current-buffer)))
+      (user-error "Cannot locate README.org in supervisor package directory"))))
 
 ;;;###autoload
 (defun supervisor-validate ()

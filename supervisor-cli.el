@@ -22,15 +22,8 @@
 
 ;;; Commentary:
 
-;; Command-line interface for supervisor.el.  This module provides:
-;; - CLI argument parsing and dispatch
-;; - Human and JSON output formatters
-;; - Exit code contract (0=success, 1=failure, 2=invalid args, etc.)
-;; - Wrapper transport adapter for supervisorctl shell script
-;; - All CLI command handlers (status, start, stop, reload, etc.)
-;;
-;; This module requires supervisor-core for state access.
-;; It does not depend on supervisor-dashboard.
+;; CLI interface for supervisor.el.
+;; Run M-x supervisor-handbook for full documentation.
 
 ;;; Code:
 

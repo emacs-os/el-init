@@ -22,23 +22,8 @@
 
 ;;; Commentary:
 
-;; Timer subsystem for supervisor.el.  This module provides systemd-style
-;; timers for scheduled oneshot service execution.
-;;
-;; EXPERIMENTAL: This subsystem is gated behind `supervisor-timer-subsystem-mode'.
-;; It is disabled by default and must be explicitly enabled.  The timer subsystem
-;; requires the parent `supervisor-mode' to also be enabled.
-;;
-;; Features:
-;; - Calendar-based scheduling (:on-calendar)
-;; - Startup delay triggers (:on-startup-sec)
-;; - Repeat interval triggers (:on-unit-active-sec)
-;; - Retry policy with exponential backoff
-;; - Catch-up runs after downtime for persistent timers
-;; - State persistence across Emacs restarts
-;;
-;; This module has no direct dependencies on supervisor-dashboard or supervisor-cli.
-;; It requires supervisor-core for entry lookup and process management.
+;; Timer subsystem for supervisor.el.
+;; Run M-x supervisor-handbook for full documentation.
 
 ;;; Code:
 

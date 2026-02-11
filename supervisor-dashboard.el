@@ -22,17 +22,8 @@
 
 ;;; Commentary:
 
-;; Dashboard UI for supervisor.el.  This module provides:
-;; - `supervisor-dashboard-mode' based on `tabulated-list-mode'
-;; - Dashboard keymap and interactive commands
-;; - Entry rendering and status display
-;; - Faces for status, type, and stage visualization
-;; - Stage grouping and filtering
-;; - Auto-refresh functionality
-;; - Transient menu integration (optional)
-;;
-;; This module requires supervisor-core for state access.
-;; It does not depend on supervisor-cli.
+;; Dashboard UI for supervisor.el.
+;; Run M-x supervisor-handbook for full documentation.
 
 ;;; Code:
 

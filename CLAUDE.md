@@ -15,9 +15,9 @@ The package is split into focused modules:
 | `supervisor-core.el` | Engine, parsing, scheduling, process lifecycle, state management |
 | `supervisor-dashboard.el` | UI rendering, keymaps, interactive commands |
 | `supervisor-cli.el` | CLI dispatcher, formatters, command handlers |
-| `supervisor.el` | Facade that loads all modules and provides the `supervisor` feature |
+| `supervisor.el` | Entry point that loads all modules and provides the `supervisor` feature |
 
-**Load order:** core → dashboard → cli → facade.
+**Load order:** core → timer → dashboard → cli (loaded by entry point).
 
 **Dependency rules:**
 - `supervisor-core.el` has no dependencies on dashboard or CLI (can load standalone)
@@ -167,8 +167,8 @@ make check   # Must pass before commits (runs lint + test)
 
 ### Package Structure
 - Lexical binding required in all module files
-- Standard headers: Author, Version, Package-Requires, Keywords, URL (in facade)
+- Standard headers: Author, Version, Package-Requires, Keywords, URL (in entry point)
 - GPL-compatible license with boilerplate above `;;; Commentary:`
 - Must include LICENSE file
-- Main feature provided by facade: `(provide 'supervisor)`
+- Main feature provided by entry point: `(provide 'supervisor)`
 - Each module provides its own feature: `supervisor-core`, `supervisor-dashboard`, `supervisor-cli`

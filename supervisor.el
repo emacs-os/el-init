@@ -25,16 +25,8 @@
 
 ;;; Commentary:
 
-;; See README.org for full documentation.
-;;
-;; Module structure:
-;; - supervisor-core.el: engine, parsing, scheduling, process lifecycle, state
-;; - supervisor-dashboard.el: UI rendering, keymaps, interactive commands
-;; - supervisor-cli.el: CLI dispatcher, formatters, command handlers
-;; - supervisor.el: facade that loads all modules (this file)
-;;
-;; Load order: core -> dashboard -> cli -> facade.
-;; No circular require chains exist between modules.
+;; Emacs Lisp process supervisor.
+;; Run M-x supervisor-handbook for full documentation.
 
 ;;; Code:
 

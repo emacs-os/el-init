@@ -10,6 +10,8 @@ an experimental timer subsystem for scheduled ~oneshot~ services.
 
 This handbook is the implementation reference for current behavior.
 
+Run ~M-x supervisor-handbook~ to open this file in Emacs at any time.
+
 * Navigation
 
 - [[#scope-and-goals][Scope and Goals]]
@@ -50,14 +52,14 @@ It is not a system init replacement in current release scope.
 :END:
 
 | File | Purpose |
-| ~supervisor.el~ | Facade; loads all modules and provides feature ~supervisor~ |
+| ~supervisor.el~ | Entry point; loads all modules and provides feature ~supervisor~ |
 | ~supervisor-core.el~ | Engine: parsing, validation, planning, DAG scheduler, lifecycle, overrides |
 | ~supervisor-timer.el~ | Experimental timer subsystem: timers, scheduler, retry/catch-up, timer state |
 | ~supervisor-dashboard.el~ | Dashboard UI, keybindings, transient menu integration |
 | ~supervisor-cli.el~ | CLI parser/dispatcher/formatters and wrapper adapter |
 | ~sbin/supervisorctl~ | Transport wrapper around ~emacsclient --eval~ |
 
-Load order in facade: core -> timer -> dashboard -> cli.
+Load order in entry point: core -> timer -> dashboard -> cli.
 
 Module dependency rules:
 
@@ -927,6 +929,7 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-overrides-save~ | Save overrides to disk |
 | ~M-x supervisor-overrides-clear~ | Clear overrides in memory + file |
 | ~M-x supervisor~ | Open dashboard |
+| ~M-x supervisor-handbook~ | Open README.org handbook (read-only) |
 
 ** Dashboard Interactive Commands
 
