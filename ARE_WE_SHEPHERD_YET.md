@@ -62,23 +62,19 @@ Completed milestones (already shipped):
 2. Control plane implementation.
 3. Modularized codebase split (core/dashboard/CLI + facade).
 
-Remaining mandatory milestones (do in order):
+Active roadmap milestone:
 
-1. Security hardening: restricted control channel, explicit auth model, and a
-   documented threat model.
-2. PID 1 engineering: child reaping, signal handling, safe shutdown semantics,
+1. PID 1 engineering: child reaping, signal handling, safe shutdown semantics,
    crash safety, and tests.
-3. Parity and expansion: systemd-timer-equivalent scheduling, socket
-   activation, advanced readiness, and remaining capability additions.
+
+Tracked in dedicated plan files (intentionally not listed as active roadmap milestones):
+
+- `PLAN-1-security-hardening-control-channel.md`
+- `PLAN-2-systemd-timers-oneshot.md`
 
 **Remaining Roadmap Requirements (Detailed)**
 
-**1. Security Hardening**
-- Lock down control channels (local socket by default).
-- If TCP is enabled, require strong auth and protect server files.
-- Document the threat model and safe deployment guidance.
-
-**2. PID 1 Engineering**
+**1. PID 1 Engineering**
 - Implement child reaping and SIGCHLD handling.
 - Define explicit signal handling for shutdown and reboot flows.
 - Ensure safe shutdown order and crash safety under PID 1 semantics.
@@ -107,13 +103,6 @@ Shim approach (preferred):
 - Explicit rule: if the shim is PID 1, Emacs is **not** PID 1. If the project
   requires Emacs to be PID 1, the shim logic must be integrated into Emacs
   (or Emacs must be patched to reap all children itself).
-
-**3. Parity and Expansion**
-- Add systemd-timer-equivalent timers (calendar + monotonic triggers,
-  persistence/catch-up behavior, and jitter/accuracy controls) and socket
-  activation.
-- Add advanced readiness semantics as needed.
-- Keep CLI parity with the interactive UI.
 
 ## Definition of Done
 
