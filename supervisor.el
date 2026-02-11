@@ -28,6 +28,33 @@
 ;; Supervisor is a lightweight process supervisor for managing background
 ;; processes from Emacs.  It is useful for starting session services when
 ;; using Emacs as a window manager (EXWM) or for managing development daemons.
+;;
+;; Features:
+;; - Staged startup with four ordered stages (stage1 through stage4)
+;; - Dependency ordering via :after keyword for intra-stage dependencies
+;; - Two process types: simple (long-running daemons) and oneshot (run-once)
+;; - Automatic crash recovery with configurable restart limits
+;; - Interactive dashboard for monitoring and control
+;; - Per-process logging with automatic log rotation
+;; - Config file watching for automatic reload
+;;
+;; Quick start:
+;;
+;;   (setq supervisor-programs
+;;         '(("xrdb -merge ~/.Xresources" :type oneshot :stage stage1)
+;;           ("dunst" :stage stage2)
+;;           ("nm-applet" :stage stage3)
+;;           ("blueman-applet" :tags (bluetooth tray))))
+;;
+;;   (supervisor-mode 1)
+;;
+;; Commands:
+;; - `M-x supervisor' to open the interactive dashboard
+;; - `M-x supervisor-start' to start all configured processes
+;; - `M-x supervisor-stop' to stop all supervised processes
+;; - `M-x supervisor-validate' to check config without starting
+;;
+;; See README.org for full documentation and configuration options.
 
 ;;; Code:
 
@@ -996,50 +1023,52 @@ Mark ready immediately for simple processes, on exit for oneshot."
        (t
         (supervisor--dag-do-start id cmd logging-p type restart-p oneshot-wait oneshot-timeout))))))
 
+(defun supervisor--dag-finish-spawn-attempt ()
+  "Finish a spawn attempt by decrementing count and processing queue."
+  (cl-decf supervisor--dag-active-starts)
+  (supervisor--dag-process-pending-starts))
+
+(defun supervisor--dag-handle-spawn-failure (id)
+  "Handle spawn failure for ID by marking state and unblocking dependents."
+  (puthash id 'failed-to-spawn supervisor--entry-state)
+  (supervisor--dag-finish-spawn-attempt)
+  (supervisor--dag-mark-ready id))
+
+(defun supervisor--dag-setup-oneshot-timeout (id timeout)
+  "Set up timeout timer for oneshot ID with TIMEOUT seconds."
+  (puthash id
+           (run-at-time timeout nil
+                        (lambda ()
+                          (supervisor--log 'warning "oneshot %s timed out after %ds" id timeout)
+                          (supervisor--dag-mark-ready id)))
+           supervisor--dag-timeout-timers))
+
+(defun supervisor--dag-handle-spawn-success (id type oneshot-timeout)
+  "Handle successful spawn of ID with TYPE and ONESHOT-TIMEOUT."
+  (puthash id 'started supervisor--entry-state)
+  (supervisor--dag-finish-spawn-attempt)
+  (if (eq type 'oneshot)
+      (progn
+        (supervisor--log 'info "started oneshot %s" id)
+        (when oneshot-timeout
+          (supervisor--dag-setup-oneshot-timeout id oneshot-timeout)))
+    (supervisor--log 'info "started %s" id)
+    (supervisor--dag-mark-ready id)))
+
 (defun supervisor--dag-do-start (id cmd logging-p type restart-p _oneshot-wait oneshot-timeout)
   "Start process ID with CMD, LOGGING-P, TYPE, RESTART-P, and ONESHOT-TIMEOUT."
-  ;; Mark as started now (process is spawning)
   (puthash id t supervisor--dag-started)
-  ;; Record start time for blame view
   (puthash id (float-time) supervisor--start-times)
-  ;; Increment active count (for max-concurrent-starts)
   (cl-incf supervisor--dag-active-starts)
   (let ((args (split-string-and-unquote cmd)))
     (if (not (executable-find (car args)))
         (progn
           (supervisor--log 'warning "executable not found for %s: %s" id (car args))
-          (puthash id 'failed-to-spawn supervisor--entry-state)
-          ;; Decrement count (spawn attempt done) and process queue
-          (cl-decf supervisor--dag-active-starts)
-          (supervisor--dag-process-pending-starts)
-          ;; Mark ready anyway so dependents can proceed
-          (supervisor--dag-mark-ready id))
-      ;; Start the process
+          (supervisor--dag-handle-spawn-failure id))
       (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
-        ;; Decrement count (spawn attempt done) and process queue
-        (cl-decf supervisor--dag-active-starts)
-        (supervisor--dag-process-pending-starts)
         (if (not proc)
-            ;; Failed to start, mark ready so stage can proceed
-            (progn
-              (puthash id 'failed-to-spawn supervisor--entry-state)
-              (supervisor--dag-mark-ready id))
-          ;; Started successfully
-          (puthash id 'started supervisor--entry-state)
-          (if (eq type 'oneshot)
-              (progn
-                (supervisor--log 'info "started oneshot %s" id)
-                ;; Set up timeout timer if needed
-                (when oneshot-timeout
-                  (puthash id
-                           (run-at-time oneshot-timeout nil
-                                        (lambda ()
-                                          (supervisor--log 'warning "oneshot %s timed out after %ds" id oneshot-timeout)
-                                          (supervisor--dag-mark-ready id)))
-                           supervisor--dag-timeout-timers)))
-            ;; Simple process: mark ready immediately (spawned = ready)
-            (supervisor--log 'info "started %s" id)
-            (supervisor--dag-mark-ready id)))))))
+            (supervisor--dag-handle-spawn-failure id)
+          (supervisor--dag-handle-spawn-success id type oneshot-timeout))))))
 
 (defun supervisor--dag-check-stage-complete ()
   "Check if current stage is complete and invoke callback if so."
@@ -1113,6 +1142,89 @@ effect on next start (manual or restart)."
           ((eq override 'disabled) nil)
           (t config-enabled))))
 
+(defun supervisor--handle-oneshot-exit (name proc-status exit-code)
+  "Handle exit of oneshot process NAME.
+PROC-STATUS is the process status symbol, EXIT-CODE is the exit code.
+Logs completion, invokes callbacks, and notifies DAG scheduler."
+  (puthash name exit-code supervisor--oneshot-completed)
+  (if (eq proc-status 'signal)
+      (supervisor--log 'warning "oneshot %s %s"
+                       name (supervisor--format-exit-status proc-status exit-code))
+    (if (> exit-code 0)
+        (supervisor--log 'warning "oneshot %s %s"
+                         name (supervisor--format-exit-status proc-status exit-code))
+      (supervisor--log 'info "oneshot %s completed" name)))
+  ;; Invoke any registered wait callback (event-driven)
+  (when-let* ((cb-entry (gethash name supervisor--oneshot-callbacks)))
+    (remhash name supervisor--oneshot-callbacks)
+    (when (cdr cb-entry)
+      (cancel-timer (cdr cb-entry)))
+    (funcall (car cb-entry) (not supervisor--shutting-down)))
+  ;; Notify DAG scheduler
+  (supervisor--dag-mark-ready name))
+
+(defun supervisor--handle-shutdown-exit ()
+  "Handle process exit during shutdown.
+Decrement remaining count and signal completion when all done."
+  (cl-decf supervisor--shutdown-remaining)
+  (when (<= supervisor--shutdown-remaining 0)
+    ;; Cancel timeout timer (early completion)
+    (when supervisor--shutdown-timer
+      (cancel-timer supervisor--shutdown-timer)
+      (setq supervisor--shutdown-timer nil))
+    ;; Mark complete and invoke callback if provided
+    (let ((cb supervisor--shutdown-callback))
+      (setq supervisor--shutdown-callback nil)
+      (clrhash supervisor--processes)
+      (setq supervisor--shutdown-complete-flag t)
+      (when cb (funcall cb)))))
+
+(defun supervisor--schedule-restart (id cmd default-logging type config-restart proc-status exit-code)
+  "Schedule restart of process ID after crash.
+CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are original process params.
+PROC-STATUS and EXIT-CODE describe the exit for logging."
+  (supervisor--log 'info "%s %s, restarting..."
+                   id (supervisor--format-exit-status proc-status exit-code))
+  (puthash id
+           (run-at-time supervisor-restart-delay nil
+                        #'supervisor--start-process id cmd default-logging type config-restart t)
+           supervisor--restart-timers))
+
+(defun supervisor--make-process-sentinel (id cmd default-logging type config-restart)
+  "Create a process sentinel for ID with captured parameters.
+CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart."
+  (lambda (p _event)
+    (unless (process-live-p p)
+      (let* ((name (process-name p))
+             (proc-status (process-status p))
+             (exit-code (process-exit-status p))
+             (exit-status (pcase proc-status
+                            ('signal 'signal)
+                            ('exit 'exited)
+                            (_ 'unknown))))
+        ;; Clean up stderr process
+        (when-let* ((stderr (get-process (format "%s-stderr" name))))
+          (delete-process stderr))
+        (remhash name supervisor--processes)
+        ;; Run process exit hook
+        (run-hook-with-args 'supervisor-process-exit-hook name exit-status exit-code)
+        ;; Handle oneshot completion
+        (when (eq type 'oneshot)
+          (supervisor--handle-oneshot-exit name proc-status exit-code))
+        (supervisor--refresh-dashboard)
+        ;; Handle shutdown tracking
+        (when supervisor--shutting-down
+          (supervisor--handle-shutdown-exit))
+        ;; Schedule restart if appropriate
+        (unless (or (eq type 'oneshot)
+                    supervisor--shutting-down
+                    (eq (gethash name supervisor--enabled-override) 'disabled)
+                    (not (supervisor--get-effective-restart name config-restart))
+                    (gethash name supervisor--failed)
+                    (supervisor--check-crash-loop name))
+          (supervisor--schedule-restart id cmd default-logging type config-restart
+                                        proc-status exit-code))))))
+
 (defun supervisor--start-process (id cmd default-logging type config-restart &optional is-restart)
   "Start CMD with identifier ID.
 DEFAULT-LOGGING is the config value; runtime override is checked at restart.
@@ -1134,10 +1246,11 @@ IS-RESTART is t when called from a crash-triggered restart timer."
               (and is-restart (eq (gethash id supervisor--enabled-override) 'disabled))
               (and (gethash id supervisor--processes)
                    (process-live-p (gethash id supervisor--processes))))
-    (supervisor--ensure-log-directory)
     (let* ((args (split-string-and-unquote cmd))
            (logging (supervisor--get-effective-logging id default-logging))
-           (log-file (when logging (supervisor--log-file id)))
+           (log-file (when logging
+                       (supervisor--ensure-log-directory)
+                       (supervisor--log-file id)))
            ;; Create stderr process to capture stderr to same log file
            (stderr-proc (when logging
                           (make-pipe-process
@@ -1152,72 +1265,8 @@ IS-RESTART is t when called from a crash-triggered restart timer."
                   :filter (when logging
                             (lambda (_proc output)
                               (write-region output nil log-file t 'silent)))
-                  :sentinel (lambda (p _event)
-                              (unless (process-live-p p)
-                                (let* ((name (process-name p))
-                                       (proc-status (process-status p))
-                                       (exit-code (process-exit-status p))
-                                       ;; For hook: 'signal, 'exited, or 'unknown
-                                       (exit-status (pcase proc-status
-                                                      ('signal 'signal)
-                                                      ('exit 'exited)
-                                                      (_ 'unknown))))
-                                  ;; Clean up stderr process
-                                  (when-let* ((stderr (get-process (format "%s-stderr" name))))
-                                    (delete-process stderr))
-                                  (remhash name supervisor--processes)
-                                  ;; Run process exit hook
-                                  (run-hook-with-args 'supervisor-process-exit-hook
-                                                      name exit-status exit-code)
-                                  ;; Track oneshot completion with exit code
-                                  (when (eq type 'oneshot)
-                                    (puthash name exit-code supervisor--oneshot-completed)
-                                    (if (eq proc-status 'signal)
-                                        (supervisor--log 'warning "oneshot %s %s"
-                                                         name (supervisor--format-exit-status proc-status exit-code))
-                                      (if (> exit-code 0)
-                                          (supervisor--log 'warning "oneshot %s %s"
-                                                           name (supervisor--format-exit-status proc-status exit-code))
-                                        (supervisor--log 'info "oneshot %s completed" name)))
-                                    ;; Invoke any registered wait callback (event-driven)
-                                    ;; Pass nil if shutting down (process was killed), t otherwise
-                                    (when-let* ((cb-entry (gethash name supervisor--oneshot-callbacks)))
-                                      (remhash name supervisor--oneshot-callbacks)
-                                      (when (cdr cb-entry)  ; cancel timeout timer
-                                        (cancel-timer (cdr cb-entry)))
-                                      (funcall (car cb-entry) (not supervisor--shutting-down)))
-                                    ;; Notify DAG scheduler
-                                    (supervisor--dag-mark-ready name))
-                                  (supervisor--refresh-dashboard)
-                                  ;; Track shutdown completion (event-driven)
-                                  (when supervisor--shutting-down
-                                    (cl-decf supervisor--shutdown-remaining)
-                                    (when (and (<= supervisor--shutdown-remaining 0)
-                                               supervisor--shutdown-callback)
-                                      ;; Cancel SIGKILL timeout timer (early completion)
-                                      (when supervisor--shutdown-timer
-                                        (cancel-timer supervisor--shutdown-timer)
-                                        (setq supervisor--shutdown-timer nil))
-                                      (let ((cb supervisor--shutdown-callback))
-                                        (setq supervisor--shutdown-callback nil)
-                                        (clrhash supervisor--processes)
-                                        (setq supervisor--shutdown-complete-flag t)
-                                        (funcall cb))))
-                                  ;; Oneshot processes don't restart - exit is expected
-                                  ;; Also skip if runtime-disabled (check early to avoid noise)
-                                  (unless (or (eq type 'oneshot)
-                                              supervisor--shutting-down
-                                              (eq (gethash name supervisor--enabled-override) 'disabled)
-                                              (not (supervisor--get-effective-restart name config-restart))
-                                              (gethash name supervisor--failed)
-                                              (supervisor--check-crash-loop name))
-                                    (supervisor--log 'info "%s %s, restarting..."
-                                                     name (supervisor--format-exit-status proc-status exit-code))
-                                    ;; Track restart timer so it can be canceled
-                                    (puthash name
-                                             (run-at-time supervisor-restart-delay nil
-                                                          #'supervisor--start-process id cmd default-logging type config-restart t)
-                                             supervisor--restart-timers))))))))
+                  :sentinel (supervisor--make-process-sentinel
+                             id cmd default-logging type config-restart))))
       (set-process-query-on-exit-flag proc nil)
       (when stderr-proc
         (set-process-query-on-exit-flag stderr-proc nil))
@@ -1342,7 +1391,9 @@ Mark all unstarted entries as timed out and invoke the callback."
           (funcall callback)
         ;; Start all ready entries
         (dolist (id ready-ids)
-          (supervisor--dag-try-start-entry id))))))
+          (supervisor--dag-try-start-entry id))
+        ;; Check if stage is already complete (e.g., all entries were disabled)
+        (supervisor--dag-check-stage-complete)))))
 
 ;;;###autoload
 (defun supervisor-start ()
@@ -1693,6 +1744,94 @@ Skips invalid/malformed entries to avoid parse errors."
   "Return non-nil if ID represents a stage separator row."
   (and id (symbolp id) (string-prefix-p "--" (symbol-name id))))
 
+(defun supervisor--compute-entry-status (id type)
+  "Compute status string and PID string for entry ID of TYPE.
+Return a cons cell (STATUS . PID)."
+  (let* ((proc (gethash id supervisor--processes))
+         (alive (and proc (process-live-p proc)))
+         (failed (gethash id supervisor--failed))
+         (oneshot-p (eq type 'oneshot))
+         (oneshot-exit (gethash id supervisor--oneshot-completed))
+         (oneshot-done (not (null oneshot-exit)))
+         (oneshot-failed (and oneshot-done (> oneshot-exit 0)))
+         (pid (cond (alive (number-to-string (process-id proc)))
+                    ((and oneshot-p oneshot-done) (format "exit:%d" oneshot-exit))
+                    (t "-")))
+         (status (cond (alive "running")
+                       (failed "dead")
+                       ((and oneshot-p oneshot-failed) "failed")
+                       ((and oneshot-p oneshot-done) "done")
+                       (oneshot-p "pending")
+                       (t "stopped"))))
+    (cons status pid)))
+
+(defun supervisor--compute-entry-reason (id type)
+  "Compute reason string for entry ID of TYPE."
+  (let* ((proc (gethash id supervisor--processes))
+         (alive (and proc (process-live-p proc)))
+         (failed (gethash id supervisor--failed))
+         (oneshot-p (eq type 'oneshot))
+         (oneshot-exit (gethash id supervisor--oneshot-completed))
+         (oneshot-done (not (null oneshot-exit)))
+         (entry-state (gethash id supervisor--entry-state)))
+    (cond
+     (alive "")
+     ((and oneshot-p oneshot-done) "")
+     ((eq entry-state 'disabled) "disabled")
+     ((eq entry-state 'delayed) "delayed")
+     ((eq entry-state 'waiting-on-deps) "waiting-on-deps")
+     ((eq entry-state 'stage-not-started) "stage-not-started")
+     ((eq entry-state 'failed-to-spawn) "failed-to-spawn")
+     ((eq entry-state 'stage-timeout) "stage-timeout")
+     (failed "crash-loop")
+     (t ""))))
+
+(defun supervisor--make-dashboard-entry (id type stage enabled-p restart-p logging-p)
+  "Create a dashboard entry vector for ID.
+TYPE, STAGE, ENABLED-P, RESTART-P, LOGGING-P are parsed entry fields."
+  (let* ((status-pid (supervisor--compute-entry-status id type))
+         (status (car status-pid))
+         (pid (cdr status-pid))
+         (reason (supervisor--compute-entry-reason id type))
+         (effective-enabled (supervisor--get-effective-enabled id enabled-p))
+         (restart-str (if (eq type 'oneshot)
+                          "-"
+                        (if (supervisor--get-effective-restart id restart-p)
+                            "yes" "no")))
+         (log-override (gethash id supervisor--logging))
+         (effective-logging (cond ((eq log-override 'enabled) t)
+                                  ((eq log-override 'disabled) nil)
+                                  (t logging-p))))
+    (vector id
+            (symbol-name type)
+            (symbol-name stage)
+            (if effective-enabled "yes" "no")
+            (supervisor--propertize-status status)
+            restart-str
+            (if effective-logging "yes" "no")
+            pid
+            reason)))
+
+(defun supervisor--group-entries-by-stage (entries)
+  "Group ENTRIES by stage with separator rows.
+ENTRIES is a list of (id vector stage) tuples."
+  (let* ((sorted (sort entries
+                       (lambda (a b)
+                         (let* ((stage-a (nth 2 a))
+                                (stage-b (nth 2 b))
+                                (sa (if stage-a (supervisor--stage-to-int stage-a) 99))
+                                (sb (if stage-b (supervisor--stage-to-int stage-b) 99)))
+                           (< sa sb)))))
+         (result nil)
+         (current-stage nil))
+    (dolist (entry sorted)
+      (let ((entry-stage (nth 2 entry)))
+        (when (and entry-stage (not (eq entry-stage current-stage)))
+          (setq current-stage entry-stage)
+          (push (supervisor--make-stage-separator entry-stage) result))
+        (push (list (car entry) (cadr entry)) result)))
+    (nreverse result)))
+
 (defun supervisor--get-entries ()
   "Generate entries for the dashboard (deduplicates on the fly).
 Respects `supervisor--dashboard-stage-filter' and tag filter when set.
@@ -1704,109 +1843,33 @@ is active, entries are grouped by stage with separator rows."
         (tag-filter supervisor--dashboard-tag-filter)
         (idx 0))
     (dolist (entry supervisor-programs)
-      ;; Extract ID even for potentially invalid entries
-      ;; Use idx-based fallback for truly malformed entries to avoid collisions
       (let* ((raw-id (supervisor--extract-id entry idx))
              (invalid-reason (gethash raw-id supervisor--invalid)))
         (cl-incf idx)
-        ;; Skip duplicates
         (unless (gethash raw-id seen)
           (puthash raw-id t seen)
           (if invalid-reason
-              ;; Invalid entry - show with reason (only if no filter or cannot determine stage)
               (unless stage-filter
                 (push (list raw-id
                             (vector raw-id "-" "-" "-"
                                     (supervisor--propertize-status "invalid")
                                     "-" "-" "-"
                                     invalid-reason)
-                            nil)  ; nil stage for invalid
+                            nil)
                       entries))
-            ;; Valid entry - parse and show full info
             (pcase-let ((`(,id ,_cmd ,_delay ,enabled-p ,restart-p ,logging-p
                                ,type ,stage ,_after ,_owait ,_otimeout ,tags)
                          (supervisor--parse-entry entry)))
-              ;; Apply stage and tag filters
               (when (and (or (null stage-filter) (eq stage stage-filter))
                          (or (null tag-filter) (member tag-filter tags)))
-              (let* ((proc (gethash id supervisor--processes))
-                     (alive (and proc (process-live-p proc)))
-                     (failed (gethash id supervisor--failed))
-                     (oneshot-p (eq type 'oneshot))
-                     (oneshot-exit (gethash id supervisor--oneshot-completed))
-                     (oneshot-done (not (null oneshot-exit)))
-                     (oneshot-failed (and oneshot-done (> oneshot-exit 0)))
-                     ;; PID column: show exit code for completed oneshots
-                     (pid (cond (alive (number-to-string (process-id proc)))
-                                ((and oneshot-p oneshot-done)
-                                 (format "exit:%d" oneshot-exit))
-                                (t "-")))
-                     (status (cond (alive "running")
-                                   (failed "dead")
-                                   ((and oneshot-p oneshot-failed) "failed")
-                                   ((and oneshot-p oneshot-done) "done")
-                                   (oneshot-p "pending")
-                                   (t "stopped")))
-                     ;; Enabled column - check for runtime overrides
-                     (effective-enabled (supervisor--get-effective-enabled id enabled-p))
-                     ;; Restart column - check for overrides (n/a for oneshot)
-                     (restart-str (if oneshot-p
-                                      "-"
-                                    (let ((eff (supervisor--get-effective-restart
-                                                id restart-p)))
-                                      (if eff "yes" "no"))))
-                     ;; Logging column - check for overrides
-                     (log-override (gethash id supervisor--logging))
-                     (effective-logging (cond ((eq log-override 'enabled) t)
-                                              ((eq log-override 'disabled) nil)
-                                              (t logging-p)))
-                     ;; Reason column - detailed state for non-running entries
-                     (entry-state (gethash id supervisor--entry-state))
-                     (reason (cond
-                              (alive "")
-                              ((and oneshot-p oneshot-done) "")
-                              ((eq entry-state 'disabled) "disabled")
-                              ((eq entry-state 'delayed) "delayed")
-                              ((eq entry-state 'waiting-on-deps) "waiting-on-deps")
-                              ((eq entry-state 'stage-not-started) "stage-not-started")
-                              ((eq entry-state 'failed-to-spawn) "failed-to-spawn")
-                              ((eq entry-state 'stage-timeout) "stage-timeout")
-                              (failed "crash-loop")
-                              (t ""))))
                 (push (list id
-                            (vector id
-                                    (symbol-name type)
-                                    (symbol-name stage)
-                                    (if effective-enabled "yes" "no")
-                                    (supervisor--propertize-status status)
-                                    restart-str
-                                    (if effective-logging "yes" "no")
-                                    pid
-                                    reason)
-                            stage)  ; Include stage for grouping
-                      entries))))))))
-    ;; Group by stage if enabled and no stage filter
+                            (supervisor--make-dashboard-entry
+                             id type stage enabled-p restart-p logging-p)
+                            stage)
+                      entries)))))))
     (setq entries (nreverse entries))
     (if (and supervisor-dashboard-group-by-stage (null stage-filter))
-        ;; Sort by stage, then group with separators
-        ;; Invalid entries (nil stage) go last (priority 99)
-        (let* ((sorted (sort entries
-                             (lambda (a b)
-                               (let* ((stage-a (nth 2 a))
-                                      (stage-b (nth 2 b))
-                                      (sa (if stage-a (supervisor--stage-to-int stage-a) 99))
-                                      (sb (if stage-b (supervisor--stage-to-int stage-b) 99)))
-                                 (< sa sb)))))
-               (result nil)
-               (current-stage nil))
-          (dolist (entry sorted)
-            (let ((entry-stage (nth 2 entry)))
-              (when (and entry-stage (not (eq entry-stage current-stage)))
-                (setq current-stage entry-stage)
-                (push (supervisor--make-stage-separator entry-stage) result))
-              (push (list (car entry) (cadr entry)) result)))
-          (nreverse result))
-      ;; No grouping - return entries without stage metadata
+        (supervisor--group-entries-by-stage entries)
       (mapcar (lambda (e) (list (car e) (cadr e))) entries))))
 
 (defun supervisor--stage-progress-banner ()
@@ -1825,35 +1888,42 @@ is active, entries are grouped by stage with separator rows."
 
 (defun supervisor--health-summary ()
   "Return compact health summary string."
-  (let ((running 0) (done 0) (failed 0) (invalid 0) (pending 0) (idx 0))
+  (let ((running 0) (done 0) (failed 0) (invalid 0) (pending 0)
+        (seen (make-hash-table :test 'equal))
+        (idx 0))
     (dolist (entry supervisor-programs)
       (let ((raw-id (supervisor--extract-id entry idx)))
         (cl-incf idx)
-        (if (gethash raw-id supervisor--invalid)
-            (cl-incf invalid)
-          (let ((parsed (ignore-errors (supervisor--parse-entry entry))))
-            (if (null parsed)
-                ;; Parse failed - treat as invalid even if not in cache
-                (cl-incf invalid)
-              (let* ((id (car parsed))
-                     (type (nth 6 parsed))
-                     (proc (gethash id supervisor--processes))
-                     (alive (and proc (process-live-p proc)))
-                     (is-failed (gethash id supervisor--failed))
-                     (oneshot-p (eq type 'oneshot))
-                     (oneshot-exit (gethash id supervisor--oneshot-completed)))
-                (cond
-                 (alive (cl-incf running))
-                 (is-failed (cl-incf failed))
-                 ((and oneshot-p oneshot-exit (> oneshot-exit 0)) (cl-incf failed))
-                 ((and oneshot-p oneshot-exit) (cl-incf done))
-                 (oneshot-p (cl-incf pending))
-                 (t (cl-incf pending)))))))))
+        ;; Skip duplicates to match runtime behavior
+        (unless (gethash raw-id seen)
+          (puthash raw-id t seen)
+          (if (gethash raw-id supervisor--invalid)
+              (cl-incf invalid)
+            (let ((parsed (ignore-errors (supervisor--parse-entry entry))))
+              (if (null parsed)
+                  (cl-incf invalid)
+                (let* ((id (car parsed))
+                       (type (nth 6 parsed))
+                       (proc (gethash id supervisor--processes))
+                       (alive (and proc (process-live-p proc)))
+                       (is-failed (gethash id supervisor--failed))
+                       (oneshot-p (eq type 'oneshot))
+                       (oneshot-exit (gethash id supervisor--oneshot-completed)))
+                  (cond
+                   (alive (cl-incf running))
+                   (is-failed (cl-incf failed))
+                   ((and oneshot-p oneshot-exit (> oneshot-exit 0)) (cl-incf failed))
+                   ((and oneshot-p oneshot-exit) (cl-incf done))
+                   (oneshot-p (cl-incf pending))
+                   (t (cl-incf pending))))))))))
     (format "%d run | %d done | %d pend | %d fail | %d inv"
             running done pending failed invalid)))
 
 (defvar supervisor--help-text
-  "[e]nable [f]ilter [t]ag [s]tart [k]ill [K]force [r]estart [l]og [L]view [p]roced [P]auto [d]eps [D]graph [B]lame [g]refresh [G]live [h]elp [?]info [q]uit")
+  (concat "[e]nable [f]ilter [t]ag [s]tart [k]ill [K]force [r]estart "
+          "[l]og [L]view [p]roced [P]auto [d]eps [D]graph "
+          "[B]lame [g]refresh [G]live [h]elp [?]info [q]uit")
+  "Key hints displayed in dashboard header.")
 
 (defun supervisor--refresh-dashboard ()
   "Refresh the dashboard buffer if it exists."
@@ -2347,7 +2417,13 @@ Displays computed dependencies after validation and cycle fallback."
       (supervisor--log 'info "watching %s for changes" file))))
 
 (defun supervisor--stop-config-watch ()
-  "Stop watching config file."
+  "Stop watching config file and cancel any pending debounce timer."
+  ;; Cancel debounce timer if pending
+  (when-let* ((timer (get 'supervisor--config-watch-callback 'timer)))
+    (when (timerp timer)
+      (cancel-timer timer))
+    (put 'supervisor--config-watch-callback 'timer nil))
+  ;; Remove file watch
   (when supervisor--config-watch-descriptor
     (require 'filenotify)
     (file-notify-rm-watch supervisor--config-watch-descriptor)

@@ -42,13 +42,13 @@ CI failures that pass locally often involve Emacs version differences (e.g., `wh
 ## Architecture
 
 ### Entry Parsing
-`supervisor--parse-entry` converts user config into an 11-element list:
-`(id cmd delay enabled-p restart-p logging-p type stage after oneshot-wait oneshot-timeout)`
+`supervisor--parse-entry` converts user config into a 12-element list:
+`(id cmd delay enabled-p restart-p logging-p type stage after oneshot-wait oneshot-timeout tags)`
 
 All internal functions work with this parsed format, not raw config entries.
 
 ### Staged Startup Flow
-1. `supervisor-start` parses all entries and partitions by stage (early→services→session→ui)
+1. `supervisor-start` parses all entries and partitions by stage (stage1→stage2→stage3→stage4)
 2. `supervisor--start-stages-async` processes stages sequentially via continuation-passing
 3. Within each stage, `supervisor--dag-init` builds a dependency graph from `:after` declarations
 4. Entries with in-degree 0 start immediately; others wait for dependencies
@@ -82,6 +82,8 @@ See PLAN-INIT-followups.md for the authoritative spec. Key requirements:
 
 ### Async Scheduling
 - No polling loops—use sentinels and timers only
+  - Exception: `supervisor-stop-now` uses a brief polling loop (max 0.5s) for synchronous
+    shutdown in `kill-emacs-hook`, where async completion is not possible
 - Cycle detection must fall back to list order and clear `:after` edges
 - Disabled entries are immediately ready
 - Start failures must not block dependents or stages

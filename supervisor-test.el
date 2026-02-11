@@ -948,5 +948,90 @@
     ;; Vector should have 9 elements
     (should (= 9 (length (cadr sep))))))
 
+(ert-deftest supervisor-test-health-summary-deduplication ()
+  "Health summary deduplicates entries with same ID."
+  (let ((supervisor-programs '(("sleep 100" :id "dup")
+                               ("sleep 100" :id "dup")))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+    (let ((summary (supervisor--health-summary)))
+      ;; Should count only 1 pending, not 2
+      (should (string-match-p "1 pend" summary)))))
+
+(ert-deftest supervisor-test-disabled-only-stage-completes ()
+  "Stage with only disabled entries completes immediately."
+  (let* ((supervisor-programs '(("sleep 100" :id "a" :disabled t :stage stage1)))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--current-stage nil)
+         (supervisor--completed-stages nil)
+         (supervisor--shutting-down nil)
+         (completed nil))
+    ;; Parse entries
+    (let ((entries (supervisor--all-parsed-entries)))
+      ;; Start stage with callback that sets completed flag
+      (supervisor--start-stage-async
+       'stage1 entries
+       (lambda () (setq completed t)))
+      ;; Stage should complete immediately since all entries are disabled
+      (should completed))))
+
+(ert-deftest supervisor-test-config-watch-timer-cleanup ()
+  "Config watch stop cleans up debounce timer."
+  ;; Set up a fake timer on the symbol property
+  (let ((fake-timer (run-at-time 100 nil #'ignore)))
+    (put 'supervisor--config-watch-callback 'timer fake-timer)
+    ;; Stop should cancel the timer
+    (supervisor--stop-config-watch)
+    ;; Timer property should be nil
+    (should (null (get 'supervisor--config-watch-callback 'timer)))
+    ;; Timer should be cancelled (no longer in timer-list)
+    (should-not (memq fake-timer timer-list))))
+
+(ert-deftest supervisor-test-log-dir-not-created-when-logging-disabled ()
+  "Log directory is not created when logging is disabled for entry."
+  (let* ((temp-dir (make-temp-file "supervisor-test" t))
+         (nonexistent-subdir (expand-file-name "should-not-exist" temp-dir))
+         (supervisor-log-directory nonexistent-subdir)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--shutting-down nil))
+    (unwind-protect
+        (progn
+          ;; Start with logging disabled - should NOT create log directory
+          (supervisor--start-process "test" "/bin/true" nil 'oneshot nil)
+          ;; Log directory should not have been created
+          (should-not (file-directory-p nonexistent-subdir)))
+      ;; Cleanup
+      (delete-directory temp-dir t))))
+
+(ert-deftest supervisor-test-shutdown-complete-flag-without-callback ()
+  "Shutdown sets complete flag even when no callback is provided."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--shutdown-complete-flag nil)
+        (supervisor--shutdown-callback nil)
+        (supervisor--shutdown-remaining 0)
+        (supervisor--shutdown-timer nil))
+    ;; Simulate a process exit during shutdown with no callback
+    (setq supervisor--shutting-down t)
+    (setq supervisor--shutdown-remaining 1)
+    ;; Call the exit handler (simulates sentinel calling this)
+    (supervisor--handle-shutdown-exit)
+    ;; Flag should be set even without callback
+    (should (eq supervisor--shutdown-complete-flag t))
+    (should (= supervisor--shutdown-remaining 0))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
