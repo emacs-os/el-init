@@ -46,6 +46,29 @@ Core guards timer calls with fboundp, so validate works without timer module."
                   "--eval" "(supervisor-validate)")))
     (should (= result 0))))
 
+(ert-deftest supervisor-test-module-core-standalone-stop ()
+  "Verify supervisor-stop works standalone without timer module.
+Tests the stop path which was previously missing fboundp guard."
+  (let* ((default-directory (file-name-directory (locate-library "supervisor")))
+         (result (call-process
+                  "emacs" nil nil nil
+                  "-Q" "--batch" "-L" "."
+                  "--eval" "(require 'supervisor-core)"
+                  "--eval" "(setq supervisor-programs nil)"
+                  "--eval" "(supervisor-stop)")))
+    (should (= result 0))))
+
+(ert-deftest supervisor-test-module-core-standalone-start ()
+  "Verify supervisor-start works standalone without timer module."
+  (let* ((default-directory (file-name-directory (locate-library "supervisor")))
+         (result (call-process
+                  "emacs" nil nil nil
+                  "-Q" "--batch" "-L" "."
+                  "--eval" "(require 'supervisor-core)"
+                  "--eval" "(setq supervisor-programs nil)"
+                  "--eval" "(supervisor-start)")))
+    (should (= result 0))))
+
 (ert-deftest supervisor-test-module-cli-standalone ()
   "Verify supervisor-cli loads and works without dashboard or timer.
 Spawns a subprocess to test CLI dispatch without dashboard or timer module."

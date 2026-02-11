@@ -593,9 +593,6 @@ Set to nil to disable persistence (overrides only live in memory)."
 (defconst supervisor-overrides-schema-version 1
   "Schema version for persistent overrides file.")
 
-(defconst supervisor-timer-state-schema-version 1
-  "Schema version for persistent timer state file.")
-
 (defvar supervisor--overrides-loaded nil
   "Non-nil if overrides have been loaded from file this session.")
 
@@ -2632,8 +2629,9 @@ to poll completion status if needed.
 For `kill-emacs-hook', use `supervisor-stop-now' instead."
   (interactive)
   (setq supervisor--shutting-down t)
-  ;; Stop timer scheduler
-  (supervisor-timer-scheduler-stop)
+  ;; Stop timer scheduler (if timer module loaded)
+  (when (fboundp 'supervisor-timer-scheduler-stop)
+    (supervisor-timer-scheduler-stop))
   ;; Cancel any pending delayed starts
   (dolist (timer supervisor--timers)
     (when (timerp timer)
