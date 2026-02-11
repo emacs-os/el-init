@@ -1,5 +1,28 @@
 [[https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml][https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml/badge.svg]]
 
+* Navigation
+
+- [[#supervisorel][supervisor.el]]
+- [[#codebase-layout][Codebase Layout]]
+- [[#requirements][Requirements]]
+- [[#install-and-enable][Install And Enable]]
+- [[#public-commands][Public Commands]]
+- [[#cli-control-plane-supervisorctl][CLI Control Plane (`supervisorctl`)]]
+- [[#configuration-model][Configuration Model]]
+- [[#startup-execution-model][Startup Execution Model]]
+- [[#entry-lifecycle-state-machine][Entry Lifecycle State Machine]]
+- [[#process-lifecycle-and-restart][Process Lifecycle And Restart]]
+- [[#reload-reconciler][Reload Reconciler]]
+- [[#stop-semantics][Stop Semantics]]
+- [[#dashboard-m-x-supervisor][Dashboard (`M-x supervisor`)]]
+- [[#logging][Logging]]
+- [[#config-file-watch][Config File Watch]]
+- [[#structured-events-and-hooks][Structured Events And Hooks]]
+- [[#customization-variables][Customization Variables]]
+- [[#security][Security]]
+- [[#development-commands][Development Commands]]
+- [[#license][License]]
+
 * supervisor.el
 
 `supervisor.el` is an Emacs user-session process supervisor.
