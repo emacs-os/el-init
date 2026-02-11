@@ -3,8 +3,8 @@
 This folder will hold a single minimal CLI shim that controls `supervisor.el`
 via `emacsclient`. All command parsing, dispatch, output formatting, and
 policy live in Elisp. The goal is a systemctl-like UX that covers all
-supervisor features so the interactive dashboard (`M-x supervisor`) remains
-optional.
+supervisor features so the interactive dashboard (`M-x system`, with
+`M-x supervisor` compatibility during migration) remains optional.
 
 Status: design plan only, not yet implemented.
 
@@ -12,14 +12,15 @@ Status: design plan only, not yet implemented.
 
 - Human-readable output by default.
 - `--json` returns machine-friendly output.
-- Prefer a single minimal shim (`supervisorctl`), not multiple wrappers.
+- Prefer a single minimal shim (`system`), not multiple wrappers.
 - Keep all logic in Elisp; the shim only transports argv and prints output.
 - Fail fast with clear errors if the Emacs server is unavailable.
 - The CLI must expose the same operations as the dashboard.
 
 ## Primary Command
 
-- `sbin/supervisorctl` (tiny shim; no per-command scripts)
+- `sbin/system` (tiny shim; no per-command scripts)
+- `sbin/supervisorctl` compatibility alias during migration
 
 If shell scripts are to be avoided entirely, this shim can be a tiny compiled
 launcher instead (C/Rust/Go), but it must remain a thin transport layer only.
@@ -28,35 +29,35 @@ launcher instead (C/Rust/Go), but it must remain a thin transport layer only.
 
 Lifecycle:
 
-- `supervisorctl start [ID...]`
-- `supervisorctl stop [ID...]`
-- `supervisorctl restart [ID...]`
-- `supervisorctl reload`
-- `supervisorctl validate`
+- `system start [ID...]`
+- `system stop [ID...]`
+- `system restart [ID...]`
+- `system reload`
+- `system validate`
 
 State and inspect:
 
-- `supervisorctl status [ID...]`
-- `supervisorctl list`
-- `supervisorctl describe ID`
-- `supervisorctl graph [ID]`
-- `supervisorctl blame`
-- `supervisorctl logs ID [--tail N]`
-- `supervisorctl stage`
-- `supervisorctl wait [--stage STAGE|--all] [--timeout N]`
+- `system status [ID...]`
+- `system list`
+- `system describe ID`
+- `system graph [ID]`
+- `system blame`
+- `system logs ID [--tail N]`
+- `system stage`
+- `system wait [--stage STAGE|--all] [--timeout N]`
 
 Runtime overrides (dashboard parity):
 
-- `supervisorctl enable [ID...]`
-- `supervisorctl disable [ID...]`
-- `supervisorctl restart-policy (on|off) [ID...]`
-- `supervisorctl logging (on|off) [ID...]`
+- `system enable [ID...]`
+- `system disable [ID...]`
+- `system restart-policy (on|off) [ID...]`
+- `system logging (on|off) [ID...]`
 
 Low-level control:
 
-- `supervisorctl kill ID [--signal SIG]`
-- `supervisorctl ping`
-- `supervisorctl version`
+- `system kill ID [--signal SIG]`
+- `system ping`
+- `system version`
 
 Note: some commands map to P1 items (reload, wait, runtime enable/disable) and
 will be no-ops until implemented.
@@ -175,24 +176,24 @@ Example `graph --json`:
 These should return structured data instead of only `message` output.
 Prefer a single dispatcher plus small helpers.
 
-- `supervisor-cli-status` -> list/alist for all entries
-- `supervisor-cli-describe` -> alist for one entry
-- `supervisor-cli-graph` -> dependency edges
-- `supervisor-cli-blame` -> startup timing info
-- `supervisor-cli-logs` -> recent log lines
-- `supervisor-cli-set-enabled` -> enable/disable by id(s)
-- `supervisor-cli-set-restart` -> runtime restart override by id(s)
-- `supervisor-cli-set-logging` -> runtime logging override by id(s)
-- `supervisor-cli-signal` -> send signal to a process
-- `supervisor-cli-validate` -> validation summary and invalid list
-- `supervisor-cli-reload` -> reconcile config without restart
+- `system-cli-status` -> list/alist for all entries
+- `system-cli-describe` -> alist for one entry
+- `system-cli-graph` -> dependency edges
+- `system-cli-blame` -> startup timing info
+- `system-cli-logs` -> recent log lines
+- `system-cli-set-enabled` -> enable/disable by id(s)
+- `system-cli-set-restart` -> runtime restart override by id(s)
+- `system-cli-set-logging` -> runtime logging override by id(s)
+- `system-cli-signal` -> send signal to a process
+- `system-cli-validate` -> validation summary and invalid list
+- `system-cli-reload` -> reconcile config without restart
 
 ## Transport
 
 The shim encodes argv and invokes a single Elisp dispatcher:
 
 ```
-emacsclient --eval "(supervisorctl--dispatch \"<encoded-argv>\")"
+emacsclient --eval "(system--dispatch \"<encoded-argv>\")"
 ```
 
 The dispatcher returns a structured payload containing:

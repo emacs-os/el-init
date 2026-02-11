@@ -65,9 +65,10 @@ All items below are mandatory. There are no optional phases. Do them in order.
    targets and incremental refactors.
 3. Service definition layer: formal schema, versioning, persistent overrides,
    migration plan, and validation coverage.
-4. Control plane implementation: ship `supervisorctl` and the POSIX wrappers
-   planned in `sbin/README.md`, with human + JSON output, stable schema, exit
-   codes, and tests.
+4. Control plane implementation: ship the `system` CLI (with
+   `supervisorctl` compatibility alias) and the POSIX wrappers planned in
+   `sbin/README.md`, with human + JSON output, stable schema, exit codes, and
+   tests.
 5. Modularize codebase: split core engine, dashboard UI, and CLI/control plane
    into separate files with clear boundaries and stable APIs.
 6. Security hardening: restricted control channel, explicit auth model, and a
@@ -99,13 +100,28 @@ All items below are mandatory. There are no optional phases. Do them in order.
   baseline for simple configs.
 
 **4. Control Plane (CLI + Minimal Shim)**
-- Implement `supervisorctl` with human-readable defaults and `--json`.
+- Implement `system` (and `supervisorctl` compatibility alias) with
+  human-readable defaults and `--json`.
 - Keep parsing/dispatch/output in Elisp; the shim is transport only.
 - Use a single minimal shim (not per-command scripts). If shell must be
   avoided, allow a tiny compiled launcher, still transport-only.
 - Define a stable JSON schema and exit codes; add tests for all outputs.
 - Use `emacsclient --eval` with explicit server selection flags (`-s`/`-f`).
 - Treat server access as privileged; document socket and auth handling.
+- Emacs-side UX mapping rebrand (public interface target):
+- Package/repo name target: `system.el`
+- Feature name target: `system`
+- Interactive entry point target: `M-x system`
+- Public function names target: `system-start`, `system-stop`, `system-reload`
+- CLI verb surface target:
+- `system start <service>`
+- `system stop <service>`
+- `system restart <service>`
+- `system status [service]`
+- `system enable <service>`
+- `system disable <service>`
+- `system reload`
+- Keep compatibility aliases during migration to avoid breaking existing users.
 
 **5. Modularization (Core/UI/CLI Split)**
 - Split core engine into `supervisor-core.el` (parsing, validation, DAG,
