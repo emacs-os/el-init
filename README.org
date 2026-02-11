@@ -1,6 +1,6 @@
 [[https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml][https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml/badge.svg]]
 
-**A userspace service manager for Emacs sessions.**
+*A userspace service manager for Emacs sessions.*
 
 This project provides deterministic process supervision, staged startup,
 dependency management, crash recovery, and observability from within Emacs.
