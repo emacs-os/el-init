@@ -4,7 +4,7 @@
 ;;
 ;; Author: telecommuter <telecommuter@riseup.net>
 ;; Version: 1.0.0
-;; Package-Requires: ((emacs "27.1"))
+;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: processes, unix
 ;; URL: https://github.com/cypherpunk2001/supervisor.el
 
@@ -31,6 +31,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'transient)
 
 ;; Forward declarations for optional features
 (declare-function file-notify-add-watch "filenotify" (file flags callback))
@@ -133,42 +134,87 @@ Set to a file path string to watch a specific file instead."
 ;;; Dashboard Faces
 
 (defface supervisor-status-running
-  '((t :foreground "green" :weight bold))
+  '((t :foreground "#00ff00" :weight bold))
   "Face for running status in dashboard."
   :group 'supervisor)
 
 (defface supervisor-status-done
-  '((t :foreground "gray"))
+  '((t :foreground "#00bfff"))
   "Face for done/completed oneshot status in dashboard."
   :group 'supervisor)
 
 (defface supervisor-status-failed
-  '((t :foreground "red" :weight bold))
+  '((t :foreground "#ff4444" :weight bold))
   "Face for failed status in dashboard."
   :group 'supervisor)
 
 (defface supervisor-status-dead
-  '((t :foreground "orange" :weight bold))
+  '((t :foreground "#ff8c00" :weight bold))
   "Face for dead/crash-loop status in dashboard."
   :group 'supervisor)
 
 (defface supervisor-status-invalid
-  '((t :foreground "magenta" :weight bold))
+  '((t :foreground "#ff00ff" :weight bold))
   "Face for invalid config entry in dashboard."
   :group 'supervisor)
 
 (defface supervisor-status-pending
-  '((t :foreground "yellow"))
+  '((t :foreground "#ffd700"))
   "Face for pending/not-yet-started status in dashboard."
   :group 'supervisor)
 
 (defface supervisor-status-stopped
-  '((t :foreground "dim gray"))
+  '((t :foreground "#888888"))
   "Face for stopped status in dashboard."
   :group 'supervisor)
 
+(defface supervisor-type-simple
+  '((t :foreground "#87ceeb"))
+  "Face for simple process type in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-type-oneshot
+  '((t :foreground "#dda0dd"))
+  "Face for oneshot process type in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-stage-1
+  '((t :foreground "#ff6b6b"))
+  "Face for stage1 in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-stage-2
+  '((t :foreground "#feca57"))
+  "Face for stage2 in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-stage-3
+  '((t :foreground "#48dbfb"))
+  "Face for stage3 in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-stage-4
+  '((t :foreground "#1dd1a1"))
+  "Face for stage4 in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-enabled-yes
+  '((t :foreground "#00ff00"))
+  "Face for enabled=yes in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-enabled-no
+  '((t :foreground "#ff6b6b"))
+  "Face for enabled=no in dashboard."
+  :group 'supervisor)
+
+(defface supervisor-reason
+  '((t :foreground "#ffa500" :slant italic))
+  "Face for reason column in dashboard."
+  :group 'supervisor)
+
 (defface supervisor-stage-separator
-  '((t :weight bold :underline t))
+  '((t :foreground "#5f87af" :weight bold :underline t))
   "Face for stage separator rows in dashboard."
   :group 'supervisor)
 
@@ -184,6 +230,13 @@ Used in dashboard stage separators for better readability."
 
 (defcustom supervisor-dashboard-group-by-stage t
   "When non-nil, group dashboard entries by stage with separators."
+  :type 'boolean
+  :group 'supervisor)
+
+(defcustom supervisor-dashboard-show-header-hints nil
+  "When non-nil, show key hints in dashboard header line.
+When nil (default), the header shows only stage progress and health summary.
+Press \\`h' in the dashboard for full keybinding help."
   :type 'boolean
   :group 'supervisor)
 
@@ -1525,9 +1578,6 @@ CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart."
                             ('signal 'signal)
                             ('exit 'exited)
                             (_ 'unknown))))
-        ;; Clean up stderr process
-        (when-let* ((stderr (get-process (format "%s-stderr" name))))
-          (delete-process stderr))
         (remhash name supervisor--processes)
         ;; Emit process exit event (dispatches to legacy hook)
         (supervisor--emit-event 'process-exit name nil
@@ -1575,25 +1625,18 @@ IS-RESTART is t when called from a crash-triggered restart timer."
            (log-file (when logging
                        (supervisor--ensure-log-directory)
                        (supervisor--log-file id)))
-           ;; Create stderr process to capture stderr to same log file
-           (stderr-proc (when logging
-                          (make-pipe-process
-                           :name (format "%s-stderr" id)
-                           :filter (lambda (_proc output)
-                                     (write-region output nil log-file t 'silent)))))
            (proc (make-process
                   :name id
                   :command args
                   :connection-type 'pipe
-                  :stderr stderr-proc
+                  ;; Merge stderr into stdout - both captured by filter
+                  :stderr nil
                   :filter (when logging
                             (lambda (_proc output)
                               (write-region output nil log-file t 'silent)))
                   :sentinel (supervisor--make-process-sentinel
                              id cmd default-logging type config-restart))))
       (set-process-query-on-exit-flag proc nil)
-      (when stderr-proc
-        (set-process-query-on-exit-flag stderr-proc nil))
       (puthash id proc supervisor--processes)
       proc)))
 
@@ -2071,13 +2114,48 @@ nil means show all entries, otherwise a tag symbol or string.")
     (define-key map "g" #'supervisor-dashboard-refresh)
     (define-key map "G" #'supervisor-dashboard-toggle-auto-refresh)
     (define-key map "h" #'supervisor-dashboard-help)
-    (define-key map "?" #'supervisor-dashboard-describe-entry)
+    (define-key map "i" #'supervisor-dashboard-describe-entry)
     (define-key map "d" #'supervisor-dashboard-show-deps)
     (define-key map "D" #'supervisor-dashboard-show-graph)
     (define-key map "B" #'supervisor-dashboard-blame)
+    (define-key map "?" #'supervisor-dashboard-menu)
     (define-key map "q" #'supervisor-dashboard-quit)
     map)
   "Keymap for `supervisor-dashboard-mode'.")
+
+(transient-define-prefix supervisor-dashboard-menu ()
+  "Supervisor dashboard actions."
+  [:description
+   (lambda ()
+     (let ((snapshot (supervisor--build-snapshot)))
+       (concat (supervisor--stage-progress-banner)
+               " | " (supervisor--health-summary snapshot))))
+   ["Entry Actions"
+    ("s" "Start" supervisor-dashboard-start)
+    ("k" "Kill" supervisor-dashboard-kill)
+    ("K" "Kill (force)" supervisor-dashboard-kill-force)]
+   ["Toggles"
+    ("e" "Enabled" supervisor-dashboard-toggle-enabled)
+    ("r" "Restart" supervisor-dashboard-toggle-restart)
+    ("l" "Logging" supervisor-dashboard-toggle-logging)]
+   ["Views"
+    ("L" "View log" supervisor-dashboard-view-log)
+    ("d" "Dependencies" supervisor-dashboard-show-deps)
+    ("D" "Dep graph" supervisor-dashboard-show-graph)
+    ("B" "Blame" supervisor-dashboard-blame)]]
+  [["Filter"
+    ("f" "Cycle stage" supervisor-dashboard-cycle-filter)
+    ("t" "Cycle tag" supervisor-dashboard-cycle-tag-filter)]
+   ["Refresh"
+    ("g" "Refresh" supervisor-dashboard-refresh)
+    ("G" "Auto-refresh" supervisor-dashboard-toggle-auto-refresh)]
+   ["System"
+    ("p" "Proced" proced)
+    ("P" "Proced auto" supervisor-dashboard-toggle-proced-auto-update)]
+   ["Help"
+    ("i" "Entry info" supervisor-dashboard-describe-entry)
+    ("h" "Full help" supervisor-dashboard-help)
+    ("q" "Quit" supervisor-dashboard-quit)]])
 
 (defvar-local supervisor--dashboard-last-id nil
   "Last echoed entry ID, to avoid repeated messages.")
@@ -2250,14 +2328,28 @@ If SNAPSHOT is provided, read runtime state from it."
                                   ((eq log-override 'disabled) nil)
                                   (t logging-p))))
     (vector id
-            (symbol-name type)
-            (symbol-name stage)
-            (if effective-enabled "yes" "no")
+            (propertize (symbol-name type)
+                        'face (if (eq type 'oneshot)
+                                  'supervisor-type-oneshot
+                                'supervisor-type-simple))
+            (propertize (symbol-name stage)
+                        'face (pcase stage
+                                ('stage1 'supervisor-stage-1)
+                                ('stage2 'supervisor-stage-2)
+                                ('stage3 'supervisor-stage-3)
+                                ('stage4 'supervisor-stage-4)
+                                (_ nil)))
+            (propertize (if effective-enabled "yes" "no")
+                        'face (if effective-enabled
+                                  'supervisor-enabled-yes
+                                'supervisor-enabled-no))
             (supervisor--propertize-status status)
             restart-str
             (if effective-logging "yes" "no")
             pid
-            reason)))
+            (if (string-empty-p reason)
+                reason
+              (propertize reason 'face 'supervisor-reason)))))
 
 (defun supervisor--group-entries-by-stage (entries)
   "Group ENTRIES by stage with separator rows.
@@ -2327,13 +2419,18 @@ If SNAPSHOT is provided, read runtime state from it."
   (let ((all-stages '(stage1 stage2 stage3 stage4))
         (parts nil))
     (dolist (stage all-stages)
-      (push (cond ((member stage supervisor--completed-stages)
-                   (format "[%s *]" stage))
-                  ((eq stage supervisor--current-stage)
-                   (format "[%s >]" stage))
-                  (t
-                   (format "[%s  ]" stage)))
-            parts))
+      (let* ((face (pcase stage
+                     ('stage1 'supervisor-stage-1)
+                     ('stage2 'supervisor-stage-2)
+                     ('stage3 'supervisor-stage-3)
+                     ('stage4 'supervisor-stage-4)))
+             (text (cond ((member stage supervisor--completed-stages)
+                          (format "[%s *]" stage))
+                         ((eq stage supervisor--current-stage)
+                          (format "[%s >]" stage))
+                         (t
+                          (format "[%s  ]" stage)))))
+        (push (propertize text 'face face) parts)))
     (mapconcat #'identity (nreverse parts) " ")))
 
 (defun supervisor--health-summary (&optional snapshot)
@@ -2379,13 +2476,21 @@ If SNAPSHOT is provided, read state from it; otherwise read from globals."
                    ((and oneshot-p oneshot-exit) (cl-incf done))
                    (oneshot-p (cl-incf pending))
                    (t (cl-incf pending))))))))))
-    (format "%d run | %d done | %d pend | %d fail | %d inv"
-            running done pending failed invalid)))
+    (concat (propertize (format "%d" running) 'face 'supervisor-status-running)
+            " run | "
+            (propertize (format "%d" done) 'face 'supervisor-status-done)
+            " done | "
+            (propertize (format "%d" pending) 'face 'supervisor-status-pending)
+            " pend | "
+            (propertize (format "%d" failed) 'face 'supervisor-status-failed)
+            " fail | "
+            (propertize (format "%d" invalid) 'face 'supervisor-status-invalid)
+            " inv")))
 
 (defvar supervisor--help-text
   (concat "[e]nable [f]ilter [t]ag [s]tart [k]ill [K]force [r]estart "
           "[l]og [L]view [p]roced [P]auto [d]eps [D]graph "
-          "[B]lame [g]refresh [G]live [h]elp [?]info [q]uit")
+          "[B]lame [g]refresh [G]live [?]menu [i]nfo [h]elp [q]uit")
   "Key hints displayed in dashboard header.")
 
 (defun supervisor--refresh-dashboard ()
@@ -2401,7 +2506,8 @@ ensuring consistency within a single refresh cycle."
         (setq header-line-format
               (concat (supervisor--stage-progress-banner)
                       " | " (supervisor--health-summary snapshot)
-                      "  " supervisor--help-text))
+                      (when supervisor-dashboard-show-header-hints
+                        (concat "  " supervisor--help-text))))
         (goto-char (min pos (point-max)))))))
 
 (defun supervisor-dashboard-refresh ()
@@ -2517,7 +2623,8 @@ With prefix argument, show status legend instead."
     (princ "  P     Toggle proced auto-update mode\n")
     (princ "  g     Refresh dashboard\n")
     (princ "  G     Toggle auto-refresh (live monitoring)\n")
-    (princ "  ?     Show entry details (C-u ? for status legend)\n")
+    (princ "  ?     Open action menu (transient)\n")
+    (princ "  i     Show entry details (C-u i for status legend)\n")
     (princ "  h     Show this help\n")
     (princ "  d     Show dependencies for entry\n")
     (princ "  D     Show dependency graph\n")
@@ -2852,7 +2959,8 @@ Builds a single snapshot for both entries and header to ensure consistency."
         (setq-local header-line-format
                     (concat (supervisor--stage-progress-banner)
                             " | " (supervisor--health-summary snapshot)
-                            "  " supervisor--help-text))))
+                            (when supervisor-dashboard-show-header-hints
+                              (concat "  " supervisor--help-text))))))
     (pop-to-buffer buf)))
 
 ;;; File Watch

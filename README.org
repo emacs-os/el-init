@@ -18,7 +18,7 @@ This is user-session supervision, not a system init replacement.
 
 ** Requirements
 
-- Emacs 27.1+
+- Emacs 28.1+
 - `supervisor.el` available in `load-path`
 
 ** Install And Enable
@@ -296,7 +296,8 @@ Rows and header are built from a shared runtime snapshot per refresh.
 | `B` | Show startup blame timings |
 | `g` | Refresh dashboard |
 | `G` | Toggle dashboard auto-refresh |
-| `?` | Show entry details (`C-u ?` shows status legend) |
+| `?` | Open action menu (transient) |
+| `i` | Show entry details (`C-u i` shows status legend) |
 | `h` | Open full dashboard help |
 | `q` | Quit dashboard |
 

@@ -949,6 +949,7 @@
   (should (string-match-p "\\[G\\]" supervisor--help-text))
   (should (string-match-p "\\[h\\]" supervisor--help-text))
   (should (string-match-p "\\[?\\]" supervisor--help-text))
+  (should (string-match-p "\\[i\\]" supervisor--help-text))
   (should (string-match-p "\\[q\\]" supervisor--help-text)))
 
 (ert-deftest supervisor-test-stage-separator-creation ()
@@ -2037,6 +2038,50 @@ Regression test: process-ready was incorrectly emitted for disabled entries."
     ;; Should have both process-started and process-ready
     (should (cl-find 'process-started events :key (lambda (e) (plist-get e :type))))
     (should (cl-find 'process-ready events :key (lambda (e) (plist-get e :type))))))
+
+(ert-deftest supervisor-test-no-stderr-process-created ()
+  "Starting a process does not create a separate stderr process.
+Regression test: stderr pipe processes used to pollute the process list."
+  (let* ((supervisor-programs '(("true" :id "test-no-stderr" :type oneshot)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--restart-timestamps (make-hash-table :test 'equal))
+         (supervisor-log-directory (make-temp-file "supervisor-test-" t)))
+    (unwind-protect
+        (progn
+          (supervisor--start-process "test-no-stderr" "true" t 'oneshot nil nil)
+          ;; Main process should exist
+          (should (gethash "test-no-stderr" supervisor--processes))
+          ;; No stderr process should exist (with or without space prefix)
+          (should-not (get-process "test-no-stderr-stderr"))
+          (should-not (get-process " test-no-stderr-stderr")))
+      (when-let* ((proc (gethash "test-no-stderr" supervisor--processes)))
+        (delete-process proc))
+      (delete-directory supervisor-log-directory t))))
+
+(ert-deftest supervisor-test-dashboard-menu-keybinding ()
+  "Dashboard ? key is bound to transient menu."
+  (should (eq (lookup-key supervisor-dashboard-mode-map "?")
+              'supervisor-dashboard-menu)))
+
+(ert-deftest supervisor-test-dashboard-info-keybinding ()
+  "Dashboard i key is bound to entry info."
+  (should (eq (lookup-key supervisor-dashboard-mode-map "i")
+              'supervisor-dashboard-describe-entry)))
+
+(ert-deftest supervisor-test-header-hints-default-hidden ()
+  "Header hints are hidden by default."
+  (should-not supervisor-dashboard-show-header-hints))
+
+(ert-deftest supervisor-test-transient-menu-defined ()
+  "Transient menu is properly defined."
+  (should (fboundp 'supervisor-dashboard-menu))
+  ;; Should be a transient prefix command
+  (should (get 'supervisor-dashboard-menu 'transient--prefix)))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
