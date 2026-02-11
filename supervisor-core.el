@@ -1669,7 +1669,9 @@ Returns t if triggered, nil if skipped."
 
 (defun supervisor--timer-failure-retryable-p (exit-code)
   "Return non-nil if EXIT-CODE represents a retryable failure.
-Non-zero exits are retryable.  Signal deaths (negative codes) are not."
+Positive exit codes (normal process exits with non-zero status) are retryable.
+Signal deaths are stored as negative values (negated signal number) and are
+not retryable per PLAN-2 spec."
   (and exit-code
        (integerp exit-code)
        (> exit-code 0)))
@@ -2928,8 +2930,13 @@ effect on next start (manual or restart)."
 (defun supervisor--handle-oneshot-exit (name proc-status exit-code)
   "Handle exit of oneshot process NAME.
 PROC-STATUS is the process status symbol, EXIT-CODE is the exit code.
-Logs completion, invokes callbacks, and notifies DAG scheduler."
-  (puthash name exit-code supervisor--oneshot-completed)
+Logs completion, invokes callbacks, and notifies DAG scheduler.
+For signal deaths, stores negated signal number (e.g., -9 for SIGKILL)
+to distinguish from normal exits with positive exit codes."
+  (let ((stored-code (if (eq proc-status 'signal)
+                         (- exit-code)  ; Negate signal number
+                       exit-code)))
+    (puthash name stored-code supervisor--oneshot-completed))
   (if (eq proc-status 'signal)
       (supervisor--log 'warning "oneshot %s %s"
                        name (supervisor--format-exit-status proc-status exit-code))

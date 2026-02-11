@@ -3114,9 +3114,46 @@ Regression test: stderr pipe processes used to pollute the process list."
   (should (supervisor--timer-failure-retryable-p 127)))
 
 (ert-deftest supervisor-test-timer-failure-not-retryable-signal ()
-  "Signal deaths (negative codes) are not retryable."
-  (should-not (supervisor--timer-failure-retryable-p -9))
-  (should-not (supervisor--timer-failure-retryable-p -15)))
+  "Signal deaths (stored as negative values) are not retryable.
+Emacs provides signal numbers as positive values with process-status='signal.
+The oneshot exit handler encodes these as negative for retry gating."
+  (should-not (supervisor--timer-failure-retryable-p -9))   ; SIGKILL
+  (should-not (supervisor--timer-failure-retryable-p -15))) ; SIGTERM
+
+(ert-deftest supervisor-test-oneshot-exit-encodes-signal-as-negative ()
+  "Signal deaths are stored as negative values in oneshot-completed.
+This ensures retry eligibility correctly rejects signal deaths."
+  (let ((supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--oneshot-callbacks (make-hash-table :test 'equal))
+        (supervisor--dag-blocking-oneshots nil)
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-ready nil)
+        (supervisor--event-handlers nil))
+    ;; Simulate signal death: proc-status='signal, exit-code=9 (SIGKILL)
+    (supervisor--handle-oneshot-exit "test-oneshot" 'signal 9)
+    ;; Should be stored as -9
+    (should (= -9 (gethash "test-oneshot" supervisor--oneshot-completed)))
+    ;; Therefore not retryable
+    (should-not (supervisor--timer-failure-retryable-p
+                 (gethash "test-oneshot" supervisor--oneshot-completed)))))
+
+(ert-deftest supervisor-test-oneshot-exit-preserves-normal-exit-code ()
+  "Normal exit codes are stored as-is (positive values)."
+  (let ((supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--oneshot-callbacks (make-hash-table :test 'equal))
+        (supervisor--dag-blocking-oneshots nil)
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-ready nil)
+        (supervisor--event-handlers nil))
+    ;; Simulate normal exit: proc-status='exit, exit-code=1
+    (supervisor--handle-oneshot-exit "test-oneshot" 'exit 1)
+    ;; Should be stored as 1 (positive)
+    (should (= 1 (gethash "test-oneshot" supervisor--oneshot-completed)))
+    ;; Therefore retryable
+    (should (supervisor--timer-failure-retryable-p
+             (gethash "test-oneshot" supervisor--oneshot-completed)))))
 
 (ert-deftest supervisor-test-timer-failure-not-retryable-zero ()
   "Zero exit (success) is not retryable."
