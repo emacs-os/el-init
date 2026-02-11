@@ -2,7 +2,7 @@
 
 * Navigation
 
-- [[#supervisorel][supervisor.el]]
+- [[#about-supervisorel][About supervisor.el]]
 - [[#codebase-layout][Codebase Layout]]
 - [[#requirements][Requirements]]
 - [[#install-and-enable][Install And Enable]]
@@ -23,7 +23,7 @@
 - [[#development-commands][Development Commands]]
 - [[#license][License]]
 
-* supervisor.el
+* About supervisor.el
 
 ~supervisor.el~ is an Emacs user-session process supervisor.
 
@@ -131,7 +131,6 @@ sbin/supervisorctl [OPTIONS] COMMAND [ARGS...]
 | ~--socket NAME~ | Use specific Emacs server socket |
 | ~--server-file PATH~ | Use server file for TCP |
 | ~--timeout N~ | Wait at most N seconds for response |
-| ~--strict~ | Fail on security warnings instead of continuing |
 
 *** Commands
 
@@ -177,7 +176,6 @@ Utilities:
 | ~2~ | Invalid arguments |
 | ~3~ | Emacs server unavailable |
 | ~4~ | Validation failed |
-| ~5~ | Security policy violation (strict mode) |
 
 *** JSON Output
 

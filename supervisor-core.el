@@ -64,6 +64,46 @@ See README.org for available keywords."
   :type '(repeat (choice string (list string &rest plist)))
   :group 'supervisor)
 
+(defcustom supervisor-timers nil
+  "List of timer definitions for scheduled oneshot execution.
+Each entry is a plist with required keys :id and :target.
+
+Required keys:
+  :id       - string, unique timer identifier
+  :target   - string, ID of oneshot service in `supervisor-programs'
+
+Trigger keys (at least one required):
+  :on-calendar      - calendar schedule (see below)
+  :on-startup-sec   - seconds after supervisor-start to run
+  :on-unit-active-sec - seconds after target completes to run again
+
+Optional keys:
+  :enabled    - boolean, default t
+  :persistent - boolean, default t (enables catch-up after downtime)
+
+Calendar schedule format:
+  (:minute M :hour H :day-of-month D :month MO :day-of-week DOW)
+  Each field is an integer, list of integers, or \\='* for any.
+
+Example:
+  \\='((:id \"backup-daily\"
+     :target \"backup-script\"
+     :on-calendar (:hour 3 :minute 0))
+    (:id \"cleanup-startup\"
+     :target \"cleanup-script\"
+     :on-startup-sec 60))"
+  :type '(repeat plist)
+  :group 'supervisor)
+
+(defcustom supervisor-timer-state-file
+  (expand-file-name "supervisor/timer-state.eld"
+                    (or (getenv "XDG_STATE_HOME")
+                        (expand-file-name "~/.local/state")))
+  "File path for persisting timer state.
+Set to nil to disable timer state persistence."
+  :type '(choice file (const nil))
+  :group 'supervisor)
+
 (defcustom supervisor-log-directory
   (expand-file-name "supervisor" user-emacs-directory)
   "Directory for supervisor log files."
@@ -342,8 +382,49 @@ Return nil if valid, or a reason string if invalid."
 
 ;; Forward declarations for supervisor-validate and supervisor-dry-run
 (defvar supervisor--invalid)
+(defvar supervisor--invalid-timers)
 (defvar supervisor--cycle-fallback-ids)
 (defvar supervisor--computed-deps)
+
+;;; Timer Definition Schema (early for use in validate/dry-run)
+
+(defconst supervisor-timer-schema-version 1
+  "Schema version for timer definitions.")
+
+(cl-defstruct (supervisor-timer (:constructor supervisor-timer--create)
+                                (:copier nil))
+  "Timer definition for scheduled oneshot execution.
+
+Field documentation:
+  id              - Unique identifier string (required)
+  target          - ID of oneshot service to trigger (required)
+  enabled         - Whether this timer is active (boolean, default t)
+  on-calendar     - Calendar schedule plist (optional)
+  on-startup-sec  - Seconds after startup to trigger (optional)
+  on-unit-active-sec - Seconds after target completes to trigger again (optional)
+  persistent      - Enable catch-up after downtime (boolean, default t)"
+  (id nil :type string :documentation "Unique timer identifier (required)")
+  (target nil :type string :documentation "Target oneshot service ID (required)")
+  (enabled t :type boolean :documentation "Whether timer is active")
+  (on-calendar nil :type (or null list) :documentation "Calendar schedule plist")
+  (on-startup-sec nil :type (or null integer) :documentation "Startup delay seconds")
+  (on-unit-active-sec nil :type (or null integer) :documentation "Repeat interval seconds")
+  (persistent t :type boolean :documentation "Enable catch-up after downtime"))
+
+(defconst supervisor-timer-required-fields '(id target)
+  "List of required fields in a timer definition.")
+
+(defconst supervisor-timer-trigger-fields
+  '(on-calendar on-startup-sec on-unit-active-sec)
+  "List of trigger fields.  At least one must be specified.")
+
+(defconst supervisor-timer-valid-keywords
+  '(:id :target :enabled :on-calendar :on-startup-sec :on-unit-active-sec :persistent)
+  "List of valid timer keywords.")
+
+(defconst supervisor-timer-calendar-fields
+  '(:minute :hour :day-of-month :month :day-of-week)
+  "Valid fields in an :on-calendar schedule.")
 
 (defun supervisor--extract-id (entry idx)
   "Extract a stable ID from ENTRY at position IDX in `supervisor-programs'.
@@ -362,37 +443,48 @@ For malformed entries, returns \"malformed#IDX\" for consistency."
 
 ;;;###autoload
 (defun supervisor-validate ()
-  "Validate all entries in `supervisor-programs' without starting.
+  "Validate all entries in `supervisor-programs' and `supervisor-timers'.
 Display results in a temporary buffer and populate `supervisor--invalid'
-so the dashboard reflects validation state."
+and `supervisor--invalid-timers' so the dashboard reflects validation state."
   (interactive)
   (clrhash supervisor--invalid)
-  (let ((valid 0)
-        (invalid 0)
-        (results nil)
-        (seen (make-hash-table :test 'equal))
-        (idx 0))
-    (dolist (entry supervisor-programs)
-      (let* ((id (supervisor--extract-id entry idx))
-             (reason (supervisor--validate-entry entry)))
-        (cl-incf idx)
-        ;; Skip duplicates
-        (unless (gethash id seen)
-          (puthash id t seen)
-          (if reason
-              (progn
-                (cl-incf invalid)
-                (puthash id reason supervisor--invalid)
-                (push (format "INVALID %s: %s" id reason) results))
-            (cl-incf valid)
-            (push (format "OK      %s" id) results)))))
-    (with-output-to-temp-buffer "*supervisor-validate*"
-      (princ (format "Validation: %d valid, %d invalid\n\n" valid invalid))
-      (dolist (line (nreverse results))
-        (princ line)
-        (princ "\n")))
-    ;; Refresh dashboard if open
-    (supervisor--maybe-refresh-dashboard)))
+  (clrhash supervisor--invalid-timers)
+  ;; Build plan to get entry validation results
+  (let* ((plan (supervisor--build-plan supervisor-programs))
+         (entry-valid (length (supervisor-plan-entries plan)))
+         (entry-invalid (hash-table-count (supervisor-plan-invalid plan)))
+         (entry-results nil))
+    ;; Populate supervisor--invalid from plan
+    (maphash (lambda (k v) (puthash k v supervisor--invalid))
+             (supervisor-plan-invalid plan))
+    ;; Collect entry results (entry is a tuple where car is the id)
+    (dolist (entry (supervisor-plan-entries plan))
+      (push (format "OK      %s" (car entry)) entry-results))
+    (maphash (lambda (id reason)
+               (push (format "INVALID %s: %s" id reason) entry-results))
+             (supervisor-plan-invalid plan))
+    ;; Validate timers using plan (for target checking)
+    (let* ((timers (supervisor--build-timer-list plan))
+           (timer-valid (length timers))
+           (timer-invalid (hash-table-count supervisor--invalid-timers))
+           (timer-results nil))
+      ;; Collect timer results
+      (dolist (timer timers)
+        (push (format "OK      %s" (supervisor-timer-id timer)) timer-results))
+      (maphash (lambda (id reason)
+                 (push (format "INVALID %s: %s" id reason) timer-results))
+               supervisor--invalid-timers)
+      ;; Display results
+      (with-output-to-temp-buffer "*supervisor-validate*"
+        (princ (format "Services: %d valid, %d invalid\n" entry-valid entry-invalid))
+        (dolist (line (nreverse entry-results))
+          (princ (format "  %s\n" line)))
+        (when supervisor-timers
+          (princ (format "\nTimers: %d valid, %d invalid\n" timer-valid timer-invalid))
+          (dolist (line (nreverse timer-results))
+            (princ (format "  %s\n" line)))))))
+  ;; Refresh dashboard if open
+  (supervisor--maybe-refresh-dashboard))
 
 ;;;###autoload
 (defun supervisor-dry-run ()
@@ -404,6 +496,7 @@ cycle fallback behavior.  Uses the pure plan builder internally."
   (let ((plan (supervisor--build-plan supervisor-programs)))
     ;; Populate legacy globals for dashboard compatibility
     (clrhash supervisor--invalid)
+    (clrhash supervisor--invalid-timers)
     (clrhash supervisor--cycle-fallback-ids)
     (clrhash supervisor--computed-deps)
     (maphash (lambda (k v) (puthash k v supervisor--invalid))
@@ -412,46 +505,69 @@ cycle fallback behavior.  Uses the pure plan builder internally."
              (supervisor-plan-cycle-fallback-ids plan))
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
              (supervisor-plan-deps plan))
-    ;; Display from plan artifact
-    (with-output-to-temp-buffer "*supervisor-dry-run*"
-      (princ "=== Supervisor Dry Run ===\n\n")
-      (princ (format "Total entries: %d valid, %d invalid\n\n"
-                     (length (supervisor-plan-entries plan))
-                     (hash-table-count (supervisor-plan-invalid plan))))
-      ;; Show invalid entries first
-      (when (> (hash-table-count (supervisor-plan-invalid plan)) 0)
-        (princ "--- Invalid Entries (skipped) ---\n")
-        (maphash (lambda (id reason)
-                   (princ (format "  %s: %s\n" id reason)))
-                 (supervisor-plan-invalid plan))
-        (princ "\n"))
-      ;; Display each stage from the plan's by-stage data
-      (dolist (stage-pair (supervisor-plan-by-stage plan))
-        (let* ((stage-int (car stage-pair))
-               (stage-name (supervisor--int-to-stage stage-int))
-               (sorted-entries (cdr stage-pair)))
-          (princ (format "--- Stage: %s (%d entries) ---\n"
-                         stage-name (length sorted-entries)))
-          (let ((order 1))
-            (dolist (entry sorted-entries)
-              (let* ((id (nth 0 entry))
-                     (type (nth 6 entry))
-                     (delay (nth 2 entry))
-                     (enabled-p (nth 3 entry))
-                     (deps (gethash id (supervisor-plan-deps plan)))
-                     (cycle (gethash id (supervisor-plan-cycle-fallback-ids plan))))
-                (princ (format "  %d. %s [%s]%s%s%s\n"
-                               order id type
-                               (if (not enabled-p) " DISABLED" "")
-                               (if (> delay 0) (format " delay=%ds" delay) "")
-                               (if cycle " (CYCLE FALLBACK)"
-                                 (if deps
-                                     (format " after=%s"
-                                             (mapconcat #'identity deps ","))
-                                   ""))))
-                (cl-incf order))))
-          (princ "\n")))
-      (princ "=== End Dry Run ===\n"))))
+    ;; Validate timers
+    (let ((timers (supervisor--build-timer-list plan)))
+      ;; Display from plan artifact
+      (with-output-to-temp-buffer "*supervisor-dry-run*"
+        (princ "=== Supervisor Dry Run ===\n\n")
+        (princ (format "Services: %d valid, %d invalid\n"
+                       (length (supervisor-plan-entries plan))
+                       (hash-table-count (supervisor-plan-invalid plan))))
+        (when supervisor-timers
+          (princ (format "Timers: %d valid, %d invalid\n"
+                         (length timers)
+                         (hash-table-count supervisor--invalid-timers))))
+        (princ "\n")
+        ;; Show invalid entries first
+        (when (> (hash-table-count (supervisor-plan-invalid plan)) 0)
+          (princ "--- Invalid Services (skipped) ---\n")
+          (maphash (lambda (id reason)
+                     (princ (format "  %s: %s\n" id reason)))
+                   (supervisor-plan-invalid plan))
+          (princ "\n"))
+        ;; Show invalid timers
+        (when (> (hash-table-count supervisor--invalid-timers) 0)
+          (princ "--- Invalid Timers (skipped) ---\n")
+          (maphash (lambda (id reason)
+                     (princ (format "  %s: %s\n" id reason)))
+                   supervisor--invalid-timers)
+          (princ "\n"))
+        ;; Display each stage from the plan's by-stage data
+        (dolist (stage-pair (supervisor-plan-by-stage plan))
+          (let* ((stage-int (car stage-pair))
+                 (stage-name (supervisor--int-to-stage stage-int))
+                 (sorted-entries (cdr stage-pair)))
+            (princ (format "--- Stage: %s (%d entries) ---\n"
+                           stage-name (length sorted-entries)))
+            (let ((order 1))
+              (dolist (entry sorted-entries)
+                (let* ((id (nth 0 entry))
+                       (type (nth 6 entry))
+                       (delay (nth 2 entry))
+                       (enabled-p (nth 3 entry))
+                       (deps (gethash id (supervisor-plan-deps plan)))
+                       (cycle (gethash id (supervisor-plan-cycle-fallback-ids plan))))
+                  (princ (format "  %d. %s [%s]%s%s%s\n"
+                                 order id type
+                                 (if (not enabled-p) " DISABLED" "")
+                                 (if (> delay 0) (format " delay=%ds" delay) "")
+                                 (if cycle " (CYCLE FALLBACK)"
+                                   (if deps
+                                       (format " after=%s"
+                                               (mapconcat #'identity deps ","))
+                                     ""))))
+                  (cl-incf order))))
+            (princ "\n")))
+        ;; Show timer summary if any
+        (when timers
+          (princ "--- Timers ---\n")
+          (dolist (timer timers)
+            (princ (format "  %s -> %s%s\n"
+                           (supervisor-timer-id timer)
+                           (supervisor-timer-target timer)
+                           (if (supervisor-timer-enabled timer) "" " DISABLED"))))
+          (princ "\n"))
+        (princ "=== End Dry Run ===\n")))))
 
 ;;; State Variables
 
@@ -976,6 +1092,9 @@ Field documentation:
   "Alist of optional fields with their default values.
 A value of :defer means the default is resolved at runtime.")
 
+(defvar supervisor--invalid-timers (make-hash-table :test 'equal)
+  "Hash table mapping invalid timer IDs to reason strings.")
+
 ;;; Parsed Entry Accessors (Schema v1)
 ;;
 ;; These functions abstract the internal tuple representation.
@@ -1035,6 +1154,162 @@ A value of :defer means the default is resolved at runtime.")
 (defsubst supervisor-entry-requires (entry)
   "Return the requirement dependencies of parsed ENTRY."
   (nth 12 entry))
+
+;;; Timer Validation and Parsing
+
+(defun supervisor--calendar-plist-p (obj)
+  "Return non-nil if OBJ is a valid calendar plist structure.
+Must be a proper (non-dotted) list starting with a keyword."
+  (and (proper-list-p obj)
+       obj
+       (keywordp (car obj))))
+
+(defun supervisor--validate-single-calendar (calendar)
+  "Validate a single CALENDAR schedule plist.
+Return nil if valid, or an error message string."
+  ;; Check for proper list structure before iterating
+  (cond
+   ((not (proper-list-p calendar))
+    ":on-calendar must be a proper plist, not a dotted pair")
+   ((null calendar)
+    ":on-calendar entry cannot be empty")
+   ((not (keywordp (car calendar)))
+    ":on-calendar entry must start with a keyword")
+   (t
+    (let ((valid-fields supervisor-timer-calendar-fields))
+      (cl-loop for (key val) on calendar by #'cddr
+               unless (memq key valid-fields)
+               return (format ":on-calendar has unknown field %s" key)
+               unless (or (eq val '*)
+                          (integerp val)
+                          (and (listp val) (cl-every #'integerp val)))
+               return (format ":on-calendar field %s must be integer, list of integers, or *" key))))))
+
+(defun supervisor--validate-timer-calendar (calendar)
+  "Validate CALENDAR schedule (single plist or list of plists).
+Return nil if valid, or an error message string."
+  (cond
+   ((not (listp calendar))
+    ":on-calendar must be a plist or list of plists")
+   ;; Empty list is invalid (no schedule)
+   ((null calendar)
+    ":on-calendar cannot be empty")
+   ;; Single calendar plist (starts with keyword)
+   ((keywordp (car calendar))
+    (supervisor--validate-single-calendar calendar))
+   ;; List of calendar plists - validate each entry is a plist
+   ((listp (car calendar))
+    (cl-loop for entry in calendar
+             unless (supervisor--calendar-plist-p entry)
+             return (format ":on-calendar list entry must be a plist, got %S" entry)
+             for err = (supervisor--validate-single-calendar entry)
+             when err return err))
+   (t
+    ":on-calendar must be a plist or list of plists")))
+
+(defun supervisor--validate-timer (timer-plist plan)
+  "Validate TIMER-PLIST against PLAN.
+Return nil if valid, or an error message string.
+PLAN is used to verify the target exists and is a oneshot."
+  (catch 'invalid
+    (let ((id (plist-get timer-plist :id))
+          (target (plist-get timer-plist :target)))
+      ;; Check for unknown keywords
+      (let ((unknown-err
+             (cl-loop for (key _val) on timer-plist by #'cddr
+                      unless (memq key supervisor-timer-valid-keywords)
+                      return (format "unknown keyword %s" key))))
+        (when unknown-err (throw 'invalid unknown-err)))
+      ;; Check required fields
+      (unless (and id (stringp id) (not (string-empty-p id)))
+        (throw 'invalid ":id must be a non-empty string"))
+      (unless (and target (stringp target) (not (string-empty-p target)))
+        (throw 'invalid ":target must be a non-empty string"))
+      ;; Check at least one trigger with non-nil value
+      (unless (or (plist-get timer-plist :on-calendar)
+                  (plist-get timer-plist :on-startup-sec)
+                  (plist-get timer-plist :on-unit-active-sec))
+        (throw 'invalid
+               "at least one trigger required (:on-calendar, :on-startup-sec, or :on-unit-active-sec)"))
+      ;; Validate trigger field types (explicit nil is invalid when key is present)
+      (when (plist-member timer-plist :on-startup-sec)
+        (let ((startup-sec (plist-get timer-plist :on-startup-sec)))
+          (unless (and startup-sec (integerp startup-sec) (>= startup-sec 0))
+            (throw 'invalid ":on-startup-sec must be a non-negative integer"))))
+      (when (plist-member timer-plist :on-unit-active-sec)
+        (let ((active-sec (plist-get timer-plist :on-unit-active-sec)))
+          (unless (and active-sec (integerp active-sec) (> active-sec 0))
+            (throw 'invalid ":on-unit-active-sec must be a positive integer"))))
+      ;; Validate calendar schedule (use plist-member since empty list is valid to detect)
+      (when (plist-member timer-plist :on-calendar)
+        (let ((calendar (plist-get timer-plist :on-calendar)))
+          (when-let* ((err (supervisor--validate-timer-calendar calendar)))
+            (throw 'invalid err))))
+      ;; Validate enabled field
+      (when (plist-member timer-plist :enabled)
+        (unless (booleanp (plist-get timer-plist :enabled))
+          (throw 'invalid ":enabled must be a boolean")))
+      ;; Validate persistent field
+      (when (plist-member timer-plist :persistent)
+        (unless (booleanp (plist-get timer-plist :persistent))
+          (throw 'invalid ":persistent must be a boolean")))
+      ;; Validate target exists and is oneshot
+      (when plan
+        (let* ((entries (supervisor-plan-entries plan))
+               (target-entry (cl-find target entries
+                                      :key #'supervisor-entry-id
+                                      :test #'equal)))
+          (unless target-entry
+            (throw 'invalid
+                   (format ":target '%s' not found in supervisor-programs" target)))
+          (unless (eq (supervisor-entry-type target-entry) 'oneshot)
+            (throw 'invalid
+                   (format ":target '%s' must be a oneshot service, not %s"
+                           target (supervisor-entry-type target-entry))))))
+      ;; Valid
+      nil)))
+
+(defun supervisor--parse-timer (timer-plist)
+  "Parse TIMER-PLIST into a supervisor-timer struct.
+Assumes validation has already passed."
+  (supervisor-timer--create
+   :id (plist-get timer-plist :id)
+   :target (plist-get timer-plist :target)
+   :enabled (if (plist-member timer-plist :enabled)
+                (plist-get timer-plist :enabled)
+              t)
+   :on-calendar (plist-get timer-plist :on-calendar)
+   :on-startup-sec (plist-get timer-plist :on-startup-sec)
+   :on-unit-active-sec (plist-get timer-plist :on-unit-active-sec)
+   :persistent (if (plist-member timer-plist :persistent)
+                   (plist-get timer-plist :persistent)
+                 t)))
+
+(defun supervisor--build-timer-list (plan)
+  "Build list of validated timer structs from `supervisor-timers'.
+Invalid timers are added to `supervisor--invalid-timers' hash.
+PLAN is used for target validation."
+  (clrhash supervisor--invalid-timers)
+  (let ((timers nil)
+        (seen-ids (make-hash-table :test 'equal)))
+    (dolist (timer-plist supervisor-timers)
+      (let* ((id (or (plist-get timer-plist :id)
+                     (format "timer#%d" (hash-table-count supervisor--invalid-timers))))
+             (error-reason (supervisor--validate-timer timer-plist plan)))
+        (cond
+         ;; Invalid timer
+         (error-reason
+          (puthash id error-reason supervisor--invalid-timers)
+          (supervisor--log 'warning "INVALID timer %s - %s" id error-reason))
+         ;; Duplicate ID
+         ((gethash id seen-ids)
+          (puthash id "duplicate timer ID" supervisor--invalid-timers)
+          (supervisor--log 'warning "duplicate timer ID '%s', skipping" id))
+         ;; Valid timer
+         (t
+          (puthash id t seen-ids)
+          (push (supervisor--parse-timer timer-plist) timers)))))
+    (nreverse timers)))
 
 (defun supervisor--get-entry-for-id (id)
   "Get the parsed entry for ID.
@@ -2385,6 +2660,7 @@ Ready semantics (when dependents are unblocked):
   (clrhash supervisor--manually-stopped)
   (clrhash supervisor--failed)
   (clrhash supervisor--invalid)
+  (clrhash supervisor--invalid-timers)
   (clrhash supervisor--logging)
   (clrhash supervisor--restart-times)
   (clrhash supervisor--restart-timers)
@@ -2409,6 +2685,8 @@ Ready semantics (when dependents are unblocked):
              (supervisor-plan-cycle-fallback-ids plan))
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
              (supervisor-plan-deps plan))
+    ;; Validate timers (populates supervisor--invalid-timers)
+    (supervisor--build-timer-list plan)
     ;; Initialize all entry states to stage-not-started via FSM
     (dolist (entry (supervisor-plan-entries plan))
       (supervisor--transition-state (car entry) 'stage-not-started))
@@ -2674,8 +2952,11 @@ Does not restart changed entries - use dashboard kill/start for that."
          (started (plist-get result :started)))
     ;; Populate legacy globals from plan for dashboard
     (clrhash supervisor--invalid)
+    (clrhash supervisor--invalid-timers)
     (maphash (lambda (k v) (puthash k v supervisor--invalid))
              (supervisor-plan-invalid plan))
+    ;; Validate timers (populates supervisor--invalid-timers)
+    (supervisor--build-timer-list plan)
     (supervisor--maybe-refresh-dashboard)
     (message "Supervisor reload: stopped %d, started %d" stopped started)))
 

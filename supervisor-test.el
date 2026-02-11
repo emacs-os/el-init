@@ -928,14 +928,16 @@ core symbols exist without dashboard/cli-specific dependencies."
   "Dry-run shows invalid entries."
   (let ((supervisor-programs '(("valid" :type simple)
                                ("invalid" :type "bad")))
+        (supervisor-timers nil)
         (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--invalid-timers (make-hash-table :test 'equal))
         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
         (supervisor--computed-deps (make-hash-table :test 'equal)))
     (supervisor-dry-run)
     (let ((output (with-current-buffer "*supervisor-dry-run*"
                     (buffer-string))))
       (kill-buffer "*supervisor-dry-run*")
-      (should (string-match-p "Invalid Entries" output))
+      (should (string-match-p "Invalid Services" output))
       (should (string-match-p "invalid" output)))))
 
 (ert-deftest supervisor-test-dry-run-validates-after ()
@@ -2546,6 +2548,252 @@ Regression test: stderr pipe processes used to pollute the process list."
     (let ((stage3-entry (assoc 2 (supervisor-plan-by-stage plan))))
       (should-not stage3-entry))))
 
+;;; Timer Schema tests
+
+(ert-deftest supervisor-test-timer-struct-fields ()
+  "Timer struct has expected fields."
+  (let ((timer (supervisor-timer--create
+                :id "test"
+                :target "target"
+                :enabled t
+                :on-startup-sec 60
+                :persistent t)))
+    (should (supervisor-timer-p timer))
+    (should (equal "test" (supervisor-timer-id timer)))
+    (should (equal "target" (supervisor-timer-target timer)))
+    (should (eq t (supervisor-timer-enabled timer)))
+    (should (= 60 (supervisor-timer-on-startup-sec timer)))
+    (should (eq t (supervisor-timer-persistent timer)))))
+
+(ert-deftest supervisor-test-timer-validate-missing-id ()
+  "Timer without :id is rejected."
+  (let ((err (supervisor--validate-timer '(:target "foo" :on-startup-sec 60) nil)))
+    (should (string-match-p ":id must be" err))))
+
+(ert-deftest supervisor-test-timer-validate-missing-target ()
+  "Timer without :target is rejected."
+  (let ((err (supervisor--validate-timer '(:id "t" :on-startup-sec 60) nil)))
+    (should (string-match-p ":target must be" err))))
+
+(ert-deftest supervisor-test-timer-validate-empty-id ()
+  "Timer with empty string :id is rejected."
+  (let ((err (supervisor--validate-timer '(:id "" :target "foo" :on-startup-sec 60) nil)))
+    (should (string-match-p ":id must be a non-empty string" err))))
+
+(ert-deftest supervisor-test-timer-validate-empty-target ()
+  "Timer with empty string :target is rejected."
+  (let ((err (supervisor--validate-timer '(:id "t" :target "" :on-startup-sec 60) nil)))
+    (should (string-match-p ":target must be a non-empty string" err))))
+
+(ert-deftest supervisor-test-timer-validate-no-trigger ()
+  "Timer without any trigger is rejected."
+  (let ((err (supervisor--validate-timer '(:id "t" :target "foo") nil)))
+    (should (string-match-p "at least one trigger" err))))
+
+(ert-deftest supervisor-test-timer-validate-unknown-keyword ()
+  "Timer with unknown keyword is rejected."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-startup-sec 60 :bogus t) nil)))
+    (should (string-match-p "unknown keyword" err))))
+
+(ert-deftest supervisor-test-timer-validate-startup-sec-type ()
+  "Timer with non-integer :on-startup-sec is rejected."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-startup-sec "60") nil)))
+    (should (string-match-p ":on-startup-sec must be" err))))
+
+(ert-deftest supervisor-test-timer-validate-unit-active-sec-positive ()
+  "Timer with zero :on-unit-active-sec is rejected."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-unit-active-sec 0) nil)))
+    (should (string-match-p ":on-unit-active-sec must be a positive" err))))
+
+(ert-deftest supervisor-test-timer-validate-startup-sec-nil ()
+  "Timer with only nil :on-startup-sec has no valid trigger."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-startup-sec nil) nil)))
+    (should (string-match-p "at least one trigger" err))))
+
+(ert-deftest supervisor-test-timer-validate-unit-active-sec-nil ()
+  "Timer with only nil :on-unit-active-sec has no valid trigger."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-unit-active-sec nil) nil)))
+    (should (string-match-p "at least one trigger" err))))
+
+(ert-deftest supervisor-test-timer-validate-startup-sec-nil-with-other-trigger ()
+  "Timer with nil :on-startup-sec but valid :on-calendar still validates."
+  (let* ((programs '(("script" :type oneshot :id "script")))
+         (plan (supervisor--build-plan programs))
+         (err (supervisor--validate-timer
+               '(:id "t" :target "script" :on-startup-sec nil
+                 :on-calendar (:hour 3))
+               plan)))
+    ;; Should fail on nil :on-startup-sec type check, not on missing trigger
+    (should (string-match-p ":on-startup-sec must be" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-unknown-field ()
+  "Timer with unknown calendar field is rejected."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-calendar (:bogus 5)) nil)))
+    (should (string-match-p "unknown field" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-bad-value ()
+  "Timer with invalid calendar value type is rejected."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-calendar (:hour "3")) nil)))
+    (should (string-match-p "must be integer" err))))
+
+(ert-deftest supervisor-test-timer-validate-enabled-boolean ()
+  "Timer with non-boolean :enabled is rejected."
+  (let ((err (supervisor--validate-timer
+              '(:id "t" :target "foo" :on-startup-sec 60 :enabled "yes") nil)))
+    (should (string-match-p ":enabled must be a boolean" err))))
+
+(ert-deftest supervisor-test-timer-validate-target-not-found ()
+  "Timer targeting nonexistent service is rejected."
+  (let* ((programs '(("real" :type oneshot :id "real")))
+         (plan (supervisor--build-plan programs))
+         (err (supervisor--validate-timer
+               '(:id "t" :target "missing" :on-startup-sec 60) plan)))
+    (should (string-match-p "not found" err))))
+
+(ert-deftest supervisor-test-timer-validate-target-not-oneshot ()
+  "Timer targeting simple service is rejected."
+  (let* ((programs '(("daemon" :type simple :id "daemon")))
+         (plan (supervisor--build-plan programs))
+         (err (supervisor--validate-timer
+               '(:id "t" :target "daemon" :on-startup-sec 60) plan)))
+    (should (string-match-p "must be a oneshot" err))))
+
+(ert-deftest supervisor-test-timer-validate-valid ()
+  "Valid timer passes validation."
+  (let* ((programs '(("script" :type oneshot :id "script")))
+         (plan (supervisor--build-plan programs))
+         (err (supervisor--validate-timer
+               '(:id "t" :target "script" :on-startup-sec 60) plan)))
+    (should-not err)))
+
+(ert-deftest supervisor-test-timer-validate-calendar-valid ()
+  "Valid calendar schedule passes validation."
+  (let* ((programs '(("script" :type oneshot :id "script")))
+         (plan (supervisor--build-plan programs))
+         (err (supervisor--validate-timer
+               '(:id "t" :target "script"
+                 :on-calendar (:hour 3 :minute 0 :day-of-week *))
+               plan)))
+    (should-not err)))
+
+(ert-deftest supervisor-test-timer-validate-calendar-list-valid ()
+  "Valid list of calendar schedules passes validation."
+  (let* ((programs '(("script" :type oneshot :id "script")))
+         (plan (supervisor--build-plan programs))
+         (err (supervisor--validate-timer
+               '(:id "t" :target "script"
+                 :on-calendar ((:hour 3 :minute 0)
+                               (:hour 15 :minute 30)))
+               plan)))
+    (should-not err)))
+
+(ert-deftest supervisor-test-timer-validate-calendar-list-invalid ()
+  "Invalid entry in list of calendar schedules is rejected."
+  (let* ((programs '(("script" :type oneshot :id "script")))
+         (plan (supervisor--build-plan programs))
+         (err (supervisor--validate-timer
+               '(:id "t" :target "script"
+                 :on-calendar ((:hour 3 :minute 0)
+                               (:bogus 15)))
+               plan)))
+    (should (string-match-p "unknown field" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-empty ()
+  "Empty calendar list with no other trigger has no valid trigger."
+  (let* ((programs '(("script" :type oneshot :id "script")))
+         (plan (supervisor--build-plan programs))
+         (err (supervisor--validate-timer
+               '(:id "t" :target "script" :on-calendar ())
+               plan)))
+    ;; Empty list is falsy so fails trigger check first
+    (should (string-match-p "at least one trigger" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-dotted-pair ()
+  "Dotted pair calendar is rejected, not crash."
+  (let* ((programs '(("script" :type oneshot :id "script")))
+         (plan (supervisor--build-plan programs))
+         (err (supervisor--validate-timer
+               '(:id "t" :target "script" :on-calendar (:hour . 3))
+               plan)))
+    (should (string-match-p "proper plist" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-empty-with-other-trigger ()
+  "Empty calendar with valid :on-startup-sec fails on empty calendar."
+  (let* ((programs '(("script" :type oneshot :id "script")))
+         (plan (supervisor--build-plan programs))
+         (err (supervisor--validate-timer
+               '(:id "t" :target "script" :on-calendar () :on-startup-sec 60)
+               plan)))
+    (should (string-match-p "cannot be empty" err))))
+
+(ert-deftest supervisor-test-timer-validate-calendar-list-non-plist ()
+  "Non-plist entry in calendar list is rejected."
+  (let* ((programs '(("script" :type oneshot :id "script")))
+         (plan (supervisor--build-plan programs))
+         (err (supervisor--validate-timer
+               '(:id "t" :target "script"
+                 :on-calendar ((:hour 3) foo))
+               plan)))
+    (should (string-match-p "must be a plist" err))))
+
+(ert-deftest supervisor-test-timer-parse ()
+  "Timer parsing produces correct struct."
+  (let ((timer (supervisor--parse-timer
+                '(:id "backup" :target "backup-script"
+                  :on-calendar (:hour 3 :minute 0)
+                  :enabled nil :persistent nil))))
+    (should (equal "backup" (supervisor-timer-id timer)))
+    (should (equal "backup-script" (supervisor-timer-target timer)))
+    (should (eq nil (supervisor-timer-enabled timer)))
+    (should (equal '(:hour 3 :minute 0) (supervisor-timer-on-calendar timer)))
+    (should (eq nil (supervisor-timer-persistent timer)))))
+
+(ert-deftest supervisor-test-timer-parse-defaults ()
+  "Timer parsing applies correct defaults."
+  (let ((timer (supervisor--parse-timer
+                '(:id "t" :target "foo" :on-startup-sec 60))))
+    (should (eq t (supervisor-timer-enabled timer)))
+    (should (eq t (supervisor-timer-persistent timer)))))
+
+(ert-deftest supervisor-test-timer-build-list-valid ()
+  "Build timer list from valid config."
+  (let* ((supervisor-timers '((:id "t1" :target "s1" :on-startup-sec 60)
+                              (:id "t2" :target "s2" :on-startup-sec 120)))
+         (programs '(("s1" :type oneshot :id "s1")
+                     ("s2" :type oneshot :id "s2")))
+         (plan (supervisor--build-plan programs))
+         (timers (supervisor--build-timer-list plan)))
+    (should (= 2 (length timers)))
+    (should (= 0 (hash-table-count supervisor--invalid-timers)))))
+
+(ert-deftest supervisor-test-timer-build-list-invalid-rejected ()
+  "Invalid timers are rejected and tracked."
+  (let* ((supervisor-timers '((:id "valid" :target "s1" :on-startup-sec 60)
+                              (:id "invalid" :target "missing" :on-startup-sec 60)))
+         (programs '(("s1" :type oneshot :id "s1")))
+         (plan (supervisor--build-plan programs))
+         (timers (supervisor--build-timer-list plan)))
+    (should (= 1 (length timers)))
+    (should (= 1 (hash-table-count supervisor--invalid-timers)))
+    (should (gethash "invalid" supervisor--invalid-timers))))
+
+(ert-deftest supervisor-test-timer-build-list-duplicate-rejected ()
+  "Duplicate timer IDs are rejected."
+  (let* ((supervisor-timers '((:id "dup" :target "s1" :on-startup-sec 60)
+                              (:id "dup" :target "s1" :on-startup-sec 120)))
+         (programs '(("s1" :type oneshot :id "s1")))
+         (plan (supervisor--build-plan programs))
+         (timers (supervisor--build-timer-list plan)))
+    (should (= 1 (length timers)))
+    (should (= 1 (hash-table-count supervisor--invalid-timers)))))
+
 ;;; CLI Control Plane tests
 
 (ert-deftest supervisor-test-cli-result-structure ()
@@ -2562,8 +2810,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   (should (= 1 supervisor-cli-exit-failure))
   (should (= 2 supervisor-cli-exit-invalid-args))
   (should (= 3 supervisor-cli-exit-server-unavailable))
-  (should (= 4 supervisor-cli-exit-validation-failed))
-  (should (= 5 supervisor-cli-exit-security)))
+  (should (= 4 supervisor-cli-exit-validation-failed)))
 
 (ert-deftest supervisor-test-cli-dispatch-unknown-command ()
   "Unknown CLI command returns exit code 2."

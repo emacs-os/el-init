@@ -60,9 +60,6 @@
 (defconst supervisor-cli-exit-validation-failed 4
   "Exit code when config validation fails.")
 
-(defconst supervisor-cli-exit-security 5
-  "Exit code for security policy violation (strict mode).")
-
 (defconst supervisor-cli-version "1.0.0"
   "CLI version string.")
 
@@ -433,37 +430,67 @@ Empty lists are encoded as arrays, not null."
   (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
       (let* ((plan (supervisor--build-plan supervisor-programs))
-             (valid-count (length (supervisor-plan-entries plan)))
+             (service-valid (length (supervisor-plan-entries plan)))
              (invalid-hash (supervisor-plan-invalid plan))
-             (invalid-list nil))
+             (service-invalid-list nil))
         (maphash (lambda (id reason)
-                   (push `((id . ,id) (reason . ,reason)) invalid-list))
+                   (push `((id . ,id) (reason . ,reason)) service-invalid-list))
                  invalid-hash)
         ;; Sort invalid list by ID for deterministic output
-        (setq invalid-list (sort invalid-list
-                                 (lambda (a b)
-                                   (string< (alist-get 'id a) (alist-get 'id b)))))
-        (let ((invalid-count (length invalid-list)))
-          (if json-p
+        (setq service-invalid-list
+              (sort service-invalid-list
+                    (lambda (a b)
+                      (string< (alist-get 'id a) (alist-get 'id b)))))
+        ;; Validate timers
+        (let* ((timers (supervisor--build-timer-list plan))
+               (timer-valid (length timers))
+               (timer-invalid-list nil))
+          (maphash (lambda (id reason)
+                     (push `((id . ,id) (reason . ,reason)) timer-invalid-list))
+                   supervisor--invalid-timers)
+          (setq timer-invalid-list
+                (sort timer-invalid-list
+                      (lambda (a b)
+                        (string< (alist-get 'id a) (alist-get 'id b)))))
+          (let ((service-invalid (length service-invalid-list))
+                (timer-invalid (length timer-invalid-list))
+                (has-errors (or (> (length service-invalid-list) 0)
+                                (> (length timer-invalid-list) 0))))
+            (if json-p
+                (supervisor--cli-make-result
+                 (if has-errors supervisor-cli-exit-validation-failed
+                   supervisor-cli-exit-success)
+                 'json
+                 (json-encode
+                  `((services . ((valid . ,service-valid)
+                                 (invalid . ,service-invalid)
+                                 (errors . ,(supervisor--cli-ensure-array
+                                             (mapcar #'supervisor--cli-invalid-to-json-obj
+                                                     service-invalid-list)))))
+                    (timers . ((valid . ,timer-valid)
+                               (invalid . ,timer-invalid)
+                               (errors . ,(supervisor--cli-ensure-array
+                                           (mapcar #'supervisor--cli-invalid-to-json-obj
+                                                   timer-invalid-list))))))))
               (supervisor--cli-make-result
-               (if (> invalid-count 0) supervisor-cli-exit-validation-failed
+               (if has-errors supervisor-cli-exit-validation-failed
                  supervisor-cli-exit-success)
-               'json
-               (json-encode `((valid . ,valid-count)
-                              (invalid . ,invalid-count)
-                              (errors . ,(supervisor--cli-ensure-array
-                                          (mapcar #'supervisor--cli-invalid-to-json-obj
-                                                  invalid-list))))))
-            (supervisor--cli-make-result
-             (if (> invalid-count 0) supervisor-cli-exit-validation-failed
-               supervisor-cli-exit-success)
-             'human
-             (concat (format "Validation: %d valid, %d invalid\n" valid-count invalid-count)
-                     (mapconcat (lambda (e)
-                                  (format "INVALID %s: %s\n"
-                                          (alist-get 'id e)
-                                          (alist-get 'reason e)))
-                                invalid-list "")))))))))
+               'human
+               (concat
+                (format "Services: %d valid, %d invalid\n" service-valid service-invalid)
+                (mapconcat (lambda (e)
+                             (format "  INVALID %s: %s\n"
+                                     (alist-get 'id e)
+                                     (alist-get 'reason e)))
+                           service-invalid-list "")
+                (when supervisor-timers
+                  (concat
+                   (format "Timers: %d valid, %d invalid\n" timer-valid timer-invalid)
+                   (mapconcat (lambda (e)
+                                (format "  INVALID %s: %s\n"
+                                        (alist-get 'id e)
+                                        (alist-get 'reason e)))
+                              timer-invalid-list ""))))))))))))
 
 (defun supervisor--cli-cmd-start (args json-p)
   "Handle `start [-- ID...]' command with ARGS.  JSON-P enables JSON output.
