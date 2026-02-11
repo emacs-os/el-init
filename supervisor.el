@@ -25,36 +25,7 @@
 
 ;;; Commentary:
 
-;; Supervisor is a lightweight process supervisor for managing background
-;; processes from Emacs.  It is useful for starting session services when
-;; using Emacs as a window manager (EXWM) or for managing development daemons.
-;;
-;; Features:
-;; - Staged startup with four ordered stages (stage1 through stage4)
-;; - Dependency ordering via :after keyword for intra-stage dependencies
-;; - Two process types: simple (long-running daemons) and oneshot (run-once)
-;; - Automatic crash recovery with configurable restart limits
-;; - Interactive dashboard for monitoring and control
-;; - Per-process logging with automatic log rotation
-;; - Config file watching for automatic reload
-;;
-;; Quick start:
-;;
-;;   (setq supervisor-programs
-;;         '(("xrdb -merge ~/.Xresources" :type oneshot :stage stage1)
-;;           ("dunst" :stage stage2)
-;;           ("nm-applet" :stage stage3)
-;;           ("blueman-applet" :tags (bluetooth tray))))
-;;
-;;   (supervisor-mode 1)
-;;
-;; Commands:
-;; - `M-x supervisor' to open the interactive dashboard
-;; - `M-x supervisor-start' to start all configured processes
-;; - `M-x supervisor-stop' to stop all supervised processes
-;; - `M-x supervisor-validate' to check config without starting
-;;
-;; See README.org for full documentation and configuration options.
+;; See README.org for full documentation.
 
 ;;; Code:
 
@@ -632,16 +603,72 @@ Returns t if transition succeeded, nil if forced through invalid."
      (t
       (error "Invalid transition %s -> %s for entry %s" current new-state id)))))
 
+;;; Structured Event Dispatcher (Phase 6)
+
+(defconst supervisor--event-types
+  '(stage-start stage-complete process-started process-ready
+    process-exit process-failed cleanup)
+  "Valid event types for the structured event system.
+- `stage-start': stage begins processing
+- `stage-complete': stage finished processing
+- `process-started': process successfully spawned
+- `process-ready': process became ready (simple=spawned, oneshot=exited)
+- `process-exit': supervised process exited
+- `process-failed': process failed to spawn
+- `cleanup': cleanup phase beginning")
+
+(defvar supervisor-event-hook nil
+  "Hook run for all supervisor events.
+Called with one argument: an event plist with the following keys:
+  :type  - event type symbol (see `supervisor--event-types')
+  :ts    - timestamp (float-time)
+  :id    - entry ID string (for process events, nil for stage/global)
+  :stage - stage name symbol (for stage events, nil otherwise)
+  :data  - additional payload plist (event-type specific)
+
+This is the unified event interface.  Legacy hooks remain for
+backward compatibility but are dispatched via this system.")
+
+(defun supervisor--emit-event (type &optional id stage data)
+  "Emit a structured event of TYPE with optional ID, STAGE, and DATA.
+TYPE must be a member of `supervisor--event-types'.
+Runs `supervisor-event-hook' with the event plist, then dispatches
+to legacy hooks for backward compatibility."
+  (unless (memq type supervisor--event-types)
+    (error "Invalid event type: %s" type))
+  (let ((event (list :type type
+                     :ts (float-time)
+                     :id id
+                     :stage stage
+                     :data data)))
+    ;; Run unified event hook
+    (run-hook-with-args 'supervisor-event-hook event)
+    ;; Dispatch to legacy hooks for backward compatibility
+    (pcase type
+      ('stage-start
+       (run-hook-with-args 'supervisor-stage-start-hook stage))
+      ('stage-complete
+       (run-hook-with-args 'supervisor-stage-complete-hook stage))
+      ('process-exit
+       (let ((status (plist-get data :status))
+             (code (plist-get data :code)))
+         (run-hook-with-args 'supervisor-process-exit-hook id status code)))
+      ('cleanup
+       (run-hooks 'supervisor-cleanup-hook)))))
+
 (defvar supervisor-cleanup-hook nil
-  "Hook run during cleanup, before killing processes.")
+  "Hook run during cleanup, before killing processes.
+Legacy hook; prefer `supervisor-event-hook' for new code.")
 
 (defvar supervisor-stage-start-hook nil
   "Hook run when a stage begins.
-Called with one argument: the stage name symbol.")
+Called with one argument: the stage name symbol.
+Legacy hook; prefer `supervisor-event-hook' for new code.")
 
 (defvar supervisor-stage-complete-hook nil
   "Hook run when a stage completes.
-Called with one argument: the stage name symbol.")
+Called with one argument: the stage name symbol.
+Legacy hook; prefer `supervisor-event-hook' for new code.")
 
 (defvar supervisor-process-exit-hook nil
   "Hook run when a supervised process exits.
@@ -649,7 +676,8 @@ Called with three arguments: ID (string), STATUS (symbol), and CODE (integer).
 STATUS is one of:
   `exited'   - process exited normally (CODE is exit code, 0 = success)
   `signal'   - process killed by signal (CODE is signal number)
-  `unknown'  - exit status could not be determined")
+  `unknown'  - exit status could not be determined
+Legacy hook; prefer `supervisor-event-hook' for new code.")
 
 ;;; DAG Scheduler State (per-stage, reset between stages)
 
@@ -1233,7 +1261,7 @@ No-op if DAG scheduler is not active (e.g., manual starts)."
       (remhash id supervisor--dag-timeout-timers))
     ;; Remove from blocking set
     (remhash id supervisor--dag-blocking)
-    ;; Log that this entry is now ready
+    ;; Log that this entry is now ready (event emission is caller's responsibility)
     (supervisor--log 'info "%s ready" id)
     ;; Unlock dependents and collect newly ready ones
     (let ((newly-ready nil))
@@ -1318,6 +1346,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
 (defun supervisor--dag-handle-spawn-failure (id)
   "Handle spawn failure for ID by marking state and unblocking dependents."
   (supervisor--transition-state id 'failed-to-spawn)
+  (supervisor--emit-event 'process-failed id nil nil)
   (supervisor--dag-finish-spawn-attempt)
   (supervisor--dag-mark-ready id))
 
@@ -1327,20 +1356,25 @@ Mark ready immediately for simple processes, on exit for oneshot."
            (run-at-time timeout nil
                         (lambda ()
                           (supervisor--log 'warning "oneshot %s timed out after %ds" id timeout)
-                          (supervisor--dag-mark-ready id)))
+                          (supervisor--dag-mark-ready id)
+                          (supervisor--emit-event 'process-ready id nil
+                                                  (list :type 'oneshot :timeout t))))
            supervisor--dag-timeout-timers))
 
 (defun supervisor--dag-handle-spawn-success (id type oneshot-timeout)
   "Handle successful spawn of ID with TYPE and ONESHOT-TIMEOUT."
   (supervisor--transition-state id 'started)
+  (supervisor--emit-event 'process-started id nil (list :type type))
   (supervisor--dag-finish-spawn-attempt)
   (if (eq type 'oneshot)
       (progn
         (supervisor--log 'info "started oneshot %s" id)
         (when oneshot-timeout
           (supervisor--dag-setup-oneshot-timeout id oneshot-timeout)))
+    ;; Simple process: spawned = ready
     (supervisor--log 'info "started %s" id)
-    (supervisor--dag-mark-ready id)))
+    (supervisor--dag-mark-ready id)
+    (supervisor--emit-event 'process-ready id nil (list :type type))))
 
 (defun supervisor--dag-do-start (id cmd logging-p type restart-p _oneshot-wait oneshot-timeout)
   "Start process ID with CMD, LOGGING-P, TYPE, RESTART-P, and ONESHOT-TIMEOUT."
@@ -1447,8 +1481,10 @@ Logs completion, invokes callbacks, and notifies DAG scheduler."
     (when (cdr cb-entry)
       (cancel-timer (cdr cb-entry)))
     (funcall (car cb-entry) (not supervisor--shutting-down)))
-  ;; Notify DAG scheduler
-  (supervisor--dag-mark-ready name))
+  ;; Notify DAG scheduler and emit ready event
+  (supervisor--dag-mark-ready name)
+  (supervisor--emit-event 'process-ready name nil
+                          (list :type 'oneshot :exit-code exit-code)))
 
 (defun supervisor--handle-shutdown-exit ()
   "Handle process exit during shutdown.
@@ -1493,8 +1529,9 @@ CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart."
         (when-let* ((stderr (get-process (format "%s-stderr" name))))
           (delete-process stderr))
         (remhash name supervisor--processes)
-        ;; Run process exit hook
-        (run-hook-with-args 'supervisor-process-exit-hook name exit-status exit-code)
+        ;; Emit process exit event (dispatches to legacy hook)
+        (supervisor--emit-event 'process-exit name nil
+                                (list :status exit-status :code exit-code))
         ;; Handle oneshot completion
         (when (eq type 'oneshot)
           (supervisor--handle-oneshot-exit name proc-status exit-code))
@@ -1597,13 +1634,18 @@ CALLBACK is called with t on success, nil on error."
         (if (not (executable-find (car args)))
             (progn
               (supervisor--log 'warning "executable not found for %s: %s" id (car args))
+              (supervisor--emit-event 'process-failed id nil nil)
               (funcall callback nil))
           ;; Start the process
           (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
             (if (not proc)
-                (funcall callback nil)
+                (progn
+                  (supervisor--emit-event 'process-failed id nil nil)
+                  (funcall callback nil))
+              (supervisor--emit-event 'process-started id nil (list :type type))
               (if (eq type 'oneshot)
                   ;; Wait for oneshot via timer (no polling loop)
+                  ;; process-ready is emitted by oneshot exit handler
                   (progn
                     (supervisor--log 'info "waiting for oneshot %s..." id)
                     (supervisor--wait-for-oneshot
@@ -1613,8 +1655,9 @@ CALLBACK is called with t on success, nil on error."
                            (supervisor--log 'info "oneshot %s completed" id)
                          (supervisor--log 'warning "oneshot %s timed out" id))
                        (funcall callback completed))))
-                ;; Simple process: spawned immediately
+                ;; Simple process: spawned = ready
                 (supervisor--log 'info "started %s" id)
+                (supervisor--emit-event 'process-ready id nil (list :type type))
                 (funcall callback t)))))))))
 
 (defun supervisor--dag-force-stage-complete ()
@@ -1646,7 +1689,7 @@ Mark all unstarted entries as timed out and invoke the callback."
   "Start ENTRIES for STAGE-NAME asynchronously.  Call CALLBACK when complete."
   (supervisor--log 'info "=== Stage: %s ===" stage-name)
   (setq supervisor--current-stage stage-name)
-  (run-hook-with-args 'supervisor-stage-start-hook stage-name)
+  (supervisor--emit-event 'stage-start nil stage-name nil)
   (if (null entries)
       ;; Empty stage, proceed immediately (callback handles hook and tracking)
       (funcall callback)
@@ -1755,7 +1798,7 @@ Entries are already validated and topologically sorted."
       (supervisor--start-stage-async
        stage-name entries
        (lambda ()
-         (run-hook-with-args 'supervisor-stage-complete-hook stage-name)
+         (supervisor--emit-event 'stage-complete nil stage-name nil)
          (push stage-name supervisor--completed-stages)
          (supervisor--dag-cleanup)
          (supervisor--start-stages-from-plan rest))))))
@@ -1779,7 +1822,7 @@ briefly for processes to terminate, ensuring a clean exit."
            supervisor--restart-timers)
   (clrhash supervisor--restart-timers)
   (supervisor--dag-cleanup)
-  (run-hooks 'supervisor-cleanup-hook)
+  (supervisor--emit-event 'cleanup nil nil nil)
   ;; Send SIGKILL to all processes immediately
   (maphash (lambda (_name proc)
              (when (process-live-p proc)
@@ -1821,7 +1864,7 @@ For `kill-emacs-hook', use `supervisor-stop-now' instead."
   (clrhash supervisor--restart-timers)
   ;; Clean up DAG scheduler
   (supervisor--dag-cleanup)
-  (run-hooks 'supervisor-cleanup-hook)
+  (supervisor--emit-event 'cleanup nil nil nil)
   ;; Send SIGTERM to all
   (maphash (lambda (_name proc)
              (when (process-live-p proc)
@@ -1956,11 +1999,20 @@ Returns a plist with :stopped and :started counts."
                (when (supervisor--get-effective-enabled id enabled-p)
                  (let ((args (split-string-and-unquote cmd)))
                    (if (not (executable-find (car args)))
-                       (supervisor--log 'warning "reload: executable not found for %s: %s"
-                                        id (car args))
+                       (progn
+                         (supervisor--log 'warning "reload: executable not found for %s: %s"
+                                          id (car args))
+                         (supervisor--emit-event 'process-failed id nil nil))
                      (supervisor--log 'info "reload: starting %s entry %s" reason id)
-                     (supervisor--start-process id cmd logging-p type restart-p)
-                     (cl-incf started)))))))
+                     (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
+                       (if proc
+                           (progn
+                             (supervisor--emit-event 'process-started id nil (list :type type))
+                             ;; Simple processes are immediately ready; oneshots ready on exit
+                             (when (eq type 'simple)
+                               (supervisor--emit-event 'process-ready id nil (list :type type)))
+                             (cl-incf started))
+                         (supervisor--emit-event 'process-failed id nil nil)))))))))
           ;; noop and skip actions require no work
           (_ nil))))
     (list :stopped stopped :started started)))

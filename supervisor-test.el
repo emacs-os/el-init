@@ -1822,5 +1822,221 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
     (supervisor--transition-state "oneshot" 'started)
     (should (eq 'started (gethash "oneshot" supervisor--entry-state)))))
 
+;;; Phase 6: Structured Event Dispatcher Tests
+
+(ert-deftest supervisor-test-event-types-defined ()
+  "All event types are defined in the event type list."
+  (should (memq 'stage-start supervisor--event-types))
+  (should (memq 'stage-complete supervisor--event-types))
+  (should (memq 'process-started supervisor--event-types))
+  (should (memq 'process-ready supervisor--event-types))
+  (should (memq 'process-exit supervisor--event-types))
+  (should (memq 'process-failed supervisor--event-types))
+  (should (memq 'cleanup supervisor--event-types)))
+
+(ert-deftest supervisor-test-emit-event-invalid-type-rejected ()
+  "Emitting an invalid event type signals an error."
+  (should-error (supervisor--emit-event 'invalid-event-type nil nil nil)
+                :type 'error))
+
+(ert-deftest supervisor-test-emit-event-schema ()
+  "Emitted events have the correct schema."
+  (let ((events nil))
+    (cl-letf (((symbol-function 'run-hook-with-args)
+               (lambda (hook &rest args) (when (eq hook 'supervisor-event-hook)
+                                           (push (car args) events))))
+              ((symbol-function 'run-hooks) #'ignore))
+      (supervisor--emit-event 'stage-start nil 'stage1 nil)
+      (let ((event (car events)))
+        (should (eq 'stage-start (plist-get event :type)))
+        (should (numberp (plist-get event :ts)))
+        (should (null (plist-get event :id)))
+        (should (eq 'stage1 (plist-get event :stage)))))))
+
+(ert-deftest supervisor-test-emit-event-stage-start ()
+  "Stage-start event is emitted with correct data."
+  (let ((events nil))
+    (cl-letf (((symbol-function 'run-hook-with-args)
+               (lambda (hook &rest args)
+                 (when (eq hook 'supervisor-event-hook)
+                   (push (car args) events))))
+              ((symbol-function 'run-hooks) #'ignore))
+      (supervisor--emit-event 'stage-start nil 'stage2 nil)
+      (should (= 1 (length events)))
+      (let ((event (car events)))
+        (should (eq 'stage-start (plist-get event :type)))
+        (should (eq 'stage2 (plist-get event :stage)))))))
+
+(ert-deftest supervisor-test-emit-event-process-exit ()
+  "Process-exit event carries status and code in data."
+  (let ((events nil))
+    (cl-letf (((symbol-function 'run-hook-with-args)
+               (lambda (hook &rest args)
+                 (when (eq hook 'supervisor-event-hook)
+                   (push (car args) events))))
+              ((symbol-function 'run-hooks) #'ignore))
+      (supervisor--emit-event 'process-exit "myproc" nil
+                              (list :status 'exited :code 0))
+      (should (= 1 (length events)))
+      (let ((event (car events)))
+        (should (eq 'process-exit (plist-get event :type)))
+        (should (equal "myproc" (plist-get event :id)))
+        (should (eq 'exited (plist-get (plist-get event :data) :status)))
+        (should (= 0 (plist-get (plist-get event :data) :code)))))))
+
+(ert-deftest supervisor-test-emit-event-process-started ()
+  "Process-started event includes type in data."
+  (let ((events nil))
+    (cl-letf (((symbol-function 'run-hook-with-args)
+               (lambda (hook &rest args)
+                 (when (eq hook 'supervisor-event-hook)
+                   (push (car args) events))))
+              ((symbol-function 'run-hooks) #'ignore))
+      (supervisor--emit-event 'process-started "daemon" nil
+                              (list :type 'simple))
+      (should (= 1 (length events)))
+      (let ((event (car events)))
+        (should (eq 'process-started (plist-get event :type)))
+        (should (equal "daemon" (plist-get event :id)))
+        (should (eq 'simple (plist-get (plist-get event :data) :type)))))))
+
+(ert-deftest supervisor-test-legacy-hook-stage-start-compatibility ()
+  "Stage-start event dispatches to legacy supervisor-stage-start-hook."
+  (let ((legacy-calls nil))
+    (cl-letf (((symbol-function 'run-hook-with-args)
+               (lambda (hook &rest args)
+                 (when (eq hook 'supervisor-stage-start-hook)
+                   (push args legacy-calls)))))
+      (supervisor--emit-event 'stage-start nil 'stage3 nil)
+      (should (= 1 (length legacy-calls)))
+      (should (eq 'stage3 (caar legacy-calls))))))
+
+(ert-deftest supervisor-test-legacy-hook-stage-complete-compatibility ()
+  "Stage-complete event dispatches to legacy supervisor-stage-complete-hook."
+  (let ((legacy-calls nil))
+    (cl-letf (((symbol-function 'run-hook-with-args)
+               (lambda (hook &rest args)
+                 (when (eq hook 'supervisor-stage-complete-hook)
+                   (push args legacy-calls)))))
+      (supervisor--emit-event 'stage-complete nil 'stage4 nil)
+      (should (= 1 (length legacy-calls)))
+      (should (eq 'stage4 (caar legacy-calls))))))
+
+(ert-deftest supervisor-test-legacy-hook-process-exit-compatibility ()
+  "Process-exit event dispatches to legacy supervisor-process-exit-hook."
+  (let ((legacy-calls nil))
+    (cl-letf (((symbol-function 'run-hook-with-args)
+               (lambda (hook &rest args)
+                 (when (eq hook 'supervisor-process-exit-hook)
+                   (push args legacy-calls)))))
+      (supervisor--emit-event 'process-exit "proc1" nil
+                              (list :status 'signal :code 15))
+      (should (= 1 (length legacy-calls)))
+      (let ((call (car legacy-calls)))
+        (should (equal "proc1" (nth 0 call)))
+        (should (eq 'signal (nth 1 call)))
+        (should (= 15 (nth 2 call)))))))
+
+(ert-deftest supervisor-test-legacy-hook-cleanup-compatibility ()
+  "Cleanup event dispatches to legacy supervisor-cleanup-hook."
+  (let ((cleanup-called nil))
+    (cl-letf (((symbol-function 'run-hooks)
+               (lambda (hook)
+                 (when (eq hook 'supervisor-cleanup-hook)
+                   (setq cleanup-called t))))
+              ((symbol-function 'run-hook-with-args) #'ignore))
+      (supervisor--emit-event 'cleanup nil nil nil)
+      (should cleanup-called))))
+
+(ert-deftest supervisor-test-spawn-failure-no-process-ready ()
+  "Spawn failure emits process-failed but NOT process-ready.
+Regression test: process-ready was incorrectly emitted for failures."
+  (let ((events nil)
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--dag-ready (make-hash-table :test 'equal))
+        (supervisor--ready-times (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-blocking (make-hash-table :test 'equal))
+        (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+        (supervisor--dag-started (make-hash-table :test 'equal))
+        (supervisor--dag-active-starts 1)
+        (supervisor--dag-pending-starts nil)
+        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--dag-entries (make-hash-table :test 'equal)))
+    ;; Set up initial state
+    (supervisor--transition-state "test" 'stage-not-started)
+    (puthash "test" '("test" "cmd" 0 t t t simple stage3 nil t 30 nil)
+             supervisor--dag-entries)
+    ;; Capture events
+    (cl-letf (((symbol-function 'run-hook-with-args)
+               (lambda (hook &rest args)
+                 (when (eq hook 'supervisor-event-hook)
+                   (push (car args) events))))
+              ((symbol-function 'run-hooks) #'ignore))
+      (supervisor--dag-handle-spawn-failure "test"))
+    ;; Should have process-failed but NOT process-ready
+    (should (cl-find 'process-failed events :key (lambda (e) (plist-get e :type))))
+    (should-not (cl-find 'process-ready events :key (lambda (e) (plist-get e :type))))))
+
+(ert-deftest supervisor-test-disabled-entry-no-process-ready ()
+  "Disabled entries do NOT emit process-ready.
+Regression test: process-ready was incorrectly emitted for disabled entries."
+  (let ((events nil)
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--dag-ready (make-hash-table :test 'equal))
+        (supervisor--ready-times (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-blocking (make-hash-table :test 'equal))
+        (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+        (supervisor--dag-started (make-hash-table :test 'equal))
+        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--dag-entries (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal)))
+    ;; Set up as disabled entry
+    (puthash "test" '("test" "cmd" 0 nil t t simple stage3 nil t 30 nil)
+             supervisor--dag-entries)
+    ;; Capture events
+    (cl-letf (((symbol-function 'run-hook-with-args)
+               (lambda (hook &rest args)
+                 (when (eq hook 'supervisor-event-hook)
+                   (push (car args) events))))
+              ((symbol-function 'run-hooks) #'ignore))
+      (supervisor--dag-start-entry-async
+       '("test" "cmd" 0 nil t t simple stage3 nil t 30 nil)))
+    ;; Should NOT have process-ready
+    (should-not (cl-find 'process-ready events :key (lambda (e) (plist-get e :type))))))
+
+(ert-deftest supervisor-test-simple-spawn-emits-process-ready ()
+  "Successful simple process spawn emits process-started AND process-ready."
+  (let ((events nil)
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--dag-ready (make-hash-table :test 'equal))
+        (supervisor--ready-times (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-blocking (make-hash-table :test 'equal))
+        (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+        (supervisor--dag-started (make-hash-table :test 'equal))
+        (supervisor--dag-active-starts 1)
+        (supervisor--dag-pending-starts nil)
+        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--dag-entries (make-hash-table :test 'equal)))
+    ;; Set up initial state
+    (supervisor--transition-state "test" 'stage-not-started)
+    (puthash "test" '("test" "sleep" 0 t t t simple stage3 nil t 30 nil)
+             supervisor--dag-entries)
+    ;; Capture events
+    (cl-letf (((symbol-function 'run-hook-with-args)
+               (lambda (hook &rest args)
+                 (when (eq hook 'supervisor-event-hook)
+                   (push (car args) events))))
+              ((symbol-function 'run-hooks) #'ignore))
+      (supervisor--dag-handle-spawn-success "test" 'simple nil))
+    ;; Should have both process-started and process-ready
+    (should (cl-find 'process-started events :key (lambda (e) (plist-get e :type))))
+    (should (cl-find 'process-ready events :key (lambda (e) (plist-get e :type))))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
