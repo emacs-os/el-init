@@ -31,8 +31,10 @@ This handbook is the implementation reference for current behavior.
 - [[#development][Development]]
 - [[#license][License]]
 
-<<scope-and-goals>>
 * Scope and Goals
+:PROPERTIES:
+:CUSTOM_ID: scope-and-goals
+:END:
 
 ~supervisor.el~ is a *per-user session supervisor*.
 
@@ -42,8 +44,10 @@ Elisp.
 
 It is not a system init replacement in current release scope.
 
-<<module-layout>>
 * Module Layout
+:PROPERTIES:
+:CUSTOM_ID: module-layout
+:END:
 
 | File | Purpose |
 | ~supervisor.el~ | Facade; loads all modules and provides feature ~supervisor~ |
@@ -62,15 +66,19 @@ Module dependency rules:
 - ~supervisor-dashboard.el~ depends on core (+ optional timer symbols).
 - ~supervisor-cli.el~ depends on core (+ optional timer symbols).
 
-<<requirements>>
 * Requirements
+:PROPERTIES:
+:CUSTOM_ID: requirements
+:END:
 
 - Emacs 28.1+
 - Optional: ~transient~ for dashboard menu key ~?~
 - For CLI wrapper: ~emacsclient~, ~base64~, and ~sed~ in ~PATH~
 
-<<quick-start>>
 * Quick Start
+:PROPERTIES:
+:CUSTOM_ID: quick-start
+:END:
 
 #+begin_src emacs-lisp
 (require 'supervisor)
@@ -100,8 +108,10 @@ Enable the experimental timer subsystem only if you are using timers:
 (supervisor-timer-subsystem-mode 1)
 #+end_src
 
-<<service-definition-handbook-supervisor-programs>>
 * Service Definition Handbook (~supervisor-programs~)
+:PROPERTIES:
+:CUSTOM_ID: service-definition-handbook-supervisor-programs
+:END:
 
 ~supervisor-programs~ is a list of entries.
 
@@ -204,8 +214,10 @@ the canonical way to read entry fields.
 - prints timer validation summary when timers are configured
 - opens ~*supervisor-dry-run*~ report buffer
 
-<<startup-and-lifecycle-model>>
 * Startup and Lifecycle Model
+:PROPERTIES:
+:CUSTOM_ID: startup-and-lifecycle-model
+:END:
 
 ** Stages and Ordering
 
@@ -299,8 +311,10 @@ This is used by status/reporting and timer retry eligibility.
 - waits up to ~0.5s~ for process death
 - intended for ~kill-emacs-hook~
 
-<<runtime-overrides-and-reconciliation>>
 * Runtime Overrides and Reconciliation
+:PROPERTIES:
+:CUSTOM_ID: runtime-overrides-and-reconciliation
+:END:
 
 ** Runtime Overrides
 
@@ -349,8 +363,10 @@ Effects:
 - Starts newly eligible entries
 - Leaves converged entries running
 
-<<timer-subsystem-handbook-experimental>>
 * Timer Subsystem Handbook (Experimental)
+:PROPERTIES:
+:CUSTOM_ID: timer-subsystem-handbook-experimental
+:END:
 
 Timer subsystem lives in ~supervisor-timer.el~ and is disabled by default.
 
@@ -509,8 +525,10 @@ CLI:
 - ~supervisorctl timers~ shows timer runtime/invalid definitions
 - If subsystem is gated off, command returns explicit disabled status
 
-<<dashboard-handbook-m-x-supervisor>>
 * Dashboard Handbook (~M-x supervisor~)
+:PROPERTIES:
+:CUSTOM_ID: dashboard-handbook-m-x-supervisor
+:END:
 
 Dashboard buffer: ~*supervisor*~, major mode ~supervisor-dashboard-mode~
 (derived from ~tabulated-list-mode~).
@@ -593,8 +611,10 @@ Notes:
 - ~?~ requires the ~transient~ package.
 - Full ID is echoed in minibuffer when current row ID exceeds table width.
 
-<<cli-handbook-sbinsupervisorctl>>
 * CLI Handbook (~sbin/supervisorctl~)
+:PROPERTIES:
+:CUSTOM_ID: cli-handbook-sbinsupervisorctl
+:END:
 
 The shell wrapper is transport-only; behavior is implemented in
 ~supervisor-cli.el~ dispatchers.
@@ -712,8 +732,10 @@ Empty collections are encoded as arrays (not ~null~).
 | ~3~ | Emacs server unavailable |
 | ~4~ | Validation failed |
 
-<<events-and-hooks>>
 * Events and Hooks
+:PROPERTIES:
+:CUSTOM_ID: events-and-hooks
+:END:
 
 ** Unified Event Hook
 
@@ -748,8 +770,10 @@ Still supported and dispatched from event adapter:
 - ~supervisor-stage-complete-hook~
 - ~supervisor-process-exit-hook~ (~id~, ~status~, ~code~)
 
-<<persistence-and-files>>
 * Persistence and Files
+:PROPERTIES:
+:CUSTOM_ID: persistence-and-files
+:END:
 
 ** Log Files
 
@@ -774,8 +798,10 @@ Existing ~log-*.log~ files are rotated on ~supervisor-start~.
   set, otherwise ~~/.local/state/supervisor/timer-state.eld~
 - Active only when timer subsystem is active
 
-<<customization-reference>>
 * Customization Reference
+:PROPERTIES:
+:CUSTOM_ID: customization-reference
+:END:
 
 All user options (defcustom) are listed below.
 
@@ -814,8 +840,10 @@ All user options (defcustom) are listed below.
 | ~supervisor-dashboard-show-timers~ | ~t~ | Show timer section |
 | ~supervisor-auto-refresh-interval~ | ~2~ | Auto-refresh cadence |
 
-<<command-reference>>
 * Command Reference
+:PROPERTIES:
+:CUSTOM_ID: command-reference
+:END:
 
 ** Interactive Emacs Commands
 
@@ -857,8 +885,10 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-show-graph~ | Show full dependency graph |
 | ~M-x supervisor-dashboard-menu-open~ | Open transient menu |
 
-<<indexes>>
 * Indexes
+:PROPERTIES:
+:CUSTOM_ID: indexes
+:END:
 
 These indexes are intentionally redundant for searchability.
 
@@ -951,8 +981,10 @@ These indexes are intentionally redundant for searchability.
 - ~supervisor-stage-complete-hook~
 - ~supervisor-process-exit-hook~
 
-<<security>>
 * Security
+:PROPERTIES:
+:CUSTOM_ID: security
+:END:
 
 ~supervisorctl~ uses ~emacsclient --eval~. Any principal that can connect to
 your Emacs server can execute code as your Emacs user.
@@ -965,8 +997,10 @@ Practical guidance:
 - Use ~--server-file~ only when you intentionally operate server-file/TCP mode.
 - Keep server auth/socket directories private (owner-only permissions).
 
-<<development>>
 * Development
+:PROPERTIES:
+:CUSTOM_ID: development
+:END:
 
 #+begin_src bash
 make check
@@ -981,7 +1015,9 @@ Interactive load:
 emacs -Q -l supervisor.el
 #+end_src
 
-<<license>>
 * License
+:PROPERTIES:
+:CUSTOM_ID: license
+:END:
 
 GPL-3.0-or-later. See ~LICENSE~.
