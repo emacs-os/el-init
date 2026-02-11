@@ -696,12 +696,12 @@ to legacy hooks for backward compatibility."
                      :data data)))
     ;; Run unified event hook
     (run-hook-with-args 'supervisor-event-hook event)
-    ;; Log stage transitions to *Messages* (always visible, not debug info)
+    ;; Log stage transitions to *Messages* (always visible, not warnings)
     (pcase type
       ('stage-start
-       (supervisor--log 'warning "stage %s starting" stage))
+       (message "Supervisor: %s starting" stage))
       ('stage-complete
-       (supervisor--log 'warning "stage %s complete" stage)))
+       (message "Supervisor: %s complete" stage)))
     ;; Dispatch to legacy hooks for backward compatibility
     (pcase type
       ('stage-start
