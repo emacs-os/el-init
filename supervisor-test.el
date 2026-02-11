@@ -3106,6 +3106,206 @@ Regression test: stderr pipe processes used to pollute the process list."
       ;; Scheduler should NOT have been started
       (should-not scheduler-started))))
 
+;;; Phase 3: Retry and Catch-up Tests
+
+(ert-deftest supervisor-test-timer-failure-retryable-positive-exit ()
+  "Positive exit codes are retryable."
+  (should (supervisor--timer-failure-retryable-p 1))
+  (should (supervisor--timer-failure-retryable-p 127)))
+
+(ert-deftest supervisor-test-timer-failure-not-retryable-signal ()
+  "Signal deaths (negative codes) are not retryable."
+  (should-not (supervisor--timer-failure-retryable-p -9))
+  (should-not (supervisor--timer-failure-retryable-p -15)))
+
+(ert-deftest supervisor-test-timer-failure-not-retryable-zero ()
+  "Zero exit (success) is not retryable."
+  (should-not (supervisor--timer-failure-retryable-p 0)))
+
+(ert-deftest supervisor-test-timer-failure-not-retryable-nil ()
+  "Nil exit code is not retryable."
+  (should-not (supervisor--timer-failure-retryable-p nil)))
+
+(ert-deftest supervisor-test-timer-schedule-retry-first-attempt ()
+  "First retry is scheduled with first interval."
+  (let ((supervisor-timer-retry-intervals '(30 120 600))
+        (supervisor--timer-state (make-hash-table :test 'equal))
+        (state nil))
+    (puthash "t1" state supervisor--timer-state)
+    (cl-letf (((symbol-function 'float-time) (lambda () 1000.0)))
+      (let ((updated (supervisor--timer-schedule-retry "t1" state)))
+        (should updated)
+        (should (= 1 (plist-get updated :retry-attempt)))
+        (should (= 1030.0 (plist-get updated :retry-next-at)))))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-schedule-retry-second-attempt ()
+  "Second retry uses second interval."
+  (let ((supervisor-timer-retry-intervals '(30 120 600))
+        (supervisor--timer-state (make-hash-table :test 'equal))
+        (state '(:retry-attempt 1)))
+    (puthash "t1" state supervisor--timer-state)
+    (cl-letf (((symbol-function 'float-time) (lambda () 1000.0)))
+      (let ((updated (supervisor--timer-schedule-retry "t1" state)))
+        (should updated)
+        (should (= 2 (plist-get updated :retry-attempt)))
+        (should (= 1120.0 (plist-get updated :retry-next-at)))))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-schedule-retry-exhausted ()
+  "No retry scheduled when max attempts reached."
+  (let ((supervisor-timer-retry-intervals '(30 120 600))
+        (supervisor--timer-state (make-hash-table :test 'equal))
+        (state '(:retry-attempt 3)))
+    (puthash "t1" state supervisor--timer-state)
+    (should-not (supervisor--timer-schedule-retry "t1" state))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-schedule-retry-disabled ()
+  "No retry when retry-intervals is nil."
+  (let ((supervisor-timer-retry-intervals nil)
+        (supervisor--timer-state (make-hash-table :test 'equal))
+        (state nil))
+    (puthash "t1" state supervisor--timer-state)
+    (should-not (supervisor--timer-schedule-retry "t1" state))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-catch-up-needed ()
+  "Catch-up detected for persistent timer with missed run."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1"
+                                          :on-calendar '(:minute 0)
+                                          :persistent t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--scheduler-startup-time 1000.0)
+         (supervisor-timer-catch-up-limit 86400))
+    ;; Last run was 2 hours ago, missed the hourly schedule
+    (puthash "t1" '(:last-run-at 900.0) supervisor--timer-state)
+    ;; Mock calendar computation to return a time in the past
+    (cl-letf (((symbol-function 'supervisor--timer-compute-next-run)
+               (lambda (_timer _from) 950.0))
+              ((symbol-function 'float-time) (lambda () 1000.0)))
+      (should (supervisor--timer-needs-catch-up-p timer)))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-catch-up-not-needed-recent ()
+  "No catch-up for timer with recent run."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1"
+                                          :on-calendar '(:minute 0)
+                                          :persistent t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--scheduler-startup-time 1000.0)
+         (supervisor-timer-catch-up-limit 86400))
+    ;; Last run was just now
+    (puthash "t1" '(:last-run-at 999.0) supervisor--timer-state)
+    ;; Mock calendar computation to return a time in the future
+    (cl-letf (((symbol-function 'supervisor--timer-compute-next-run)
+               (lambda (_timer _from) 1060.0))
+              ((symbol-function 'float-time) (lambda () 1000.0)))
+      (should-not (supervisor--timer-needs-catch-up-p timer)))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-catch-up-not-needed-non-persistent ()
+  "No catch-up for non-persistent timer."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1"
+                                          :on-calendar '(:minute 0)
+                                          :persistent nil))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--scheduler-startup-time 1000.0)
+         (supervisor-timer-catch-up-limit 86400))
+    (puthash "t1" '(:last-run-at 900.0) supervisor--timer-state)
+    (should-not (supervisor--timer-needs-catch-up-p timer))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-catch-up-not-needed-too-old ()
+  "No catch-up for missed run beyond catch-up limit."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1"
+                                          :on-calendar '(:minute 0)
+                                          :persistent t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--scheduler-startup-time 100000.0)
+         (supervisor-timer-catch-up-limit 86400))
+    ;; Last run was way before catch-up window
+    (puthash "t1" '(:last-run-at 1000.0) supervisor--timer-state)
+    ;; Mock calendar computation to return a time before catch-up window
+    (cl-letf (((symbol-function 'supervisor--timer-compute-next-run)
+               (lambda (_timer _from) 2000.0))  ; Before cutoff
+              ((symbol-function 'float-time) (lambda () 100000.0)))
+      (should-not (supervisor--timer-needs-catch-up-p timer)))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-catch-up-boundary-no-false-trigger ()
+  "No false catch-up when last-run-at is exactly at schedule boundary.
+The fix passes (1+ last-run) to compute-next-run to avoid the case where
+compute-next-run returns the same timestamp as last-run for calendar timers
+at minute boundaries."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1"
+                                          :on-calendar '(:minute 0)
+                                          :persistent t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--scheduler-startup-time 1000.0)
+         (supervisor-timer-catch-up-limit 86400)
+         (call-count 0)
+         (from-times nil))
+    ;; Last run was at exactly time 900.0 (a schedule boundary)
+    (puthash "t1" '(:last-run-at 900.0) supervisor--timer-state)
+    ;; Mock compute-next-run to return 900.0 when called with 900.0,
+    ;; but return future time 1800.0 when called with 901.0
+    ;; This simulates the boundary condition we fixed
+    (cl-letf (((symbol-function 'supervisor--timer-compute-next-run)
+               (lambda (_timer from)
+                 (setq call-count (1+ call-count))
+                 (push from from-times)
+                 (if (= from 900.0) 900.0 1800.0)))
+              ((symbol-function 'float-time) (lambda () 1000.0)))
+      ;; Should NOT need catch-up because next run is in the future
+      (should-not (supervisor--timer-needs-catch-up-p timer))
+      ;; Verify we called with 901.0 (last-run + 1), not 900.0
+      (should (= call-count 1))
+      (should (= (car from-times) 901.0)))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-scheduler-tick-handles-retry ()
+  "Scheduler tick triggers retry when due."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--timer-scheduler nil)
+         (supervisor--shutting-down nil)
+         (triggered-reason nil))
+    ;; Set up state with pending retry
+    (puthash "t1" '(:retry-next-at 999.0 :next-run-at 2000.0)
+             supervisor--timer-state)
+    ;; Mock trigger to capture reason
+    (cl-letf (((symbol-function 'supervisor--timer-trigger)
+               (lambda (_timer reason) (setq triggered-reason reason)))
+              ((symbol-function 'float-time) (lambda () 1000.0)))
+      (supervisor--timer-scheduler-tick)
+      (should (eq 'retry triggered-reason)))
+    (clrhash supervisor--timer-state)))
+
+(ert-deftest supervisor-test-timer-retry-budget-reset-on-scheduled ()
+  "Retry budget is reset on fresh scheduled trigger."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--timer-scheduler nil)
+         (supervisor--shutting-down nil))
+    ;; Set up state with exhausted retry budget and due scheduled run
+    (puthash "t1" '(:retry-attempt 3 :retry-next-at nil :next-run-at 999.0)
+             supervisor--timer-state)
+    ;; Mock trigger and update functions
+    (cl-letf (((symbol-function 'supervisor--timer-trigger)
+               (lambda (_timer _reason) nil))
+              ((symbol-function 'supervisor--timer-update-next-run)
+               (lambda (_id) nil))
+              ((symbol-function 'float-time) (lambda () 1000.0)))
+      (supervisor--timer-scheduler-tick)
+      ;; Retry budget should be reset
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (= 0 (plist-get state :retry-attempt)))
+        (should-not (plist-get state :retry-next-at))))
+    (clrhash supervisor--timer-state)))
+
 ;;; CLI Control Plane tests
 
 (ert-deftest supervisor-test-cli-result-structure ()

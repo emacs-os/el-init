@@ -104,6 +104,22 @@ Set to nil to disable timer state persistence."
   :type '(choice file (const nil))
   :group 'supervisor)
 
+(defcustom supervisor-timer-retry-intervals '(30 120 600)
+  "List of retry intervals in seconds for failed timer runs.
+Each element is the delay before the next retry attempt.
+Default is 30s, 2m, 10m (3 attempts total).
+Set to nil to disable retries."
+  :type '(repeat integer)
+  :group 'supervisor)
+
+(defcustom supervisor-timer-catch-up-limit (* 24 60 60)
+  "Maximum age in seconds for catch-up runs after downtime.
+When scheduler starts, timers with `:persistent t' that missed
+runs within this window will trigger a catch-up run.
+Default is 24 hours.  Set to 0 to disable catch-up."
+  :type 'integer
+  :group 'supervisor)
+
 (defcustom supervisor-log-directory
   (expand-file-name "supervisor" user-emacs-directory)
   "Directory for supervisor log files."
@@ -1540,6 +1556,29 @@ Returns t if triggered, nil if skipped."
          (supervisor--timer-on-target-complete id target-id success)))
       t)))
 
+(defun supervisor--timer-failure-retryable-p (exit-code)
+  "Return non-nil if EXIT-CODE represents a retryable failure.
+Non-zero exits are retryable.  Signal deaths (negative codes) are not."
+  (and exit-code
+       (integerp exit-code)
+       (> exit-code 0)))
+
+(defun supervisor--timer-schedule-retry (timer-id state)
+  "Schedule a retry for TIMER-ID based on current STATE.
+Returns updated state with :retry-attempt and :retry-next-at set,
+or nil if no retry should be scheduled."
+  (when supervisor-timer-retry-intervals
+    (let* ((attempt (or (plist-get state :retry-attempt) 0))
+           (max-attempts (length supervisor-timer-retry-intervals)))
+      (when (< attempt max-attempts)
+        (let ((delay (nth attempt supervisor-timer-retry-intervals))
+              (now (float-time)))
+          (setq state (plist-put state :retry-attempt (1+ attempt)))
+          (setq state (plist-put state :retry-next-at (+ now delay)))
+          (supervisor--log 'info "timer %s: retry %d/%d in %ds"
+                           timer-id (1+ attempt) max-attempts delay)
+          state)))))
+
 (defun supervisor--timer-on-target-complete (timer-id target-id success)
   "Handle completion of TIMER-ID's target TARGET-ID.
 SUCCESS is t if completed successfully, nil otherwise."
@@ -1555,11 +1594,15 @@ SUCCESS is t if completed successfully, nil otherwise."
           (setq state (plist-put state :retry-next-at nil))
           (supervisor--emit-event 'timer-success timer-id nil
                                   (list :target target-id)))
-      ;; Failure
+      ;; Failure - check if retryable
       (setq state (plist-put state :last-failure-at now))
       (setq state (plist-put state :last-exit (or exit-code -1)))
       (supervisor--emit-event 'timer-failure timer-id nil
-                              (list :target target-id :exit exit-code)))
+                              (list :target target-id :exit exit-code))
+      ;; Schedule retry if eligible
+      (when (supervisor--timer-failure-retryable-p exit-code)
+        (when-let* ((updated (supervisor--timer-schedule-retry timer-id state)))
+          (setq state updated))))
     (puthash timer-id state supervisor--timer-state)
     ;; Update next run time (includes unit-active recalculation)
     (supervisor--timer-update-next-run timer-id)
@@ -1592,10 +1635,26 @@ Reschedules itself for the next due time."
       (when (supervisor-timer-enabled timer)
         (let* ((id (supervisor-timer-id timer))
                (state (gethash id supervisor--timer-state))
-               (next-run (plist-get state :next-run-at)))
+               (next-run (plist-get state :next-run-at))
+               (retry-at (plist-get state :retry-next-at)))
           (cond
+           ;; Retry is due (takes priority over regular schedule)
+           ((and retry-at (<= retry-at now))
+            (supervisor--timer-trigger timer 'retry)
+            ;; Clear retry on trigger (will be rescheduled on failure)
+            (setq state (gethash id supervisor--timer-state))
+            (setq state (plist-put state :retry-next-at nil))
+            (puthash id state supervisor--timer-state)
+            ;; Get next time to check
+            (setq next-run (plist-get state :next-run-at))
+            (when next-run
+              (setq next-check (if next-check (min next-check next-run) next-run))))
            ;; Timer is due
            ((and next-run (<= next-run now))
+            ;; Reset retry budget for fresh scheduled execution
+            (setq state (plist-put state :retry-attempt 0))
+            (setq state (plist-put state :retry-next-at nil))
+            (puthash id state supervisor--timer-state)
             (supervisor--timer-trigger timer 'scheduled)
             ;; Update next run time
             (supervisor--timer-update-next-run id)
@@ -1604,14 +1663,57 @@ Reschedules itself for the next due time."
             (setq next-run (plist-get state :next-run-at))
             (when next-run
               (setq next-check (if next-check (min next-check next-run) next-run))))
-           ;; Timer not yet due - track next check time
-           (next-run
-            (setq next-check (if next-check (min next-check next-run) next-run)))))))
+           ;; Not due yet - track next check time (retry or scheduled)
+           (t
+            (when retry-at
+              (setq next-check (if next-check (min next-check retry-at) retry-at)))
+            (when next-run
+              (setq next-check (if next-check (min next-check next-run) next-run))))))))
     ;; Schedule next tick
     (when next-check
       (let ((delay (max 1 (- next-check now)))) ; At least 1 second
         (setq supervisor--timer-scheduler
               (run-at-time delay nil #'supervisor--timer-scheduler-tick))))))
+
+(defun supervisor--timer-needs-catch-up-p (timer)
+  "Return non-nil if TIMER needs a catch-up run after downtime.
+Checks if timer is persistent and missed a run within catch-up limit.
+
+NOTE: This requires :last-run-at to be persisted across restarts.
+Without timer state persistence (Phase 4), catch-up only works within
+a single Emacs session.  See `supervisor-timer-state-file'."
+  (when (and (supervisor-timer-persistent timer)
+             (> supervisor-timer-catch-up-limit 0))
+    (let* ((id (supervisor-timer-id timer))
+           (state (gethash id supervisor--timer-state))
+           (last-run (plist-get state :last-run-at))
+           (now (float-time))
+           (cutoff (- now supervisor-timer-catch-up-limit)))
+      ;; Need catch-up if: had a previous run, and it's old enough that
+      ;; we likely missed at least one scheduled run
+      (when last-run
+        ;; Check if there was a scheduled run between last-run and now
+        ;; that we missed (for calendar triggers)
+        ;; Use last-run + 1 to get strictly-after time, avoiding boundary
+        ;; where compute-next-run returns the same minute as last-run
+        (let ((would-have-run (supervisor--timer-compute-next-run timer (1+ last-run))))
+          (and would-have-run
+               (< would-have-run now)        ; Run was due before now
+               (>= would-have-run cutoff)))))))  ; Run is within catch-up window
+
+(defun supervisor--timer-process-catch-ups ()
+  "Process catch-up triggers for persistent timers after downtime.
+Called during scheduler start."
+  (let ((catch-up-count 0))
+    (dolist (timer supervisor--timer-list)
+      (when (and (supervisor-timer-enabled timer)
+                 (supervisor--timer-needs-catch-up-p timer))
+        (let ((id (supervisor-timer-id timer)))
+          (supervisor--log 'info "timer %s: triggering catch-up run" id)
+          (supervisor--timer-trigger timer 'catch-up)
+          (cl-incf catch-up-count))))
+    (when (> catch-up-count 0)
+      (supervisor--log 'info "processed %d catch-up runs" catch-up-count))))
 
 (defun supervisor--timer-scheduler-start ()
   "Start the timer scheduler.
@@ -1628,6 +1730,8 @@ Call after supervisor-start has completed stage startup."
         (puthash id nil supervisor--timer-state))
       ;; Compute initial next-run
       (supervisor--timer-update-next-run id)))
+  ;; Process catch-up runs for persistent timers
+  (supervisor--timer-process-catch-ups)
   ;; Start the scheduler tick
   (supervisor--timer-scheduler-tick)
   (supervisor--log 'info "timer scheduler started with %d timers"

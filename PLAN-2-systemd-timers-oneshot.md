@@ -1,81 +1,90 @@
-# PLAN 2: Basic Interval Timers for Oneshot Services
+# PLAN 2: Systemd-Style Timers for Oneshot Services
 
 Roadmap reference: `ROADMAP.md` parity/expansion workstream.
 
 ## Objective
 
-Add reliable, easy-to-test interval timers for `oneshot` services using an
+Add reliable, systemd-style timers for `oneshot` services using an
 Elisp-native configuration model and the existing supervisor engine.
 
-This plan intentionally prioritizes correctness, deterministic behavior, and
-implementation simplicity over systemd feature parity.
+This plan prioritizes correctness, deterministic behavior, and
+implementation simplicity.
 
 ## Product Constraints (Locked)
 
 - Timer targets are `oneshot` services only.
 - Elisp-native config (no systemd unit-file syntax).
-- No cron compatibility.
-- No calendar expressions.
+- No cron compatibility (use calendar plists instead).
 - No jitter/randomized delay knobs.
-- No durable on-disk timer state in this plan.
 
-## Design Decisions (Agreed Defaults)
+## Design Decisions (Implemented)
 
-- Timer mode supported: fixed interval only.
-  - Run every `:every-sec` seconds.
-  - Optional one-time startup delay via `:initial-delay-sec`.
+- Timer triggers supported:
+  - `:on-calendar` - cron-style calendar matching (minute/hour/day/month/dow)
+  - `:on-startup-sec` - seconds after supervisor-start
+  - `:on-unit-active-sec` - seconds after last successful completion
+  - Multiple triggers can be combined (earliest wins)
 - Overlap behavior:
   - If target oneshot is still active when due, skip and record
     miss reason `overlap`.
 - Disabled behavior:
   - Disabled timer or disabled target is skipped with explicit miss reason.
 - Failure behavior:
-  - No retry/backoff in this plan.
+  - Configurable retry policy with exponential backoff (default: 30s, 2m, 10m)
+  - Retry budget resets on each fresh scheduled trigger
+  - Non-zero exits are retryable; signal deaths are not
   - Scheduler continues running other timers if one target fails.
+- Catch-up behavior:
+  - Persistent timers can catch up missed runs after downtime
+  - Catch-up window is configurable (default: 24 hours)
+  - NOTE: Requires timer state persistence (Phase 4) to work across restarts
 
 ## In Scope
 
 - Timer definition schema and validation.
+- Calendar, startup, and unit-active triggers.
 - Interval scheduler integrated with existing process lifecycle.
 - In-memory timer runtime state.
+- Retry policy with configurable intervals.
+- Catch-up logic for persistent timers (requires Phase 4 for cross-restart).
 - Timer event emission for observability.
-- Basic timer visibility in existing status surfaces (read-only is sufficient).
-- Comprehensive tests for interval scheduling and skip/failure semantics.
+- Comprehensive tests for scheduling and skip/failure semantics.
 
-## Out of Scope
+## Deferred to Phase 4
 
-- Calendar scheduling (`:on-calendar`).
-- Mixed trigger composition (`:on-startup-sec` + `:on-unit-active-sec` + calendar).
-- Retry/backoff policy.
-- Missed-run catch-up/persistent semantics.
-- Timer state persistence file.
-- New timer control subcommands/actions (beyond existing surfaces).
+- Timer state persistence file (enables catch-up across restarts).
+
+## Deferred to Phase 5
+
+- Timer visibility in dashboard/CLI status surfaces.
+- Timer control subcommands/actions.
 
 ## Configuration Model
 
-Introduce/retain top-level variable:
+Top-level variable:
 
 - `supervisor-timers` (list of timer definitions)
 
 Each timer references a target oneshot service ID in `supervisor-programs`.
 
-Timer fields (planned contract):
+Timer fields:
 
 - Identity:
   - `:id` string (required)
   - `:target` string (required, must resolve to oneshot service)
   - `:enabled` boolean (default `t`)
-- Scheduling:
-  - `:every-sec` positive integer seconds (required)
-  - `:initial-delay-sec` non-negative integer seconds (optional, default `0`)
+  - `:persistent` boolean (default `t`, enables catch-up)
+- Triggers (at least one required):
+  - `:on-calendar` plist with `:minute`, `:hour`, `:day-of-month`, `:month`, `:day-of-week`
+  - `:on-startup-sec` positive number
+  - `:on-unit-active-sec` positive number
 
 Validation requirements:
 
 - Unknown keys rejected.
 - `:id` and `:target` must be non-empty strings.
 - `:target` must exist and be `oneshot`.
-- `:every-sec` required and must be positive integer.
-- `:initial-delay-sec`, when present, must be non-negative integer.
+- At least one trigger must be specified.
 - Duplicate timer IDs rejected deterministically.
 
 ## Runtime Architecture
@@ -85,6 +94,8 @@ Validation requirements:
 - Compute and maintain per-timer `next-run-at`.
 - Trigger oneshot runs via existing start/process primitives.
 - Enforce overlap-skip policy.
+- Schedule retries on retryable failures.
+- Process catch-up runs on startup for persistent timers.
 - Emit structured timer events.
 - Maintain deterministic ordering for simultaneous due timers.
 
@@ -96,7 +107,7 @@ Validation requirements:
 - Start scheduler only after stage startup completes.
 - Never start/restart scheduler during shutdown.
 
-### Timer State Model (In-Memory Only)
+### Timer State Model (In-Memory)
 
 Per timer, track at minimum:
 
@@ -105,93 +116,50 @@ Per timer, track at minimum:
 - `next-run-at`
 - `last-missed-at`
 - `last-miss-reason`
-
-No on-disk state file in this plan.
-
-## Control Plane and UI Surface
-
-### Dashboard / Status Surfaces
-
-Timer visibility should include:
-
-- timer ID
-- target service ID
-- enabled state
-- next run time
-- last run/result
-- last miss reason
-
-No timer action UI required in this plan.
-
-### CLI
-
-No new timer command surface required for this plan.
-Any existing status output may include timer state as read-only data.
-
-## Failure Semantics
-
-- Scheduler does not silently drop due triggers.
-- Every skip/failure path records explicit reason and emits event.
-- One timer failure must not stall unrelated timers.
-- Overlap never causes double-run for the same target.
+- `last-success-at`
+- `last-failure-at`
+- `retry-attempt`
+- `retry-next-at`
+- `startup-triggered`
 
 ## Work Plan
 
-### Phase 1: Schema and Validation
+### Phase 1: Schema and Validation ✓
 
-Deliverables:
+- Timer struct and validation functions
+- Calendar plist validation
+- Target existence and type validation
+- Invalid timer surfacing
 
-- Define simplified `supervisor-timers` schema.
-- Validate timer->target mapping to oneshot services.
-- Add explicit invalid-timer surfacing for user-facing validation commands.
+### Phase 2: Scheduler Core ✓
 
-Acceptance criteria:
+- Calendar matching and next-time computation
+- Startup and unit-active trigger computation
+- Non-polling scheduler loop using Emacs timers
+- Overlap detection and skip
+- Trigger execution with event emission
+- Startup trigger independence (dedicated flag)
 
-- Invalid timer definitions are rejected deterministically.
-- Valid timers compile into canonical internal representations.
+### Phase 3: Retry and Catch-up ✓
 
-### Phase 2: Interval Scheduler Core
+- Configurable retry policy (30s, 2m, 10m default)
+- Retry eligibility gating (positive exits only)
+- Retry budget reset on fresh scheduled trigger
+- Catch-up logic for persistent timers
+- (NOTE: Full catch-up requires Phase 4 persistence)
 
-Deliverables:
+### Phase 4: Durable State Persistence
 
-- Implement fixed interval computation using `:every-sec`.
-- Implement optional one-time startup offset using `:initial-delay-sec`.
-- Add due-check mechanism using Emacs timers (no busy polling).
-- Implement overlap skip, disabled skip, and event emission.
+- Load timer state from `supervisor-timer-state-file` on startup
+- Save timer state on significant changes
+- Enable catch-up across Emacs restarts
 
-Acceptance criteria:
+### Phase 5: Dashboard and CLI
 
-- Deterministic scheduling with stable ordering for simultaneous due timers.
-- No overlap double-run for same timer/target.
-- Scheduler does not start during shutdown.
+- Timer visibility in status surfaces
+- Timer state in CLI output
 
-### Phase 3: Observability and Status Integration
+### Phase 6: Test Matrix and Hardening
 
-Deliverables:
-
-- Expose timer runtime state in existing status/dashboard surfaces (read-only).
-- Ensure timer events are emitted and documented for hook consumers.
-
-Acceptance criteria:
-
-- Operators can inspect timer health from existing interfaces.
-- Event stream reflects trigger, skip, success, and failure paths.
-
-### Phase 4: Test Matrix and Hardening
-
-Deliverables:
-
-- ERT coverage for:
-  - schema/validation failures
-  - interval computation correctness
-  - initial-delay behavior
-  - overlap skip behavior
-  - disabled timer/target behavior
-  - deterministic simultaneous ordering
-  - shutdown guard behavior
-  - non-interference between timers
-
-Acceptance criteria:
-
-- `make check` passes with deterministic, repeatable results.
-- No known scheduler regressions in documented edge cases.
+- Comprehensive edge case coverage
+- Integration tests with real process execution
