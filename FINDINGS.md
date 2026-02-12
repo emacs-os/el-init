@@ -21,10 +21,11 @@ Focus:
 - No compatibility alias was kept for `reload` (intentional ABI break per project direction).
 
 ## High-Level Assessment
-- Strong parity today: `start`, `stop`, `restart`, `kill`, `status`.
+- Strong parity today: `start`, `stop`, `restart`, `kill`.
+- `status` currently behaves as an overview/list view (closer to `systemctl list-units`) than true `systemctl status`.
 - Partial parity: `describe` (vs `show`), `graph` (vs `list-dependencies`), `timers` (vs `list-timers`), `logs`.
 - Intentional supervisor-specific commands: `reconcile`, `validate`, `restart-policy`, `logging`, staged startup model.
-- Major missing systemctl-style script probes: `is-active`, `is-enabled`, `is-failed`, plus `reset-failed`.
+- Major current script-level gaps: `is-active`, `is-enabled`, `is-failed` (planned parity) and `reset-failed` (currently unplanned).
 
 ## Current Command Surface (Supervisor)
 CLI (`supervisorctl`):
@@ -42,8 +43,8 @@ Interactive (`M-x supervisor` dashboard):
 
 | Common systemctl commands | supervisorctl | supervisor interactive | Current parity / divergence notes |
 |---|---|---|---|
-| `systemctl status [UNIT...]` | `status [ID...]` / `list [ID...]` | Main dashboard table view | Close parity. Different state vocabulary (`running`, `pending`, `dead`, etc.). |
-| `systemctl list-units` | `status` / `list` | Main dashboard view | Close parity for service listing. |
+| `systemctl status [UNIT...]` | `status [ID...]` / `list [ID...]` | Main dashboard table view | Divergence: current output is overview-oriented, not detailed per-unit status style. |
+| `systemctl list-units` | `status` / `list` | Main dashboard view | Current parity is effectively here (overview listing behavior). |
 | `systemctl show UNIT` | `describe ID` | `i` (entry details), `d`/`D` (deps) | Partial parity. Name differs; output model differs. |
 | `systemctl start UNIT...` | `start [--] ID...` | `s` | Close parity. Disabled entries are blocked unless enabled. |
 | `systemctl stop UNIT...` | `stop [--] ID...` | No dedicated stop key | Partial parity. CLI exists; dashboard has kill, not explicit stop verb. |
@@ -66,18 +67,22 @@ Interactive (`M-x supervisor` dashboard):
 | `systemctl --version` | `version` | N/A | Equivalent intent. |
 
 ## Divergence Hotspots (Current)
-1. `enable`/`disable`
+1. `status` semantics
+- Current `supervisorctl status` is overview/list behavior, closer to `systemctl list-units`.
+- A true systemctl-like detailed status output is still missing.
+
+2. `enable`/`disable`
 - Same words as systemctl, but not same install-state behavior.
 - Current behavior is supervisor override persistence.
 
-2. `stop` behavior split by interface
+3. `stop` behavior split by interface
 - CLI has explicit `stop`.
 - Interactive mode currently lacks a dedicated stop action and relies on kill/start actions.
 
-3. Missing script-first probes
+4. Missing script-first probes
 - No `is-active` / `is-enabled` / `is-failed` equivalents yet.
 
-4. Reconcile naming decision
+5. Reconcile naming decision
 - This is now clean: `reconcile` is explicit and avoids overloading `reload`.
 
 ## Proposed Target Table (Systemctl-First Policy)
@@ -88,8 +93,8 @@ Policy used here:
 
 | systemctl command / workflow | Current supervisorctl | Target state | Status | Notes |
 |---|---|---|---|---|
-| `status [UNIT...]` | `status [ID...]` / `list [ID...]` | Keep parity and tighten wording toward service/unit language | Planned parity | Already close; mainly terminology cleanup. |
-| `list-units` | `list` / `status` | Add `list-units` naming parity | Planned parity | May keep `list` for convenience if desired. |
+| `status [UNIT...]` | `status [ID...]` / `list [ID...]` | Implement true detailed status view for one/more units | Planned parity | Current behavior is list-overview; needs redesign for real status semantics. |
+| `list-units` | `list` / `status` | Make overview table canonical under `list-units` | Planned parity | Current status output should move here; compatibility alias policy is optional. |
 | `show UNIT` | `describe ID` | Rename to `show` | Planned parity | Direct nomenclature alignment target. |
 | `start UNIT...` | `start [--] ID...` | Keep 1:1 behavior | Planned parity | Already close. |
 | `stop UNIT...` | `stop [--] ID...` | Keep 1:1 behavior in CLI and interactive | Planned parity | Add explicit interactive stop action for full parity. |
@@ -101,25 +106,29 @@ Policy used here:
 | `disable UNIT...` | `disable [--] ID...` (override model) | Align semantics toward systemctl-style enable/disable | Planned parity | Same divergence as above. |
 | `list-dependencies [UNIT]` | `graph [ID]` | Rename/reshape to `list-dependencies` | Planned parity | Underlying dependency info already exists. |
 | `list-timers` | `timers` | Rename/reshape to `list-timers` | Planned parity | Underlying timer listing exists. |
-| `cat UNIT` | No equivalent | Keep missing | Unplanned (as requested) | Explicitly out of plan. |
-| `edit UNIT` | No equivalent | Keep missing | Unplanned (as requested) | Explicitly out of plan. |
-| `mask/unmask UNIT` | No equivalent | Keep missing | Unplanned (as requested) | Explicitly out of plan. |
+| `cat UNIT` | No equivalent | Add `cat UNIT` equivalent for unit-file display | Planned parity | Depends on modular unit-file foundation. |
+| `edit UNIT` | No equivalent | Add `edit UNIT` workflow | Planned parity | Human-centered edit flow via modular unit files. |
+| `mask/unmask UNIT` | No equivalent | Add masking semantics and commands | Planned parity | Requires clear mask state model in supervisor config domain. |
 | `journalctl -u UNIT` workflow | `logs ID [--tail N]` | Keep file-log model as-is | Unplanned (as requested) | Intentional non-journal design choice. |
-| `--version` | `version` | Keep as-is | Unplanned change (as requested) | Already equivalent intent. |
-| `is-active UNIT` | No equivalent | Keep missing | Unplanned (as requested) | Explicitly out of plan. |
-| `is-enabled UNIT` | No equivalent | Keep missing | Unplanned (as requested) | Explicitly out of plan. |
-| `is-failed UNIT` | No equivalent | Keep missing | Unplanned (as requested) | Explicitly out of plan. |
+| `--version` | `version` | Keep as-is (already equivalent) | Planned parity (already satisfied) | No functional change needed. |
+| `is-active UNIT` | No equivalent | Add strict `is-active` probe semantics | Planned parity | Script-focused exit-code behavior. |
+| `is-enabled UNIT` | No equivalent | Add strict `is-enabled` probe semantics | Planned parity | Script-focused exit-code behavior. |
+| `is-failed UNIT` | No equivalent | Add strict `is-failed` probe semantics | Planned parity | Script-focused exit-code behavior. |
 | `reset-failed [UNIT...]` | No equivalent | Keep missing | Unplanned (as requested) | Explicitly out of plan. |
 | Supervisor extra: `reconcile` | `reconcile` | Keep as supervisor-specific extension | Planned preserve | Not a systemctl equivalent; useful control-plane convergence verb. |
 | Supervisor extra: `validate` | `validate` | Keep as supervisor-specific extension | Planned preserve | Valuable built-in validation command. |
 | Supervisor extra: `restart-policy`, `logging` | `restart-policy`, `logging` | Keep as supervisor-specific extensions | Planned preserve | Intentional policy controls beyond systemctl command set. |
 
 ## Suggested Next Compatibility Wave (Based on This Policy)
-1. Rename `describe -> show`, `graph -> list-dependencies`, `timers -> list-timers`.
-2. Add explicit interactive `stop` and `restart` actions for dashboard parity.
-3. Design and implement true `reload UNIT...` semantics separate from `reconcile`.
-4. Define and implement a practical `daemon-reload` equivalent in supervisor’s scope.
-5. Decide and execute semantic alignment plan for `enable`/`disable`.
+1. Split `status` vs `list-units` semantics: move current overview output to `list-units`, add true detailed `status UNIT...`.
+2. Rename `describe -> show`, `graph -> list-dependencies`, `timers -> list-timers`.
+3. Add explicit interactive `stop` and `restart` actions for dashboard parity.
+4. Build modular unit-file foundation, then implement `edit UNIT` and `cat UNIT`.
+5. Design and implement masking model and `mask/unmask` commands.
+6. Add script probes: `is-active`, `is-enabled`, `is-failed`.
+7. Design and implement true `reload UNIT...` semantics separate from `reconcile`.
+8. Define and implement a practical `daemon-reload` equivalent in supervisor’s scope.
+9. Decide and execute semantic alignment plan for `enable`/`disable`.
 
 ## Final Where-We-Stand Summary
 - The biggest semantic confusion points from prior findings (`reload`, `kill`) are now significantly cleaner.

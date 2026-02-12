@@ -17,6 +17,8 @@ This plan also introduces a human-centered modular Elisp unit-file model to supp
 ## Explicit Scope Decisions
 
 ### Planned parity work
+- Reassign current `status` overview output to `list-units`
+- Add true detailed `status UNIT...` behavior
 - `describe` -> `show`
 - `graph` -> `list-dependencies`
 - `timers` -> `list-timers`
@@ -25,6 +27,10 @@ This plan also introduces a human-centered modular Elisp unit-file model to supp
 - Introduce a supervisor-scoped `daemon-reload` equivalent
 - Align `enable`/`disable` semantics closer to systemctl model
 - Add modular unit files and `edit UNIT` workflow
+- Add `cat UNIT` parity for unit-file display
+- Add `mask/unmask UNIT` parity
+- Add `is-active`, `is-enabled`, `is-failed` parity
+- Keep `version` parity explicitly verified (already functionally aligned)
 
 ### Planned preserve (supervisor-specific extensions)
 - `reconcile`
@@ -34,16 +40,11 @@ This plan also introduces a human-centered modular Elisp unit-file model to supp
 - file-based logs workflow (`logs`, dashboard `L`)
 
 ### Unplanned (as currently directed)
-- `systemctl cat UNIT`
-- `systemctl mask/unmask UNIT`
 - `journalctl -u UNIT` parity (keep file-based logging model)
-- `systemctl is-active`
-- `systemctl is-enabled`
-- `systemctl is-failed`
 - `systemctl reset-failed`
-- change to `version` behavior
 
-Note: `systemctl edit UNIT` is now planned via the modular unit-file design below.
+Note: `systemctl edit UNIT` and `systemctl cat UNIT` are planned via the modular
+unit-file design below.
 
 ## Target End State
 
@@ -65,6 +66,9 @@ Note: `systemctl edit UNIT` is now planned via the modular unit-file design belo
 
 ## 1) Command Surface Normalization
 Deliverables:
+- Re-scope status commands:
+  - make current overview table canonical under `list-units`
+  - implement true detailed `status UNIT...` output
 - Rename CLI verbs:
   - `describe` -> `show`
   - `graph` -> `list-dependencies`
@@ -73,6 +77,7 @@ Deliverables:
 
 Acceptance:
 - Command usage/help reflects normalized names.
+- `status` provides detailed unit view semantics, while `list-units` is overview/list semantics.
 - Old names removed or retained only if explicitly approved.
 - `make check` passes.
 
@@ -159,7 +164,19 @@ Acceptance:
 - Save/close/return flow works without context loss.
 - Documentation includes practical examples.
 
-## 8) Documentation and Migration
+## 8) Additional Systemctl Parity Commands
+Deliverables:
+- Implement `cat UNIT` to show effective unit-file content from modular unit sources.
+- Implement `mask UNIT` and `unmask UNIT` semantics and persistence model.
+- Implement `is-active`, `is-enabled`, `is-failed` with script-friendly exit-code behavior.
+- Verify `version` output/exit behavior remains systemctl-comparable.
+
+Acceptance:
+- `cat`, `mask/unmask`, and `is-*` are present and documented.
+- Exit codes for `is-*` are deterministic for automation use.
+- Mask state composes predictably with enable/disable semantics.
+
+## 9) Documentation and Migration
 Deliverables:
 - Update README command tables and examples.
 - Add unit-file handbook section (layout, template, edit flow).
@@ -170,12 +187,13 @@ Acceptance:
 - Docs match behavior exactly.
 - No stale command references remain.
 
-## 9) Testing and Quality Gates
+## 10) Testing and Quality Gates
 Required:
 - Extend ERT for renamed commands and removed legacy names.
 - Add tests for interactive stop/restart actions.
 - Add tests for reload vs reconcile split.
 - Add tests for unit-file load, validation, and edit flow behavior contracts.
+- Add tests for `cat`, `mask/unmask`, and `is-*` behaviors/exit codes.
 - `make check` must pass at each merged phase.
 
 Acceptance:
@@ -183,14 +201,17 @@ Acceptance:
 - No regressions in JSON contracts unless explicitly versioned.
 
 ## Execution Order
-1. Command renames (`show`, `list-dependencies`, `list-timers`)
-2. Interactive `stop`/`restart` parity
-3. Unit-file foundation
-4. `edit UNIT` workflow on top of unit files
-5. `daemon-reload` implementation
-6. `reload` semantic split from `reconcile`
-7. `enable/disable` model alignment
-8. Documentation and migration completion pass
+1. `status` / `list-units` semantic split (overview vs detailed status)
+2. Command renames (`show`, `list-dependencies`, `list-timers`)
+3. Interactive `stop`/`restart` parity
+4. Unit-file foundation
+5. `edit UNIT` + `cat UNIT` workflows on top of unit files
+6. `mask/unmask` model and command implementation
+7. `is-active` / `is-enabled` / `is-failed` parity commands
+8. `daemon-reload` implementation
+9. `reload` semantic split from `reconcile`
+10. `enable/disable` model alignment
+11. Documentation and migration completion pass
 
 ## Risks and Mitigations
 - Risk: semantic churn confuses users during transition.
@@ -203,9 +224,10 @@ Acceptance:
 ## Completion Criteria
 This plan is complete when:
 - Planned parity commands use systemctl-aligned names/behaviors.
-- `edit UNIT` is implemented with modular unit files and human-centered flow.
+- `status` and `list-units` semantics are clearly separated and systemctl-comparable.
+- `edit UNIT` and `cat UNIT` are implemented with modular unit files and human-centered flow.
 - Dashboard and CLI command semantics remain consistent.
-- Unplanned items remain explicitly out of scope.
+- Only explicitly unplanned items remain out of scope (`journalctl -u` parity and `reset-failed`).
 - `make check` passes across all phases.
 
 ## Open Design Questions (to resolve before implementation)
@@ -222,3 +244,10 @@ This plan is complete when:
 4. Reload application semantics:
 - whether `reload UNIT` should auto-apply to live process immediately,
 - or stage changes until `reconcile`.
+
+5. Mask model details:
+- whether masked units are represented as file-state, override-state, or both,
+- and precedence with enable/disable and manual start.
+
+6. `is-*` exit code contract:
+- exact success/failure semantics to mirror systemctl scripting expectations.
