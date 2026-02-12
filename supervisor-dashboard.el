@@ -831,27 +831,23 @@ Cycles: config default -> override opposite -> back to config default."
             (supervisor--refresh-dashboard)))))))
 
 (defun supervisor-dashboard-kill (&optional force)
-  "Stop process at point with confirmation.
-Prevents auto-restart and sends kill signal.
+  "Kill process at point with confirmation.
+Sends kill signal and prevents auto-restart.
 With prefix argument FORCE, skip confirmation."
   (interactive "P")
-  (let ((id (tabulated-list-get-id)))
+  (when-let* ((id (tabulated-list-get-id)))
     (when (supervisor--separator-row-p id)
-      (user-error "Cannot kill separator row")))
-  (when-let* ((id (tabulated-list-get-id))
-              (proc (gethash id supervisor--processes)))
-    (when (process-live-p proc)
-      (when (or force
-                (yes-or-no-p (format "Kill process '%s'? " id)))
-        ;; Mark as manually stopped so sentinel doesn't restart it
-        ;; This is temporary - cleared when entry is started again
-        (puthash id t supervisor--manually-stopped)
-        (kill-process proc)
-        (supervisor--refresh-dashboard)))))
+      (user-error "Cannot kill separator row"))
+    (when (or force
+              (yes-or-no-p (format "Kill process '%s'? " id)))
+      (let ((result (supervisor--manual-stop id)))
+        (pcase (plist-get result :status)
+          ('stopped (supervisor--refresh-dashboard))
+          ('skipped (message "Entry %s is %s" id (plist-get result :reason))))))))
 
 (defun supervisor-dashboard-kill-force ()
-  "Stop process at point without confirmation.
-Disables auto-restart and sends kill signal immediately."
+  "Kill process at point without confirmation.
+Sends kill signal immediately and prevents auto-restart."
   (interactive)
   (supervisor-dashboard-kill t))
 
@@ -862,23 +858,15 @@ Respects runtime enable/disable overrides."
   (when-let* ((id (tabulated-list-get-id)))
     (when (supervisor--separator-row-p id)
       (user-error "Cannot start separator row"))
-    (if (gethash id supervisor--invalid)
-        (message "Cannot start invalid entry: %s" id)
-      (when-let* ((entry (supervisor--get-entry-for-id id)))
-        (unless (and (gethash id supervisor--processes)
-                     (process-live-p (gethash id supervisor--processes)))
-          (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
-            (if (not (supervisor--get-effective-enabled id enabled-p))
-                (message "Entry %s is disabled (use 'e' to enable)" id)
-              (let ((args (split-string-and-unquote cmd)))
-                (if (not (executable-find (car args)))
-                    (supervisor--log 'warning "executable not found: %s" (car args))
-                  ;; Clear failed state and oneshot completion on manual start
-                  (remhash id supervisor--failed)
-                  (remhash id supervisor--restart-times)
-                  (remhash id supervisor--oneshot-completed)
-                  (supervisor--start-process id cmd logging-p type restart-p)
-                  (supervisor--refresh-dashboard))))))))))
+    (let ((result (supervisor--manual-start id)))
+      (pcase (plist-get result :status)
+        ('started (supervisor--refresh-dashboard))
+        ('skipped
+         (let ((reason (plist-get result :reason)))
+           (if (string= reason "disabled")
+               (message "Entry %s is disabled (use 'e' to enable)" id)
+             (message "Entry %s is %s" id reason))))
+        ('error (message "Cannot start %s: %s" id (plist-get result :reason)))))))
 
 (defun supervisor-dashboard-toggle-logging ()
   "Toggle logging for process at point (takes effect on next start)."

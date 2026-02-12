@@ -2411,6 +2411,68 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
                 (supervisor--emit-event 'process-ready id nil (list :type type))
                 (when callback (funcall callback t))))))))))
 
+(defun supervisor--manual-start (id)
+  "Attempt to manually start entry with ID.
+Returns a plist with :status and :reason.
+:status is one of: started, skipped, error
+:reason explains why (for skipped/error cases).
+
+This function handles all pre-start checks and state clearing,
+ensuring consistent behavior between dashboard and CLI."
+  (cond
+   ;; Entry is invalid (check first - get-entry-for-id skips invalid entries)
+   ((gethash id supervisor--invalid)
+    (list :status 'error :reason "invalid entry"))
+   ;; Already running
+   ((and (gethash id supervisor--processes)
+         (process-live-p (gethash id supervisor--processes)))
+    (list :status 'skipped :reason "already running"))
+   ;; Check if entry exists and can be started
+   (t
+    (let ((entry (supervisor--get-entry-for-id id)))
+      (if (not entry)
+          (list :status 'error :reason "not found")
+        (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
+          (cond
+           ;; Disabled
+           ((not (supervisor--get-effective-enabled id enabled-p))
+            (list :status 'skipped :reason "disabled"))
+           ;; Executable not found
+           ((not (executable-find (car (split-string-and-unquote cmd))))
+            (list :status 'error :reason "executable not found"))
+           ;; All checks passed - start
+           (t
+            ;; Clear failed state and oneshot completion on manual start
+            (remhash id supervisor--failed)
+            (remhash id supervisor--restart-times)
+            (remhash id supervisor--oneshot-completed)
+            ;; Clear manually-stopped so restart works again
+            (remhash id supervisor--manually-stopped)
+            (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
+              (if proc
+                  (list :status 'started :reason nil)
+                (list :status 'error :reason "failed to start process")))))))))))
+
+(defun supervisor--manual-stop (id)
+  "Attempt to manually stop entry with ID.
+Returns a plist with :status and :reason.
+:status is one of: stopped, skipped, error
+:reason explains why (for skipped/error cases).
+
+This function sets manually-stopped to suppress restart,
+ensuring consistent behavior between dashboard and CLI."
+  (let ((proc (gethash id supervisor--processes)))
+    (cond
+     ((not proc)
+      (list :status 'skipped :reason "not running"))
+     ((not (process-live-p proc))
+      (list :status 'skipped :reason "not running"))
+     (t
+      ;; Mark as manually stopped so sentinel doesn't restart it
+      (puthash id t supervisor--manually-stopped)
+      (delete-process proc)
+      (list :status 'stopped :reason nil)))))
+
 (defun supervisor--dag-force-stage-complete ()
   "Force stage completion due to timeout.
 Mark all unstarted entries as timed out and invoke the callback."

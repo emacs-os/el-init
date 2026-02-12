@@ -509,33 +509,57 @@ Use -- before IDs that start with a hyphen."
       (let ((args (supervisor--cli-strip-separator args)))
         (cond
          (args
-      ;; Start specific entries
-      (let ((started nil)
-            (errors nil))
-        (dolist (id args)
-          (let ((entry (supervisor--get-entry-for-id id)))
-            (if entry
-                (progn
-                  (supervisor--start-entry-async entry nil)
-                  (push id started))
-              (push id errors))))
-        (let ((msg (concat
-                    (when started
-                      (format "Started: %s\n" (mapconcat #'identity (nreverse started) ", ")))
-                    (when errors
-                      (format "Not found: %s\n" (mapconcat #'identity errors ", "))))))
-          (if errors
-              (supervisor--cli-make-result supervisor-cli-exit-failure
-                                           (if json-p 'json 'human)
-                                           (if json-p
-                                               (json-encode `((started . ,(nreverse started))
-                                                              (errors . ,errors)))
-                                             msg))
-            (supervisor--cli-success
-             (if json-p
-                 (json-encode `((started . ,(nreverse started))))
-               msg)
-             (if json-p 'json 'human))))))
+          ;; Start specific entries
+          (let ((started nil)
+                (skipped nil)
+                (errors nil))
+            (dolist (id args)
+              (let ((result (supervisor--manual-start id)))
+                (pcase (plist-get result :status)
+                  ('started (push id started))
+                  ('skipped (push (cons id (plist-get result :reason)) skipped))
+                  ('error (push (cons id (plist-get result :reason)) errors)))))
+            ;; Reverse once to preserve order (push builds in reverse)
+            (setq started (nreverse started)
+                  skipped (nreverse skipped)
+                  errors (nreverse errors))
+            (let ((msg (concat
+                        (when started
+                          (format "Started: %s\n"
+                                  (mapconcat #'identity started ", ")))
+                        (when skipped
+                          (mapconcat (lambda (pair)
+                                       (format "Skipped: %s (%s)\n" (car pair) (cdr pair)))
+                                     skipped ""))
+                        (when errors
+                          (mapconcat (lambda (pair)
+                                       (format "Error: %s (%s)\n" (car pair) (cdr pair)))
+                                     errors "")))))
+              (if errors
+                  (supervisor--cli-make-result supervisor-cli-exit-failure
+                                               (if json-p 'json 'human)
+                                               (if json-p
+                                                   (json-encode
+                                                    `((started . ,started)
+                                                      (skipped . ,(mapcar (lambda (p)
+                                                                            `((id . ,(car p))
+                                                                              (reason . ,(cdr p))))
+                                                                          skipped))
+                                                      (errors . ,(mapcar (lambda (p)
+                                                                           `((id . ,(car p))
+                                                                             (reason . ,(cdr p))))
+                                                                         errors))))
+                                                 msg))
+                (supervisor--cli-success
+                 (if json-p
+                     (json-encode
+                      `((started . ,started)
+                        (skipped . ,(mapcar (lambda (p)
+                                              `((id . ,(car p))
+                                                (reason . ,(cdr p))))
+                                            skipped))))
+                   msg)
+                 (if json-p 'json 'human))))))
          (t
           ;; Start all via supervisor-start
           (supervisor-start)
@@ -558,26 +582,31 @@ Use -- before IDs that start with a hyphen."
          (args
           ;; Stop specific entries
           (let ((stopped nil)
-                (errors nil))
+                (skipped nil))
             (dolist (id args)
-              (let ((proc (gethash id supervisor--processes)))
-                (if (and proc (process-live-p proc))
-                    (progn
-                      ;; Mark as manually stopped so sentinel doesn't restart it
-                      ;; This is temporary - cleared when entry is started again
-                      (puthash id t supervisor--manually-stopped)
-                      (delete-process proc)
-                      (push id stopped))
-                  (push id errors))))
+              (let ((result (supervisor--manual-stop id)))
+                (pcase (plist-get result :status)
+                  ('stopped (push id stopped))
+                  ('skipped (push (cons id (plist-get result :reason)) skipped)))))
+            ;; Reverse once to preserve order
+            (setq stopped (nreverse stopped)
+                  skipped (nreverse skipped))
             (let ((msg (concat
                         (when stopped
-                          (format "Stopped: %s\n" (mapconcat #'identity (nreverse stopped) ", ")))
-                        (when errors
-                          (format "Not running: %s\n" (mapconcat #'identity errors ", "))))))
+                          (format "Stopped: %s\n"
+                                  (mapconcat #'identity stopped ", ")))
+                        (when skipped
+                          (mapconcat (lambda (pair)
+                                       (format "Skipped: %s (%s)\n" (car pair) (cdr pair)))
+                                     skipped "")))))
               (supervisor--cli-success
                (if json-p
-                   (json-encode `((stopped . ,(nreverse stopped))
-                                  (not_running . ,errors)))
+                   (json-encode
+                    `((stopped . ,stopped)
+                      (skipped . ,(mapcar (lambda (p)
+                                            `((id . ,(car p))
+                                              (reason . ,(cdr p))))
+                                          skipped))))
                  msg)
                (if json-p 'json 'human)))))
          (t
@@ -602,37 +631,56 @@ Use -- before IDs that start with a hyphen."
          (args
           ;; Restart specific entries
           (let ((restarted nil)
+                (skipped nil)
                 (errors nil))
             (dolist (id args)
-              (let* ((proc (gethash id supervisor--processes))
-                     (entry (supervisor--get-entry-for-id id)))
-                (cond
-                 ((not entry)
-                  (push id errors))
-                 ((and proc (process-live-p proc))
-                  ;; Kill then restart
-                  (delete-process proc)
-                  (supervisor--start-entry-async entry nil)
-                  (push id restarted))
-                 (t
-                  ;; Just start
-                  (supervisor--start-entry-async entry nil)
-                  (push id restarted)))))
+              ;; Stop first if running (ignore result, we just want it stopped)
+              (supervisor--manual-stop id)
+              ;; Then start
+              (let ((result (supervisor--manual-start id)))
+                (pcase (plist-get result :status)
+                  ('started (push id restarted))
+                  ('skipped (push (cons id (plist-get result :reason)) skipped))
+                  ('error (push (cons id (plist-get result :reason)) errors)))))
+            ;; Reverse once to preserve order
+            (setq restarted (nreverse restarted)
+                  skipped (nreverse skipped)
+                  errors (nreverse errors))
             (let ((msg (concat
                         (when restarted
-                          (format "Restarted: %s\n" (mapconcat #'identity (nreverse restarted) ", ")))
+                          (format "Restarted: %s\n"
+                                  (mapconcat #'identity restarted ", ")))
+                        (when skipped
+                          (mapconcat (lambda (pair)
+                                       (format "Skipped: %s (%s)\n" (car pair) (cdr pair)))
+                                     skipped ""))
                         (when errors
-                          (format "Not found: %s\n" (mapconcat #'identity errors ", "))))))
+                          (mapconcat (lambda (pair)
+                                       (format "Error: %s (%s)\n" (car pair) (cdr pair)))
+                                     errors "")))))
               (if errors
                   (supervisor--cli-make-result supervisor-cli-exit-failure
                                                (if json-p 'json 'human)
                                                (if json-p
-                                                   (json-encode `((restarted . ,(nreverse restarted))
-                                                                  (errors . ,errors)))
+                                                   (json-encode
+                                                    `((restarted . ,restarted)
+                                                      (skipped . ,(mapcar (lambda (p)
+                                                                            `((id . ,(car p))
+                                                                              (reason . ,(cdr p))))
+                                                                          skipped))
+                                                      (errors . ,(mapcar (lambda (p)
+                                                                           `((id . ,(car p))
+                                                                             (reason . ,(cdr p))))
+                                                                         errors))))
                                                  msg))
                 (supervisor--cli-success
                  (if json-p
-                     (json-encode `((restarted . ,(nreverse restarted))))
+                     (json-encode
+                      `((restarted . ,restarted)
+                        (skipped . ,(mapcar (lambda (p)
+                                              `((id . ,(car p))
+                                                (reason . ,(cdr p))))
+                                            skipped))))
                    msg)
                  (if json-p 'json 'human))))))
          (t
@@ -1030,6 +1078,9 @@ Options must come before --.  Use -- before IDs that start with hyphen."
       (let ((proc (gethash id supervisor--processes)))
         (if (and proc (process-live-p proc))
             (progn
+              ;; Mark as manually stopped so sentinel doesn't restart it
+              ;; (matches dashboard kill behavior for full parity)
+              (puthash id t supervisor--manually-stopped)
               (signal-process proc sig)
               (supervisor--cli-success
                (if json-p
