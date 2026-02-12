@@ -2668,6 +2668,368 @@ Regression test: stderr pipe processes used to pollute the process list."
               (should (string-match "bad-unit" content)))))
       (delete-directory dir t))))
 
+;;; Unit-File Scaffold and Edit/Cat Tests
+
+(ert-deftest supervisor-test-unit-file-scaffold-contains-id ()
+  "Scaffold template contains the given ID."
+  (let ((scaffold (supervisor--unit-file-scaffold "my-svc")))
+    (should (stringp scaffold))
+    (should (string-match ":id \"my-svc\"" scaffold))
+    (should (string-match ":command" scaffold))))
+
+(ert-deftest supervisor-test-unit-file-scaffold-is-valid-plist ()
+  "Scaffold template can be read as a valid plist (with command filled)."
+  (let* ((scaffold (supervisor--unit-file-scaffold "test-svc"))
+         ;; Replace empty command placeholder with actual value
+         (filled (replace-regexp-in-string
+                  ":command \"\"" ":command \"echo hello\"" scaffold)))
+    (with-temp-buffer
+      (insert filled)
+      (goto-char (point-min))
+      (let ((form (read (current-buffer))))
+        (should (listp form))
+        (should (keywordp (car form)))
+        (should (equal "test-svc" (plist-get form :id)))
+        (should (equal "echo hello" (plist-get form :command)))))))
+
+(ert-deftest supervisor-test-cli-cat-existing-unit-file ()
+  "CLI cat outputs raw content of existing unit file."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "my-svc.el" dir)
+            (insert "(:id \"my-svc\" :command \"echo ok\")"))
+          (let ((result (supervisor--cli-dispatch '("cat" "my-svc"))))
+            (should (supervisor-cli-result-p result))
+            (should (= supervisor-cli-exit-success
+                        (supervisor-cli-result-exitcode result)))
+            (should (string-match ":id \"my-svc\""
+                                  (supervisor-cli-result-output result)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-cat-missing-unit-file ()
+  "CLI cat returns error for missing unit file."
+  (let ((supervisor-unit-directory "/tmp/nonexistent-supervisor-units-dir"))
+    (let ((result (supervisor--cli-dispatch '("cat" "nope"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-failure
+                  (supervisor-cli-result-exitcode result)))
+      (should (string-match "not found"
+                            (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-cat-no-args ()
+  "CLI cat requires an ID argument."
+  (let ((result (supervisor--cli-dispatch '("cat"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-cat-too-many-args ()
+  "CLI cat takes exactly one ID."
+  (let ((result (supervisor--cli-dispatch '("cat" "a" "b"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-cat-json-format ()
+  "CLI cat --json outputs path and content fields."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "svc.el" dir)
+            (insert "(:id \"svc\" :command \"echo\")"))
+          (let ((result (supervisor--cli-dispatch '("cat" "svc" "--json"))))
+            (should (supervisor-cli-result-p result))
+            (should (= supervisor-cli-exit-success
+                        (supervisor-cli-result-exitcode result)))
+            (should (eq 'json (supervisor-cli-result-format result)))
+            (let ((parsed (json-read-from-string
+                           (supervisor-cli-result-output result))))
+              (should (assoc 'path parsed))
+              (should (assoc 'content parsed))
+              (should (string-match ":id" (cdr (assoc 'content parsed)))))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-edit-creates-scaffold ()
+  "CLI edit creates scaffold template for missing unit file."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir))
+    (unwind-protect
+        ;; Use JSON mode to test scaffold creation without editor launch
+        (let ((result (supervisor--cli-dispatch '("edit" "new-svc" "--json"))))
+          (should (supervisor-cli-result-p result))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          ;; File should have been created
+          (let ((path (expand-file-name "new-svc.el" dir)))
+            (should (file-exists-p path))
+            ;; Content should have the ID
+            (with-temp-buffer
+              (insert-file-contents path)
+              (should (string-match ":id \"new-svc\""
+                                    (buffer-string))))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-edit-existing-file ()
+  "CLI edit on existing file does not overwrite it."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "svc.el" dir)
+            (insert "(:id \"svc\" :command \"existing\")"))
+          ;; Use JSON mode to test without editor launch
+          (let ((result (supervisor--cli-dispatch '("edit" "svc" "--json"))))
+            (should (supervisor-cli-result-p result))
+            (should (= supervisor-cli-exit-success
+                        (supervisor-cli-result-exitcode result)))
+            ;; File content should be unchanged
+            (with-temp-buffer
+              (insert-file-contents (expand-file-name "svc.el" dir))
+              (should (string-match "existing" (buffer-string))))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-edit-json-format ()
+  "CLI edit --json outputs path and created flag."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir))
+    (unwind-protect
+        (let ((result (supervisor--cli-dispatch '("edit" "new" "--json"))))
+          (should (supervisor-cli-result-p result))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (should (eq 'json (supervisor-cli-result-format result)))
+          (let ((parsed (json-read-from-string
+                         (supervisor-cli-result-output result))))
+            (should (assoc 'path parsed))
+            (should (eq t (cdr (assoc 'created parsed))))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-edit-no-args ()
+  "CLI edit requires an ID argument."
+  (let ((result (supervisor--cli-dispatch '("edit"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-edit-too-many-args ()
+  "CLI edit takes exactly one ID."
+  (let ((result (supervisor--cli-dispatch '("edit" "a" "b"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-dashboard-cat-keybinding ()
+  "Dashboard keymap binds `c' to cat."
+  (should (eq #'supervisor-dashboard-cat
+              (lookup-key supervisor-dashboard-mode-map "c"))))
+
+(ert-deftest supervisor-test-dashboard-edit-keybinding ()
+  "Dashboard keymap binds `E' to edit."
+  (should (eq #'supervisor-dashboard-edit
+              (lookup-key supervisor-dashboard-mode-map "E"))))
+
+(ert-deftest supervisor-test-dashboard-cat-rejects-separator ()
+  "Dashboard cat rejects separator rows."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list '--stage3-- (vector "" "" "" "" "" "" "" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should-error (supervisor-dashboard-cat)
+                    :type 'user-error))))
+
+(ert-deftest supervisor-test-dashboard-cat-rejects-timer ()
+  "Dashboard cat rejects timer rows."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list "t1" (vector "t1" "timer" "---" "yes"
+                                    "waiting" "---" "---" "-" "-")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should-error (supervisor-dashboard-cat)
+                    :type 'user-error))))
+
+(ert-deftest supervisor-test-dashboard-edit-rejects-separator ()
+  "Dashboard edit rejects separator rows."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list '--stage3-- (vector "" "" "" "" "" "" "" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should-error (supervisor-dashboard-edit)
+                    :type 'user-error))))
+
+(ert-deftest supervisor-test-cli-edit-launches-editor ()
+  "CLI edit launches $VISUAL/$EDITOR via `call-process'."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (launch-args nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--cli-edit-launch-editor)
+                   (lambda (editor path)
+                     (setq launch-args (list editor path))
+                     0)))
+          (let* ((process-environment
+                  (cons "VISUAL=my-editor" process-environment))
+                 (result (supervisor--cli-dispatch '("edit" "new-svc"))))
+            (should (supervisor-cli-result-p result))
+            (should (= supervisor-cli-exit-success
+                        (supervisor-cli-result-exitcode result)))
+            ;; Editor should have been called
+            (should launch-args)
+            (should (equal "my-editor" (car launch-args)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-edit-editor-failure ()
+  "CLI edit reports failure when editor exits non-zero."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--cli-edit-launch-editor)
+                   (lambda (_editor _path) 1)))
+          (let* ((process-environment
+                  (cons "VISUAL=my-editor" process-environment))
+                 (result (supervisor--cli-dispatch '("edit" "new-svc"))))
+            (should (supervisor-cli-result-p result))
+            (should (= supervisor-cli-exit-failure
+                        (supervisor-cli-result-exitcode result)))
+            (should (string-match "exited with status 1"
+                                  (supervisor-cli-result-output result)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-edit-no-editor-error ()
+  "CLI edit returns error when no $VISUAL or $EDITOR is set."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir))
+    (unwind-protect
+        (let* ((process-environment
+                (cl-remove-if (lambda (e)
+                                (or (string-prefix-p "VISUAL=" e)
+                                    (string-prefix-p "EDITOR=" e)))
+                              process-environment))
+               (result (supervisor--cli-dispatch '("edit" "new-svc"))))
+          (should (supervisor-cli-result-p result))
+          (should (= supervisor-cli-exit-failure
+                      (supervisor-cli-result-exitcode result)))
+          (should (string-match "No \\$VISUAL or \\$EDITOR"
+                                (supervisor-cli-result-output result))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-dashboard-edit-enables-edit-mode ()
+  "Dashboard edit activates `supervisor-edit-mode' with return-on-q."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (path (expand-file-name "test-svc.el" dir)))
+    (unwind-protect
+        (progn
+          (write-region "(:id \"test-svc\" :command \"echo\")" nil path)
+          ;; Simulate dashboard with a valid entry
+          (with-temp-buffer
+            (supervisor-dashboard-mode)
+            (let ((tabulated-list-entries
+                   (list (list "test-svc"
+                               (vector "test-svc" "simple" "stage3"
+                                       "yes" "running" "yes" "---"
+                                       "-" "-")))))
+              (tabulated-list-init-header)
+              (tabulated-list-print)
+              (goto-char (point-min))
+              (supervisor-dashboard-edit)
+              ;; Should have opened the file with edit mode
+              (let ((edit-buf (get-file-buffer path)))
+                (should edit-buf)
+                (with-current-buffer edit-buf
+                  (should supervisor-edit-mode)
+                  ;; q should be bound
+                  (should (eq #'supervisor-edit-quit
+                              (lookup-key supervisor-edit-mode-map "q")))
+                  ;; C-c C-q should be bound
+                  (should (eq #'supervisor-edit-finish
+                              (lookup-key supervisor-edit-mode-map
+                                          (kbd "C-c C-q")))))
+                (kill-buffer edit-buf)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-edit-quit-returns ()
+  "Pressing `q' in edit buffer returns to dashboard."
+  (let* ((dir (make-temp-file "units-" t))
+         (path (expand-file-name "svc.el" dir))
+         (returned nil))
+    (unwind-protect
+        (progn
+          (write-region "(:id \"svc\" :command \"echo\")" nil path)
+          (find-file path)
+          (supervisor-edit-mode 1)
+          (cl-letf (((symbol-function 'supervisor--return-to-dashboard)
+                     (lambda () (setq returned t)))
+                    ((symbol-function 'y-or-n-p) (lambda (_) nil)))
+            ;; Buffer is unmodified, q should quit
+            (should-not (buffer-modified-p))
+            (supervisor-edit-quit)
+            (should returned)))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest supervisor-test-dashboard-edit-save-hook-fires ()
+  "Dashboard edit save-hook wiring fires validator on save."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (path (expand-file-name "hook-svc.el" dir))
+         (validated nil))
+    (unwind-protect
+        (progn
+          (write-region "(:id \"hook-svc\" :command \"echo\")" nil path)
+          (with-temp-buffer
+            (supervisor-dashboard-mode)
+            (let ((tabulated-list-entries
+                   (list (list "hook-svc"
+                               (vector "hook-svc" "simple" "stage3"
+                                       "yes" "running" "yes" "---"
+                                       "-" "-")))))
+              (tabulated-list-init-header)
+              (tabulated-list-print)
+              (goto-char (point-min))
+              (supervisor-dashboard-edit)
+              (let ((edit-buf (get-file-buffer path)))
+                (should edit-buf)
+                (with-current-buffer edit-buf
+                  ;; Validator should be in after-save-hook
+                  (should (memq #'supervisor--validate-unit-file-buffer
+                                after-save-hook))
+                  ;; Mock validator to track invocation
+                  (cl-letf (((symbol-function
+                              'supervisor--validate-unit-file-buffer)
+                             (lambda () (setq validated t))))
+                    ;; Modify and save to trigger hook
+                    (goto-char (point-max))
+                    (insert " ")
+                    (save-buffer)))
+                (should validated)
+                (kill-buffer edit-buf)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-validate-unit-file-buffer-hook ()
+  "Validate-on-save reports validation result."
+  (let* ((dir (make-temp-file "units-" t))
+         (path (expand-file-name "test.el" dir)))
+    (unwind-protect
+        (progn
+          (write-region "(:id \"test\" :command \"echo\")" nil path)
+          (with-temp-buffer
+            (insert-file-contents path)
+            (setq buffer-file-name path)
+            ;; Should not error for valid file
+            (supervisor--validate-unit-file-buffer)))
+      (delete-directory dir t))))
+
 ;;; Schema v1 Tests
 
 (ert-deftest supervisor-test-service-schema-version ()

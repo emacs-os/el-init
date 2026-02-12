@@ -39,6 +39,10 @@
 (declare-function supervisor-timer-enabled "supervisor-timer" (timer))
 (declare-function supervisor-timer-persistent "supervisor-timer" (timer))
 
+;; Forward declarations for unit-file module (optional)
+(declare-function supervisor--unit-file-path "supervisor-units" (id))
+(declare-function supervisor--unit-file-scaffold "supervisor-units" (id))
+
 ;; Forward declarations for timer state variables (defined in supervisor-timer.el)
 (defvar supervisor--invalid-timers)
 (defvar supervisor--timer-list)
@@ -1377,6 +1381,105 @@ Returns a list (COMMAND ARGS JSON-P)."
          (args (cdr argv)))
     (list command args (if json-p t nil))))
 
+(defun supervisor--cli-cmd-cat (args json-p)
+  "Handle `cat ID' command with ARGS.  JSON-P enables JSON output.
+Output literal raw content of a unit file."
+  (cond
+   ((null args)
+    (supervisor--cli-error supervisor-cli-exit-invalid-args
+                           "cat requires an ID argument"
+                           (if json-p 'json 'human)))
+   ((cdr args)
+    (supervisor--cli-error supervisor-cli-exit-invalid-args
+                           (format "cat takes exactly one ID, got: %s"
+                                   (mapconcat #'identity args " "))
+                           (if json-p 'json 'human)))
+   (t
+    (let* ((id (car args))
+           (path (supervisor--unit-file-path id)))
+      (if (file-exists-p path)
+          (let ((content (with-temp-buffer
+                           (insert-file-contents path)
+                           (buffer-string))))
+            (if json-p
+                (supervisor--cli-success
+                 (json-encode `((path . ,path)
+                                (content . ,content)))
+                 'json)
+              (supervisor--cli-success content 'human)))
+        (supervisor--cli-error supervisor-cli-exit-failure
+                               (format "Unit file not found: %s" path)
+                               (if json-p 'json 'human)))))))
+
+(defun supervisor--cli-edit-launch-editor (editor path)
+  "Launch EDITOR on PATH synchronously.
+Returns the exit status of the editor process."
+  (let* ((parts (split-string editor))
+         (program (car parts))
+         (extra-args (cdr parts)))
+    (apply #'call-process program nil nil nil
+           (append extra-args (list path)))))
+
+(defun supervisor--cli-cmd-edit (args json-p)
+  "Handle `edit ID' command with ARGS.  JSON-P enables JSON output.
+Open unit file for editing.  Create scaffold if file does not exist.
+In non-interactive context, launch $VISUAL or $EDITOR."
+  (cond
+   ((null args)
+    (supervisor--cli-error supervisor-cli-exit-invalid-args
+                           "edit requires an ID argument"
+                           (if json-p 'json 'human)))
+   ((cdr args)
+    (supervisor--cli-error supervisor-cli-exit-invalid-args
+                           (format "edit takes exactly one ID, got: %s"
+                                   (mapconcat #'identity args " "))
+                           (if json-p 'json 'human)))
+   (t
+    (let* ((id (car args))
+           (path (supervisor--unit-file-path id))
+           (created (not (file-exists-p path))))
+      ;; Ensure directory exists
+      (when created
+        (make-directory (file-name-directory path) t)
+        (write-region (supervisor--unit-file-scaffold id) nil path))
+      (if json-p
+          (supervisor--cli-success
+           (json-encode `((path . ,path)
+                          (created . ,(if created t :json-false))))
+           'json)
+        ;; Non-interactive: launch external editor
+        (let ((editor (or (getenv "VISUAL") (getenv "EDITOR"))))
+          (if editor
+              (let* ((preamble (concat (if created
+                                           (format "Created new unit file: %s\n"
+                                                   path)
+                                         "")
+                                       (format "Unit file: %s\n" path)))
+                     (exit-status (supervisor--cli-edit-launch-editor
+                                   editor path)))
+                (if (= 0 exit-status)
+                    (supervisor--cli-success
+                     (concat preamble
+                             "\nNext steps after editing:\n"
+                             "  supervisorctl daemon-reload"
+                             "    Reload unit definitions\n"
+                             "  supervisorctl reconcile"
+                             "        Apply changes to running state")
+                     'human)
+                  (supervisor--cli-error
+                   supervisor-cli-exit-failure
+                   (format "%sEditor exited with status %d"
+                           preamble exit-status)
+                   'human)))
+            (supervisor--cli-error
+             supervisor-cli-exit-failure
+             (format "%sNo $VISUAL or $EDITOR set.  Edit the file manually:\n  %s\n\nNext steps after editing:\n  supervisorctl daemon-reload    Reload unit definitions\n  supervisorctl reconcile        Apply changes to running state"
+                     (if created
+                         (format "Created new unit file: %s\n" path)
+                       "")
+                     path)
+             'human))))))))
+
 (defun supervisor--cli-dispatch (argv)
   "Dispatch CLI command from ARGV.
 ARGV is a list of strings (command and arguments).
@@ -1400,6 +1503,8 @@ Returns a `supervisor-cli-result' struct."
                    "  enable [--] ID...          Enable units\n"
                    "  disable [--] ID...         Disable units\n"
                    "  kill [--signal SIG] [--] ID  Send signal to unit\n"
+                   "  cat ID                     Show unit file content\n"
+                   "  edit ID                    Edit unit file\n"
                    "  list-dependencies [ID]     Show dependency graph\n"
                    "  list-timers                Show timer units\n\n"
                    "Supervisor-specific commands:\n"
@@ -1451,6 +1556,10 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-version args json-p))
          ((equal command "list-timers")
           (supervisor--cli-cmd-list-timers args json-p))
+         ((equal command "cat")
+          (supervisor--cli-cmd-cat args json-p))
+         ((equal command "edit")
+          (supervisor--cli-cmd-edit args json-p))
          (t
           (supervisor--cli-error supervisor-cli-exit-invalid-args
                                  (format "Unknown command: %s" command)

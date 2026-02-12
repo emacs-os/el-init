@@ -231,6 +231,41 @@ unchanged (legacy path)."
         ;; Unit-file entries first, then surviving legacy entries
         (append unit-entries (nreverse legacy-filtered))))))
 
+;;; Unit-File Template
+
+(defun supervisor--unit-file-scaffold (id)
+  "Return a scaffold template string for a new unit file with ID."
+  (concat "(:id \"" id "\"\n"
+          " :command \"\"  ; command to run\n"
+          " ;; :type simple        ; simple (daemon) or oneshot (run-once)\n"
+          " ;; :stage stage3       ; stage1-4, lower runs first\n"
+          " ;; :restart t          ; auto-restart on crash (simple only)\n"
+          " ;; :enabled t          ; start on supervisor-start\n"
+          " ;; :delay 0            ; seconds to wait before starting\n"
+          " ;; :after (\"dep-id\")   ; start after these IDs (same stage)\n"
+          " ;; :requires (\"id\")   ; pull-in + ordering dependency\n"
+          " ;; :logging t          ; log output to file\n"
+          " ;; :tags (tag1 tag2)   ; tags for filtering\n"
+          " )\n"))
+
+;;; Unit-File Validate-on-Save
+
+(defun supervisor--validate-unit-file-buffer ()
+  "Validate the unit-file plist in the current buffer.
+Reports errors via `message'.  Intended as `after-save-hook'."
+  (condition-case err
+      (let* ((result (supervisor--load-unit-file (buffer-file-name)))
+             (line (car result))
+             (plist (cdr result))
+             (reason (supervisor--validate-unit-file-plist
+                      plist (buffer-file-name) line)))
+        (if reason
+            (message "Unit file validation: %s" reason)
+          (message "Unit file OK: %s" (plist-get plist :id))))
+    (error
+     (message "Unit file validation error: %s"
+              (error-message-string err)))))
+
 (provide 'supervisor-units)
 
 ;;; supervisor-units.el ends here

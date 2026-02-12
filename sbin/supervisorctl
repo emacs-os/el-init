@@ -38,6 +38,8 @@
 #   enable [--] ID...           Enable units
 #   disable [--] ID...          Disable units
 #   kill [--signal SIG] [--] ID Send signal to unit
+#   cat ID                      Show unit file content
+#   edit ID                     Edit unit file
 #   list-dependencies [ID]      Show dependency graph
 #   list-timers                 Show timer units
 #

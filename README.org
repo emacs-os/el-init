@@ -306,6 +306,44 @@ Unit files are validated at load time:
 - ~:id~ must be a non-empty string; ~:command~ must be a string.
 - File path is included in validation error messages.
 - Invalid unit files are skipped and logged.
+- Invalid unit files appear in the dashboard and CLI with ~invalid~ status.
+
+** Editing Unit Files
+
+From the dashboard, press ~E~ on any service row to open its unit file for
+editing.  If the file does not exist, a scaffold template is created with the
+service ID and common configuration keys commented out.
+
+On save, the unit file is validated automatically and results are reported in
+the minibuffer.  A minor mode (~supervisor-edit-mode~) is activated with
+convenient return bindings: press ~q~ to return to the ~*supervisor*~
+dashboard (prompts to save if modified), or ~C-c C-q~ to save and return
+unconditionally.  Killing the buffer also returns to the dashboard.
+
+From the CLI:
+
+#+begin_src sh
+supervisorctl edit nm-applet
+#+end_src
+
+This resolves the unit file path and launches ~$VISUAL~ or ~$EDITOR~.  If the
+file does not exist, a scaffold is created first.  If neither ~$VISUAL~ nor
+~$EDITOR~ is set, an error is returned with the unit file path for manual
+editing.
+
+** Viewing Unit Files
+
+From the dashboard, press ~c~ on a service row to view its unit file in
+read-only mode (~view-mode~).  Press ~q~ to return.
+
+From the CLI:
+
+#+begin_src sh
+supervisorctl cat nm-applet
+#+end_src
+
+This outputs the raw unit file content.  Returns an error if the file does not
+exist.  With ~--json~, returns ~{"path": "...", "content": "..."}~.
 
 * Startup and Lifecycle Model
 :PROPERTIES:
@@ -698,6 +736,8 @@ Timer reason column shows either:
 | ~r~ | Toggle restart override |
 | ~l~ | Toggle logging override |
 | ~L~ | Open selected service log file |
+| ~c~ | View unit file (read-only) |
+| ~E~ | Edit unit file (create scaffold if missing) |
 | ~p~ | Open ~proced~ |
 | ~P~ | Toggle proced auto-update |
 | ~d~ | Show dependencies for selected service |
@@ -811,6 +851,8 @@ Systemctl-compatible commands:
 - ~enable [--] ID...~
 - ~disable [--] ID...~
 - ~kill [--signal SIG] [--] ID~
+- ~cat ID~ (display raw unit file content)
+- ~edit ID~ (edit unit file; creates scaffold if missing)
 - ~list-dependencies [ID]~
 - ~list-timers~
 
@@ -855,6 +897,20 @@ IDs.
 ~list-timers~:
 
 - explicit disabled response when timer subsystem is gated off
+
+~cat~:
+
+- requires exactly one ID argument
+- outputs raw file content from ~supervisor-unit-directory~/ID.el
+- error if file does not exist
+- JSON: ~{"path": "...", "content": "..."}~
+
+~edit~:
+
+- requires exactly one ID argument
+- creates scaffold template if unit file does not exist
+- non-interactive: launches ~$VISUAL~ or ~$EDITOR~
+- JSON: ~{"path": "...", "created": true/false}~
 
 ** Output Formats
 
@@ -1077,6 +1133,8 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-kill-force~ | Kill selected service (no confirm) |
 | ~M-x supervisor-dashboard-toggle-logging~ | Toggle logging override |
 | ~M-x supervisor-dashboard-view-log~ | Open selected service log |
+| ~M-x supervisor-dashboard-cat~ | View unit file (read-only) |
+| ~M-x supervisor-dashboard-edit~ | Edit unit file (scaffold if missing) |
 | ~M-x supervisor-dashboard-toggle-proced-auto-update~ | Toggle proced auto-update |
 | ~M-x supervisor-dashboard-show-deps~ | Show selected service deps |
 | ~M-x supervisor-dashboard-blame~ | Show startup timing view |
@@ -1093,6 +1151,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 ** Topical Index
 
 - Async oneshots (~:async~, ~:oneshot-wait~): [[#service-definition-handbook-supervisor-programs][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Cat unit file (~cat~, ~c~ in dashboard): [[#unit-files-modular-configuration][Unit Files]]
 - Blocking oneshot timeout (~:oneshot-timeout~, ~supervisor-oneshot-timeout~): [[#service-definition-handbook-supervisor-programs][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Command parsing (no implicit shell, use ~sh -c~ when needed): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Config file watch and debounce (~supervisor-watch-config~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
@@ -1103,6 +1162,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Dashboard mode/filter state (buffer-local stage/tag/auto-refresh): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Dashboard visual customization (status/type/stage faces): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Dependency semantics split (~:after~ vs ~:requires~): [[#service-definition-handbook-supervisor-programs][Service Definition]]
+- Edit unit file (~edit~, ~E~ in dashboard, scaffold template): [[#unit-files-modular-configuration][Unit Files]]
 - Event API (~supervisor-event-hook~ and event types): [[#events-and-hooks][Events and Hooks]]
 - Exit code semantics for oneshots (signals stored negative): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Graceful vs hard stop (~supervisor-stop~ vs ~supervisor-stop-now~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#command-reference][Command Reference]]
@@ -1123,6 +1183,8 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Timer retry policy (~supervisor-timer-retry-intervals~, signal non-retry): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#customization-reference][Customization Reference]]
 - Timer state persistence and schema compatibility (~supervisor-timer-state-file~): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#persistence-and-files][Persistence and Files]]
+- Unit file scaffold template (created by ~edit~ on missing file): [[#unit-files-modular-configuration][Unit Files]]
+- Unit file validate-on-save (after-save-hook in edited buffers): [[#unit-files-modular-configuration][Unit Files]]
 
 * Security
 :PROPERTIES:

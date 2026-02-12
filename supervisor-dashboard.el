@@ -43,6 +43,11 @@
 (declare-function supervisor-timer-enabled "supervisor-timer" (timer))
 (declare-function supervisor-timer--target-active-p "supervisor-timer" (timer))
 
+;; Forward declarations for unit-file module (optional)
+(declare-function supervisor--unit-file-path "supervisor-units" (id))
+(declare-function supervisor--unit-file-scaffold "supervisor-units" (id))
+(declare-function supervisor--validate-unit-file-buffer "supervisor-units" ())
+
 ;; Forward declarations for timer state variables (defined in supervisor-timer.el)
 (defvar supervisor--timer-state)
 (defvar supervisor--timer-list)
@@ -199,6 +204,8 @@ nil means show all entries, otherwise a tag symbol or string.")
     (define-key map "i" #'supervisor-dashboard-describe-entry)
     (define-key map "d" #'supervisor-dashboard-show-deps)
     (define-key map "D" #'supervisor-dashboard-show-graph)
+    (define-key map "c" #'supervisor-dashboard-cat)
+    (define-key map "E" #'supervisor-dashboard-edit)
     (define-key map "B" #'supervisor-dashboard-blame)
     (define-key map "?" #'supervisor-dashboard-menu-open)
     (define-key map "q" #'supervisor-dashboard-quit)
@@ -230,6 +237,8 @@ This is called on first use to avoid loading transient at package load time."
           ("r" "Restart" supervisor-dashboard-toggle-restart)
           ("l" "Logging" supervisor-dashboard-toggle-logging)]
          ["Views"
+          ("c" "Cat unit" supervisor-dashboard-cat)
+          ("E" "Edit unit" supervisor-dashboard-edit)
           ("L" "View log" supervisor-dashboard-view-log)
           ("d" "Dependencies" supervisor-dashboard-show-deps)
           ("D" "Dep graph" supervisor-dashboard-show-graph)
@@ -593,8 +602,8 @@ If SNAPSHOT is provided, read state from it; otherwise read from globals."
 
 (defvar supervisor--help-text
   (concat "[e]nable [f]ilter [t]ag [s]tart [x]stop [R]estart [k]ill [K]force "
-          "[r]estart-toggle [l]og [L]view [p]roced [P]auto [d]eps [D]graph "
-          "[B]lame [g]refresh [G]live [?]menu [i]nfo [h]elp [q]uit")
+          "[r]estart-toggle [l]og [L]view [c]at [E]dit [p]roced [P]auto "
+          "[d]eps [D]graph [B]lame [g]refresh [G]live [?]menu [i]nfo [h]elp [q]uit")
   "Key hints displayed in dashboard header.")
 
 (defun supervisor--refresh-dashboard ()
@@ -724,6 +733,8 @@ With prefix argument, show status legend instead."
     (princ "  r     Toggle auto-restart for entry\n")
     (princ "  l     Toggle logging for entry\n")
     (princ "  L     View log file for entry\n")
+    (princ "  c     View unit file (read-only)\n")
+    (princ "  E     Edit unit file (create scaffold if missing)\n")
     (princ "  p     Open proced (system process list)\n")
     (princ "  P     Toggle proced auto-update mode\n")
     (princ "  g     Refresh dashboard\n")
@@ -960,6 +971,98 @@ Respects runtime enable/disable overrides."
       (if (file-exists-p log-file)
           (find-file log-file)
         (message "No log file for %s" id)))))
+
+(defun supervisor-dashboard-cat ()
+  "View unit file for entry at point in read-only mode.
+Opens the unit file with `view-mode' so `q' returns to the dashboard."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "No unit file for separator row"))
+    (when (supervisor--timer-row-p id)
+      (user-error "No unit file for timer row"))
+    (let ((path (supervisor--unit-file-path id)))
+      (if (file-exists-p path)
+          (view-file path)
+        (user-error "Unit file not found: %s" path)))))
+
+(defvar supervisor-edit-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-q") #'supervisor-edit-finish)
+    (define-key map (kbd "q") #'supervisor-edit-quit)
+    map)
+  "Keymap for `supervisor-edit-mode'.")
+
+(define-minor-mode supervisor-edit-mode
+  "Minor mode for editing supervisor unit files.
+Provides `q' to return to dashboard (prompts to save if modified),
+and \\[supervisor-edit-finish] to save and return unconditionally.
+Validates the unit file on save."
+  :lighter " SvEdit"
+  :keymap supervisor-edit-mode-map
+  (if supervisor-edit-mode
+      (progn
+        (add-hook 'after-save-hook
+                  #'supervisor--validate-unit-file-buffer nil t)
+        (add-hook 'kill-buffer-hook
+                  #'supervisor--return-to-dashboard nil t))
+    (remove-hook 'after-save-hook
+                 #'supervisor--validate-unit-file-buffer t)
+    (remove-hook 'kill-buffer-hook
+                 #'supervisor--return-to-dashboard t)))
+
+(defun supervisor-edit-finish ()
+  "Save current unit file buffer and return to the dashboard.
+If modified, save first.  Then kill the buffer and return."
+  (interactive)
+  (when (and (buffer-modified-p) (buffer-file-name))
+    (save-buffer))
+  (let ((buf (current-buffer)))
+    (supervisor--return-to-dashboard)
+    (kill-buffer buf)))
+
+(defun supervisor-edit-quit ()
+  "Save if needed and return to the dashboard.
+If the buffer is modified, offer to save first.  Then kill the
+buffer and switch to the `*supervisor*' dashboard."
+  (interactive)
+  (when (and (buffer-modified-p) (buffer-file-name))
+    (if (y-or-n-p "Unit file modified; save before returning? ")
+        (save-buffer)
+      (set-buffer-modified-p nil)))
+  (let ((buf (current-buffer)))
+    (supervisor--return-to-dashboard)
+    (kill-buffer buf)))
+
+(defun supervisor-dashboard-edit ()
+  "Edit unit file for entry at point.
+If the unit file does not exist, create a scaffold template.
+On save, validate the unit file and report errors.
+Press `q' or \\[supervisor-edit-finish] to return to the dashboard."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot edit separator row"))
+    (when (supervisor--timer-row-p id)
+      (user-error "Cannot edit timer row"))
+    (let* ((path (supervisor--unit-file-path id))
+           (created (not (file-exists-p path))))
+      ;; Create scaffold if file doesn't exist
+      (when created
+        (make-directory (file-name-directory path) t)
+        (write-region (supervisor--unit-file-scaffold id) nil path))
+      ;; Open the file and activate edit mode
+      (find-file path)
+      (supervisor-edit-mode 1)
+      (when created
+        (message "Created new unit file: %s" path)))))
+
+(defun supervisor--return-to-dashboard ()
+  "Return to the *supervisor* dashboard buffer if it exists.
+Intended as `kill-buffer-hook' for edited unit files."
+  (when-let* ((buf (get-buffer "*supervisor*")))
+    (when (buffer-live-p buf)
+      (pop-to-buffer buf))))
 
 (defvar proced-auto-update-flag)  ; from proced.el
 
