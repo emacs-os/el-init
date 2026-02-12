@@ -2,11 +2,13 @@
 
 * supervisor.el Handbook
 
-*Manage your session processes from Emacs.*
+*A process supervisor for Emacs.*
 
-If you run Emacs as your window manager (EXWM), keep a long-lived daemon, or
-just want your tray applets and background services to start automatically and
-restart when they crash---~supervisor.el~ is for you.
+~supervisor.el~ aims to be robust enough to serve as PID 2---but not
+init. In practice, it is best suited for userland: managing desktop sessions
+under window managers like EXWM, or running inside
+long-lived daemonized Emacs instances that need to manage child processes or
+automate tasks with timers.
 
 Define your services in Elisp, organize them into startup stages, declare
 dependencies between them, and let supervisor handle the rest. When something
