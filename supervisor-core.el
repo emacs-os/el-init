@@ -883,16 +883,12 @@ Called with one argument: an event plist with the following keys:
   :ts    - timestamp (float-time)
   :id    - entry ID string (for process events, nil for stage/global)
   :stage - stage name symbol (for stage events, nil otherwise)
-  :data  - additional payload plist (event-type specific)
-
-This is the unified event interface.  Legacy hooks remain for
-backward compatibility but are dispatched via this system.")
+  :data  - additional payload plist (event-type specific)")
 
 (defun supervisor--emit-event (type &optional id stage data)
   "Emit a structured event of TYPE with optional ID, STAGE, and DATA.
 TYPE must be a member of `supervisor--event-types'.
-Runs `supervisor-event-hook' with the event plist, then dispatches
-to legacy hooks for backward compatibility."
+Runs `supervisor-event-hook' with the event plist."
   (unless (memq type supervisor--event-types)
     (error "Invalid event type: %s" type))
   (let ((event (list :type type
@@ -900,49 +896,13 @@ to legacy hooks for backward compatibility."
                      :id id
                      :stage stage
                      :data data)))
-    ;; Run unified event hook
     (run-hook-with-args 'supervisor-event-hook event)
-    ;; Log stage transitions to *Messages* (always visible, not warnings)
+    ;; Log stage transitions to *Messages*
     (pcase type
       ('stage-start
        (message "Supervisor: %s starting" stage))
       ('stage-complete
-       (message "Supervisor: %s complete" stage)))
-    ;; Dispatch to legacy hooks for backward compatibility
-    (pcase type
-      ('stage-start
-       (run-hook-with-args 'supervisor-stage-start-hook stage))
-      ('stage-complete
-       (run-hook-with-args 'supervisor-stage-complete-hook stage))
-      ('process-exit
-       (let ((status (plist-get data :status))
-             (code (plist-get data :code)))
-         (run-hook-with-args 'supervisor-process-exit-hook id status code)))
-      ('cleanup
-       (run-hooks 'supervisor-cleanup-hook)))))
-
-(defvar supervisor-cleanup-hook nil
-  "Hook run during cleanup, before killing processes.
-Legacy hook; prefer `supervisor-event-hook' for new code.")
-
-(defvar supervisor-stage-start-hook nil
-  "Hook run when a stage begins.
-Called with one argument: the stage name symbol.
-Legacy hook; prefer `supervisor-event-hook' for new code.")
-
-(defvar supervisor-stage-complete-hook nil
-  "Hook run when a stage completes.
-Called with one argument: the stage name symbol.
-Legacy hook; prefer `supervisor-event-hook' for new code.")
-
-(defvar supervisor-process-exit-hook nil
-  "Hook run when a supervised process exits.
-Called with three arguments: ID (string), STATUS (symbol), and CODE (integer).
-STATUS is one of:
-  `exited'   - process exited normally (CODE is exit code, 0 = success)
-  `signal'   - process killed by signal (CODE is signal number)
-  `unknown'  - exit status could not be determined
-Legacy hook; prefer `supervisor-event-hook' for new code.")
+       (message "Supervisor: %s complete" stage)))))
 
 ;;; DAG Scheduler State (per-stage, reset between stages)
 
@@ -1229,8 +1189,8 @@ If SNAPSHOT is provided, read from it; otherwise read from globals."
 
 ;;; Migration Layer (Schema v1)
 ;;
-;; Functions to help migrate from legacy supervisor-programs format
-;; to the schema v1 service definition format.
+;; Functions to normalize supervisor-programs entries to canonical
+;; schema v1 plist format.
 
 (defun supervisor--migrate-entry-to-plist (entry)
   "Migrate raw ENTRY to a canonical schema v1 plist format.
@@ -2284,7 +2244,7 @@ CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart."
                             ('exit 'exited)
                             (_ 'unknown))))
         (remhash name supervisor--processes)
-        ;; Emit process exit event (dispatches to legacy hook)
+        ;; Emit process exit event
         (supervisor--emit-event 'process-exit name nil
                                 (list :status exit-status :code exit-code))
         ;; Handle oneshot completion

@@ -1982,54 +1982,6 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
         (should (equal "daemon" (plist-get event :id)))
         (should (eq 'simple (plist-get (plist-get event :data) :type)))))))
 
-(ert-deftest supervisor-test-legacy-hook-stage-start-compatibility ()
-  "Stage-start event dispatches to legacy supervisor-stage-start-hook."
-  (let ((legacy-calls nil))
-    (cl-letf (((symbol-function 'run-hook-with-args)
-               (lambda (hook &rest args)
-                 (when (eq hook 'supervisor-stage-start-hook)
-                   (push args legacy-calls)))))
-      (supervisor--emit-event 'stage-start nil 'stage3 nil)
-      (should (= 1 (length legacy-calls)))
-      (should (eq 'stage3 (caar legacy-calls))))))
-
-(ert-deftest supervisor-test-legacy-hook-stage-complete-compatibility ()
-  "Stage-complete event dispatches to legacy supervisor-stage-complete-hook."
-  (let ((legacy-calls nil))
-    (cl-letf (((symbol-function 'run-hook-with-args)
-               (lambda (hook &rest args)
-                 (when (eq hook 'supervisor-stage-complete-hook)
-                   (push args legacy-calls)))))
-      (supervisor--emit-event 'stage-complete nil 'stage4 nil)
-      (should (= 1 (length legacy-calls)))
-      (should (eq 'stage4 (caar legacy-calls))))))
-
-(ert-deftest supervisor-test-legacy-hook-process-exit-compatibility ()
-  "Process-exit event dispatches to legacy supervisor-process-exit-hook."
-  (let ((legacy-calls nil))
-    (cl-letf (((symbol-function 'run-hook-with-args)
-               (lambda (hook &rest args)
-                 (when (eq hook 'supervisor-process-exit-hook)
-                   (push args legacy-calls)))))
-      (supervisor--emit-event 'process-exit "proc1" nil
-                              (list :status 'signal :code 15))
-      (should (= 1 (length legacy-calls)))
-      (let ((call (car legacy-calls)))
-        (should (equal "proc1" (nth 0 call)))
-        (should (eq 'signal (nth 1 call)))
-        (should (= 15 (nth 2 call)))))))
-
-(ert-deftest supervisor-test-legacy-hook-cleanup-compatibility ()
-  "Cleanup event dispatches to legacy supervisor-cleanup-hook."
-  (let ((cleanup-called nil))
-    (cl-letf (((symbol-function 'run-hooks)
-               (lambda (hook)
-                 (when (eq hook 'supervisor-cleanup-hook)
-                   (setq cleanup-called t))))
-              ((symbol-function 'run-hook-with-args) #'ignore))
-      (supervisor--emit-event 'cleanup nil nil nil)
-      (should cleanup-called))))
-
 (ert-deftest supervisor-test-spawn-failure-no-process-ready ()
   "Spawn failure emits process-failed but NOT process-ready.
 Regression test: process-ready was incorrectly emitted for failures."

@@ -132,14 +132,6 @@ blueman-applet   simple   stage4   yes      running    yes      yes   1927    -
 pasystray        simple   stage4   yes      running    yes      yes   1442    -
 #+end_example
 
-Enable the experimental timer subsystem only if you are using timers:
-
-#+begin_src emacs-lisp
-;; Parent mode must also be on.
-(supervisor-mode 1)
-(supervisor-timer-subsystem-mode 1)
-#+end_src
-
 * Service Definition (~supervisor-programs~)
 :PROPERTIES:
 :CUSTOM_ID: service-definition-handbook-supervisor-programs
@@ -406,14 +398,14 @@ Effects:
 
 Timer subsystem lives in ~supervisor-timer.el~ and is disabled by default.
 
-** Gating Contract
+To enable:
 
-Timer subsystem is active only when both are true:
+#+begin_src emacs-lisp
+(supervisor-mode 1)
+(supervisor-timer-subsystem-mode 1)
+#+end_src
 
-- ~supervisor-mode~ is enabled
-- ~supervisor-timer-subsystem-mode~ is enabled
-
-If gate is inactive, timer scheduler side effects do not run.
+Both modes must be active for timers to run.
 
 ** Timer Configuration (~supervisor-timers~)
 
@@ -870,15 +862,6 @@ or non-zero exits. Use an event hook if you want immediate notification:
 #+end_src
 
 This is optional. You can also check the dashboard or logs.
-
-** Legacy Compatibility Hooks
-
-Still supported and dispatched from event adapter:
-
-- ~supervisor-cleanup-hook~
-- ~supervisor-stage-start-hook~
-- ~supervisor-stage-complete-hook~
-- ~supervisor-process-exit-hook~ (~id~, ~status~, ~code~)
 
 * Persistence and Files
 :PROPERTIES:
