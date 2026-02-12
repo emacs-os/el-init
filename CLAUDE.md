@@ -52,6 +52,21 @@ make test-one TEST=supervisor-test-parse-string-entry  # Run single test
 emacs -Q -l supervisor.el
 ```
 
+## Emacs as a Reference Tool
+
+Look up function documentation from the shell when you need to confirm behavior:
+
+```bash
+emacs --batch --eval "(princ (documentation 'process-live-p))"
+```
+
+More generally, use `emacs --batch --eval "..."` to test expressions and confirm
+assumptions. Do this often rather than guessing.
+
+The full Emacs source code is available locally at `~/repos/emacs` for reading
+implementation details, understanding C primitives, or checking how built-in
+modes work.
+
 ## Pre-commit Requirement
 
 **IMPORTANT:** Always run `make check` and ensure it passes before:
