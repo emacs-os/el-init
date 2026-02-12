@@ -2181,6 +2181,31 @@ Regression test: stderr pipe processes used to pollute the process list."
       (when (process-live-p proc) (delete-process proc))
       (kill-buffer buf))))
 
+(ert-deftest supervisor-test-dashboard-kill-leaves-manually-stopped-untouched ()
+  "Dashboard kill does not set the manually-stopped flag."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (buf (generate-new-buffer " *test-dk*"))
+         (proc (start-process "test-dk" buf "sleep" "60")))
+    (unwind-protect
+        (progn
+          (puthash "test-svc" proc supervisor--processes)
+          (with-temp-buffer
+            (supervisor-dashboard-mode)
+            (let ((tabulated-list-entries
+                   (list (list "test-svc"
+                               (vector "test-svc" "simple" "stage3"
+                                       "yes" "running" "yes" "yes"
+                                       "1234" "-")))))
+              (tabulated-list-init-header)
+              (tabulated-list-print)
+              (goto-char (point-min))
+              ;; Call kill with force=t to skip confirmation
+              (supervisor-dashboard-kill t)
+              (should-not (gethash "test-svc" supervisor--manually-stopped)))))
+      (when (process-live-p proc) (delete-process proc))
+      (kill-buffer buf))))
+
 (ert-deftest supervisor-test-help-text-includes-stop-restart ()
   "Dashboard help text includes stop and restart keys."
   (should (string-match "\\[x\\]stop" supervisor--help-text))
