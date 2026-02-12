@@ -1,205 +1,109 @@
-# FINDINGS: supervisorctl vs systemctl (systemd)
+# FINDINGS: supervisorctl vs systemctl (systemd) — Where We Stand
 
 Date: 2026-02-12
 Repository: supervisor.el
+Status: Current to latest normalization work in this branch
 
 ## Scope
-This report compares `supervisorctl` (this repository) with `systemctl` terminology and command surface.
+This document compares `supervisorctl` and the supervisor dashboard (interactive mode) against common `systemctl` expectations.
 
-The goal is not to replicate all of systemd, but to identify:
-- what `supervisorctl` already covers,
-- what it does not cover,
-- where naming/semantics diverge from `systemctl`,
-- how to standardize terms toward systemd conventions without breaking users.
+Focus:
+- current command/behavior parity,
+- current divergence points,
+- explicit guidance on what to align 1:1 next,
+- explicit guidance on what should stay supervisor-unique.
 
-## Evidence Sources
-- `supervisorctl` command surface: `supervisor-cli.el`, `sbin/supervisorctl`
-- Dashboard vocabulary and status labels: `supervisor-dashboard.el`, `README.org`
-- Core state model and lifecycle semantics: `supervisor-core.el`
-- Local system reference: `systemctl --help` (systemd 259.1), `systemd-analyze --help`, `man systemctl`
+## Current Status Snapshot (What Changed Since Prior Findings)
+- `reload` has been removed from `supervisorctl`; canonical command is now `reconcile`.
+- `kill` semantics were changed to signal-only (no restart suppression), aligned with `systemctl kill` expectations.
+- Dashboard `k`/`K` kill now follows the same signal-only semantics as CLI kill.
+- `stop`/`restart` (all services path) now uses graceful stop first, with forced fallback.
+- No compatibility alias was kept for `reload` (intentional ABI break per project direction).
 
-## Executive Summary
-- `supervisorctl` already matches core lifecycle verbs (`start`, `stop`, `restart`, `reload`, `enable`, `disable`, `kill`, `status`) and supports timers.
-- Major differences are mostly terminology and semantics, not missing basic controls.
-- Biggest deviations are object naming (`entry`/`program` vs `unit`/`service`), state labels (`running`/`dead`/`pending`), and several command names (`describe`, `validate`, `graph`, `blame`, `ping`, `restart-policy`, `logging`).
-- Two same-name commands carry different semantics from systemd and should be treated as high-priority alignment items: `kill` and `reload`.
-- A non-breaking alias strategy can get close to systemctl terminology quickly.
+## High-Level Assessment
+- Strong parity today: `start`, `stop`, `restart`, `kill`, `status`.
+- Partial parity: `describe` (vs `show`), `graph` (vs `list-dependencies`), `timers` (vs `list-timers`), `logs`.
+- Intentional supervisor-specific commands: `reconcile`, `validate`, `restart-policy`, `logging`, staged startup model.
+- Major missing systemctl-style script probes: `is-active`, `is-enabled`, `is-failed`, plus `reset-failed`.
 
-## What supervisorctl Has Today
+## Current Command Surface (Supervisor)
+CLI (`supervisorctl`):
+- `status`, `list`, `describe`, `start`, `stop`, `restart`, `reconcile`, `validate`
+- `enable`, `disable`, `restart-policy`, `logging`
+- `blame`, `graph`, `logs`, `kill`, `ping`, `version`, `timers`
 
-### Lifecycle and control
-- `start`, `stop`, `restart`, `reload`, `kill`
-- Per-ID or all-service operation for start/stop/restart
-- Signal selection for `kill` (`--signal`)
+Interactive (`M-x supervisor` dashboard):
+- service lifecycle actions: `s` (start), `k`/`K` (kill)
+- policy toggles: `e` (enabled), `r` (restart), `l` (logging)
+- introspection: `i`, `d`, `D`, `B`, `L`
+- refresh/filter/UI: `g`, `G`, `f`, `t`, `?`, `h`, `q`
 
-### Service policy toggles
-- `enable`, `disable`
-- `restart-policy on|off`
-- `logging on|off`
+## Current Comparison Table
 
-### Introspection and diagnostics
-- `status`, `list` (alias), `describe`
-- `logs` (file tailing)
-- `graph` (dependency edges)
-- `blame` (startup timing)
-- `validate`
-- `timers`
-- `ping`, `version`
-
-### UX and integration
-- Stable human and JSON output modes (`--json`)
-- Interactive dashboard with keybindings (`M-x supervisor`)
-- Persistent override file for enabled/restart/logging runtime policy
-
-## Feature Comparison Matrix
-
-| Area | supervisorctl | systemctl | Gap Summary |
+| Common systemctl commands | supervisorctl | supervisor interactive | Current parity / divergence notes |
 |---|---|---|---|
-| Basic lifecycle | Yes | Yes | Close parity |
-| Boolean activity checks | No (`is-active`, `is-failed`, `is-enabled` absent) | Yes | Missing script-friendly checks |
-| Unit file management | Partial (`enable`/`disable`) | Rich (`mask`, `unmask`, `preset`, `edit`, `revert`, `link`, etc.) | Major surface gap |
-| Dependency inspection | `graph` | `list-dependencies` (+ `systemd-analyze dot`) | Similar capability, different naming/output |
-| Validation | `validate` | Mostly `systemd-analyze verify` (not systemctl core verb) | Function exists, name/tool mismatch |
-| Startup timing | `blame` | `systemd-analyze blame` | Capability exists, command family mismatch |
-| Logs | `logs --tail N` (file-based) | status log excerpt + journal integration (`-n`, `-o`, journalctl) | Less filtering, no journal semantics |
-| Timers | `timers` | `list-timers` + timer unit model | Similar concept, different naming/model depth |
-| Manager/system ops | No | Extensive (`daemon-reload`, reboot/power, rescue, etc.) | Out of scope for now |
-| Jobs/transactions | No explicit surface | Yes (`list-jobs`, `cancel`, job modes) | Missing |
+| `systemctl status [UNIT...]` | `status [ID...]` / `list [ID...]` | Main dashboard table view | Close parity. Different state vocabulary (`running`, `pending`, `dead`, etc.). |
+| `systemctl list-units` | `status` / `list` | Main dashboard view | Close parity for service listing. |
+| `systemctl show UNIT` | `describe ID` | `i` (entry details), `d`/`D` (deps) | Partial parity. Name differs; output model differs. |
+| `systemctl start UNIT...` | `start [--] ID...` | `s` | Close parity. Disabled entries are blocked unless enabled. |
+| `systemctl stop UNIT...` | `stop [--] ID...` | No dedicated stop key | Partial parity. CLI exists; dashboard has kill, not explicit stop verb. |
+| `systemctl restart UNIT...` | `restart [--] ID...` | No dedicated restart key (manual `k` then `s`) | Partial parity in interactive mode. |
+| `systemctl kill UNIT [--signal=]` | `kill [--signal SIG] [--] ID` | `k` / `K` (SIGTERM, confirm/no-confirm) | Now closely aligned on semantics (signal-only; restart policy remains in effect). |
+| `systemctl reload UNIT...` | No equivalent | No equivalent | Intentional divergence. Supervisor uses `reconcile` instead (different operation). |
+| `systemctl daemon-reload` | No equivalent | No equivalent | Missing by design (no systemd manager/unit-file model). |
+| `systemctl enable UNIT...` | `enable [--] ID...` | `e` toggle | Same verb, different model: supervisor runtime/startup override persistence, not unit install-state symlink model. |
+| `systemctl disable UNIT...` | `disable [--] ID...` | `e` toggle | Same divergence as `enable`. |
+| `systemctl is-active UNIT` | No equivalent | No equivalent | Missing. |
+| `systemctl is-enabled UNIT` | No equivalent | No equivalent | Missing. |
+| `systemctl is-failed UNIT` | No equivalent | No equivalent | Missing. |
+| `systemctl reset-failed [UNIT...]` | No equivalent | No equivalent | Missing. |
+| `systemctl list-dependencies [UNIT]` | `graph [ID]` | `d` / `D` | Partial parity. Capability exists, naming/output differ. |
+| `systemctl list-timers` | `timers` | Timers section in dashboard | Partial parity. Similar concept; supervisor timer model is custom. |
+| `systemctl cat UNIT` | No equivalent | No equivalent | Missing. |
+| `systemctl edit UNIT` | No equivalent | No equivalent | Missing. |
+| `systemctl mask/unmask UNIT` | No equivalent | No equivalent | Missing. |
+| `journalctl -u UNIT` workflow | `logs ID [--tail N]` | `L` (open log file) | Partial parity. File-based logs; no journal query semantics. |
+| `systemctl --version` | `version` | N/A | Equivalent intent. |
 
-## Terminology Deviations (Primary Focus)
+## Divergence Hotspots (Current)
+1. `enable`/`disable`
+- Same words as systemctl, but not same install-state behavior.
+- Current behavior is supervisor override persistence.
 
-### 1) Object model nouns
-Current supervisor terms:
-- `entry`, `entries`, `program`, `supervisor-programs`
-- service types: `simple`, `oneshot`
-- startup `stage1..stage4`
+2. `stop` behavior split by interface
+- CLI has explicit `stop`.
+- Interactive mode currently lacks a dedicated stop action and relies on kill/start actions.
 
-systemd terms:
-- `unit` (service/timer/socket/target/...)
-- `service`, `timer`
-- dependency ordering rather than fixed stages
+3. Missing script-first probes
+- No `is-active` / `is-enabled` / `is-failed` equivalents yet.
 
-Assessment:
-- `entry` and `program` are the biggest terminology mismatch in user-facing CLI/dashboard output.
-- `simple` and `oneshot` already align with systemd service type vocabulary.
-- `stage` is custom and useful, but not systemd-native terminology.
+4. Reconcile naming decision
+- This is now clean: `reconcile` is explicit and avoids overloading `reload`.
 
-### 2) State vocabulary
-Current supervisor service states (user-facing):
-- `running`, `done`, `failed`, `dead`, `pending`, `stopped`, `invalid`
+## Proposed Target Table (Recommended Direction)
 
-systemd active-state vocabulary:
-- `active`, `inactive`, `failed`, `activating`, `deactivating`, `maintenance`, `reloading`, `refreshing`
+| Capability / command family | Target state recommendation | Why | Suggested path |
+|---|---|---|---|
+| `status`, `start`, `stop`, `restart`, `kill` | Full 1:1 operational parity target | These are the core operator verbs users expect to behave predictably | Keep names; tighten edge semantics where needed; ensure interactive has equivalent stop/restart affordances. |
+| `show` | Adopt 1:1 naming target (`show`) | `describe` is understandable but non-standard | Rename `describe` to `show` (or replace outright if ABI breaks are acceptable). |
+| `list-dependencies` | Adopt mainstream naming target | `graph` is clear but less standard than `list-dependencies` | Rename `graph` to `list-dependencies` (optionally keep graph-style output mode). |
+| `list-timers` | Adopt mainstream naming target | `timers` is close, but standard command name improves predictability | Rename `timers` to `list-timers` (or support both then remove old name if desired). |
+| `is-active`, `is-enabled`, `is-failed` | Add for script compatibility (strongly recommended) | High value for automation parity | Add strict exit-code commands mapped from existing state; no model rewrite required. |
+| `reset-failed` | Add if parity is a goal | Common operational recovery action | Implement by clearing failed/crash-loop markers for selected IDs. |
+| `enable` / `disable` | Keep names, but either fully align semantics later or rename to policy-scoped verbs | Current semantics are not systemd install-state semantics | Short term: explicit docs; long term: choose between true install-state model or rename to avoid ambiguity. |
+| `reload` | Keep absent unless true reload semantics are introduced | Avoid semantic confusion | Continue using `reconcile` as canonical supervisor-specific verb. |
+| `reconcile` | Preserve as supervisor-unique | Useful and explicit; not a systemctl equivalent | Keep as-is; document as supervisor control-plane convergence action. |
+| `validate` | Preserve as supervisor-unique | Useful built-in static validation | Keep as-is; optionally add `verify` alias only if desired later. |
+| `restart-policy`, `logging` | Preserve as supervisor-unique | Valuable runtime toggles not directly modeled by systemctl command names | Keep as-is, clearly documented as supervisor policy controls. |
+| Dashboard/TUI workflow | Preserve as supervisor-unique “icing” | Strong UX differentiator beyond systemctl | Keep and continue parity with CLI semantics. |
 
-Assessment:
-- `dead` and `pending` are the least systemd-like labels.
-- `done` (for oneshot) is not wrong, but systemd users expect `active (exited)`/substates framing.
-- `invalid` is config validation state, which systemctl does not expose as a primary runtime state label in the same way.
+## Suggested Next Compatibility Wave
+1. Decide whether to rename `describe -> show`, `graph -> list-dependencies`, `timers -> list-timers` in one breaking pass.
+2. Add script-probe commands (`is-active`, `is-enabled`, `is-failed`) for automation parity.
+3. Add an explicit interactive `stop` action so dashboard has direct parity with CLI/systemctl stop intent.
+4. Decide long-term semantic plan for `enable`/`disable`: true systemctl-like install-state or explicit supervisor-policy naming.
 
-### 3) Command naming deviations
-Commands with close systemctl analog but different name:
-- `describe` vs `show`/`status`
-- `graph` vs `list-dependencies` (or `systemd-analyze dot` for graph rendering)
-- `timers` vs `list-timers`
-
-Commands closer to systemd-analyze than systemctl:
-- `blame` (closest: `systemd-analyze blame`)
-- `validate` (closest: `systemd-analyze verify`)
-
-Commands with no standard systemctl analog:
-- `restart-policy`
-- `logging` (as capture toggle)
-- `ping`
-
-### 4) Same-name semantic divergence (highest risk)
-`enable` / `disable`:
-- supervisorctl: runtime/startup policy override persisted in supervisor state file
-- systemctl: unit-file install state (symlink management)
-
-`kill`:
-- supervisorctl: sends signal and marks manually stopped, suppressing restart
-- systemctl: sends signal to unit processes; restart behavior remains per unit policy
-
-`reload`:
-- supervisorctl: reconcile config and runtime set
-- systemctl: ask unit to reload configuration (if supported), not a full reconcile action
-
-These are the most confusing differences because names look identical but behavior is different.
-
-## What supervisorctl Has That systemctl Does Not (Directly)
-- Built-in schema validation command in same CLI (`validate`)
-- Built-in deterministic startup stage model (`stage1..stage4`)
-- Combined CLI + TUI (dashboard) in one toolchain
-- Stable JSON contracts by command
-
-## What supervisorctl Lacks (Relative to systemctl Family)
-- `is-active`, `is-failed`, `is-enabled` exit-code-oriented checks
-- `try-restart`, `reload-or-restart`, `try-reload-or-restart`
-- `reset-failed`
-- `show`-style property output
-- `list-unit-files`-style install-state view
-- `mask`/`unmask` semantics
-- richer log selection (`--follow`, `--since`, `--until`, output modes)
-- dependency views beyond edge list (`before`/`after` trees)
-
-## Standardization Recommendations
-
-### Priority 0: Non-breaking terminology alignment (add aliases)
-Add command aliases while keeping current commands:
-- `show` -> existing `describe`
-- `list-units` -> existing `list`
-- `list-dependencies` -> existing `graph`
-- `list-timers` -> existing `timers`
-- `verify` -> existing `validate`
-- `is-active`, `is-enabled`, `is-failed` -> new thin commands over current state
-
-Update user-facing strings:
-- prefer `service` (or `unit`) over `entry` in CLI/dashboard text
-- keep internal symbol names unchanged initially to avoid churn
-
-### Priority 1: Semantic clarifications for same-name commands
-- `kill`: decide whether to align with systemctl behavior (signal only) or keep current restart-suppress semantics.
-- `reload`: either rename current behavior to `reconcile` and keep `reload` alias documented as reconcile, or implement a systemctl-like `reload` subset and move current behavior to `reconcile`.
-- `enable`/`disable`: explicitly label as supervisor policy enablement in help text; add `is-enabled` for scripting parity.
-
-### Priority 2: State terminology bridge
-Keep current status values for backward compatibility, but add a systemd-style view:
-- `active_state`: `active`/`inactive`/`failed`/`activating`...
-- `sub_state`: mapped detail (`running`, `dead`, `done`, `pending`, etc.)
-
-This can be exposed first in JSON, then optional human columns.
-
-### Priority 3: Command-family separation for analysis verbs
-Consider moving analysis-style verbs under an `analyze` namespace:
-- `supervisorctl analyze blame`
-- `supervisorctl analyze graph`
-- `supervisorctl verify`
-
-Keep old top-level verbs as aliases.
-
-## Proposed Terminology Map
-
-| Current term | Suggested standard term | Notes |
-|---|---|---|
-| entry | service (or unit) | `service` is practical because this supervisor manages service-like processes |
-| programs | services | Keep `supervisor-programs` variable internally for compatibility |
-| describe | show | Keep `describe` alias |
-| validate | verify | Matches `systemd-analyze verify` wording |
-| graph | list-dependencies | Keep `graph` alias for current users |
-| timers | list-timers | Keep `timers` alias |
-| dead | failed (substate crash-loop) | Better fit for systemd mental model |
-| pending | activating / waiting | Depends on implementation detail availability |
-
-## Implementation Plan (Low-Risk Path)
-1. Add aliases and help-text updates only.
-2. Add `is-active`/`is-enabled`/`is-failed` with strict exit codes.
-3. Introduce systemd-style `active_state` + `sub_state` in JSON.
-4. Revisit `kill` and `reload` semantics with explicit compatibility decision.
-5. Update README CLI handbook terminology and examples.
-
-## Final Assessment
-`supervisorctl` is already strong in core lifecycle control and visibility for a user-session supervisor.
-
-The main blocker to "systemctl-like" feel is terminology and semantic expectations, not missing basic operations.
-
-A staged alias-first standardization can deliver systemctl familiarity quickly without breaking current users.
+## Final Where-We-Stand Summary
+- The biggest semantic confusion points from prior findings (`reload`, `kill`) are now significantly cleaner.
+- Remaining gaps are now mostly command naming parity and script-oriented compatibility verbs.
+- Supervisor-unique strengths (reconcile, validation, staged startup, integrated dashboard) are clear and worth preserving.

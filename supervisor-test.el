@@ -79,7 +79,7 @@ Spawns a subprocess to test CLI dispatch without dashboard or timer module."
                   "--eval" "(require 'supervisor-core)"
                   "--eval" "(require 'supervisor-cli)"
                   "--eval" "(setq supervisor-programs nil)"
-                  "--eval" "(supervisor--cli-dispatch '(\"reload\"))")))
+                  "--eval" "(supervisor--cli-dispatch '(\"reconcile\"))")))
     (should (= result 0))))
 
 (ert-deftest supervisor-test-module-no-cycles ()
@@ -832,8 +832,8 @@ core symbols exist without dashboard/cli-specific dependencies."
   (should (string-match "exited with code 1"
                         (supervisor--format-exit-status 'exit 1))))
 
-(ert-deftest supervisor-test-reload-respects-enabled-override ()
-  "Reload uses effective enabled state for start decisions."
+(ert-deftest supervisor-test-reconcile-respects-enabled-override ()
+  "Reconcile uses effective enabled state for start decisions."
   (let ((supervisor--enabled-override (make-hash-table :test 'equal))
         (supervisor--processes (make-hash-table :test 'equal))
         (supervisor--failed (make-hash-table :test 'equal))
@@ -851,12 +851,12 @@ core symbols exist without dashboard/cli-specific dependencies."
                  (push id started-ids)))
               ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
               ((symbol-function 'executable-find) (lambda (_) t)))
-      (supervisor-reload)
+      (supervisor-reconcile)
       ;; Entry should NOT have been started due to override
       (should-not (member "new-entry" started-ids)))))
 
-(ert-deftest supervisor-test-reload-stops-disabled-entries ()
-  "Reload stops running entries that are now disabled."
+(ert-deftest supervisor-test-reconcile-stops-disabled-entries ()
+  "Reconcile stops running entries that are now disabled."
   (let ((supervisor--enabled-override (make-hash-table :test 'equal))
         (supervisor--processes (make-hash-table :test 'equal))
         (supervisor--failed (make-hash-table :test 'equal))
@@ -875,7 +875,7 @@ core symbols exist without dashboard/cli-specific dependencies."
                    (push (process-name proc) killed-ids)
                    (delete-process proc)))
                 ((symbol-function 'supervisor--refresh-dashboard) #'ignore))
-        (supervisor-reload)
+        (supervisor-reconcile)
         ;; Entry should have been killed due to :disabled
         (should (member "test-proc" killed-ids))))))
 
@@ -3481,7 +3481,7 @@ at minute boundaries."
           (puthash "t2" '(:last-failure-at 900.0 :last-exit 1)
                    supervisor--timer-state)
           (should (supervisor-timer--save-state))
-          ;; Clear and reload
+          ;; Clear and reconcile
           (clrhash supervisor--timer-state)
           (should (supervisor-timer--load-state))
           ;; Verify state restored
@@ -4103,6 +4103,21 @@ at minute boundaries."
       (when (process-live-p proc)
         (delete-process proc)))))
 
+(ert-deftest supervisor-test-cli-kill-does-not-use-manually-stopped ()
+  "CLI kill does not set manually-stopped, matching signal-only semantics."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (proc (start-process "test-proc" nil "sleep" "999")))
+    (unwind-protect
+        (progn
+          (puthash "test-id" proc supervisor--processes)
+          (let ((result (supervisor--cli-dispatch '("kill" "test-id"))))
+            (should (= supervisor-cli-exit-success
+                       (supervisor-cli-result-exitcode result))))
+          (should-not (gethash "test-id" supervisor--manually-stopped)))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
 (ert-deftest supervisor-test-start-clears-manually-stopped ()
   "Starting a process clears the manually-stopped flag."
   (let ((supervisor--manually-stopped (make-hash-table :test 'equal))
@@ -4170,11 +4185,20 @@ at minute boundaries."
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
-(ert-deftest supervisor-test-cli-reload-rejects-extra-args ()
-  "Reload with extra args returns invalid-args exit code."
-  (let ((result (supervisor--cli-dispatch '("reload" "extra"))))
+(ert-deftest supervisor-test-cli-reconcile-rejects-extra-args ()
+  "Reconcile with extra args returns invalid-args exit code."
+  (let ((result (supervisor--cli-dispatch '("reconcile" "extra"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-reload-is-unknown-command ()
+  "Legacy reload command is rejected after canonical rename."
+  (let ((result (supervisor--cli-dispatch '("reload"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match "Unknown command: reload"
+                          (supervisor-cli-result-output result)))))
 
 (ert-deftest supervisor-test-cli-ping-rejects-extra-args ()
   "Ping with extra args returns invalid-args exit code."

@@ -112,7 +112,7 @@ provides detailed reference material:
 (supervisor-start)
 #+end_src
 
-Once running, ~sbin/supervisorctl status~ shows the current state:
+With the above configuration running, ~sbin/supervisorctl status~ shows:
 
 #+begin_example
 $ sbin/supervisorctl status
@@ -131,6 +131,11 @@ nm-applet        simple   stage3   yes      running    yes      yes   1396    -
 blueman-applet   simple   stage4   yes      running    yes      yes   1927    -
 pasystray        simple   stage4   yes      running    yes      yes   1442    -
 #+end_example
+
+~M-x supervisor~ opens an interactive dashboard for managing services:
+
+#+CAPTION: Supervisor dashboard
+[[file:doc/dashboard.png]]
 
 * Service Definition (~supervisor-programs~)
 :PROPERTIES:
@@ -180,7 +185,7 @@ Validation is performed by ~supervisor--validate-entry~ and plan building.
   ~:no-restart~; ~simple~ rejects ~:oneshot-wait~, ~:async~, and
   ~:oneshot-timeout~.
 
-Invalid entries are skipped at start/reload and shown as ~invalid~ in dashboard
+Invalid entries are skipped at start/reconcile and shown as ~invalid~ in dashboard
 and CLI status/validate output.
 
 ** ID Resolution and Duplicate Handling
@@ -375,7 +380,7 @@ Dashboard logging toggle updates runtime state; use explicit save command (or CL
 logging command) when you want persistence written immediately. In other words:
 dashboard logging toggle does not auto-save, but CLI ~logging on|off ...~ does.
 
-** Reload Reconciler (~supervisor-reload~)
+** Reconcile (~supervisor-reconcile~)
 
 Reconcile flow:
 
@@ -731,7 +736,7 @@ Lifecycle:
 - ~start [-- ID...]~
 - ~stop [-- ID...]~
 - ~restart [-- ID...]~
-- ~reload~
+- ~reconcile~
 - ~validate~
 
 Overrides and policy:
@@ -764,7 +769,7 @@ IDs.
 ~start~, ~stop~, ~restart~:
 
 - with IDs: operate on those IDs
-- with no IDs: operate on whole supervisor (~start~, ~stop-now~, ~stop-now+start~)
+- with no IDs: operate on whole supervisor (~start~, ~stop~, ~stop+start~)
 
 ~graph~:
 
@@ -923,7 +928,7 @@ All user options (defcustom) are listed below.
 | ~supervisor-max-concurrent-starts~ | ~nil~ | Max concurrent stage spawns |
 | ~supervisor-verbose~ | ~nil~ | Show info-level messages |
 | ~supervisor-log-to-file~ | ~nil~ | Write supervisor events to file |
-| ~supervisor-watch-config~ | ~nil~ | Config file watch/reload |
+| ~supervisor-watch-config~ | ~nil~ | Config file watch/reconcile |
 | ~supervisor-overrides-file~ | ~(XDG_STATE_HOME or ~/.local/state)/supervisor/overrides.eld~ | Override persistence path |
 
 ** Timer Options
@@ -955,7 +960,7 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-start~ | Build plan and start staged scheduler |
 | ~M-x supervisor-stop~ | Async graceful stop |
 | ~M-x supervisor-stop-now~ | Sync hard stop |
-| ~M-x supervisor-reload~ | Reconcile running state against config |
+| ~M-x supervisor-reconcile~ | Reconcile running state against config |
 | ~M-x supervisor-validate~ | Validate config without start |
 | ~M-x supervisor-dry-run~ | Show execution plan without start |
 | ~M-x supervisor-migrate-config~ | Emit canonical schema v1 config |
@@ -1019,7 +1024,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Max concurrent stage starts (~supervisor-max-concurrent-starts~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Override precedence (runtime override vs config default): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Override persistence (~supervisor-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
-- Reload reconciler action model (~start~, ~stop~, ~noop~, ~skip~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
+- Reconcile action model (~start~, ~stop~, ~noop~, ~skip~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]

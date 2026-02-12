@@ -35,7 +35,7 @@
 #   start [ID...]    Start entries (or all if none specified)
 #   stop [ID...]     Stop entries (or all if none specified)
 #   restart [ID...]  Restart entries (or all if none specified)
-#   reload           Reconcile config without full restart
+#   reconcile        Reconcile config without full restart
 #   validate         Validate config and show errors
 #   enable ID...     Enable entries
 #   disable ID...    Disable entries

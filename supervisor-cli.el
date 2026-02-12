@@ -569,6 +569,18 @@ Use -- before IDs that start with a hyphen."
              "Supervisor started\n")
            (if json-p 'json 'human))))))))
 
+(defun supervisor--cli-stop-all-gracefully ()
+  "Stop all supervised processes and wait for completion.
+Returns non-nil when graceful shutdown completed before timeout.
+This is used by CLI `stop' and `restart' for systemctl-like stop behavior."
+  (let ((deadline (+ (float-time) supervisor-shutdown-timeout 1.0)))
+    (setq supervisor--shutdown-complete-flag nil)
+    (supervisor-stop)
+    (while (and (not supervisor--shutdown-complete-flag)
+                (< (float-time) deadline))
+      (accept-process-output nil 0.05))
+    supervisor--shutdown-complete-flag))
+
 (defun supervisor--cli-cmd-stop (args json-p)
   "Handle `stop [-- ID...]' command with ARGS.  JSON-P enables JSON output.
 Use -- before IDs that start with a hyphen."
@@ -610,8 +622,9 @@ Use -- before IDs that start with a hyphen."
                  msg)
                (if json-p 'json 'human)))))
          (t
-          ;; Stop all via supervisor-stop-now (synchronous for CLI)
-          (supervisor-stop-now)
+          ;; Stop all via graceful shutdown, with forced fallback on timeout.
+          (unless (supervisor--cli-stop-all-gracefully)
+            (supervisor-stop-now))
           (supervisor--cli-success
            (if json-p
                (json-encode '((message . "Supervisor stopped")))
@@ -684,8 +697,9 @@ Use -- before IDs that start with a hyphen."
                    msg)
                  (if json-p 'json 'human))))))
          (t
-          ;; Restart all: stop then start
-          (supervisor-stop-now)
+          ;; Restart all: graceful stop then start, with forced fallback.
+          (unless (supervisor--cli-stop-all-gracefully)
+            (supervisor-stop-now))
           (supervisor-start)
           (supervisor--cli-success
            (if json-p
@@ -693,16 +707,16 @@ Use -- before IDs that start with a hyphen."
              "Supervisor restarted\n")
            (if json-p 'json 'human))))))))
 
-(defun supervisor--cli-cmd-reload (args json-p)
-  "Handle `reload' command with ARGS.  JSON-P enables JSON output."
+(defun supervisor--cli-cmd-reconcile (args json-p)
+  "Handle `reconcile' command with ARGS.  JSON-P enables JSON output."
   (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
       (progn
-        (supervisor-reload)
+        (supervisor-reconcile)
         (supervisor--cli-success
          (if json-p
-             (json-encode '((message . "Reload complete")))
-           "Reload complete\n")
+             (json-encode '((message . "Reconcile complete")))
+           "Reconcile complete\n")
          (if json-p 'json 'human))))))
 
 (defun supervisor--cli-cmd-enable (args json-p)
@@ -1075,21 +1089,18 @@ Options must come before --.  Use -- before IDs that start with hyphen."
                                      (mapconcat #'identity extra-ids " "))
                              (if json-p 'json 'human)))
      (t
-      (let ((proc (gethash id supervisor--processes)))
-        (if (and proc (process-live-p proc))
-            (progn
-              ;; Mark as manually stopped so sentinel doesn't restart it
-              ;; (matches dashboard kill behavior for full parity)
-              (puthash id t supervisor--manually-stopped)
-              (signal-process proc sig)
-              (supervisor--cli-success
-               (if json-p
-                   (json-encode `((id . ,id) (signal . ,(symbol-name sig))))
-                 (format "Sent %s to %s\n" sig id))
-               (if json-p 'json 'human)))
-          (supervisor--cli-error supervisor-cli-exit-failure
-                                 (format "Process '%s' not running" id)
-                                 (if json-p 'json 'human))))))))
+      (let ((result (supervisor--manual-kill id sig)))
+        (pcase (plist-get result :status)
+          ('signaled
+           (supervisor--cli-success
+            (if json-p
+                (json-encode `((id . ,id) (signal . ,(symbol-name sig))))
+              (format "Sent %s to %s\n" sig id))
+            (if json-p 'json 'human)))
+          (_
+           (supervisor--cli-error supervisor-cli-exit-failure
+                                  (format "Process '%s' not running" id)
+                                  (if json-p 'json 'human)))))))))
 
 ;;; Timer Status Output
 
@@ -1269,7 +1280,7 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-success
            (concat "Usage: supervisorctl COMMAND [ARGS...]\n\n"
                    "Commands: status, list, describe, start, stop, restart,\n"
-                   "          reload, validate, enable, disable, restart-policy,\n"
+                   "          reconcile, validate, enable, disable, restart-policy,\n"
                    "          logging, blame, graph, logs, kill, ping, version,\n"
                    "          timers\n\n"
                    "Options: --json (output as JSON)\n")
@@ -1288,8 +1299,8 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-stop args json-p))
          ((equal command "restart")
           (supervisor--cli-cmd-restart args json-p))
-         ((equal command "reload")
-          (supervisor--cli-cmd-reload args json-p))
+         ((equal command "reconcile")
+          (supervisor--cli-cmd-reconcile args json-p))
          ((equal command "enable")
           (supervisor--cli-cmd-enable args json-p))
          ((equal command "disable")

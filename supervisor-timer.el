@@ -63,7 +63,7 @@ requires `supervisor-mode' to be enabled.  If `supervisor-mode' is
 disabled, timer functionality is a no-op even if this mode is enabled.
 
 When disabled (the default), timer code will not:
-- Build timer plans/lists in startup or reload flows
+- Build timer plans/lists in startup or reconcile flows
 - Start, tick, or reschedule scheduler loops
 - Trigger timer-driven oneshot runs
 - Execute retry or catch-up logic

@@ -177,7 +177,7 @@ to file when enabled, regardless of verbose setting."
 
 (defcustom supervisor-watch-config nil
   "When non-nil, watch the Emacs init file for modification.
-When the init file is modified, automatically run `supervisor-reload'.
+When the init file is modified, automatically run `supervisor-reconcile'.
 The file watched is the value of `user-init-file'.
 Set to a file path string to watch a specific file instead."
   :type '(choice (const :tag "Disabled" nil)
@@ -2433,6 +2433,26 @@ ensuring consistent behavior between dashboard and CLI."
       (delete-process proc)
       (list :status 'stopped :reason nil)))))
 
+(defun supervisor--manual-kill (id &optional signal)
+  "Attempt to send SIGNAL to running entry with ID.
+Returns a plist with :status and :reason.
+:status is one of: signaled, skipped, error
+:reason explains why (for skipped/error cases).
+
+SIGNAL defaults to `SIGTERM'.  Unlike `supervisor--manual-stop', this
+does not mark the entry as manually stopped, so restart policy remains
+in effect."
+  (let* ((sig (or signal 'SIGTERM))
+         (proc (gethash id supervisor--processes)))
+    (cond
+     ((not proc)
+      (list :status 'skipped :reason "not running"))
+     ((not (process-live-p proc))
+      (list :status 'skipped :reason "not running"))
+     (t
+      (signal-process proc sig)
+      (list :status 'signaled :reason nil)))))
+
 (defun supervisor--dag-force-stage-complete ()
   "Force stage completion due to timeout.
 Mark all unstarted entries as timed out and invoke the callback."
@@ -2793,7 +2813,7 @@ Returns a plist with :stopped and :started counts."
           ('stop
            (when-let* ((proc (gethash id supervisor--processes)))
              (when (process-live-p proc)
-               (supervisor--log 'info "reload: stopping %s entry %s" reason id)
+               (supervisor--log 'info "reconcile: stopping %s entry %s" reason id)
                ;; Mark as manually stopped so sentinel doesn't restart it
                (puthash id t supervisor--manually-stopped)
                (kill-process proc)
@@ -2807,10 +2827,10 @@ Returns a plist with :stopped and :started counts."
                  (let ((args (split-string-and-unquote cmd)))
                    (if (not (executable-find (car args)))
                        (progn
-                         (supervisor--log 'warning "reload: executable not found for %s: %s"
+                         (supervisor--log 'warning "reconcile: executable not found for %s: %s"
                                           id (car args))
                          (supervisor--emit-event 'process-failed id nil nil))
-                     (supervisor--log 'info "reload: starting %s entry %s" reason id)
+                     (supervisor--log 'info "reconcile: starting %s entry %s" reason id)
                      (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
                        (if proc
                            (progn
@@ -2825,8 +2845,8 @@ Returns a plist with :stopped and :started counts."
     (list :stopped stopped :started started)))
 
 ;;;###autoload
-(defun supervisor-reload ()
-  "Reload configuration and reconcile running processes.
+(defun supervisor-reconcile ()
+  "Reconcile configuration and running processes.
 Uses declarative reconciliation: build plan, build snapshot, compute
 actions, then apply.  The action list can be inspected before apply
 by calling `supervisor--compute-actions' directly.
@@ -2855,7 +2875,7 @@ Does not restart changed entries - use dashboard kill/start for that."
                (fboundp 'supervisor-timer-build-list))
       (supervisor-timer-build-list plan))
     (supervisor--maybe-refresh-dashboard)
-    (message "Supervisor reload: stopped %d, started %d" stopped started)))
+    (message "Supervisor reconcile: stopped %d, started %d" stopped started)))
 
 
 ;;; File Watch
@@ -2868,15 +2888,15 @@ Does not restart changed entries - use dashboard kill/start for that."
    (t nil)))
 
 (defun supervisor--config-watch-callback (_event)
-  "Handle config file modification.  Trigger reload after debounce."
-  ;; Simple debounce: cancel pending reload, schedule new one
+  "Handle config file modification.  Trigger reconcile after debounce."
+  ;; Simple debounce: cancel pending reconcile, schedule new one
   (when (timerp (get 'supervisor--config-watch-callback 'timer))
     (cancel-timer (get 'supervisor--config-watch-callback 'timer)))
   (put 'supervisor--config-watch-callback 'timer
        (run-at-time 1 nil
                     (lambda ()
-                      (supervisor--log 'info "config file changed, reloading...")
-                      (supervisor-reload)))))
+                      (supervisor--log 'info "config file changed, reconciling...")
+                      (supervisor-reconcile)))))
 
 (defun supervisor--start-config-watch ()
   "Start watching config file if configured."

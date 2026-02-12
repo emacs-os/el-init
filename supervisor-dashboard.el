@@ -832,7 +832,7 @@ Cycles: config default -> override opposite -> back to config default."
 
 (defun supervisor-dashboard-kill (&optional force)
   "Kill process at point with confirmation.
-Sends kill signal and prevents auto-restart.
+Sends kill signal and leaves restart policy unchanged.
 With prefix argument FORCE, skip confirmation."
   (interactive "P")
   (when-let* ((id (tabulated-list-get-id)))
@@ -840,14 +840,14 @@ With prefix argument FORCE, skip confirmation."
       (user-error "Cannot kill separator row"))
     (when (or force
               (yes-or-no-p (format "Kill process '%s'? " id)))
-      (let ((result (supervisor--manual-stop id)))
+      (let ((result (supervisor--manual-kill id 'SIGTERM)))
         (pcase (plist-get result :status)
-          ('stopped (supervisor--refresh-dashboard))
+          ('signaled (supervisor--refresh-dashboard))
           ('skipped (message "Entry %s is %s" id (plist-get result :reason))))))))
 
 (defun supervisor-dashboard-kill-force ()
   "Kill process at point without confirmation.
-Sends kill signal immediately and prevents auto-restart."
+Sends kill signal immediately and leaves restart policy unchanged."
   (interactive)
   (supervisor-dashboard-kill t))
 
