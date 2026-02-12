@@ -1,114 +1,149 @@
-# FINDINGS: supervisorctl vs systemctl (systemd) — Current State
+# FINDINGS: supervisorctl/dashboard vs systemctl/systemd
 
 Date: 2026-02-12
 Repository: supervisor.el
-Status: Post-Phase 10 snapshot of current command surface
+Status: fresh parity/difference audit
 
 ## Scope
-This document records the current behavior and command surface of:
+This report compares current behavior of:
 - `supervisorctl` (CLI)
-- supervisor dashboard interactive mode (`M-x supervisor`)
+- supervisor dashboard (`M-x supervisor`)
 
-It compares those current behaviors against common `systemctl` expectations.
+against common `systemctl` workflows and systemd expectations.
 
-## Evidence Source
+## Evidence
 - `supervisor-cli.el`
 - `supervisor-dashboard.el`
 - `supervisor-core.el`
 - `supervisor-units.el`
-- `sbin/supervisorctl`
+- `README.org`
 
-## Current Command Surface
+## Executive Summary
+- Command naming is now strongly systemctl-shaped for core lifecycle/introspection.
+- Dashboard and CLI are mostly consistent for start/stop/restart/kill/mask/edit/cat.
+- Biggest intentional divergences are architectural, not naming:
+  - override-based enable/disable model,
+  - explicit `reconcile`,
+  - file-log model instead of journald,
+  - Emacs/runtime-scoped supervisor rather than PID 1 init.
 
-### supervisorctl (CLI)
-Systemctl-compatible commands:
+## 1) CLI Parity (`supervisorctl`)
+
+### 1.1 Systemctl-aligned commands
 - `status [ID...]`, `list-units [ID...]`, `show ID`
 - `start [-- ID...]`, `stop [-- ID...]`, `restart [-- ID...]`
+- `kill [--signal SIG] [--] ID`
 - `enable [--] ID...`, `disable [--] ID...`
 - `mask [--] ID...`, `unmask [--] ID...`
-- `kill [--signal SIG] [--] ID`
 - `is-active ID`, `is-enabled ID`, `is-failed ID`
 - `daemon-reload`, `reload [--] ID...`
 - `cat ID`, `edit ID`
 - `list-dependencies [ID]`, `list-timers`
+- `version`
 
-Supervisor-specific commands:
-- `reconcile`, `validate`
-- `restart-policy (on|off) [--] ID...`, `logging (on|off) [--] ID...`
-- `blame`, `logs [--tail N] [--] ID`, `ping`, `version`
+### 1.2 Supervisor-specific commands
+- `reconcile`
+- `validate`
+- `restart-policy (on|off) [--] ID...`
+- `logging (on|off) [--] ID...`
+- `blame`
+- `logs [--tail N] [--] ID`
+- `ping`
 
-Notable current semantics:
-- `status` with IDs gives detailed per-unit output; without IDs delegates to `list-units`.
-- `reload` hot-reloads specific units; `reconcile` performs global convergence.
-- `daemon-reload` re-reads config from disk without affecting runtime.
-- `start` on a disabled unit succeeds (session-only, no override change; only mask blocks).
-- `is-active`/`is-enabled`/`is-failed` use systemctl-compatible exit codes (0/1/3/4).
-- `kill` is signal-only and does not mark manual-stop restart suppression.
-- `stop`/`restart` (all services path) attempt graceful stop first, then force-stop fallback.
+## 2) Dashboard Parity
 
-### Dashboard (interactive)
-Key actions:
-- Lifecycle: `s` (start), `x` (stop), `R` (restart), `k`/`K` (kill)
-- Policy toggles: `e` (enabled), `m` (mask), `r` (restart), `l` (logging)
-- Views: `c` (cat unit), `E` (edit unit), `L` (log), `d`/`D` (deps), `B` (blame)
-- System: `u` (reload unit), `X` (daemon-reload)
-- UI/filtering: `g`/`G` (refresh), `f`/`t` (filter), `?` (menu), `i`/`h`/`q`
+### 2.1 Lifecycle and policy keys
+- Lifecycle: `s` start, `x` stop, `R` restart, `k`/`K` kill
+- Policy toggles: `e` enabled, `m` mask, `r` restart, `l` logging
+- Unit file actions: `c` cat (read-only), `E` edit
+- System actions: `u` reload-unit, `X` daemon-reload (transient menu)
+- Ops/inspection: `d`/`D` dependencies, `B` blame, `L` logs
 
-## Current Comparison Table
+### 2.2 Dashboard-only capabilities (no direct systemctl analog)
+- Stage/tag filtering (`f`, `t`)
+- Interactive process supervision view with grouped stage tables
+- Tight edit-return workflow for unit files
 
-| Common systemctl command/workflow | Current supervisorctl | Current interactive | Alignment status |
-|---|---|---|---|
-| `systemctl status [UNIT...]` | `status [ID...]` | Main dashboard table | **Aligned.** Dual behavior: detail with IDs, overview without. |
-| `systemctl list-units` | `list-units [ID...]` | Main dashboard table | **Aligned.** Renamed from `list`/`status`. |
-| `systemctl show UNIT` | `show ID` | `i` (entry details) | **Aligned.** Renamed from `describe`. |
-| `systemctl start UNIT...` | `start [-- ID...]` | `s` | **Aligned.** Works on disabled units (session-only). |
-| `systemctl stop UNIT...` | `stop [-- ID...]` | `x` | **Aligned.** Dashboard stop added. |
-| `systemctl restart UNIT...` | `restart [-- ID...]` | `R` | **Aligned.** Dashboard restart added. |
-| `systemctl kill UNIT [--signal=]` | `kill [--signal SIG] [--] ID` | `k` / `K` | **Aligned.** Signal-only semantics. |
-| `systemctl reload UNIT...` | `reload [--] ID...` | `u` (System menu) | **Aligned.** Hot-reload specific units. |
-| `systemctl daemon-reload` | `daemon-reload` | `X` (System menu) | **Aligned.** Re-reads config from disk. |
-| `systemctl enable UNIT...` | `enable [--] ID...` | `e` toggle | **Aligned.** Override-based (intentional divergence from install-state). |
-| `systemctl disable UNIT...` | `disable [--] ID...` | `e` toggle | **Aligned.** Override-based; disabled units can be manually started. |
-| `systemctl mask/unmask UNIT` | `mask [--] ID...` / `unmask [--] ID...` | `m` toggle | **Aligned.** Mask overrides enable/disable. |
-| `systemctl is-active UNIT` | `is-active ID` | N/A | **Aligned.** Exit 0/3/4 parity. |
-| `systemctl is-enabled UNIT` | `is-enabled ID` | N/A | **Aligned.** Exit 0/1/4 parity. |
-| `systemctl is-failed UNIT` | `is-failed ID` | N/A | **Aligned.** Exit 0/1/4 parity. |
-| `systemctl reset-failed [UNIT...]` | No equivalent | No equivalent | Not present. |
-| `systemctl list-dependencies [UNIT]` | `list-dependencies [ID]` | `d` / `D` | **Aligned.** Renamed from `graph`. |
-| `systemctl list-timers` | `list-timers` | Timer dashboard section | **Aligned.** Renamed from `timers`. |
-| `systemctl cat UNIT` | `cat ID` | `c` | **Aligned.** Shows raw unit file content. |
-| `systemctl edit UNIT` | `edit ID` | `E` | **Aligned.** Scaffold creation if missing. |
-| `journalctl -u UNIT` workflow | `logs [--tail N] [--] ID` | `L` opens log file | File-log model; no journal semantics. |
-| `systemctl --version` | `version` | N/A | **Aligned.** |
+## 3) Command-by-Command Parity Table
 
-## Intentional Divergences
+| systemctl/systemd workflow | supervisorctl | dashboard | parity | notes |
+|---|---|---|---|---|
+| `systemctl status [UNIT...]` | `status [ID...]` | main table + `i` details | Partial | `status` is dual-mode: with IDs = detail; without IDs = overview (list-like). |
+| `systemctl list-units` | `list-units [ID...]` | main table | Aligned | canonical overview table. |
+| `systemctl show UNIT` | `show ID` | `i` | Aligned | property-style detail for one unit. |
+| `systemctl start UNIT...` | `start [-- ID...]` | `s` | Partial | disabled units can still be manually started (session-only), by design. |
+| `systemctl stop UNIT...` | `stop [-- ID...]` | `x` | Aligned | stop sets manual-stop suppression for restart behavior. |
+| `systemctl restart UNIT...` | `restart [-- ID...]` | `R` | Aligned | implemented as stop then start. |
+| `systemctl kill UNIT` | `kill [--signal SIG] [--] ID` | `k` / `K` | Aligned | signal-only semantics; does not set manual-stop suppression. |
+| `systemctl reload UNIT...` | `reload [--] ID...` | `u` (transient System group) | Partial | per-unit hot-reload contract; not daemon-native SIGHUP semantics. |
+| `systemctl daemon-reload` | `daemon-reload` | `X` (transient System group) | Aligned | re-read definitions, no runtime start/stop effects. |
+| `systemctl enable UNIT...` | `enable [--] ID...` | `e` toggle | Partial | override-state model, not install/symlink model. |
+| `systemctl disable UNIT...` | `disable [--] ID...` | `e` toggle | Partial | override-state model; manual start still allowed. |
+| `systemctl mask/unmask UNIT` | `mask/unmask` | `m` toggle | Aligned | mask has highest precedence and blocks manual start. |
+| `systemctl is-active UNIT` | `is-active ID` | N/A | Aligned | exit code parity (0/3/4). |
+| `systemctl is-enabled UNIT` | `is-enabled ID` | N/A | Aligned | exit code parity (0/1/4), includes masked state. |
+| `systemctl is-failed UNIT` | `is-failed ID` | N/A | Aligned | exit code parity (0/1/4). |
+| `systemctl list-dependencies [UNIT]` | `list-dependencies [ID]` | `d` / `D` | Aligned | per-unit or full graph. |
+| `systemctl list-timers` | `list-timers` | timer section | Partial | present, but scoped to supervisor timer subsystem model. |
+| `systemctl cat UNIT` | `cat ID` | `c` | Aligned | raw unit file content. |
+| `systemctl edit UNIT` | `edit ID` | `E` | Partial | `$VISUAL/$EDITOR` for CLI; Emacs edit-mode flow in dashboard. |
+| `journalctl -u UNIT` | `logs [--tail N] [--] ID` | `L` | Divergent | file logs, no journal query model. |
+| `systemctl reset-failed [UNIT...]` | none | none | Missing | no direct equivalent. |
 
-- **enable/disable**: Override-based (runtime toggle) rather than systemd install-state
-  (symlink creation). This is appropriate for an Emacs-embedded supervisor where unit
-  installation is handled by config, not filesystem state.
-- **reconcile**: Global convergence operation with no systemctl equivalent.  Supervisor's
-  declarative model (plan → snapshot → actions → apply) requires an explicit converge step.
-- **validate**: Config validation command with no systemctl equivalent.  Returns both
-  service and timer invalid sets with exit code 4 on errors.
-- **Logging model**: File-based logging rather than journal-based.  Appropriate for the
-  Emacs context where journald is not assumed.
-- **Server-unavailable exit code**: Uses 69 (EX_UNAVAILABLE from sysexits.h) instead of
-  systemctl's exit codes to avoid collision.
+## 4) Notable Semantic Differences
 
-## Remaining Gaps
+### 4.1 Enable/disable model
+- systemd: install-state linkage model.
+- supervisor: persisted runtime overrides (`supervisor--enabled-override`).
+- Effective precedence is:
+  - masked => disabled,
+  - explicit enable/disable override,
+  - config default.
 
-- `reset-failed`: Not implemented.  Manual workaround: restart the unit.
-- Journal-style log querying: Not applicable (file-based logging model).
+### 4.2 Start/disabled/reconcile interaction
+- `start` on disabled unit succeeds (session-only).
+- `reconcile` preserves disabled units that were manually started.
+- masked units are always stopped/blocked even if manually started before.
 
-## Current Strengths
+### 4.3 Reload split
+- `daemon-reload`: disk-to-memory definition refresh only.
+- `reload UNIT...`: per-unit hot-swap behavior.
+- `reconcile`: global convergence operation (plan + snapshot + action application).
 
-- Consistent CLI + dashboard control surface for all operations.
-- JSON output mode in CLI for all commands.
-- Explicit `reconcile` operation for config/runtime convergence.
-- `reload` for per-unit hot-swap vs `reconcile` for global convergence.
-- `daemon-reload` for disk-to-memory config refresh without runtime impact.
-- Signal-only `kill` semantics aligned with user expectation.
-- systemctl-compatible exit codes for `is-*` predicates.
-- Unit-file support with modular config, scaffold editing, and validate-on-save.
-- Enable/disable follows systemctl session model: start on disabled works, reconcile
-  preserves manually-started disabled units.
+### 4.4 Status contract
+- `status` with IDs:
+  - prints valid details,
+  - prints invalid details,
+  - appends not-found lines for truly missing IDs,
+  - exits non-zero if any IDs are missing.
+- `status` without IDs delegates to `list-units`.
+
+### 4.5 Logging model
+- systemd: journald + `journalctl`.
+- supervisor: per-service file logs + `logs` command/dashboard `L`.
+
+## 5) Broader Architectural Differences (Not Just Commands)
+
+### 5.1 Runtime scope
+- systemd is an init/service manager ecosystem.
+- supervisor.el is an Emacs-embedded supervisor for user-session/service orchestration.
+
+### 5.2 Unit definition model
+- systemd: `.service`/`.timer` unit file grammar.
+- supervisor: Elisp program entries plus optional modular `.el` unit files (`supervisor-units.el`).
+
+### 5.3 Configuration workflow
+- Supervisor supports:
+  - mixed legacy list + unit-file merge,
+  - unit-file scaffold-on-edit,
+  - validate-on-save in dashboard edit mode,
+  - explicit migration helper (`supervisor-migrate-config`).
+
+## 6) Missing or Intentionally Not Mirrored
+- No `reset-failed`.
+- No journald/journal query model.
+- No attempt at full systemd unit taxonomy and full `systemctl` command universe.
+
+## 7) Overall Position
+- The project is now close to systemctl mental-model parity for day-to-day service operations.
+- Remaining differences are mostly intentional and tied to the Emacs/runtime architecture, not accidental naming drift.
