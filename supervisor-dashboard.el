@@ -255,7 +255,7 @@ This is called on first use to avoid loading transient at package load time."
          ["System"
           ("p" "Proced" proced)
           ("P" "Proced auto" supervisor-dashboard-toggle-proced-auto-update)
-          ("R" "Reload unit" supervisor-dashboard-reload-unit)
+          ("u" "Reload unit" supervisor-dashboard-reload-unit)
           ("X" "Daemon-reload" supervisor-dashboard-daemon-reload)]
          ["Help"
           ("i" "Entry info" supervisor-dashboard-describe-entry)

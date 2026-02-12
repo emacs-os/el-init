@@ -94,7 +94,10 @@ All runtime state lives in `supervisor--*` hash tables:
 - `supervisor--failed`: ids that have crash-looped
 - `supervisor--restart-override`: runtime restart policy overrides
 - `supervisor--enabled-override`: runtime enabled policy overrides
+- `supervisor--mask-override`: id → `masked` or nil
 - `supervisor--oneshot-completed`: id → exit code
+- `supervisor--manually-stopped`: ids stopped via CLI/dashboard (suppresses restart)
+- `supervisor--manually-started`: ids started via CLI/dashboard (reconcile preserves disabled)
 
 DAG scheduler state (`supervisor--dag-*` variables) is per-stage and reset between stages.
 
@@ -175,4 +178,4 @@ make check   # Must pass before commits (runs lint + test)
 - GPL-compatible license with boilerplate above `;;; Commentary:`
 - Must include LICENSE file
 - Main feature provided by entry point: `(provide 'supervisor)`
-- Each module provides its own feature: `supervisor-core`, `supervisor-dashboard`, `supervisor-cli`
+- Each module provides its own feature: `supervisor-core`, `supervisor-units`, `supervisor-timer`, `supervisor-dashboard`, `supervisor-cli`

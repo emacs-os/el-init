@@ -138,6 +138,10 @@ pasystray        simple   stage4   yes      running    yes      yes   1442    -
 #+CAPTION: Supervisor dashboard
 [[file:doc/dashboard.png]]
 
+As your setup grows, consider [[#unit-files-modular-configuration][unit files]] as an alternative to the
+monolithic ~supervisor-programs~ list---each service gets its own ~.el~ file
+under ~~/.config/supervisor/units/~.
+
 * Service Definition (~supervisor-programs~)
 :PROPERTIES:
 :CUSTOM_ID: service-definition-handbook-supervisor-programs
@@ -344,6 +348,56 @@ supervisorctl cat nm-applet
 
 This outputs the raw unit file content.  Returns an error if the file does not
 exist.  With ~--json~, returns ~{"path": "...", "content": "..."}~.
+
+** Migrating to Unit Files
+:PROPERTIES:
+:CUSTOM_ID: migrating-to-unit-files
+:END:
+
+You can migrate from the monolithic ~supervisor-programs~ list to individual
+unit files.  Both formats can coexist: ~supervisor-programs~ entries and unit
+files are merged at startup, with unit files taking precedence on ID collision.
+
+*** Step 1: Normalize your configuration
+
+Run ~M-x supervisor-migrate-config~ to display your current ~supervisor-programs~
+in canonical schema v1 form.  This normalizes all entries, drops any that are
+invalid or duplicated, and emits a clean ~supervisor-programs~ definition.
+Review the output to understand what each entry looks like in plist form.
+
+*** Step 2: Enable unit files
+
+#+begin_src emacs-lisp
+(setq supervisor-use-unit-files t)
+#+end_src
+
+*** Step 3: Create unit files
+
+For each service you want to extract, create a file in your unit directory
+(default ~~/.config/supervisor/units/~).  The filename should be ~ID.el~ by
+convention (e.g., ~nm-applet.el~).  Each file contains a single plist:
+
+#+begin_src emacs-lisp
+;; ~/.config/supervisor/units/nm-applet.el
+(:id "nm-applet"
+ :command "nm-applet"
+ :type simple
+ :stage stage3
+ :restart t)
+#+end_src
+
+You can also press ~E~ in the dashboard to scaffold a unit file for any service.
+
+*** Step 4: Remove migrated entries from ~supervisor-programs~
+
+After creating a unit file for a service, remove its entry from
+~supervisor-programs~.  The unit file version takes over.  You can migrate
+gradually---services not yet extracted remain in ~supervisor-programs~.
+
+*** Step 5: Reload
+
+Run ~supervisorctl daemon-reload~ or ~M-x supervisor-reconcile~ to pick up the
+new configuration.
 
 * Startup and Lifecycle Model
 :PROPERTIES:
@@ -964,7 +1018,7 @@ IDs.
 - exit 0 if all units succeed, exit 1 if any unit has an error
 - human output: one line per ID showing ~ID: action~
 - JSON: ~{"results": [{"id": "x", "action": "reloaded"}, ...]}~
-- available in dashboard transient menu under "System" group (~R~)
+- available in dashboard transient menu under "System" group (~u~)
 
 ~is-active~, ~is-enabled~, ~is-failed~:
 
@@ -1244,10 +1298,11 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Manual stop behavior and restart suppression: [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Mask/unmask (~mask~, ~unmask~, ~m~ in dashboard): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Max concurrent stage starts (~supervisor-max-concurrent-starts~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Migration from ~supervisor-programs~ to unit files (~supervisor-migrate-config~): [[#migrating-to-unit-files][Migrating to Unit Files]]
 - Override precedence (runtime override vs config default): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Override persistence (~supervisor-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
 - Reconcile action model (~start~, ~stop~, ~noop~, ~skip~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
-- Reload unit (~reload~, ~R~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
+- Reload unit (~reload~, ~u~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
