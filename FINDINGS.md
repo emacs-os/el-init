@@ -147,3 +147,86 @@ against common `systemctl` workflows and systemd expectations.
 ## 7) Overall Position
 - The project is now close to systemctl mental-model parity for day-to-day service operations.
 - Remaining differences are mostly intentional and tied to the Emacs/runtime architecture, not accidental naming drift.
+
+## TODO (Running)
+1. Unit-files-only mode (decided):
+- Drop legacy `supervisor-programs` runtime path and move to unit files only.
+- Rationale:
+  - codebase simplicity,
+  - familiarity with systemd-style unit-file workflows,
+  - reduced feature/behavior complexity,
+  - smoother UX consistency for commands like `edit`.
+
+2. Remove `reconcile` from user-facing surface (decided):
+- Remove `reconcile` command and dashboard/menu/help references.
+- Shift users to explicit, familiar flows with `daemon-reload`, `reload`, `start/stop/restart`, `enable/disable`, `mask/unmask`.
+- Preserve precision and avoid bulk implicit convergence behavior.
+
+3. Restart policy model alignment (decided):
+- Replace binary restart policy (`on|off`) with systemd-style subset:
+  - `no` (default): never restart automatically.
+  - `on-success`: restart only on clean exit.
+  - `on-failure`: restart on non-zero exit, unclean signal exit, timeout, or watchdog expiry.
+  - `always`: restart regardless of exit cause.
+- Apply this model consistently in CLI, dashboard, parser/validation, runtime behavior, and docs.
+
+4. Oneshot option rename (decided):
+- Rename `:async` to `:oneshot-async`.
+- Rename `:oneshot-wait` to `:oneshot-blocking`.
+- Keep behavior semantics identical during rename (blocking and async remain inverse).
+
+5. Execute full consistency pass for the rename:
+- Parser and defaults (`supervisor--oneshot-wait-p`, defcustom interactions).
+- Validation rules and error messages.
+- README handbook and examples.
+- ERT coverage for parse/validate/runtime behavior.
+
+6. Documentation clarity task:
+- Add a short “systemd comparison note” for oneshot behavior (`Type=oneshot`, startup waiting, timeout model) so users understand why supervisor has explicit blocking/async control.
+
+7. Log rotation architecture shift (decided):
+- Remove startup log rotation from `supervisor-start` (delete the `supervisor--rotate-logs` startup behavior).
+- Remove built-in `supervisor--rotate-logs` implementation from core.
+- Add a dedicated `sbin` log-rotation script (follow `sbin/supervisorctl` header conventions/comments style).
+- Script contract must include a simple retention option in days (for example `--keep-days N`).
+- Keep retention logic KISS: compare file age against day threshold using system file timestamps; avoid month/leap-year calendar logic.
+- Add a default log-rotation unit file plus default timer entry.
+- Keep timer subsystem optional, but change default mode to enabled.
+- Rotation behavior policy:
+  - timer subsystem disabled => no automatic log rotation,
+  - timer subsystem enabled (default) => automatic daily log rotation.
+
+8. Logging pipeline robustness and scale alignment (decided):
+- Replace per-chunk synchronous `write-region` logging path with supervisor-managed external log writers.
+- Implement a private helper (for example `libexec/supervisor-logd`) that:
+  - keeps target log FD open with append semantics,
+  - receives service output over stdin/pipe,
+  - supports explicit reopen signal (HUP/USR1) after rotation,
+  - enforces per-file hard cap (`--max-file-size-bytes N`) by rotating/reopening when exceeded.
+- Supervisor must auto-manage log writers for users (no user-defined log writer units/scripts):
+  - auto-start writer when unit logging is enabled,
+  - auto-stop writer on unit stop/restart/shutdown,
+  - track writer PID/state internally.
+- Add a separate global-prune script in `sbin` (for example `sbin/supervisor-log-prune`) that:
+  - enforces directory-wide hard cap (`--max-total-bytes N`),
+  - uses a shared lock file to coordinate across multiple writers/invocations,
+  - prunes oldest rotated logs first (never delete active current log files).
+- Integrate with log maintenance flow:
+  - default logrotate oneshot + timer runs scheduled maintenance,
+  - global prune script is run on schedule and may also be triggered by `supervisor-logd` after local rotation (throttled),
+  - post-rotate reopen signal is sent to managed writers so they bind to new files.
+
+9. CLI terminology normalization updates (decided):
+- Rename `validate` command to `verify` (hard ABI break, no alias).
+- Keep `blame` command name as-is for now.
+- Do not introduce an `analyze` namespace/shim at this time.
+
+10. Logging command surface stability (decided):
+- Keep existing logging user interface names and flows:
+  - CLI: `logging`, `logs`
+  - Dashboard: logging toggle and log-view actions
+- Apply logging changes underneath these interfaces via backend architecture updates only.
+
+11.
+- [ ] Improve interactive transient-menu keybinds to be more standardized/common/mnemonic.
+TBA
