@@ -1,198 +1,224 @@
-# PLAN: supervisorctl/systemctl Terminology Normalization (No New Features)
+# PLAN: Systemctl-First Parity + Modular Unit Files (Planning Only)
 
 Date: 2026-02-12
-Based on: `FINDINGS.md`
+Based on: `FINDINGS.md` (current)
+Status: Design and execution plan only. No implementation in this step.
 
-## Objective
-Normalize existing `supervisorctl` terminology and user-facing semantics to be as systemd-like as possible, without adding new feature surface.
+## Goal
+Move supervisor tooling toward `systemctl` 1:1 parity as much as practical, while preserving a small set of intentional supervisor-specific capabilities.
 
-Adopt a strict naming policy:
-- If behavior matches mainstream/systemd behavior, and our name differs, rename to mainstream/systemd nomenclature.
-- If behavior is only similar, mainstream naming is acceptable only when no future conflict is expected by feature development plans (roadmap/plan docs).
-- If behavior is unique, do not reuse mainstream names; use a unique supervisor-specific name.
+This plan also introduces a human-centered modular Elisp unit-file model to support `systemctl edit`-style workflows.
 
-## Hard Constraints
-- No new runtime capabilities.
-- No new output fields in JSON contracts.
-- No internal schema changes.
-- Command renames/aliases are allowed only for normalization, not expansion.
+## Policy Baseline
+- Default: prefer 1:1 `systemctl` naming and behavior.
+- Keep supervisor-specific features only when they are deliberate value-add.
+- Keep explicitly unplanned items unplanned unless direction changes.
 
-## In Scope
-- Wording, naming, and terminology normalization.
-- Clarifying existing command semantics where names overlap with `systemctl` but behavior differs.
-- Consistency across CLI, dashboard help, and README handbook.
+## Explicit Scope Decisions
 
-## Out of Scope
-- Adding runtime behavior that does not already exist.
-- Adding status model fields (`active_state`/`sub_state`).
-- Any new lifecycle behavior.
+### Planned parity work
+- `describe` -> `show`
+- `graph` -> `list-dependencies`
+- `timers` -> `list-timers`
+- Add explicit interactive `stop` and `restart` actions
+- Introduce true `reload UNIT...` semantics distinct from `reconcile`
+- Introduce a supervisor-scoped `daemon-reload` equivalent
+- Align `enable`/`disable` semantics closer to systemctl model
+- Add modular unit files and `edit UNIT` workflow
 
-## Naming Decision Framework (Policy)
-Use this decision order for every user-facing term/command.
+### Planned preserve (supervisor-specific extensions)
+- `reconcile`
+- `validate`
+- `restart-policy`
+- `logging`
+- file-based logs workflow (`logs`, dashboard `L`)
 
-1. Equivalent behavior:
-- If supervisor behavior is functionally equivalent to systemd behavior and naming differs, rename to the systemd term/verb.
-- Backward-compatible aliases may be used as transition support, but canonical naming must be systemd-aligned.
+### Unplanned (as currently directed)
+- `systemctl cat UNIT`
+- `systemctl mask/unmask UNIT`
+- `journalctl -u UNIT` parity (keep file-based logging model)
+- `systemctl is-active`
+- `systemctl is-enabled`
+- `systemctl is-failed`
+- `systemctl reset-failed`
+- change to `version` behavior
 
-2. Similar-but-not-equivalent behavior:
-- Use systemd term only if we do not plan to implement the true systemd behavior later.
-- If future true behavior is likely (per roadmap/plan documents), use a distinct name now to avoid future collision.
+Note: `systemctl edit UNIT` is now planned via the modular unit-file design below.
 
-3. Supervisor-unique behavior:
-- Use supervisor-specific naming.
-- Avoid reusing highly loaded mainstream verbs that imply different semantics.
+## Target End State
 
-4. Migration safety:
-- Keep compatibility aliases/messages during transition.
-- Keep JSON contract stable unless separately versioned.
+### CLI parity target
+- Core lifecycle and introspection commands follow systemctl naming for equivalent behavior.
+- Commands with non-equivalent behavior keep distinct names (`reconcile`, `validate`, policy toggles).
+- Help text clearly differentiates systemctl-equivalent commands from supervisor-specific commands.
 
-## Normalization Principles
-- Use `service` as the primary user-facing noun (not `entry`/`program`) where practical.
-- Keep internal code identifiers untouched unless needed for clarity.
-- Preserve existing JSON keys, status tokens, and exit codes.
-- Prefer explicit semantic phrasing where systemctl-equivalent command names are not behavior-equivalent.
+### Interactive parity target
+- Dashboard provides direct equivalents for `start`, `stop`, `restart`, and `kill`.
+- Dashboard includes direct edit action for a unit file and returns user to overview flow after save/close.
+
+### Config model target
+- Supervisor supports modular unit files (one file per unit/service) in addition to existing config.
+- Unit-file loading is deterministic and validated.
+- Edit workflow operates on first-class unit files instead of ad-hoc inline list edits.
 
 ## Workstreams
 
-## 1) Canonical Vocabulary
-Define a canonical term map and apply it consistently in user-facing text:
-- `entry` -> `service` (user-facing only)
-- `program` -> `service` (user-facing only)
-- Keep `oneshot` and `simple` as-is (already systemd-aligned)
-- Keep `stage*` terminology, but describe it as supervisor-specific ordering model
-
+## 1) Command Surface Normalization
 Deliverables:
-- Canonical term table in README.
-- One terminology policy section for contributors.
+- Rename CLI verbs:
+  - `describe` -> `show`
+  - `graph` -> `list-dependencies`
+  - `timers` -> `list-timers`
+- Update wrapper help, README, and tests for renamed commands.
 
 Acceptance:
-- No mixed `entry/service` wording in CLI help, dashboard help, or README command docs.
+- Command usage/help reflects normalized names.
+- Old names removed or retained only if explicitly approved.
+- `make check` passes.
 
-## 2) CLI Wording Normalization
-Normalize wording in:
-- usage banner text
-- command descriptions/messages
-- human output headings and diagnostics
-
-Specific focus:
-- `enable`/`disable`: explicitly described as supervisor startup policy overrides.
-- `reload`: if kept with current semantics, explicitly described as reconciliation behavior.
-- `kill`: if kept with current semantics, explicitly described as signal + restart suppression behavior.
-
+## 2) Interactive Command Parity
 Deliverables:
-- Updated strings in `supervisor-cli.el` and `sbin/supervisorctl`.
-- Updated CLI handbook sections in `README.org`.
+- Add explicit dashboard actions for `stop` and `restart` (separate from kill).
+- Keep kill behavior as signal-only.
+- Update dashboard help/transient menu/docs.
 
 Acceptance:
-- Command semantics are unambiguous from help text alone.
-- Existing command names and JSON shape remain unchanged.
+- Dashboard has direct, named actions matching CLI/systemctl mental model.
+- No semantic collision between stop and kill.
+- `make check` passes.
 
-## 3) Dashboard Wording Normalization
-Normalize dashboard help and messages:
-- key help descriptions
-- status/reason legend phrasing
-- action feedback messages (`start`/`kill`/invalid/disabled)
-
+## 3) `reload` vs `reconcile` Split
 Deliverables:
-- Updated strings in `supervisor-dashboard.el`.
-- Dashboard handbook language synchronized with runtime help buffer.
+- Define and implement true `reload UNIT...` behavior (unit-level config reload semantics where supported).
+- Keep `reconcile` as full-state convergence operation.
+- Update docs with exact semantic boundary.
 
 Acceptance:
-- Dashboard and CLI describe the same behavior with the same terminology.
+- `reload` and `reconcile` are both present and non-overlapping.
+- User can predict command outcome from name alone.
 
-## 4) Status Vocabulary Alignment (Non-Breaking)
-Do not change machine status tokens, but normalize documentation language around them:
-- document mapping to systemd mental model (example: `running ~ active`, `stopped ~ inactive`, `dead ~ failed/crash-loop`, `pending ~ activating/waiting`)
-- keep current status values intact in CLI/JSON
-
+## 4) Supervisor-Scoped `daemon-reload`
 Deliverables:
-- Mapping table in README.
-- Clarified status legend in dashboard help.
+- Add a supervisor command equivalent to reloading unit definitions from disk.
+- Rebuild in-memory plan/config model without forcing full reconcile unless requested.
 
 Acceptance:
-- Users can interpret supervisor statuses through systemd vocabulary without changing APIs.
+- Command exists and behavior is documented.
+- Compatible with modular unit-file architecture.
 
-## 5) Semantic Divergence Disclosure
-Add explicit section documenting same-name command differences from `systemctl`:
-- `enable`/`disable`
-- `reload`
-- `kill`
-
+## 5) `enable` / `disable` Semantic Alignment
 Deliverables:
-- New "systemctl compatibility notes" subsection in README.
-- Cross-reference from CLI handbook command notes.
+- Redesign semantics toward systemctl-like persistent unit enablement model.
+- Clarify relationship between config defaults, overrides, and enabled state.
+- Migrate existing override behavior safely.
 
 Acceptance:
-- No hidden semantic differences for same-name commands.
+- `enable/disable` meaning is clear and stable.
+- Docs and UI reflect one coherent model.
 
-## 7) Naming Normalization Pass (Command-Level)
-Apply the naming framework to every existing command and classify each as:
-- `equivalent` (must adopt systemd term),
-- `similar` (keep with explicit caveat, or rename if collision risk),
-- `unique` (rename to supervisor-specific term).
+## 6) Modular Elisp Unit Files (Foundation)
+Objective:
+- Introduce first-class unit files to support human-friendly editing and clearer lifecycle ownership.
 
+Proposed model:
+- A configurable unit directory (example: `~/.config/supervisor/units/`).
+- One unit per file, deterministic naming (`<unit-id>.el` or `<unit-id>.eld`).
+- Each file defines one canonical unit form.
+- Loader builds runtime plan from unit files (and optional legacy bridge from `supervisor-programs` during transition).
+
+Human factors requirements:
+- Predictable file locations.
+- Readable structure with templates.
+- Validation feedback at save/load time.
+- Minimal hidden magic in loading order.
+
+Acceptance:
+- Unit files can be loaded deterministically.
+- Validation errors map back to concrete files/lines.
+- Existing users have a migration path.
+
+## 7) `edit UNIT` Human-Centered Workflow
+Objective:
+- Provide a systemctl-like edit flow optimized for humans in Emacs.
+
+CLI/interactive workflow target:
+1. User runs `supervisorctl edit UNIT` (or dashboard edit action).
+2. Supervisor resolves the unit file path; if missing, offers scaffold template.
+3. Opens the unit buffer in Emacs.
+4. On save, validate just that unit (and dependency references as needed).
+5. On close, return user context to overview (dashboard/command flow), with clear next action hint (`daemon-reload` and/or `reconcile` as appropriate).
+
+UX constraints:
+- No surprising auto-apply without clear feedback.
+- Clear error messaging with file/line context.
+- Preserve user navigation context after editing.
+- Fast path for repeated edit-test cycles.
+
+Acceptance:
+- `edit UNIT` is discoverable and predictable.
+- Save/close/return flow works without context loss.
+- Documentation includes practical examples.
+
+## 8) Documentation and Migration
 Deliverables:
-- A command classification table in README.
-- For each `equivalent` command whose current name differs from systemd:
-  - a concrete rename plan,
-  - transition alias behavior,
-  - and deprecation wording/timeline.
-- For each non-equivalent systemd-like name, either:
-  - a rename proposal, or
-  - an explicit decision note: \"kept intentionally, no future collision expected\".
+- Update README command tables and examples.
+- Add unit-file handbook section (layout, template, edit flow).
+- Add compatibility notes for systemctl parity and intentional divergences.
+- Add migration doc from monolithic config to modular units.
 
 Acceptance:
-- Every command name has an explicit rationale under the naming framework.
-- No `equivalent` command remains under a non-systemd canonical name.
+- Docs match behavior exactly.
+- No stale command references remain.
 
-## 6) Test and Regression Guardrails
-Update/add tests only for normalization outcomes:
-- help/usage text consistency checks
-- key message consistency checks where tests already assert strings
-- guarantee no JSON contract regression
-
-Required verification:
-- `make check` passes
+## 9) Testing and Quality Gates
+Required:
+- Extend ERT for renamed commands and removed legacy names.
+- Add tests for interactive stop/restart actions.
+- Add tests for reload vs reconcile split.
+- Add tests for unit-file load, validation, and edit flow behavior contracts.
+- `make check` must pass at each merged phase.
 
 Acceptance:
-- All existing tests pass.
-- Any updated string assertions reflect normalized terminology.
+- Green CI and local `make check`.
+- No regressions in JSON contracts unless explicitly versioned.
 
 ## Execution Order
-1. Canonical vocabulary + naming decision framework
-2. Command-by-command classification (`equivalent`/`similar`/`unique`)
-3. CLI wording and naming normalization updates
-4. Dashboard wording normalization updates
-5. README compatibility notes + status mapping table + classification table
-6. Test updates and `make check`
+1. Command renames (`show`, `list-dependencies`, `list-timers`)
+2. Interactive `stop`/`restart` parity
+3. Unit-file foundation
+4. `edit UNIT` workflow on top of unit files
+5. `daemon-reload` implementation
+6. `reload` semantic split from `reconcile`
+7. `enable/disable` model alignment
+8. Documentation and migration completion pass
 
 ## Risks and Mitigations
-Risk: Human-output wording changes may affect ad-hoc scripts parsing text.
-Mitigation: Keep JSON interfaces unchanged and document human output as non-contractual.
-
-Risk: Partial normalization creates mixed terminology.
-Mitigation: apply terminology changes in one pass across CLI, dashboard, and README before merge.
+- Risk: semantic churn confuses users during transition.
+  - Mitigation: sequence changes with tight docs/tests per phase.
+- Risk: unit-file model creates migration friction.
+  - Mitigation: include legacy bridge and migration tooling.
+- Risk: edit flow becomes too Emacs-internal for CLI users.
+  - Mitigation: define explicit CLI behavior and fallback messaging.
 
 ## Completion Criteria
 This plan is complete when:
-- User-facing terminology is consistent and systemd-comparable.
-- Naming decisions follow the explicit framework in this plan.
-- Any command with equivalent systemd behavior is canonically named with systemd nomenclature.
-- Same-name command semantic differences are explicitly documented.
-- No new features/commands/options were introduced.
-- `make check` passes.
+- Planned parity commands use systemctl-aligned names/behaviors.
+- `edit UNIT` is implemented with modular unit files and human-centered flow.
+- Dashboard and CLI command semantics remain consistent.
+- Unplanned items remain explicitly out of scope.
+- `make check` passes across all phases.
 
-## Open Decisions Requiring Maintainer Input
-These are the key ambiguity points under the new naming policy:
+## Open Design Questions (to resolve before implementation)
+1. Unit-file format canonical form:
+- pure plist expression vs helper macro wrapper.
 
-1. `reload` current behavior is reconciliation, not service config reload:
-- Option A: keep `reload` name and document divergence.
-- Option B: rename behavior to `reconcile` and keep `reload` as compatibility alias.
+2. Unit-file location policy:
+- single directory vs layered directories (system/user/local precedence).
 
-2. `kill` currently also suppresses restart:
-- Option A: keep `kill` name and document divergence.
-- Option B: reserve `kill` for pure signal semantics and move current behavior name to a supervisor-specific verb.
+3. Edit return behavior:
+- always return to dashboard buffer when invoked from dashboard,
+- and what CLI should do when no interactive frame is available.
 
-3. `restart-policy` and `logging` are policy toggles without direct systemctl equivalents:
-- Option A: keep names as supervisor policy commands.
-- Option B: rename to explicitly supervisor-scoped verbs (for example prefixed policy verbs).
+4. Reload application semantics:
+- whether `reload UNIT` should auto-apply to live process immediately,
+- or stage changes until `reconcile`.
