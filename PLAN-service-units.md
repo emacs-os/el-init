@@ -130,22 +130,32 @@ Acceptance:
 
 Deliverables:
 
-- remove `supervisor-programs` and `supervisor-use-unit-files` configuration surface,
+- remove `supervisor-use-unit-files` configuration surface,
+- remove `supervisor-programs` from all runtime (non-test) code paths,
 - update dashboard/timer/core call sites that still iterate legacy config directly.
+
+Note: the `supervisor-programs` defvar is retained as a dead symbol (no runtime
+code reads it) until Phase 3 removes the ~100 test-local bindings that reference
+it.  The variable is inert — `supervisor--effective-programs` ignores it.
 
 Acceptance:
 
-- no remaining references to removed runtime knobs in executable code paths.
+- `supervisor-use-unit-files` fully removed,
+- no runtime code path reads or iterates `supervisor-programs`,
+- no remaining references to removed runtime knobs in executable code paths
+  (test-only `let`-bindings of the dead defvar are acceptable until Phase 3).
 
 ### Phase 3: Test Fixture Migration to Unit Files
 
 Deliverables:
 
 - introduce shared test helper for temp unit directories/files,
-- convert tests from in-memory `supervisor-programs` fixtures to unit-file fixtures.
+- convert tests from in-memory `supervisor-programs` fixtures to unit-file fixtures,
+- delete the `supervisor-programs` defvar once no test references remain.
 
 Acceptance:
 
+- `supervisor-programs` defvar is deleted,
 - converted tests remain deterministic and isolated,
 - `make check` passes for converted subset before proceeding.
 
