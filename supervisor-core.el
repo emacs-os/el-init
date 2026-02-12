@@ -620,6 +620,12 @@ Masked entries are always disabled regardless of enable overrides.")
 Entries in this table should not auto-restart until explicitly started again.
 This is cleared when an entry is started, allowing normal restart behavior.")
 
+(defvar supervisor--manually-started (make-hash-table :test 'equal)
+  "Hash table tracking entries manually started via CLI or dashboard.
+Used by reconcile to preserve disabled units that were explicitly started.
+Per the systemctl model, `start' on a disabled unit runs it this session
+without changing enabled state, and reconcile should not stop it.")
+
 ;;; Persistent Overrides (Schema v1)
 
 (defcustom supervisor-overrides-file
@@ -1390,6 +1396,7 @@ status queries, and reconciliation without direct global access."
   restart-override ; hash: id -> 'enabled, 'disabled, or nil
   logging-override ; hash: id -> 'enabled, 'disabled, or nil
   mask-override    ; hash: id -> 'masked or nil
+  manually-started ; hash: id -> t if manually started (for reconcile)
   timestamp)       ; float-time when snapshot was taken
 
 (defun supervisor--build-snapshot ()
@@ -1415,6 +1422,7 @@ completion status, and overrides.  Safe to call at any time."
      :restart-override (copy-hash-table supervisor--restart-override)
      :logging-override (copy-hash-table supervisor--logging)
      :mask-override (copy-hash-table supervisor--mask-override)
+     :manually-started (copy-hash-table supervisor--manually-started)
      :timestamp (float-time))))
 
 (defun supervisor--build-plan (programs)
@@ -2445,7 +2453,12 @@ Returns a plist with :status and :reason.
 :reason explains why (for skipped/error cases).
 
 This function handles all pre-start checks and state clearing,
-ensuring consistent behavior between dashboard and CLI."
+ensuring consistent behavior between dashboard and CLI.
+
+Per the systemctl model, disabled units CAN be manually started
+\(session-only, no enabled override change).  Only masked units
+are blocked.  Manually started disabled units are tracked in
+`supervisor--manually-started' so that reconcile does not stop them."
   (cond
    ;; Entry is invalid (check first - get-entry-for-id skips invalid entries)
    ((gethash id supervisor--invalid)
@@ -2459,14 +2472,11 @@ ensuring consistent behavior between dashboard and CLI."
     (let ((entry (supervisor--get-entry-for-id id)))
       (if (not entry)
           (list :status 'error :reason "not found")
-        (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
+        (pcase-let ((`(,_id ,cmd ,_delay ,_enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
           (cond
-           ;; Masked (highest precedence)
+           ;; Masked (highest precedence - only mask blocks manual start)
            ((eq (gethash id supervisor--mask-override) 'masked)
             (list :status 'skipped :reason "masked"))
-           ;; Disabled
-           ((not (supervisor--get-effective-enabled id enabled-p))
-            (list :status 'skipped :reason "disabled"))
            ;; Executable not found
            ((not (executable-find (car (split-string-and-unquote cmd))))
             (list :status 'error :reason "executable not found"))
@@ -2480,7 +2490,11 @@ ensuring consistent behavior between dashboard and CLI."
             (remhash id supervisor--manually-stopped)
             (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
               (if proc
-                  (list :status 'started :reason nil)
+                  (progn
+                    ;; Track manual start only on success so reconcile
+                    ;; preserves disabled running units.
+                    (puthash id t supervisor--manually-started)
+                    (list :status 'started :reason nil))
                 (list :status 'error :reason "failed to start process")))))))))))
 
 (defun supervisor--manual-stop (id)
@@ -2500,6 +2514,8 @@ ensuring consistent behavior between dashboard and CLI."
      (t
       ;; Mark as manually stopped so sentinel doesn't restart it
       (puthash id t supervisor--manually-stopped)
+      ;; Clear manually-started so reconcile can treat it normally
+      (remhash id supervisor--manually-started)
       (delete-process proc)
       (list :status 'stopped :reason nil)))))
 
@@ -2618,6 +2634,7 @@ Ready semantics (when dependents are unblocked):
   (clrhash supervisor--enabled-override)
   (clrhash supervisor--mask-override)
   (clrhash supervisor--manually-stopped)
+  (clrhash supervisor--manually-started)
   (clrhash supervisor--failed)
   (clrhash supervisor--invalid)
   (when (boundp 'supervisor--invalid-timers)
@@ -2826,7 +2843,9 @@ This function does not modify any state."
         (oneshot-hash (supervisor-snapshot-oneshot-exit snapshot))
         (enabled-override (supervisor-snapshot-enabled-override snapshot))
         (mask-override (or (supervisor-snapshot-mask-override snapshot)
-                           (make-hash-table :test 'equal))))
+                           (make-hash-table :test 'equal)))
+        (manually-started (or (supervisor-snapshot-manually-started snapshot)
+                              (make-hash-table :test 'equal))))
     ;; Collect running IDs from snapshot
     (let ((running-ids nil))
       (maphash (lambda (id _) (push id running-ids)) process-alive)
@@ -2845,11 +2864,22 @@ This function does not modify any state."
                                             ((eq override 'enabled) t)
                                             ((eq override 'disabled) nil)
                                             (t enabled-p))))
-              (if (not effective-enabled)
-                  (push (list :op 'stop :id id
-                              :reason (if is-masked 'masked 'disabled))
-                        actions)
-                (push (list :op 'noop :id id :reason 'already-running) actions)))))))
+              (cond
+               ;; Masked: always stop (mask overrides manual start)
+               (is-masked
+                (push (list :op 'stop :id id :reason 'masked) actions))
+               ;; Disabled but manually started: preserve (systemctl model)
+               ((and (not effective-enabled)
+                     (gethash id manually-started))
+                (push (list :op 'noop :id id :reason 'manually-started)
+                      actions))
+               ;; Disabled (not manually started): stop
+               ((not effective-enabled)
+                (push (list :op 'stop :id id :reason 'disabled) actions))
+               ;; Enabled and running: no-op
+               (t
+                (push (list :op 'noop :id id :reason 'already-running)
+                      actions))))))))
     ;; Check for processes to start (in plan but not running)
     (dolist (entry plan-entries)
       (let* ((id (car entry))

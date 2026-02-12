@@ -856,7 +856,8 @@ core symbols exist without dashboard/cli-specific dependencies."
       (should-not (member "new-entry" started-ids)))))
 
 (ert-deftest supervisor-test-reconcile-stops-disabled-entries ()
-  "Reconcile stops running entries that are now disabled."
+  "Reconcile stops running entries that are now disabled.
+Only auto-started (not manually-started) disabled units are stopped."
   (let ((supervisor--enabled-override (make-hash-table :test 'equal))
         (supervisor--processes (make-hash-table :test 'equal))
         (supervisor--failed (make-hash-table :test 'equal))
@@ -864,9 +865,11 @@ core symbols exist without dashboard/cli-specific dependencies."
         (supervisor--restart-override (make-hash-table :test 'equal))
         (supervisor--logging (make-hash-table :test 'equal))
         (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
         (supervisor-programs '(("running" :type simple :disabled t)))
         (killed-ids nil))
-    ;; Create a fake live process
+    ;; Create a fake live process (NOT manually started)
     (let ((fake-proc (start-process "test-proc" nil "sleep" "100")))
       (puthash "running" fake-proc supervisor--processes)
       ;; Mock kill-process to track kills
@@ -876,7 +879,7 @@ core symbols exist without dashboard/cli-specific dependencies."
                    (delete-process proc)))
                 ((symbol-function 'supervisor--refresh-dashboard) #'ignore))
         (supervisor-reconcile)
-        ;; Entry should have been killed due to :disabled
+        ;; Entry should have been killed due to :disabled (not manually started)
         (should (member "test-proc" killed-ids))))))
 
 (ert-deftest supervisor-test-computed-deps-populated ()
@@ -6696,6 +6699,292 @@ This distinguishes config errors from truly missing entries."
       (let ((result (supervisor--reload-unit "malformed#0")))
         (should (equal "malformed#0" (plist-get result :id)))
         (should (equal "error: invalid config" (plist-get result :action)))))))
+
+;;; Phase 9: enable/disable model alignment tests
+
+(ert-deftest supervisor-test-start-disabled-unit-works ()
+  "Manual start on a disabled unit succeeds (systemctl model).
+`start' on a disabled unit runs it this session only without
+changing the enabled override."
+  (let* ((supervisor-programs '(("echo hello" :id "svc1" :disabled t)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (started nil))
+    (cl-letf (((symbol-function 'supervisor--start-process)
+               (lambda (id _cmd _logging _type _restart &optional _is-restart)
+                 (setq started id)
+                 t)))
+      (let ((result (supervisor--manual-start "svc1")))
+        ;; Should succeed, not be skipped
+        (should (eq 'started (plist-get result :status)))
+        (should (equal "svc1" started))
+        ;; Should NOT change enabled override
+        (should-not (gethash "svc1" supervisor--enabled-override))
+        ;; Should mark as manually started for reconcile
+        (should (gethash "svc1" supervisor--manually-started))))))
+
+(ert-deftest supervisor-test-start-disabled-unit-override-unchanged ()
+  "Starting a disabled unit does not flip the enabled override.
+Even with an explicit :disabled override set, manual start does not
+change the override — it just runs the unit this session."
+  (let* ((supervisor-programs '(("echo hello" :id "svc1")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal)))
+    ;; Disable via override
+    (puthash "svc1" 'disabled supervisor--enabled-override)
+    (cl-letf (((symbol-function 'supervisor--start-process)
+               (lambda (_id _cmd _logging _type _restart &optional _is-restart) t)))
+      (let ((result (supervisor--manual-start "svc1")))
+        (should (eq 'started (plist-get result :status)))
+        ;; Override should still be 'disabled (unchanged)
+        (should (eq 'disabled (gethash "svc1" supervisor--enabled-override)))))))
+
+(ert-deftest supervisor-test-reconcile-keeps-manually-started-disabled ()
+  "Reconcile does not stop disabled units that were manually started.
+Per the systemctl model, `start' on a disabled unit is session-only
+and reconcile should not undo it."
+  (let* ((supervisor-programs '(("sleep 100" :id "svc1" :disabled t)))
+         (plan (supervisor--build-plan supervisor-programs))
+         (process-alive (make-hash-table :test 'equal))
+         (manually-started (make-hash-table :test 'equal)))
+    (puthash "svc1" t process-alive)
+    (puthash "svc1" t manually-started)
+    (let* ((snapshot (supervisor-snapshot--create
+                      :process-alive process-alive
+                      :process-pids (make-hash-table :test 'equal)
+                      :failed (make-hash-table :test 'equal)
+                      :oneshot-exit (make-hash-table :test 'equal)
+                      :entry-state (make-hash-table :test 'equal)
+                      :invalid (make-hash-table :test 'equal)
+                      :enabled-override (make-hash-table :test 'equal)
+                      :restart-override (make-hash-table :test 'equal)
+                      :logging-override (make-hash-table :test 'equal)
+                      :manually-started manually-started
+                      :timestamp (float-time)))
+           (actions (supervisor--compute-actions plan snapshot)))
+      ;; Should be noop (manually-started), NOT stop (disabled)
+      (let ((action (cl-find "svc1" actions
+                             :key (lambda (a) (plist-get a :id))
+                             :test #'equal)))
+        (should action)
+        (should (eq 'noop (plist-get action :op)))
+        (should (eq 'manually-started (plist-get action :reason)))))))
+
+(ert-deftest supervisor-test-reconcile-stops-non-manual-disabled ()
+  "Reconcile stops disabled units that were NOT manually started."
+  (let* ((supervisor-programs '(("sleep 100" :id "svc1" :disabled t)))
+         (plan (supervisor--build-plan supervisor-programs))
+         (process-alive (make-hash-table :test 'equal)))
+    (puthash "svc1" t process-alive)
+    (let* ((snapshot (supervisor-snapshot--create
+                      :process-alive process-alive
+                      :process-pids (make-hash-table :test 'equal)
+                      :failed (make-hash-table :test 'equal)
+                      :oneshot-exit (make-hash-table :test 'equal)
+                      :entry-state (make-hash-table :test 'equal)
+                      :invalid (make-hash-table :test 'equal)
+                      :enabled-override (make-hash-table :test 'equal)
+                      :restart-override (make-hash-table :test 'equal)
+                      :logging-override (make-hash-table :test 'equal)
+                      :manually-started (make-hash-table :test 'equal)
+                      :timestamp (float-time)))
+           (actions (supervisor--compute-actions plan snapshot)))
+      ;; Should stop (disabled, not manually started)
+      (let ((action (cl-find "svc1" actions
+                             :key (lambda (a) (plist-get a :id))
+                             :test #'equal)))
+        (should action)
+        (should (eq 'stop (plist-get action :op)))
+        (should (eq 'disabled (plist-get action :reason)))))))
+
+(ert-deftest supervisor-test-reconcile-stops-masked-even-if-manually-started ()
+  "Reconcile stops masked units even if manually started.
+Mask overrides everything including manual-start tracking."
+  (let* ((supervisor-programs '(("sleep 100" :id "svc1")))
+         (plan (supervisor--build-plan supervisor-programs))
+         (process-alive (make-hash-table :test 'equal))
+         (manually-started (make-hash-table :test 'equal))
+         (mask-override (make-hash-table :test 'equal)))
+    (puthash "svc1" t process-alive)
+    (puthash "svc1" t manually-started)
+    (puthash "svc1" 'masked mask-override)
+    (let* ((snapshot (supervisor-snapshot--create
+                      :process-alive process-alive
+                      :process-pids (make-hash-table :test 'equal)
+                      :failed (make-hash-table :test 'equal)
+                      :oneshot-exit (make-hash-table :test 'equal)
+                      :entry-state (make-hash-table :test 'equal)
+                      :invalid (make-hash-table :test 'equal)
+                      :enabled-override (make-hash-table :test 'equal)
+                      :restart-override (make-hash-table :test 'equal)
+                      :logging-override (make-hash-table :test 'equal)
+                      :mask-override mask-override
+                      :manually-started manually-started
+                      :timestamp (float-time)))
+           (actions (supervisor--compute-actions plan snapshot)))
+      (let ((action (cl-find "svc1" actions
+                             :key (lambda (a) (plist-get a :id))
+                             :test #'equal)))
+        (should action)
+        (should (eq 'stop (plist-get action :op)))
+        (should (eq 'masked (plist-get action :reason)))))))
+
+(ert-deftest supervisor-test-manual-stop-clears-manually-started ()
+  "Manually stopping a unit clears the manually-started flag.
+After manual stop, reconcile is free to treat it normally."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal)))
+    ;; Simulate a manually-started running process
+    (puthash "svc1" (start-process "test" nil "sleep" "999")
+             supervisor--processes)
+    (puthash "svc1" t supervisor--manually-started)
+    (unwind-protect
+        (progn
+          (supervisor--manual-stop "svc1")
+          ;; manually-started should be cleared
+          (should-not (gethash "svc1" supervisor--manually-started))
+          ;; manually-stopped should be set
+          (should (gethash "svc1" supervisor--manually-stopped)))
+      (let ((p (gethash "svc1" supervisor--processes)))
+        (when (and p (process-live-p p))
+          (delete-process p))))))
+
+(ert-deftest supervisor-test-cli-start-disabled-unit ()
+  "CLI `start' on a disabled unit succeeds."
+  (let* ((supervisor-programs '(("echo hi" :id "svc1" :disabled t)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'supervisor--start-process)
+               (lambda (_id _cmd _logging _type _restart &optional _is-restart) t)))
+      (let ((result (supervisor--cli-dispatch '("start" "--" "svc1"))))
+        (should (= supervisor-cli-exit-success
+                   (supervisor-cli-result-exitcode result)))
+        (should (string-match-p "Started: svc1"
+                                (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-mask-still-blocks-manual-start ()
+  "Masked units are still blocked from manual start.
+Only mask blocks; disabled does not."
+  (let* ((supervisor-programs '(("echo hi" :id "svc1")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal)))
+    (puthash "svc1" 'masked supervisor--mask-override)
+    (let ((result (supervisor--manual-start "svc1")))
+      (should (eq 'skipped (plist-get result :status)))
+      (should (equal "masked" (plist-get result :reason))))))
+
+(ert-deftest supervisor-test-cli-enable-persists ()
+  "CLI `enable' command persists the override to disk."
+  (let* ((temp-file (make-temp-file "supervisor-test-enable-" nil ".eld"))
+         (supervisor-overrides-file temp-file)
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--overrides-loaded nil))
+    (unwind-protect
+        (progn
+          (supervisor--cli-dispatch '("enable" "svc1"))
+          ;; In-memory override set
+          (should (eq 'enabled (gethash "svc1" supervisor--enabled-override)))
+          ;; Clear memory and reload from file
+          (clrhash supervisor--enabled-override)
+          (should (supervisor--load-overrides))
+          ;; Should survive roundtrip
+          (should (eq 'enabled (gethash "svc1" supervisor--enabled-override))))
+      (delete-file temp-file))))
+
+(ert-deftest supervisor-test-cli-disable-persists ()
+  "CLI `disable' command persists the override to disk."
+  (let* ((temp-file (make-temp-file "supervisor-test-disable-" nil ".eld"))
+         (supervisor-overrides-file temp-file)
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--overrides-loaded nil))
+    (unwind-protect
+        (progn
+          (supervisor--cli-dispatch '("disable" "svc1"))
+          ;; In-memory override set
+          (should (eq 'disabled (gethash "svc1" supervisor--enabled-override)))
+          ;; Clear memory and reload from file
+          (clrhash supervisor--enabled-override)
+          (should (supervisor--load-overrides))
+          ;; Should survive roundtrip
+          (should (eq 'disabled (gethash "svc1" supervisor--enabled-override))))
+      (delete-file temp-file))))
+
+(ert-deftest supervisor-test-manual-start-failure-no-stale-flag ()
+  "Failed manual start does not leave stale manually-started flag.
+Only successful starts should set the flag, otherwise reconcile
+could incorrectly preserve a non-running disabled unit."
+  (let* ((supervisor-programs '(("echo hi" :id "svc1")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'supervisor--start-process)
+               (lambda (_id _cmd _logging _type _restart &optional _is-restart)
+                 nil)))  ; Simulate spawn failure
+      (let ((result (supervisor--manual-start "svc1")))
+        (should (eq 'error (plist-get result :status)))
+        ;; Flag must NOT be set on failure
+        (should-not (gethash "svc1" supervisor--manually-started))))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

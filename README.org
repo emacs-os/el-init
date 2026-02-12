@@ -467,6 +467,16 @@ Effective value resolution for enabled state:
 - else explicit enabled override if present,
 - otherwise config default.
 
+Enable/disable semantics follow the systemctl model:
+
+- ~enable ID~: unit should start on next ~supervisor-start~ / ~reconcile~.
+  Persisted as override.
+- ~disable ID~: unit should NOT start automatically.  Persisted.
+- ~start ID~ on a disabled unit: starts it this session only.  Does not
+  change enabled state.  Only mask blocks manual start.
+- Reconcile skips disabled units but does not stop disabled units that
+  were manually started (preserves session-only starts).
+
 ** Persistence of Overrides
 
 Overrides are persisted in ~supervisor-overrides-file~.
@@ -498,7 +508,9 @@ Reconcile flow:
 Effects:
 
 - Stops removed entries
-- Stops entries now effectively disabled or masked
+- Stops masked entries (mask overrides manual start)
+- Stops entries newly disabled (but preserves disabled entries that were
+  manually started, per the systemctl model)
 - Starts newly eligible entries
 - Leaves converged entries running
 
@@ -901,6 +913,8 @@ IDs.
 
 - with IDs: operate on those IDs
 - with no IDs: operate on whole supervisor (~start~, ~stop~, ~stop+start~)
+- ~start~ on a disabled unit: succeeds (session-only, no override change).
+  Only masked units are blocked from manual start.
 
 ~list-dependencies~:
 
@@ -1214,6 +1228,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Crash-loop detection (~supervisor-max-restarts~, ~supervisor-restart-window~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Cycle fallback behavior for dependencies: [[#service-definition-handbook-supervisor-programs][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Dashboard filtering (stage/tag): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Disabled unit manual start (session-only, systemctl model): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Dashboard live updates (~supervisor-auto-refresh-interval~): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]], [[#customization-reference][Customization Reference]]
 - Dashboard mode/filter state (buffer-local stage/tag/auto-refresh): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Dashboard visual customization (status/type/stage faces): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]

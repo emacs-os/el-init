@@ -965,7 +965,7 @@ Sends kill signal immediately and leaves restart policy unchanged."
 
 (defun supervisor-dashboard-start ()
   "Start process at point if stopped.
-Respects runtime enable/disable overrides."
+Disabled units can be started (session-only); only mask blocks."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
     (when (supervisor--separator-row-p id)
@@ -973,11 +973,7 @@ Respects runtime enable/disable overrides."
     (let ((result (supervisor--manual-start id)))
       (pcase (plist-get result :status)
         ('started (supervisor--refresh-dashboard))
-        ('skipped
-         (let ((reason (plist-get result :reason)))
-           (if (string= reason "disabled")
-               (message "Entry %s is disabled (use 'e' to enable)" id)
-             (message "Entry %s is %s" id reason))))
+        ('skipped (message "Entry %s is %s" id (plist-get result :reason)))
         ('error (message "Cannot start %s: %s" id (plist-get result :reason)))))))
 
 (defun supervisor-dashboard-toggle-logging ()
