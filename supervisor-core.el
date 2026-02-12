@@ -83,7 +83,7 @@ Each entry is a plist with required keys :id and :target.
 
 Required keys:
   :id       - string, unique timer identifier
-  :target   - string, ID of oneshot service in `supervisor-programs'
+  :target   - string, ID of oneshot service (defined as a unit file)
 
 Trigger keys (at least one required):
   :on-calendar      - calendar schedule (see below)
@@ -417,7 +417,7 @@ Return nil if valid, or a reason string if invalid."
 (defvar supervisor--computed-deps)
 
 (defun supervisor--extract-id (entry idx)
-  "Extract a stable ID from ENTRY at position IDX in `supervisor-programs'.
+  "Extract a stable ID from ENTRY at position IDX in the program list.
 For valid entries, returns the configured or derived ID.
 For malformed entries, returns \"malformed#IDX\" for consistency."
   (cond
@@ -446,7 +446,7 @@ For malformed entries, returns \"malformed#IDX\" for consistency."
 
 ;;;###autoload
 (defun supervisor-validate ()
-  "Validate all entries in `supervisor-programs' and `supervisor-timers'.
+  "Validate all unit-file entries and `supervisor-timers'.
 Display results in a temporary buffer and populate `supervisor--invalid'
 and `supervisor--invalid-timers' so the dashboard reflects validation state."
   (interactive)
@@ -1167,8 +1167,7 @@ A value of :defer means the default is resolved at runtime.")
 (defun supervisor--get-entry-for-id (id)
   "Get the parsed entry for ID.
 Return a list of entry properties or nil if not found.
-Ensures the program list is loaded (calls `supervisor--effective-programs'
-when `supervisor-programs' is nil) so this works in cold-state.
+Loads unit files from disk via `supervisor--effective-programs'.
 Skips invalid/malformed entries to avoid parse errors."
   (let ((idx 0))
     (cl-loop for entry in (supervisor--effective-programs)
@@ -1257,12 +1256,12 @@ If SNAPSHOT is provided, read from it; otherwise read from globals."
 
 ;;; Migration Layer (Schema v1)
 ;;
-;; Functions to normalize supervisor-programs entries to canonical
+;; Functions to normalize program entries to canonical
 ;; schema v1 plist format.
 
 (defun supervisor--migrate-entry-to-plist (entry)
   "Migrate raw ENTRY to a canonical schema v1 plist format.
-Returns a plist suitable for use in supervisor-programs.
+Returns a plist in canonical program entry format.
 This normalizes short-form entries to their explicit form."
   (let* ((parsed (supervisor--parse-entry entry))
          (id (supervisor-entry-id parsed))
@@ -1314,7 +1313,7 @@ This normalizes short-form entries to their explicit form."
       cmd)))
 
 (defun supervisor--migrate-all-entries ()
-  "Migrate all entries in `supervisor-programs' to schema v1 format.
+  "Migrate all loaded entries to schema v1 format.
 Returns a list of migrated entries with a summary of changes.
 Invalid and duplicate entries are skipped with a warning."
   (let ((seen (make-hash-table :test 'equal))
@@ -1339,7 +1338,7 @@ Invalid and duplicate entries are skipped with a warning."
 (defun supervisor-migrate-config ()
   "Display the current config migrated to schema v1 format.
 Shows the canonical form of all valid entries, suitable for
-replacing the existing `supervisor-programs' definition."
+converting to unit files in `supervisor-unit-directory'."
   (interactive)
   (let* ((result (supervisor--migrate-all-entries))
          (migrated (plist-get result :migrated))
@@ -1839,7 +1838,7 @@ edges removed.  Stores computed deps in `supervisor--computed-deps'."
   "Parse and validate all entries, returning list of valid parsed entries.
 Invalid entries are stored in `supervisor--invalid' with reason strings.
 Duplicate IDs are skipped with a warning.
-Ensures the program list is loaded when `supervisor-programs' is nil."
+Loads unit files from disk via `supervisor--effective-programs'."
   (let ((seen (make-hash-table :test 'equal))
         (idx 0)
         result)
@@ -2606,7 +2605,7 @@ Mark all unstarted entries as timed out and invoke the callback."
 
 ;;;###autoload
 (defun supervisor-start ()
-  "Start all programs in `supervisor-programs' by stage.
+  "Start all programs defined in unit files by stage.
 Uses async DAG scheduler - stages run sequentially, but entries within
 a stage can run in parallel based on :after dependencies.
 
