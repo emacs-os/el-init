@@ -64,11 +64,20 @@
 (defconst supervisor-cli-exit-invalid-args 2
   "Exit code for invalid arguments.")
 
-(defconst supervisor-cli-exit-server-unavailable 3
-  "Exit code when Emacs server is unavailable.")
+(defconst supervisor-cli-exit-not-active 3
+  "Exit code for `is-active' when unit exists but is not active.
+Matches systemctl LSB convention.")
+
+(defconst supervisor-cli-exit-no-such-unit 4
+  "Exit code for `is-*' predicates when the unit does not exist.
+Matches systemctl convention.")
 
 (defconst supervisor-cli-exit-validation-failed 4
   "Exit code when config validation fails.")
+
+(defconst supervisor-cli-exit-server-unavailable 69
+  "Exit code when Emacs server is unavailable.
+Uses sysexits.h EX_UNAVAILABLE to avoid collision with systemctl codes.")
 
 (defconst supervisor-cli-version "1.0.0"
   "CLI version string.")
@@ -931,6 +940,141 @@ Use -- before IDs that start with a hyphen."
              (format "Unmasked: %s\n" (mapconcat #'identity args ", ")))
            (if json-p 'json 'human))))))))
 
+(defun supervisor--cli-cmd-is-active (args json-p)
+  "Handle `is-active ID' command with ARGS.  JSON-P enables JSON output.
+Exit 0 if the unit is active (running), exit 3 if not active,
+exit 4 if no such unit.  Uses systemctl-compatible exit code semantics."
+  (cond
+   ((null args)
+    (supervisor--cli-error supervisor-cli-exit-invalid-args
+                           "is-active requires an ID argument"
+                           (if json-p 'json 'human)))
+   ((cdr args)
+    (supervisor--cli-error supervisor-cli-exit-invalid-args
+                           (format "is-active takes exactly one ID, got: %s"
+                                   (mapconcat #'identity args " "))
+                           (if json-p 'json 'human)))
+   (t
+    (let* ((id (car args))
+           (snapshot (supervisor--build-snapshot))
+           (result (supervisor--cli-all-entries-info snapshot))
+           (entries (car result))
+           (info (cl-find id entries
+                          :key (lambda (e) (alist-get 'id e))
+                          :test #'equal)))
+      (if (not info)
+          (supervisor--cli-make-result
+           supervisor-cli-exit-no-such-unit
+           (if json-p 'json 'human)
+           (if json-p
+               (json-encode `((id . ,id) (active . :json-false)
+                              (status . "inactive")))
+             (format "inactive\n")))
+        (let* ((status (alist-get 'status info))
+               (active (equal status "running"))
+               (exitcode (if active
+                             supervisor-cli-exit-success
+                           supervisor-cli-exit-not-active)))
+          (supervisor--cli-make-result
+           exitcode
+           (if json-p 'json 'human)
+           (if json-p
+               (json-encode `((id . ,id)
+                              (active . ,(if active t :json-false))
+                              (status . ,status)))
+             (format "%s\n" status)))))))))
+
+(defun supervisor--cli-cmd-is-enabled (args json-p)
+  "Handle `is-enabled ID' command with ARGS.  JSON-P enables JSON output.
+Exit 0 if the unit is enabled, exit 1 if disabled or masked,
+exit 4 if no such unit.  Uses systemctl-compatible exit codes."
+  (cond
+   ((null args)
+    (supervisor--cli-error supervisor-cli-exit-invalid-args
+                           "is-enabled requires an ID argument"
+                           (if json-p 'json 'human)))
+   ((cdr args)
+    (supervisor--cli-error supervisor-cli-exit-invalid-args
+                           (format "is-enabled takes exactly one ID, got: %s"
+                                   (mapconcat #'identity args " "))
+                           (if json-p 'json 'human)))
+   (t
+    (let* ((id (car args))
+           (snapshot (supervisor--build-snapshot))
+           (result (supervisor--cli-all-entries-info snapshot))
+           (entries (car result))
+           (info (cl-find id entries
+                          :key (lambda (e) (alist-get 'id e))
+                          :test #'equal)))
+      (if (not info)
+          (supervisor--cli-make-result
+           supervisor-cli-exit-no-such-unit
+           (if json-p 'json 'human)
+           (if json-p
+               (json-encode `((id . ,id) (enabled . :json-false)
+                              (state . "not-found")))
+             (format "not-found\n")))
+        (let* ((is-masked (eq (gethash id supervisor--mask-override) 'masked))
+               (enabled (alist-get 'enabled info))
+               (state (cond (is-masked "masked")
+                            (enabled "enabled")
+                            (t "disabled")))
+               (exitcode (if enabled
+                             supervisor-cli-exit-success
+                           supervisor-cli-exit-failure)))
+          (supervisor--cli-make-result
+           exitcode
+           (if json-p 'json 'human)
+           (if json-p
+               (json-encode `((id . ,id)
+                              (enabled . ,(if enabled t :json-false))
+                              (state . ,state)))
+             (format "%s\n" state)))))))))
+
+(defun supervisor--cli-cmd-is-failed (args json-p)
+  "Handle `is-failed ID' command with ARGS.  JSON-P enables JSON output.
+Exit 0 if the unit is in a failed state, exit 1 if not failed,
+exit 4 if no such unit.  Uses systemctl-compatible exit codes."
+  (cond
+   ((null args)
+    (supervisor--cli-error supervisor-cli-exit-invalid-args
+                           "is-failed requires an ID argument"
+                           (if json-p 'json 'human)))
+   ((cdr args)
+    (supervisor--cli-error supervisor-cli-exit-invalid-args
+                           (format "is-failed takes exactly one ID, got: %s"
+                                   (mapconcat #'identity args " "))
+                           (if json-p 'json 'human)))
+   (t
+    (let* ((id (car args))
+           (snapshot (supervisor--build-snapshot))
+           (result (supervisor--cli-all-entries-info snapshot))
+           (entries (car result))
+           (info (cl-find id entries
+                          :key (lambda (e) (alist-get 'id e))
+                          :test #'equal)))
+      (if (not info)
+          (supervisor--cli-make-result
+           supervisor-cli-exit-no-such-unit
+           (if json-p 'json 'human)
+           (if json-p
+               (json-encode `((id . ,id) (failed . :json-false)
+                              (status . "inactive")))
+             (format "inactive\n")))
+        (let* ((status (alist-get 'status info))
+               (is-failed (member status '("dead" "failed")))
+               (exitcode (if is-failed
+                             supervisor-cli-exit-success
+                           supervisor-cli-exit-failure)))
+          (supervisor--cli-make-result
+           exitcode
+           (if json-p 'json 'human)
+           (if json-p
+               (json-encode `((id . ,id)
+                              (failed . ,(if is-failed t :json-false))
+                              (status . ,status)))
+             (format "%s\n" status)))))))))
+
 (defun supervisor--cli-cmd-restart-policy (args json-p)
   "Handle `restart-policy (on|off) [--] ID...' with ARGS.  JSON-P for JSON.
 Use -- before IDs that start with a hyphen."
@@ -1553,6 +1697,9 @@ Returns a `supervisor-cli-result' struct."
                    "  mask [--] ID...            Mask units (always disabled)\n"
                    "  unmask [--] ID...          Unmask units\n"
                    "  kill [--signal SIG] [--] ID  Send signal to unit\n"
+                   "  is-active ID               Test if unit is active (0/3/4)\n"
+                   "  is-enabled ID              Test if unit is enabled (0/1/4)\n"
+                   "  is-failed ID               Test if unit is failed (0/1/4)\n"
                    "  cat ID                     Show unit file content\n"
                    "  edit ID                    Edit unit file\n"
                    "  list-dependencies [ID]     Show dependency graph\n"
@@ -1614,6 +1761,12 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-cat args json-p))
          ((equal command "edit")
           (supervisor--cli-cmd-edit args json-p))
+         ((equal command "is-active")
+          (supervisor--cli-cmd-is-active args json-p))
+         ((equal command "is-enabled")
+          (supervisor--cli-cmd-is-enabled args json-p))
+         ((equal command "is-failed")
+          (supervisor--cli-cmd-is-failed args json-p))
          (t
           (supervisor--cli-error supervisor-cli-exit-invalid-args
                                  (format "Unknown command: %s" command)

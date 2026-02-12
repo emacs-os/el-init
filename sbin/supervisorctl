@@ -40,6 +40,9 @@
 #   mask [--] ID...             Mask units (always disabled)
 #   unmask [--] ID...           Unmask units
 #   kill [--signal SIG] [--] ID Send signal to unit
+#   is-active ID                Test if unit is active (0/3/4)
+#   is-enabled ID               Test if unit is enabled (0/1/4)
+#   is-failed ID                Test if unit is failed (0/1/4)
 #   cat ID                      Show unit file content
 #   edit ID                     Edit unit file
 #   list-dependencies [ID]      Show dependency graph
@@ -60,7 +63,7 @@ set -eu
 # Exit codes (must match supervisor-cli-exit-* constants)
 exit_failure=1
 exit_invalid_args=2
-exit_server_unavailable=3
+exit_server_unavailable=69  # EX_UNAVAILABLE (sysexits.h), avoids systemctl code collision
 
 # Default options
 socket_name=""

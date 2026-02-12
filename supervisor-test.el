@@ -4863,8 +4863,10 @@ at minute boundaries."
   (should (= 0 supervisor-cli-exit-success))
   (should (= 1 supervisor-cli-exit-failure))
   (should (= 2 supervisor-cli-exit-invalid-args))
-  (should (= 3 supervisor-cli-exit-server-unavailable))
-  (should (= 4 supervisor-cli-exit-validation-failed)))
+  (should (= 3 supervisor-cli-exit-not-active))
+  (should (= 4 supervisor-cli-exit-no-such-unit))
+  (should (= 4 supervisor-cli-exit-validation-failed))
+  (should (= 69 supervisor-cli-exit-server-unavailable)))
 
 (ert-deftest supervisor-test-cli-dispatch-unknown-command ()
   "Unknown CLI command returns exit code 2."
@@ -5946,6 +5948,255 @@ at minute boundaries."
     ;; Should fail with "No log file for --tail", not parse --tail as option
     (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
     (should (string-match "No log file for '--tail'" (supervisor-cli-result-output result)))))
+
+;;; CLI -- is-active Tests
+
+(ert-deftest supervisor-test-cli-is-active-running ()
+  "The `is-active' returns exit 0 for a running unit."
+  (let* ((supervisor-programs '(("sleep 999" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (proc (start-process "test" nil "sleep" "999")))
+    (unwind-protect
+        (progn
+          (puthash "svc" proc supervisor--processes)
+          (let ((result (supervisor--cli-dispatch '("is-active" "svc"))))
+            (should (= supervisor-cli-exit-success
+                       (supervisor-cli-result-exitcode result)))
+            (should (string-match "running" (supervisor-cli-result-output result)))))
+      (delete-process proc))))
+
+(ert-deftest supervisor-test-cli-is-active-not-running ()
+  "The `is-active' returns exit 3 (not-active) for a non-running unit."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("is-active" "svc"))))
+    (should (= supervisor-cli-exit-not-active
+               (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-is-active-unknown-id ()
+  "The `is-active' returns exit 4 (no-such-unit) for unknown ID."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("is-active" "nonexistent"))))
+    (should (= supervisor-cli-exit-no-such-unit
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match "inactive" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-is-active-no-args ()
+  "The `is-active' with no args returns exit 2."
+  (let ((result (supervisor--cli-dispatch '("is-active"))))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-is-active-extra-args ()
+  "The `is-active' with multiple IDs returns exit 2."
+  (let ((result (supervisor--cli-dispatch '("is-active" "a" "b"))))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-is-active-json ()
+  "The `is-active --json' returns JSON with active field."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("is-active" "svc" "--json"))))
+    (should (eq 'json (supervisor-cli-result-format result)))
+    (let ((parsed (json-read-from-string (supervisor-cli-result-output result))))
+      (should (equal "svc" (alist-get 'id parsed)))
+      (should (assoc 'active parsed))
+      (should (assoc 'status parsed)))))
+
+(ert-deftest supervisor-test-cli-is-active-json-running ()
+  "The `is-active --json' returns active=true for running unit."
+  (let* ((supervisor-programs '(("sleep 999" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (proc (start-process "test" nil "sleep" "999")))
+    (unwind-protect
+        (progn
+          (puthash "svc" proc supervisor--processes)
+          (let* ((result (supervisor--cli-dispatch '("is-active" "svc" "--json")))
+                 (parsed (json-read-from-string
+                          (supervisor-cli-result-output result))))
+            (should (= supervisor-cli-exit-success
+                       (supervisor-cli-result-exitcode result)))
+            (should (eq t (alist-get 'active parsed)))))
+      (delete-process proc))))
+
+;;; CLI -- is-enabled Tests
+
+(ert-deftest supervisor-test-cli-is-enabled-enabled ()
+  "The `is-enabled' returns exit 0 for an enabled unit."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("is-enabled" "svc"))))
+    (should (= supervisor-cli-exit-success
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match "enabled" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-is-enabled-disabled ()
+  "The `is-enabled' returns exit 1 for a disabled unit."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple :disabled t)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("is-enabled" "svc"))))
+    (should (= supervisor-cli-exit-failure
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match "disabled" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-is-enabled-masked ()
+  "The `is-enabled' returns exit 1 and state=masked for a masked unit."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal)))
+    (puthash "svc" 'masked supervisor--mask-override)
+    (let ((result (supervisor--cli-dispatch '("is-enabled" "svc"))))
+      (should (= supervisor-cli-exit-failure
+                 (supervisor-cli-result-exitcode result)))
+      (should (string-match "masked" (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-is-enabled-unknown-id ()
+  "The `is-enabled' returns exit 4 (no-such-unit) for unknown ID."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("is-enabled" "nonexistent"))))
+    (should (= supervisor-cli-exit-no-such-unit
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match "not-found" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-is-enabled-no-args ()
+  "The `is-enabled' with no args returns exit 2."
+  (let ((result (supervisor--cli-dispatch '("is-enabled"))))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-is-enabled-extra-args ()
+  "The `is-enabled' with multiple IDs returns exit 2."
+  (let ((result (supervisor--cli-dispatch '("is-enabled" "a" "b"))))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-is-enabled-json ()
+  "The `is-enabled --json' returns JSON with enabled and state fields."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("is-enabled" "svc" "--json"))))
+    (should (eq 'json (supervisor-cli-result-format result)))
+    (let ((parsed (json-read-from-string (supervisor-cli-result-output result))))
+      (should (equal "svc" (alist-get 'id parsed)))
+      (should (eq t (alist-get 'enabled parsed)))
+      (should (equal "enabled" (alist-get 'state parsed))))))
+
+(ert-deftest supervisor-test-cli-is-enabled-masked-json ()
+  "The `is-enabled --json' for masked unit shows enabled=false, state=masked."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal)))
+    (puthash "svc" 'masked supervisor--mask-override)
+    (let* ((result (supervisor--cli-dispatch '("is-enabled" "svc" "--json")))
+           (parsed (json-read-from-string (supervisor-cli-result-output result))))
+      (should (= supervisor-cli-exit-failure
+                 (supervisor-cli-result-exitcode result)))
+      (should (eq :json-false (alist-get 'enabled parsed)))
+      (should (equal "masked" (alist-get 'state parsed))))))
+
+;;; CLI -- is-failed Tests
+
+(ert-deftest supervisor-test-cli-is-failed-dead ()
+  "The `is-failed' returns exit 0 for a crash-looped (dead) unit."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal)))
+    (puthash "svc" t supervisor--failed)
+    (let ((result (supervisor--cli-dispatch '("is-failed" "svc"))))
+      (should (= supervisor-cli-exit-success
+                 (supervisor-cli-result-exitcode result)))
+      (should (string-match "dead" (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-is-failed-not-failed ()
+  "The `is-failed' returns exit 1 for a non-failed unit."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("is-failed" "svc"))))
+    (should (= supervisor-cli-exit-failure
+               (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-is-failed-oneshot-failed ()
+  "The `is-failed' returns exit 0 for a oneshot with non-zero exit."
+  (let* ((supervisor-programs '(("false" :id "svc" :type oneshot)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+    (puthash "svc" 1 supervisor--oneshot-completed)
+    (let ((result (supervisor--cli-dispatch '("is-failed" "svc"))))
+      (should (= supervisor-cli-exit-success
+                 (supervisor-cli-result-exitcode result)))
+      (should (string-match "failed" (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-is-failed-unknown-id ()
+  "The `is-failed' returns exit 4 (no-such-unit) for unknown ID."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("is-failed" "nonexistent"))))
+    (should (= supervisor-cli-exit-no-such-unit
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match "inactive" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-is-failed-no-args ()
+  "The `is-failed' with no args returns exit 2."
+  (let ((result (supervisor--cli-dispatch '("is-failed"))))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-is-failed-extra-args ()
+  "The `is-failed' with multiple IDs returns exit 2."
+  (let ((result (supervisor--cli-dispatch '("is-failed" "a" "b"))))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-is-failed-json ()
+  "The `is-failed --json' returns JSON with failed and status fields."
+  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal)))
+    (puthash "svc" t supervisor--failed)
+    (let* ((result (supervisor--cli-dispatch '("is-failed" "svc" "--json")))
+           (parsed (json-read-from-string (supervisor-cli-result-output result))))
+      (should (= supervisor-cli-exit-success
+                 (supervisor-cli-result-exitcode result)))
+      (should (eq 'json (supervisor-cli-result-format result)))
+      (should (equal "svc" (alist-get 'id parsed)))
+      (should (eq t (alist-get 'failed parsed)))
+      (should (equal "dead" (alist-get 'status parsed))))))
+
+(ert-deftest supervisor-test-cli-is-failed-running-json ()
+  "The `is-failed --json' returns failed=false for running unit."
+  (let* ((supervisor-programs '(("sleep 999" :id "svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (proc (start-process "test" nil "sleep" "999")))
+    (unwind-protect
+        (progn
+          (puthash "svc" proc supervisor--processes)
+          (let* ((result (supervisor--cli-dispatch '("is-failed" "svc" "--json")))
+                 (parsed (json-read-from-string
+                          (supervisor-cli-result-output result))))
+            (should (= supervisor-cli-exit-failure
+                       (supervisor-cli-result-exitcode result)))
+            (should (eq :json-false (alist-get 'failed parsed)))))
+      (delete-process proc))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

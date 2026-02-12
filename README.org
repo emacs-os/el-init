@@ -859,6 +859,9 @@ Systemctl-compatible commands:
 - ~mask [--] ID...~ (always disabled, overrides enable)
 - ~unmask [--] ID...~
 - ~kill [--signal SIG] [--] ID~
+- ~is-active ID~ (exit 0 if running, 3 if not active, 4 if unknown)
+- ~is-enabled ID~ (exit 0 if enabled, 1 if disabled/masked, 4 if unknown)
+- ~is-failed ID~ (exit 0 if failed/dead, 1 if not failed, 4 if unknown)
 - ~cat ID~ (display raw unit file content)
 - ~edit ID~ (edit unit file; creates scaffold if missing)
 - ~list-dependencies [ID]~
@@ -920,6 +923,19 @@ IDs.
 - non-interactive: launches ~$VISUAL~ or ~$EDITOR~
 - JSON: ~{"path": "...", "created": true/false}~
 
+~is-active~, ~is-enabled~, ~is-failed~:
+
+- require exactly one ID argument
+- use strict systemctl-compatible exit codes (not boolean 0/1)
+- human output prints the status/state string followed by newline
+- ~is-active~: exit 0 if running, exit 3 if not active, exit 4 if no such unit
+- ~is-enabled~: exit 0 if enabled, exit 1 if disabled or masked, exit 4 if no
+  such unit; output distinguishes "enabled", "disabled", and "masked" states
+- ~is-failed~: exit 0 if status is "dead" or "failed", exit 1 if not failed,
+  exit 4 if no such unit
+- JSON: ~{"id": "...", "<predicate>": true/false, "status": "..."}~
+  (~is-enabled~ uses ~"state"~ instead of ~"status"~)
+
 ** Output Formats
 
 Human format is default.
@@ -960,10 +976,11 @@ Empty collections are encoded as arrays (not ~null~).
 
 | Code | Meaning |
 | ~0~ | Success |
-| ~1~ | Runtime failure |
+| ~1~ | Runtime failure (also: ~is-enabled~ disabled/masked, ~is-failed~ not failed) |
 | ~2~ | Invalid arguments |
-| ~3~ | Emacs server unavailable |
-| ~4~ | Validation failed |
+| ~3~ | ~is-active~: unit exists but not active (systemctl parity) |
+| ~4~ | ~is-*~: no such unit; also: ~validate~ validation failed |
+| ~69~ | Emacs server unavailable (EX_UNAVAILABLE) |
 
 * Events and Hooks
 :PROPERTIES:
