@@ -557,7 +557,7 @@ Dashboard:
 
 CLI:
 
-- ~supervisorctl timers~ shows timer runtime/invalid definitions
+- ~supervisorctl list-timers~ shows timer runtime/invalid definitions
 - If subsystem is gated off, command returns explicit disabled status
 
 * Dashboard (~M-x supervisor~)
@@ -728,38 +728,42 @@ Wrapper/dispatcher usage behavior:
 
 ** CLI Commands
 
-Lifecycle:
+Systemctl-compatible commands:
 
-- ~status [ID...]~
-- ~list [ID...]~ (alias of ~status~)
-- ~describe ID~
+- ~status [ID...]~ (detail with IDs, overview without)
+- ~list-units [ID...]~ (overview table)
+- ~show ID~ (all properties of a unit)
 - ~start [-- ID...]~
 - ~stop [-- ID...]~
 - ~restart [-- ID...]~
-- ~reconcile~
-- ~validate~
-
-Overrides and policy:
-
 - ~enable [--] ID...~
 - ~disable [--] ID...~
+- ~kill [--signal SIG] [--] ID~
+- ~list-dependencies [ID]~
+- ~list-timers~
+
+Supervisor-specific commands:
+
+- ~reconcile~
+- ~validate~
 - ~restart-policy (on|off) [--] ID...~
 - ~logging (on|off) [--] ID...~
-
-Inspection and utilities:
-
 - ~blame~
-- ~graph [ID]~
 - ~logs [--tail N] [--] ID~
-- ~kill [--signal SIG] [--] ID~
 - ~ping~
 - ~version~
-- ~timers~
 
 Use ~--~ before IDs that start with ~-~ for commands that accept positional
 IDs.
 
 ** Command Notes
+
+~status~:
+
+- with IDs: detailed per-unit output for valid units, invalid detail for
+  misconfigured units, and "could not be found" for truly missing IDs; non-zero
+  exit only when IDs are truly missing (not just invalid)
+- without IDs: overview table (delegates to ~list-units~)
 
 ~validate~:
 
@@ -771,12 +775,12 @@ IDs.
 - with IDs: operate on those IDs
 - with no IDs: operate on whole supervisor (~start~, ~stop~, ~stop+start~)
 
-~graph~:
+~list-dependencies~:
 
 - no ID: full edge list
 - with ID: after/requires/blocks for that ID
 
-~timers~:
+~list-timers~:
 
 - explicit disabled response when timer subsystem is gated off
 
@@ -785,12 +789,18 @@ IDs.
 Human format is default.
 
 ~--json~ returns stable object structures per command (for example status,
-validate, graph, timers).
+validate, list-dependencies, list-timers).
 
-Status JSON top-level keys:
+Status JSON top-level keys (~status~ without IDs / ~list-units~):
 
 - ~entries~ (array)
 - ~invalid~ (array)
+
+Status JSON top-level keys (~status ID...~):
+
+- ~entries~ (array, valid unit detail)
+- ~invalid~ (array, invalid configured units with reason)
+- ~not_found~ (array, truly missing IDs)
 
 Timer JSON top-level keys:
 
@@ -1017,7 +1027,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Exit code semantics for oneshots (signals stored negative): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Graceful vs hard stop (~supervisor-stop~ vs ~supervisor-stop-now~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#command-reference][Command Reference]]
 - Hyphen-prefixed IDs in CLI (use ~--~ separator): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
-- JSON contracts (status/validate/timers + error shape): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
+- JSON contracts (status/validate/list-timers + error shape): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Log rotation and log file paths: [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Logging pipeline (~supervisor--log~, ~supervisor-verbose~, ~supervisor-log-to-file~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Manual stop behavior and restart suppression: [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]

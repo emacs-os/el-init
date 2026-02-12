@@ -338,6 +338,15 @@ invalid is list of (id . reason) pairs, sorted by ID for determinism."
      (when ready-time (format "Ready time: %.3f\n" ready-time))
      (when duration (format "Duration: %.3fs\n" duration)))))
 
+(defun supervisor--cli-describe-invalid-human (info)
+  "Format invalid entry INFO as human-readable detail view."
+  (let ((id (alist-get 'id info))
+        (reason (alist-get 'reason info)))
+    (concat
+     (format "ID: %s\n" id)
+     (format "Status: invalid\n")
+     (format "Reason: %s\n" (or reason "-")))))
+
 ;;; CLI JSON Formatters
 
 (defun supervisor--cli-entry-to-json-obj (info)
@@ -375,8 +384,81 @@ Empty lists are encoded as arrays, not null."
 ;;; CLI Subcommand Handlers
 
 (defun supervisor--cli-cmd-status (args json-p)
-  "Handle `status' command with ARGS.  JSON-P enables JSON output."
-  ;; Check for unknown flags (args starting with --)
+  "Handle `status [ID...]' command with ARGS.  JSON-P enables JSON output.
+With IDs, show detailed status for each unit (valid or invalid).
+Print output for found units, invalid detail for invalid units,
+and append warnings for truly missing IDs (exit non-zero if any missing).
+Without IDs, show overview table (same as `list-units')."
+  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+    (if unknown
+        (supervisor--cli-error supervisor-cli-exit-invalid-args
+                               (format "Unknown option: %s" unknown)
+                               (if json-p 'json 'human))
+      (if args
+          ;; Detailed status for specific IDs
+          (let* ((snapshot (supervisor--build-snapshot))
+                 (result (supervisor--cli-all-entries-info snapshot))
+                 (entries (car result))
+                 (invalid (cadr result))
+                 (valid-out nil)
+                 (invalid-out nil)
+                 (missing nil))
+            (dolist (id args)
+              (let ((info (cl-find id entries
+                                   :key (lambda (e) (alist-get 'id e))
+                                   :test #'equal)))
+                (if info
+                    (push info valid-out)
+                  (let ((inv (cl-find id invalid
+                                      :key (lambda (e) (alist-get 'id e))
+                                      :test #'equal)))
+                    (if inv
+                        (push inv invalid-out)
+                      (push id missing))))))
+            (setq valid-out (nreverse valid-out))
+            (setq invalid-out (nreverse invalid-out))
+            (setq missing (nreverse missing))
+            (let* ((detail
+                    (if json-p
+                        (json-encode
+                         `((entries
+                            . ,(supervisor--cli-ensure-array
+                                (mapcar #'supervisor--cli-entry-to-json-obj
+                                        valid-out)))
+                           (invalid
+                            . ,(supervisor--cli-ensure-array
+                                (mapcar #'supervisor--cli-invalid-to-json-obj
+                                        invalid-out)))
+                           (not_found
+                            . ,(supervisor--cli-ensure-array missing))))
+                      (concat
+                       (when valid-out
+                         (mapconcat #'supervisor--cli-describe-human
+                                    valid-out "\n"))
+                       (when invalid-out
+                         (concat
+                          (when valid-out "\n")
+                          (mapconcat #'supervisor--cli-describe-invalid-human
+                                     invalid-out "\n")))
+                       (when missing
+                         (concat
+                          (when (or valid-out invalid-out) "\n")
+                          (mapconcat
+                           (lambda (id)
+                             (format "Unit %s could not be found.\n" id))
+                           missing ""))))))
+                   (exitcode (if missing
+                                 supervisor-cli-exit-failure
+                               supervisor-cli-exit-success)))
+              (supervisor--cli-make-result
+               exitcode (if json-p 'json 'human) detail)))
+        ;; No IDs: overview table (same as list-units)
+        (supervisor--cli-cmd-list-units nil json-p)))))
+
+(defun supervisor--cli-cmd-list-units (args json-p)
+  "Handle `list-units [ID...]' command with ARGS.  JSON-P enables JSON output.
+Show overview status table for all or filtered entries.
+When IDs are specified, both valid and invalid rows are filtered."
   (let ((unknown (supervisor--cli-has-unknown-flags args)))
     (if unknown
         (supervisor--cli-error supervisor-cli-exit-invalid-args
@@ -386,33 +468,33 @@ Empty lists are encoded as arrays, not null."
              (result (supervisor--cli-all-entries-info snapshot))
              (entries (car result))
              (invalid (cadr result))
-             ;; Filter by IDs if specified
              (entries (if args
                           (cl-remove-if-not
                            (lambda (e) (member (alist-get 'id e) args))
                            entries)
-                        entries)))
+                        entries))
+             (invalid (if args
+                          (cl-remove-if-not
+                           (lambda (e) (member (alist-get 'id e) args))
+                           invalid)
+                        invalid)))
         (supervisor--cli-success
          (if json-p
              (supervisor--cli-status-json entries invalid)
            (supervisor--cli-status-human entries invalid))
          (if json-p 'json 'human))))))
 
-(defun supervisor--cli-cmd-list (args json-p)
-  "Handle `list' command with ARGS.  JSON-P enables JSON output."
-  ;; list is alias for status
-  (supervisor--cli-cmd-status args json-p))
-
-(defun supervisor--cli-cmd-describe (args json-p)
-  "Handle `describe ID' command with ARGS.  JSON-P enables JSON output."
+(defun supervisor--cli-cmd-show (args json-p)
+  "Handle `show ID' command with ARGS.  JSON-P enables JSON output.
+Show all properties of a single unit."
   (cond
    ((null args)
     (supervisor--cli-error supervisor-cli-exit-invalid-args
-                           "describe requires an ID argument"
+                           "show requires an ID argument"
                            (if json-p 'json 'human)))
    ((cdr args)
     (supervisor--cli-error supervisor-cli-exit-invalid-args
-                           (format "describe takes exactly one ID, got: %s"
+                           (format "show takes exactly one ID, got: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    (t
@@ -420,16 +502,31 @@ Empty lists are encoded as arrays, not null."
            (snapshot (supervisor--build-snapshot))
            (result (supervisor--cli-all-entries-info snapshot))
            (entries (car result))
-           (info (cl-find id entries :key (lambda (e) (alist-get 'id e)) :test #'equal)))
-      (if info
-          (supervisor--cli-success
-           (if json-p
-               (json-encode (supervisor--cli-entry-to-json-obj info))
-             (supervisor--cli-describe-human info))
-           (if json-p 'json 'human))
+           (invalid (cadr result))
+           (info (cl-find id entries
+                          :key (lambda (e) (alist-get 'id e))
+                          :test #'equal))
+           (inv (unless info
+                  (cl-find id invalid
+                           :key (lambda (e) (alist-get 'id e))
+                           :test #'equal))))
+      (cond
+       (info
+        (supervisor--cli-success
+         (if json-p
+             (json-encode (supervisor--cli-entry-to-json-obj info))
+           (supervisor--cli-describe-human info))
+         (if json-p 'json 'human)))
+       (inv
+        (supervisor--cli-success
+         (if json-p
+             (json-encode (supervisor--cli-invalid-to-json-obj inv))
+           (supervisor--cli-describe-invalid-human inv))
+         (if json-p 'json 'human)))
+       (t
         (supervisor--cli-error supervisor-cli-exit-failure
                                (format "No entry with ID '%s'" id)
-                               (if json-p 'json 'human)))))))
+                               (if json-p 'json 'human))))))))
 
 (defun supervisor--cli-cmd-validate (args json-p)
   "Handle `validate' command with ARGS.  JSON-P enables JSON output."
@@ -869,13 +966,12 @@ Use -- before IDs that start with a hyphen."
                        blame-data "")))
          (if json-p 'json 'human))))))
 
-(defun supervisor--cli-cmd-graph (args json-p)
-  "Handle `graph [ID]' command with ARGS.  JSON-P enables JSON output."
-  ;; Check for extra args (graph takes at most 1 ID)
+(defun supervisor--cli-cmd-list-dependencies (args json-p)
+  "Handle `list-dependencies [ID]' command with ARGS.  JSON-P for JSON."
   (cond
    ((> (length args) 1)
     (supervisor--cli-error supervisor-cli-exit-invalid-args
-                           (format "graph takes at most one ID, got: %s"
+                           (format "list-dependencies takes at most one ID, got: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    ((and args (string-prefix-p "-" (car args)))
@@ -1217,8 +1313,8 @@ Returns a list of alists, one per timer."
                             (mapcar #'supervisor--cli-invalid-timer-to-json-obj invalid))))))
     (json-encode obj)))
 
-(defun supervisor--cli-cmd-timers (args json-p)
-  "Handle `timers' command with ARGS.  JSON-P enables JSON output."
+(defun supervisor--cli-cmd-list-timers (args json-p)
+  "Handle `list-timers' command with ARGS.  JSON-P enables JSON output."
   (let ((unknown (supervisor--cli-has-unknown-flags args)))
     (cond
      (unknown
@@ -1227,7 +1323,7 @@ Returns a list of alists, one per timer."
                              (if json-p 'json 'human)))
      (args
       (supervisor--cli-error supervisor-cli-exit-invalid-args
-                             "timers command does not accept arguments"
+                             "list-timers command does not accept arguments"
                              (if json-p 'json 'human)))
      ;; Check if timer subsystem is enabled
      ((not (supervisor-timer-subsystem-active-p))
@@ -1279,18 +1375,35 @@ Returns a `supervisor-cli-result' struct."
          ((null command)
           (supervisor--cli-success
            (concat "Usage: supervisorctl COMMAND [ARGS...]\n\n"
-                   "Commands: status, list, describe, start, stop, restart,\n"
-                   "          reconcile, validate, enable, disable, restart-policy,\n"
-                   "          logging, blame, graph, logs, kill, ping, version,\n"
-                   "          timers\n\n"
+                   "Systemctl-compatible commands:\n"
+                   "  status [ID...]             Show unit status (detail with IDs, overview without)\n"
+                   "  list-units [ID...]         List units (overview table)\n"
+                   "  show ID                    Show all properties of a unit\n"
+                   "  start [-- ID...]           Start units\n"
+                   "  stop [-- ID...]            Stop units\n"
+                   "  restart [-- ID...]         Restart units\n"
+                   "  enable [--] ID...          Enable units\n"
+                   "  disable [--] ID...         Disable units\n"
+                   "  kill [--signal SIG] [--] ID  Send signal to unit\n"
+                   "  list-dependencies [ID]     Show dependency graph\n"
+                   "  list-timers                Show timer units\n\n"
+                   "Supervisor-specific commands:\n"
+                   "  reconcile                  Reconcile config and runtime\n"
+                   "  validate                   Validate config\n"
+                   "  restart-policy (on|off) ID...  Set restart policy\n"
+                   "  logging (on|off) ID...     Set logging policy\n"
+                   "  blame                      Show startup timing\n"
+                   "  logs [--tail N] [--] ID    View unit log file\n"
+                   "  ping                       Check supervisor liveness\n"
+                   "  version                    Show version\n\n"
                    "Options: --json (output as JSON)\n")
            (if json-p 'json 'human)))
          ((equal command "status")
           (supervisor--cli-cmd-status args json-p))
-         ((equal command "list")
-          (supervisor--cli-cmd-list args json-p))
-         ((equal command "describe")
-          (supervisor--cli-cmd-describe args json-p))
+         ((equal command "list-units")
+          (supervisor--cli-cmd-list-units args json-p))
+         ((equal command "show")
+          (supervisor--cli-cmd-show args json-p))
          ((equal command "validate")
           (supervisor--cli-cmd-validate args json-p))
          ((equal command "start")
@@ -1311,8 +1424,8 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-logging args json-p))
          ((equal command "blame")
           (supervisor--cli-cmd-blame args json-p))
-         ((equal command "graph")
-          (supervisor--cli-cmd-graph args json-p))
+         ((equal command "list-dependencies")
+          (supervisor--cli-cmd-list-dependencies args json-p))
          ((equal command "logs")
           (supervisor--cli-cmd-logs args json-p))
          ((equal command "kill")
@@ -1321,8 +1434,8 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-ping args json-p))
          ((equal command "version")
           (supervisor--cli-cmd-version args json-p))
-         ((equal command "timers")
-          (supervisor--cli-cmd-timers args json-p))
+         ((equal command "list-timers")
+          (supervisor--cli-cmd-list-timers args json-p))
          (t
           (supervisor--cli-error supervisor-cli-exit-invalid-args
                                  (format "Unknown command: %s" command)

@@ -4009,33 +4009,33 @@ at minute boundaries."
     (should (= supervisor-cli-exit-validation-failed (supervisor-cli-result-exitcode result)))
     (should (string-match "1 invalid" (supervisor-cli-result-output result)))))
 
-(ert-deftest supervisor-test-cli-status-human-format ()
-  "Status command returns human-readable table."
+(ert-deftest supervisor-test-cli-list-units-human-format ()
+  "The `list-units' command returns human-readable table."
   (let* ((supervisor-programs '(("test-cmd" :id "test" :type simple)))
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--entry-state (make-hash-table :test 'equal))
-         (result (supervisor--cli-dispatch '("status"))))
+         (result (supervisor--cli-dispatch '("list-units"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
     (should (eq 'human (supervisor-cli-result-format result)))
     ;; Should contain header row
     (should (string-match "ID" (supervisor-cli-result-output result)))))
 
-(ert-deftest supervisor-test-cli-status-json-format ()
-  "Status --json returns JSON array."
+(ert-deftest supervisor-test-cli-list-units-json-format ()
+  "The `list-units --json' returns JSON with entries array."
   (let* ((supervisor-programs '(("test-cmd" :id "test" :type simple)))
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--entry-state (make-hash-table :test 'equal))
-         (result (supervisor--cli-dispatch '("status" "--json"))))
+         (result (supervisor--cli-dispatch '("list-units" "--json"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
     (should (eq 'json (supervisor-cli-result-format result)))
     ;; Should be valid JSON with entries array
     (should (string-match "\"entries\"" (supervisor-cli-result-output result)))))
 
-(ert-deftest supervisor-test-cli-describe-requires-id ()
-  "Describe without ID returns invalid-args exit code."
-  (let ((result (supervisor--cli-dispatch '("describe"))))
+(ert-deftest supervisor-test-cli-show-requires-id ()
+  "The `show' command without ID returns invalid-args exit code."
+  (let ((result (supervisor--cli-dispatch '("show"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
@@ -4151,17 +4151,17 @@ at minute boundaries."
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
-(ert-deftest supervisor-test-cli-graph-full ()
-  "Graph command without ID returns full graph."
+(ert-deftest supervisor-test-cli-list-dependencies-full ()
+  "The `list-dependencies' command without ID returns full graph."
   (let* ((supervisor-programs '(("a" :id "a") ("b" :id "b" :after "a")))
-         (result (supervisor--cli-dispatch '("graph"))))
+         (result (supervisor--cli-dispatch '("list-dependencies"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))))
 
-(ert-deftest supervisor-test-cli-graph-single ()
-  "Graph command with ID returns single entry graph."
+(ert-deftest supervisor-test-cli-list-dependencies-single ()
+  "The `list-dependencies' command with ID returns single entry deps."
   (let* ((supervisor-programs '(("a" :id "a") ("b" :id "b" :after "a")))
-         (result (supervisor--cli-dispatch '("graph" "b"))))
+         (result (supervisor--cli-dispatch '("list-dependencies" "b"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
     (should (string-match "ID: b" (supervisor-cli-result-output result)))))
@@ -4192,13 +4192,189 @@ at minute boundaries."
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
 (ert-deftest supervisor-test-cli-reload-is-unknown-command ()
-  "Legacy reload command is rejected after canonical rename."
+  "Legacy reload command is rejected."
   (let ((result (supervisor--cli-dispatch '("reload"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args
                (supervisor-cli-result-exitcode result)))
     (should (string-match "Unknown command: reload"
                           (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-list-is-unknown-command ()
+  "Legacy `list' command is rejected after rename to `list-units'."
+  (let ((result (supervisor--cli-dispatch '("list"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match "Unknown command: list"
+                          (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-describe-is-unknown-command ()
+  "Legacy `describe' command is rejected after rename to `show'."
+  (let ((result (supervisor--cli-dispatch '("describe"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match "Unknown command: describe"
+                          (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-graph-is-unknown-command ()
+  "Legacy `graph' command is rejected after rename to `list-dependencies'."
+  (let ((result (supervisor--cli-dispatch '("graph"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match "Unknown command: graph"
+                          (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-timers-is-unknown-command ()
+  "Legacy `timers' command is rejected after rename to `list-timers'."
+  (let ((result (supervisor--cli-dispatch '("timers"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match "Unknown command: timers"
+                          (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-status-no-args-shows-table ()
+  "The `status' with no IDs shows overview table (delegates to `list-units')."
+  (let* ((supervisor-programs '(("test-cmd" :id "test" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("status"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    ;; Should contain header row (table format)
+    (should (string-match "ID" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-status-with-id-shows-detail ()
+  "The `status ID' shows detailed unit info."
+  (let* ((supervisor-programs '(("test-cmd" :id "test" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("status" "test"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    ;; Should show detailed info (describe format)
+    (should (string-match "ID: test" (supervisor-cli-result-output result)))
+    (should (string-match "Type:" (supervisor-cli-result-output result)))
+    (should (string-match "Status:" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-status-partial-missing ()
+  "The `status ID1 ID2' prints found units and warns about missing ones."
+  (let* ((supervisor-programs '(("test-cmd" :id "test" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("status" "test" "nonexistent"))))
+    (should (supervisor-cli-result-p result))
+    ;; Non-zero exit because of missing ID
+    (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
+    ;; But should still show output for the found ID
+    (should (string-match "ID: test" (supervisor-cli-result-output result)))
+    ;; And warn about the missing one
+    (should (string-match "nonexistent" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-status-all-missing ()
+  "The `status' with only missing IDs still shows warnings."
+  (let* ((supervisor-programs '(("test-cmd" :id "test" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("status" "nope"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
+    (should (string-match "could not be found" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-list-units-filters-invalid ()
+  "The `list-units ID' filters both valid and invalid entries."
+  (let* ((supervisor-programs '(("good-cmd" :id "good" :type simple)
+                                ("bad-cmd" :id "bad" :type "string-type")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("list-units" "good"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    ;; Should show "good" but not "bad" (invalid entry filtered out)
+    (should (string-match "good" (supervisor-cli-result-output result)))
+    (should-not (string-match "bad" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-status-invalid-id-shows-invalid-detail ()
+  "The `status' with an invalid unit ID shows invalid detail, not \"not found\"."
+  (let* ((supervisor-programs '(("good-cmd" :id "good" :type simple)
+                                ("bad-cmd" :id "bad" :type "string-type")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("status" "bad"))))
+    (should (supervisor-cli-result-p result))
+    ;; Invalid configured unit is found, so exit success (not missing)
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    (should (string-match "ID: bad" (supervisor-cli-result-output result)))
+    (should (string-match "Status: invalid" (supervisor-cli-result-output result)))
+    (should-not (string-match "could not be found" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-status-mixed-valid-invalid-missing ()
+  "The `status' with valid, invalid, and missing IDs classifies each correctly."
+  (let* ((supervisor-programs '(("good-cmd" :id "good" :type simple)
+                                ("bad-cmd" :id "bad" :type "string-type")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("status" "good" "bad" "ghost"))))
+    (should (supervisor-cli-result-p result))
+    ;; Non-zero exit because "ghost" is truly missing
+    (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
+    ;; Valid unit has detail
+    (should (string-match "ID: good" (supervisor-cli-result-output result)))
+    ;; Invalid unit has invalid detail
+    (should (string-match "ID: bad" (supervisor-cli-result-output result)))
+    (should (string-match "Status: invalid" (supervisor-cli-result-output result)))
+    ;; Only the truly missing ID gets "could not be found"
+    (should (string-match "ghost.*could not be found" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-status-invalid-id-json ()
+  "The `status --json' with invalid ID returns invalid array, not not_found."
+  (let* ((supervisor-programs '(("bad-cmd" :id "bad" :type "string-type")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("status" "bad" "--json"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    (let ((parsed (json-read-from-string (supervisor-cli-result-output result))))
+      ;; Invalid unit appears in "invalid" array, not "not_found"
+      (should (< 0 (length (alist-get 'invalid parsed))))
+      (should (equal "bad" (alist-get 'id (aref (alist-get 'invalid parsed) 0)))))))
+
+(ert-deftest supervisor-test-cli-show-invalid-id-shows-invalid-detail ()
+  "The `show' with an invalid unit ID shows invalid detail, not \"not found\"."
+  (let* ((supervisor-programs '(("bad-cmd" :id "bad" :type "string-type")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("show" "bad"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    (should (string-match "ID: bad" (supervisor-cli-result-output result)))
+    (should (string-match "Status: invalid" (supervisor-cli-result-output result)))
+    (should-not (string-match "No entry with ID" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-show-invalid-id-json ()
+  "The `show --json' with invalid ID returns invalid object, not error."
+  (let* ((supervisor-programs '(("bad-cmd" :id "bad" :type "string-type")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("show" "bad" "--json"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+    (let ((parsed (json-read-from-string (supervisor-cli-result-output result))))
+      (should (equal "bad" (alist-get 'id parsed)))
+      (should (alist-get 'reason parsed)))))
+
+(ert-deftest supervisor-test-cli-show-truly-missing-still-errors ()
+  "The `show' with a truly missing ID still returns an error."
+  (let* ((supervisor-programs '(("good-cmd" :id "good" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("show" "ghost"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
+    (should (string-match "No entry with ID" (supervisor-cli-result-output result)))))
 
 (ert-deftest supervisor-test-cli-ping-rejects-extra-args ()
   "Ping with extra args returns invalid-args exit code."
@@ -4212,20 +4388,20 @@ at minute boundaries."
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
-(ert-deftest supervisor-test-cli-timers-no-timers ()
-  "Timers command with no timers configured."
+(ert-deftest supervisor-test-cli-list-timers-no-timers ()
+  "The `list-timers' command with no timers configured."
   (let ((supervisor-timer-subsystem-mode t)
         (supervisor-mode t)
         (supervisor--timer-list nil)
         (supervisor--timer-state (make-hash-table :test 'equal))
         (supervisor--invalid-timers (make-hash-table :test 'equal)))
-    (let ((result (supervisor--cli-dispatch '("timers"))))
+    (let ((result (supervisor--cli-dispatch '("list-timers"))))
       (should (supervisor-cli-result-p result))
       (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
       (should (string-match "No timers" (supervisor-cli-result-output result))))))
 
-(ert-deftest supervisor-test-cli-timers-shows-state ()
-  "Timers command shows timer state."
+(ert-deftest supervisor-test-cli-list-timers-shows-state ()
+  "The `list-timers' command shows timer state."
   (let* ((supervisor-timer-subsystem-mode t)
          (supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
@@ -4234,19 +4410,19 @@ at minute boundaries."
          (supervisor--invalid-timers (make-hash-table :test 'equal)))
     (puthash "t1" '(:last-run-at 1000.0 :next-run-at 2000.0)
              supervisor--timer-state)
-    (let ((result (supervisor--cli-dispatch '("timers"))))
+    (let ((result (supervisor--cli-dispatch '("list-timers"))))
       (should (supervisor-cli-result-p result))
       (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
       (should (string-match "t1" (supervisor-cli-result-output result)))
       (should (string-match "s1" (supervisor-cli-result-output result))))))
 
-(ert-deftest supervisor-test-cli-timers-json ()
-  "Timers command with --json outputs JSON."
+(ert-deftest supervisor-test-cli-list-timers-json ()
+  "The `list-timers --json' outputs JSON."
   (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--invalid-timers (make-hash-table :test 'equal)))
-    (let ((result (supervisor--cli-dispatch '("--json" "timers"))))
+    (let ((result (supervisor--cli-dispatch '("--json" "list-timers"))))
       (should (supervisor-cli-result-p result))
       (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
       (should (eq 'json (supervisor-cli-result-format result)))
@@ -4254,8 +4430,8 @@ at minute boundaries."
       (let ((json-object-type 'alist))
         (should (json-read-from-string (supervisor-cli-result-output result)))))))
 
-(ert-deftest supervisor-test-cli-timers-invalid-human-format ()
-  "Timers command shows invalid timers with correct id and reason."
+(ert-deftest supervisor-test-cli-list-timers-invalid-human-format ()
+  "The `list-timers' command shows invalid timers with correct id and reason."
   (let ((supervisor-timer-subsystem-mode t)
         (supervisor-mode t)
         (supervisor--timer-list nil)
@@ -4263,7 +4439,7 @@ at minute boundaries."
         (supervisor--invalid-timers (make-hash-table :test 'equal)))
     ;; Add invalid timer with known id and reason
     (puthash "bad-timer" ":target 'missing' not found" supervisor--invalid-timers)
-    (let ((result (supervisor--cli-dispatch '("timers"))))
+    (let ((result (supervisor--cli-dispatch '("list-timers"))))
       (should (supervisor-cli-result-p result))
       (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
       ;; Should show id and reason correctly
@@ -4271,8 +4447,8 @@ at minute boundaries."
       (should (string-match-p ":target 'missing' not found"
                               (supervisor-cli-result-output result))))))
 
-(ert-deftest supervisor-test-cli-timers-invalid-json-format ()
-  "Timers --json outputs invalid timers with correct structure."
+(ert-deftest supervisor-test-cli-list-timers-invalid-json-format ()
+  "The `list-timers --json' outputs invalid timers with correct structure."
   (let ((supervisor-timer-subsystem-mode t)
         (supervisor-mode t)
         (supervisor--timer-list nil)
@@ -4280,7 +4456,7 @@ at minute boundaries."
         (supervisor--invalid-timers (make-hash-table :test 'equal)))
     ;; Add invalid timer
     (puthash "bad-timer" "test reason" supervisor--invalid-timers)
-    (let ((result (supervisor--cli-dispatch '("--json" "timers"))))
+    (let ((result (supervisor--cli-dispatch '("--json" "list-timers"))))
       (should (supervisor-cli-result-p result))
       (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
       ;; Parse JSON and check invalid array structure
@@ -4306,8 +4482,8 @@ at minute boundaries."
       ;; Status is at index 4
       (should (string-match-p "failed" (aref entry 4))))))
 
-(ert-deftest supervisor-test-cli-timers-full-field-mapping ()
-  "CLI timers output includes all required fields per Phase 5 contract."
+(ert-deftest supervisor-test-cli-list-timers-full-field-mapping ()
+  "The `list-timers' output includes all required fields."
   (let* ((supervisor-timer-subsystem-mode t)
          (supervisor-mode t)
          (timer (supervisor-timer--create :id "test-timer" :target "test-target"
@@ -4325,7 +4501,7 @@ at minute boundaries."
                             :last-miss-reason overlap)
              supervisor--timer-state)
     ;; Test human format includes all fields
-    (let ((result (supervisor--cli-dispatch '("timers"))))
+    (let ((result (supervisor--cli-dispatch '("list-timers"))))
       (should (supervisor-cli-result-p result))
       (let ((output (supervisor-cli-result-output result)))
         ;; ID and target
@@ -4338,7 +4514,7 @@ at minute boundaries."
         ;; Miss reason
         (should (string-match-p "overlap" output))))
     ;; Test JSON format includes all fields with correct values
-    (let ((result (supervisor--cli-dispatch '("--json" "timers"))))
+    (let ((result (supervisor--cli-dispatch '("--json" "list-timers"))))
       (should (supervisor-cli-result-p result))
       (let* ((json-object-type 'alist)
              (json-array-type 'list)
@@ -4358,12 +4534,12 @@ at minute boundaries."
         (should (= 850.0 (alist-get 'last_miss_at entry)))
         (should (equal "overlap" (alist-get 'miss_reason entry)))))))
 
-(ert-deftest supervisor-test-cli-timers-rejects-extra-args ()
-  "Timers with extra args returns invalid-args exit code."
+(ert-deftest supervisor-test-cli-list-timers-rejects-extra-args ()
+  "The `list-timers' with extra args returns invalid-args exit code."
   (let ((supervisor--timer-list nil)
         (supervisor--timer-state (make-hash-table :test 'equal))
         (supervisor--invalid-timers (make-hash-table :test 'equal)))
-    (let ((result (supervisor--cli-dispatch '("timers" "extra"))))
+    (let ((result (supervisor--cli-dispatch '("list-timers" "extra"))))
       (should (supervisor-cli-result-p result))
       (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result))))))
 
@@ -4374,10 +4550,10 @@ at minute boundaries."
       (should (supervisor-cli-result-p result))
       (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result))))))
 
-(ert-deftest supervisor-test-cli-describe-rejects-extra-args ()
-  "Describe with extra args returns invalid-args exit code."
+(ert-deftest supervisor-test-cli-show-rejects-extra-args ()
+  "The `show' with extra args returns invalid-args exit code."
   (let* ((supervisor-programs '(("cmd" :id "test")))
-         (result (supervisor--cli-dispatch '("describe" "test" "extra"))))
+         (result (supervisor--cli-dispatch '("show" "test" "extra"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
@@ -4387,19 +4563,19 @@ at minute boundaries."
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
-(ert-deftest supervisor-test-cli-graph-rejects-extra-args ()
-  "Graph with multiple args returns invalid-args exit code."
+(ert-deftest supervisor-test-cli-list-dependencies-rejects-extra-args ()
+  "The `list-dependencies' with multiple args returns invalid-args exit code."
   (let* ((supervisor-programs '(("a" :id "a")))
-         (result (supervisor--cli-dispatch '("graph" "a" "b"))))
+         (result (supervisor--cli-dispatch '("list-dependencies" "a" "b"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
 ;;; CLI JSON Schema Tests
 
-(ert-deftest supervisor-test-cli-status-json-empty-arrays ()
-  "Status JSON returns arrays, not null, for empty results."
+(ert-deftest supervisor-test-cli-list-units-json-empty-arrays ()
+  "The `list-units --json' returns arrays, not null, for empty results."
   (let* ((supervisor-programs nil)
-         (result (supervisor--cli-dispatch '("status" "--json"))))
+         (result (supervisor--cli-dispatch '("list-units" "--json"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
     ;; Should have [] not null
