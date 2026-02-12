@@ -124,7 +124,7 @@ Override state is persisted to `supervisor-overrides-file` (default: `~/.local/s
 - Corrupt files are logged and preserved, not deleted
 
 ### Dashboard
-`supervisor-dashboard-mode` extends `tabulated-list-mode`. The dashboard reads from both config (`supervisor-programs`) and runtime state hash tables to display current status.
+`supervisor-dashboard-mode` extends `tabulated-list-mode`. The dashboard reads from unit files (via `supervisor--effective-programs`) and runtime state hash tables to display current status.
 
 ## Code Quality Standards
 

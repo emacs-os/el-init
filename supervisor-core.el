@@ -71,12 +71,6 @@ This allows supervisor-core to work standalone without dashboard."
   "Emacs Lisp process supervisor."
   :group 'processes)
 
-;; Retained for test backward-compatibility (Phase 3 removes test usage).
-(defvar supervisor-programs nil
-  "Do not use.  Retained for backward compatibility.
-Services are defined as unit files in `supervisor-unit-directory'.
-Runtime code loads them via `supervisor--effective-programs'.")
-
 (defcustom supervisor-timers nil
   "List of timer definitions for scheduled oneshot execution.
 Each entry is a plist with required keys :id and :target.

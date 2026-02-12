@@ -44,12 +44,11 @@ Each entry in PROGRAMS is either a string (bare command) or
 (defmacro supervisor-test-with-unit-files (programs &rest body)
   "Execute BODY with PROGRAMS written as unit files in a temp directory.
 Binds `supervisor-unit-directory' to the temp dir, clears
-`supervisor-programs' and `supervisor--unit-file-invalid', and
-cleans up the temp directory afterward."
+`supervisor--unit-file-invalid', and cleans up the temp directory
+afterward."
   (declare (indent 1) (debug (form body)))
   `(let* ((dir--temp (make-temp-file "units-" t))
           (supervisor-unit-directory dir--temp)
-          (supervisor-programs nil)
           (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
      (supervisor-test--write-unit-files dir--temp ,programs)
      (unwind-protect
@@ -83,7 +82,7 @@ Core guards timer calls with fboundp, so validate works without timer module."
                   "emacs" nil nil nil
                   "-Q" "--batch" "-L" "."
                   "--eval" "(require 'supervisor-core)"
-                  "--eval" "(setq supervisor-programs nil)"
+                  "--eval" "(setq supervisor-unit-directory (make-temp-file \"units-\" t))"
                   "--eval" "(supervisor-validate)")))
     (should (= result 0))))
 
@@ -95,7 +94,7 @@ Tests the stop path which was previously missing fboundp guard."
                   "emacs" nil nil nil
                   "-Q" "--batch" "-L" "."
                   "--eval" "(require 'supervisor-core)"
-                  "--eval" "(setq supervisor-programs nil)"
+                  "--eval" "(setq supervisor-unit-directory (make-temp-file \"units-\" t))"
                   "--eval" "(supervisor-stop)")))
     (should (= result 0))))
 
@@ -106,7 +105,7 @@ Tests the stop path which was previously missing fboundp guard."
                   "emacs" nil nil nil
                   "-Q" "--batch" "-L" "."
                   "--eval" "(require 'supervisor-core)"
-                  "--eval" "(setq supervisor-programs nil)"
+                  "--eval" "(setq supervisor-unit-directory (make-temp-file \"units-\" t))"
                   "--eval" "(supervisor-start)")))
     (should (= result 0))))
 
@@ -119,7 +118,7 @@ Spawns a subprocess to test CLI dispatch without dashboard or timer module."
                   "-Q" "--batch" "-L" "."
                   "--eval" "(require 'supervisor-core)"
                   "--eval" "(require 'supervisor-cli)"
-                  "--eval" "(setq supervisor-programs nil)"
+                  "--eval" "(setq supervisor-unit-directory (make-temp-file \"units-\" t))"
                   "--eval" "(supervisor--cli-dispatch '(\"reconcile\"))")))
     (should (= result 0))))
 
@@ -415,7 +414,6 @@ core symbols exist without dashboard/cli-specific dependencies."
   "supervisor-validate handles malformed unit files gracefully."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
-         (supervisor-programs nil)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal))
          (supervisor--invalid (make-hash-table :test 'equal)))
     (unwind-protect
@@ -1053,18 +1051,18 @@ Only auto-started (not manually-started) disabled units are stopped."
 
 (ert-deftest supervisor-test-health-summary-format ()
   "Health summary includes all required counts."
-  (let ((supervisor-programs nil)
-        (supervisor--invalid (make-hash-table :test 'equal))
-        (supervisor--processes (make-hash-table :test 'equal))
-        (supervisor--failed (make-hash-table :test 'equal))
-        (supervisor--oneshot-completed (make-hash-table :test 'equal)))
-    (let ((summary (supervisor--health-summary)))
-      ;; Should contain all five metrics
-      (should (string-match-p "run" summary))
-      (should (string-match-p "done" summary))
-      (should (string-match-p "pend" summary))
-      (should (string-match-p "fail" summary))
-      (should (string-match-p "inv" summary)))))
+  (supervisor-test-with-unit-files nil
+    (let ((supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+      (let ((summary (supervisor--health-summary)))
+        ;; Should contain all five metrics
+        (should (string-match-p "run" summary))
+        (should (string-match-p "done" summary))
+        (should (string-match-p "pend" summary))
+        (should (string-match-p "fail" summary))
+        (should (string-match-p "inv" summary))))))
 
 (ert-deftest supervisor-test-help-text-key-parity ()
   "Help text includes all bound keys."
@@ -1104,7 +1102,6 @@ Only auto-started (not manually-started) disabled units are stopped."
 Unit-file loader already deduplicates, so only one entry is loaded."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
-         (supervisor-programs nil)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal))
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor--processes (make-hash-table :test 'equal))
@@ -1323,71 +1320,81 @@ Regression test: duplicates must not overwrite order-index of kept entry."
   "Plan->global copy mechanism populates legacy globals correctly.
 Unit test for the plan data extraction used by supervisor-start.
 Note: Does not call supervisor-start directly to avoid process spawning."
-  (let ((supervisor-programs '(("sleep 100" :id "a" :stage stage1)
-                               ("sleep 200" :id "b" :stage stage1 :after "a")
-                               ("invalid" :unknown-key t)))
-        (supervisor--invalid (make-hash-table :test 'equal))
-        (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
-        (supervisor--computed-deps (make-hash-table :test 'equal))
-        (supervisor--entry-state (make-hash-table :test 'equal))
-        (supervisor--processes (make-hash-table :test 'equal))
-        (supervisor--failed (make-hash-table :test 'equal))
-        (supervisor--restart-override (make-hash-table :test 'equal))
-        (supervisor--enabled-override (make-hash-table :test 'equal))
-        (supervisor--logging (make-hash-table :test 'equal))
-        (supervisor--restart-times (make-hash-table :test 'equal))
-        (supervisor--restart-timers (make-hash-table :test 'equal))
-        (supervisor--oneshot-completed (make-hash-table :test 'equal))
-        (supervisor--start-times (make-hash-table :test 'equal))
-        (supervisor--ready-times (make-hash-table :test 'equal))
-        (supervisor--timers nil)
-        (supervisor--current-stage nil)
-        (supervisor--completed-stages nil)
-        (supervisor--shutting-down t))  ; Prevent actual process starts
-    ;; Build plan and populate globals (same as supervisor-start)
-    (let ((plan (supervisor--build-plan supervisor-programs)))
-      (maphash (lambda (k v) (puthash k v supervisor--invalid))
-               (supervisor-plan-invalid plan))
-      (maphash (lambda (k v) (puthash k v supervisor--cycle-fallback-ids))
-               (supervisor-plan-cycle-fallback-ids plan))
-      (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
-               (supervisor-plan-deps plan)))
-    ;; Verify globals were populated from plan
-    (should (gethash "invalid" supervisor--invalid))  ; Invalid entry recorded
-    (should (equal '("a") (gethash "b" supervisor--computed-deps)))  ; Deps computed
-    (should (= 1 (hash-table-count supervisor--invalid)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "a" :stage stage1)
+        ("sleep 200" :id "b" :stage stage1 :after "a")
+        ("invalid-cmd" :id "invalid" :restart t :no-restart t))
+    (let ((supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+          (supervisor--computed-deps (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--restart-timers (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--start-times (make-hash-table :test 'equal))
+          (supervisor--ready-times (make-hash-table :test 'equal))
+          (supervisor--timers nil)
+          (supervisor--current-stage nil)
+          (supervisor--completed-stages nil)
+          (supervisor--shutting-down t))  ; Prevent actual process starts
+      ;; Build plan and populate globals (same as supervisor-start)
+      (let ((plan (supervisor--build-plan (supervisor--effective-programs))))
+        (maphash (lambda (k v) (puthash k v supervisor--invalid))
+                 (supervisor-plan-invalid plan))
+        (maphash (lambda (k v) (puthash k v supervisor--cycle-fallback-ids))
+                 (supervisor-plan-cycle-fallback-ids plan))
+        (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
+                 (supervisor-plan-deps plan)))
+      ;; Verify globals were populated from plan
+      (should (gethash "invalid" supervisor--invalid))  ; Invalid entry recorded
+      (should (equal '("a") (gethash "b" supervisor--computed-deps)))  ; Deps computed
+      (should (= 1 (hash-table-count supervisor--invalid))))))
 
 (ert-deftest supervisor-test-plan-build-warns-on-duplicates ()
   "Plan building emits warnings for duplicate IDs.
 Regression test for warning parity with legacy startup path."
-  (let ((supervisor-programs '(("sleep 100" :id "dup")
-                               ("sleep 200" :id "dup")))
-        (messages nil))
-    (cl-letf (((symbol-function 'supervisor--log)
-               (lambda (_level fmt &rest args)
-                 (push (apply #'format fmt args) messages))))
-      (supervisor--build-plan supervisor-programs))
-    ;; Should have warned about duplicate
-    (should (cl-some (lambda (m) (string-match-p "duplicate ID 'dup'" m))
-                     messages))))
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
+         (messages nil))
+    (with-temp-file (expand-file-name "dup1.el" dir)
+      (insert "(:id \"dup\" :command \"sleep 100\")"))
+    (with-temp-file (expand-file-name "dup2.el" dir)
+      (insert "(:id \"dup\" :command \"sleep 200\")"))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'supervisor--log)
+                     (lambda (_level fmt &rest args)
+                       (push (apply #'format fmt args) messages))))
+            (supervisor--build-plan (supervisor--effective-programs)))
+          ;; Should have warned about duplicate
+          (should (cl-some (lambda (m) (string-match-p "Duplicate.*ID 'dup'" m))
+                           messages)))
+      (delete-directory dir t))))
 
 (ert-deftest supervisor-test-plan-build-warns-on-invalid-after ()
   "Plan building emits warnings for invalid :after references.
 Regression test for warning parity with legacy startup path."
-  (let ((supervisor-programs '(("sleep 100" :id "a" :stage stage1)
-                               ("sleep 200" :id "b" :stage stage1 :after "nonexistent")
-                               ("sleep 300" :id "c" :stage stage2 :after "a")))
-        (messages nil))
-    (cl-letf (((symbol-function 'supervisor--log)
-               (lambda (_level fmt &rest args)
-                 (push (apply #'format fmt args) messages))))
-      (supervisor--build-plan supervisor-programs))
-    ;; Should have warned about nonexistent dep
-    (should (cl-some (lambda (m) (string-match-p "does not exist" m))
-                     messages))
-    ;; Should have warned about cross-stage dep
-    (should (cl-some (lambda (m) (string-match-p "different stage" m))
-                     messages))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "a" :stage stage1)
+        ("sleep 200" :id "b" :stage stage1 :after "nonexistent")
+        ("sleep 300" :id "c" :stage stage2 :after "a"))
+    (let ((messages nil))
+      (cl-letf (((symbol-function 'supervisor--log)
+                 (lambda (_level fmt &rest args)
+                   (push (apply #'format fmt args) messages))))
+        (supervisor--build-plan (supervisor--effective-programs)))
+      ;; Should have warned about nonexistent dep
+      (should (cl-some (lambda (m) (string-match-p "does not exist" m))
+                       messages))
+      ;; Should have warned about cross-stage dep
+      (should (cl-some (lambda (m) (string-match-p "different stage" m))
+                       messages)))))
 
 ;;; Phase 3: Snapshot-Based Read Model Tests
 
@@ -1466,25 +1473,26 @@ Regression test for warning parity with legacy startup path."
 
 (ert-deftest supervisor-test-health-summary-from-snapshot-parity ()
   "Health summary from snapshot matches direct global access."
-  (let ((supervisor-programs '(("sleep 100" :id "a")
-                               ("sleep 200" :id "b")))
-        (supervisor--processes (make-hash-table :test 'equal))
-        (supervisor--failed (make-hash-table :test 'equal))
-        (supervisor--oneshot-completed (make-hash-table :test 'equal))
-        (supervisor--entry-state (make-hash-table :test 'equal))
-        (supervisor--invalid (make-hash-table :test 'equal))
-        (supervisor--enabled-override (make-hash-table :test 'equal))
-        (supervisor--restart-override (make-hash-table :test 'equal))
-        (supervisor--logging (make-hash-table :test 'equal)))
-    ;; Mark one as failed
-    (puthash "a" t supervisor--failed)
-    ;; Build snapshot
-    (let ((snapshot (supervisor--build-snapshot)))
-      ;; Health from globals
-      (let ((health-globals (supervisor--health-summary)))
-        ;; Health from snapshot
-        (let ((health-snapshot (supervisor--health-summary snapshot)))
-          (should (equal health-globals health-snapshot)))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "a")
+        ("sleep 200" :id "b"))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal)))
+      ;; Mark one as failed
+      (puthash "a" t supervisor--failed)
+      ;; Build snapshot
+      (let ((snapshot (supervisor--build-snapshot)))
+        ;; Health from globals
+        (let ((health-globals (supervisor--health-summary)))
+          ;; Health from snapshot
+          (let ((health-snapshot (supervisor--health-summary snapshot)))
+            (should (equal health-globals health-snapshot))))))))
 
 (ert-deftest supervisor-test-reason-from-snapshot-parity ()
   "Reason computation from snapshot matches direct global access."
@@ -1516,175 +1524,204 @@ Regression test for warning parity with legacy startup path."
 (ert-deftest supervisor-test-initial-dashboard-uses-shared-snapshot ()
   "Initial dashboard render uses same snapshot for entries and header.
 Regression test: M-x supervisor must use shared snapshot like refresh does."
-  (let ((supervisor-programs '(("sleep 100" :id "a")))
-        (supervisor--processes (make-hash-table :test 'equal))
-        (supervisor--failed (make-hash-table :test 'equal))
-        (supervisor--oneshot-completed (make-hash-table :test 'equal))
-        (supervisor--entry-state (make-hash-table :test 'equal))
-        (supervisor--invalid (make-hash-table :test 'equal))
-        (supervisor--enabled-override (make-hash-table :test 'equal))
-        (supervisor--restart-override (make-hash-table :test 'equal))
-        (supervisor--logging (make-hash-table :test 'equal))
-        (supervisor--current-stage nil)
-        (supervisor--completed-stages nil)
-        (snapshots-built 0))
-    ;; Track how many snapshots are built during initial render
-    (cl-letf (((symbol-function 'supervisor--build-snapshot)
-               (lambda ()
-                 (cl-incf snapshots-built)
-                 (supervisor-snapshot--create
-                  :process-alive (make-hash-table :test 'equal)
-                  :process-pids (make-hash-table :test 'equal)
-                  :failed (copy-hash-table supervisor--failed)
-                  :oneshot-exit (copy-hash-table supervisor--oneshot-completed)
-                  :entry-state (copy-hash-table supervisor--entry-state)
-                  :invalid (copy-hash-table supervisor--invalid)
-                  :enabled-override (copy-hash-table supervisor--enabled-override)
-                  :restart-override (copy-hash-table supervisor--restart-override)
-                  :logging-override (copy-hash-table supervisor--logging)
-                  :timestamp (float-time)))))
-      (unwind-protect
-          (progn
-            (supervisor)
-            ;; Should build exactly one snapshot for initial render
-            (should (= 1 snapshots-built)))
-        ;; Cleanup
-        (when-let* ((buf (get-buffer "*supervisor*")))
-          (kill-buffer buf))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "a"))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--current-stage nil)
+          (supervisor--completed-stages nil)
+          (snapshots-built 0))
+      ;; Track how many snapshots are built during initial render
+      (cl-letf (((symbol-function 'supervisor--build-snapshot)
+                 (lambda ()
+                   (cl-incf snapshots-built)
+                   (supervisor-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (copy-hash-table supervisor--failed)
+                    :oneshot-exit (copy-hash-table supervisor--oneshot-completed)
+                    :entry-state (copy-hash-table supervisor--entry-state)
+                    :invalid (copy-hash-table supervisor--invalid)
+                    :enabled-override (copy-hash-table supervisor--enabled-override)
+                    :restart-override (copy-hash-table supervisor--restart-override)
+                    :logging-override (copy-hash-table supervisor--logging)
+                    :timestamp (float-time)))))
+        (unwind-protect
+            (progn
+              (supervisor)
+              ;; Should build exactly one snapshot for initial render
+              (should (= 1 snapshots-built)))
+          ;; Cleanup
+          (when-let* ((buf (get-buffer "*supervisor*")))
+            (kill-buffer buf)))))))
 
 ;;; Phase 4: Declarative Reconciler Tests
 
 (ert-deftest supervisor-test-compute-actions-start ()
   "Compute-actions returns start action for entries not running."
-  (let* ((supervisor-programs '(("sleep 100" :id "a")))
-         (plan (supervisor--build-plan supervisor-programs))
-         ;; Empty snapshot - nothing running
-         (snapshot (supervisor-snapshot--create
-                    :process-alive (make-hash-table :test 'equal)
-                    :process-pids (make-hash-table :test 'equal)
-                    :failed (make-hash-table :test 'equal)
-                    :oneshot-exit (make-hash-table :test 'equal)
-                    :entry-state (make-hash-table :test 'equal)
-                    :invalid (make-hash-table :test 'equal)
-                    :enabled-override (make-hash-table :test 'equal)
-                    :restart-override (make-hash-table :test 'equal)
-                    :logging-override (make-hash-table :test 'equal)
-                    :timestamp (float-time)))
-         (actions (supervisor--compute-actions plan snapshot)))
-    (should (= 1 (length actions)))
-    (should (eq 'start (plist-get (car actions) :op)))
-    (should (equal "a" (plist-get (car actions) :id)))
-    (should (eq 'new-entry (plist-get (car actions) :reason)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "a"))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           ;; Empty snapshot - nothing running
+           (snapshot (supervisor-snapshot--create
+                      :process-alive (make-hash-table :test 'equal)
+                      :process-pids (make-hash-table :test 'equal)
+                      :failed (make-hash-table :test 'equal)
+                      :oneshot-exit (make-hash-table :test 'equal)
+                      :entry-state (make-hash-table :test 'equal)
+                      :invalid (make-hash-table :test 'equal)
+                      :enabled-override (make-hash-table :test 'equal)
+                      :restart-override (make-hash-table :test 'equal)
+                      :logging-override (make-hash-table :test 'equal)
+                      :timestamp (float-time)))
+           (actions (supervisor--compute-actions plan snapshot)))
+      (should (= 1 (length actions)))
+      (should (eq 'start (plist-get (car actions) :op)))
+      (should (equal "a" (plist-get (car actions) :id)))
+      (should (eq 'new-entry (plist-get (car actions) :reason))))))
 
 (ert-deftest supervisor-test-compute-actions-stop-removed ()
   "Compute-actions returns stop action for running entries not in plan."
-  (let* ((supervisor-programs nil)  ; Empty plan
-         (plan (supervisor--build-plan supervisor-programs))
-         ;; Snapshot shows a running process
-         (process-alive (make-hash-table :test 'equal)))
-    (puthash "orphan" t process-alive)
-    (let* ((snapshot (supervisor-snapshot--create
-                      :process-alive process-alive
-                      :process-pids (make-hash-table :test 'equal)
-                      :failed (make-hash-table :test 'equal)
-                      :oneshot-exit (make-hash-table :test 'equal)
-                      :entry-state (make-hash-table :test 'equal)
-                      :invalid (make-hash-table :test 'equal)
-                      :enabled-override (make-hash-table :test 'equal)
-                      :restart-override (make-hash-table :test 'equal)
-                      :logging-override (make-hash-table :test 'equal)
-                      :timestamp (float-time)))
-           (actions (supervisor--compute-actions plan snapshot)))
-      (should (= 1 (length actions)))
-      (should (eq 'stop (plist-get (car actions) :op)))
-      (should (equal "orphan" (plist-get (car actions) :id)))
-      (should (eq 'removed (plist-get (car actions) :reason))))))
+  (supervisor-test-with-unit-files nil
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           ;; Snapshot shows a running process
+           (process-alive (make-hash-table :test 'equal)))
+      (puthash "orphan" t process-alive)
+      (let* ((snapshot (supervisor-snapshot--create
+                        :process-alive process-alive
+                        :process-pids (make-hash-table :test 'equal)
+                        :failed (make-hash-table :test 'equal)
+                        :oneshot-exit (make-hash-table :test 'equal)
+                        :entry-state (make-hash-table :test 'equal)
+                        :invalid (make-hash-table :test 'equal)
+                        :enabled-override (make-hash-table :test 'equal)
+                        :restart-override (make-hash-table :test 'equal)
+                        :logging-override (make-hash-table :test 'equal)
+                        :timestamp (float-time)))
+             (actions (supervisor--compute-actions plan snapshot)))
+        (should (= 1 (length actions)))
+        (should (eq 'stop (plist-get (car actions) :op)))
+        (should (equal "orphan" (plist-get (car actions) :id)))
+        (should (eq 'removed (plist-get (car actions) :reason)))))))
 
 (ert-deftest supervisor-test-compute-actions-stop-disabled ()
   "Compute-actions returns stop action for running entries now disabled."
-  (let* ((supervisor-programs '(("sleep 100" :id "a" :disabled t)))
-         (plan (supervisor--build-plan supervisor-programs))
-         ;; Snapshot shows process is running
-         (process-alive (make-hash-table :test 'equal)))
-    (puthash "a" t process-alive)
-    (let* ((snapshot (supervisor-snapshot--create
-                      :process-alive process-alive
-                      :process-pids (make-hash-table :test 'equal)
-                      :failed (make-hash-table :test 'equal)
-                      :oneshot-exit (make-hash-table :test 'equal)
-                      :entry-state (make-hash-table :test 'equal)
-                      :invalid (make-hash-table :test 'equal)
-                      :enabled-override (make-hash-table :test 'equal)
-                      :restart-override (make-hash-table :test 'equal)
-                      :logging-override (make-hash-table :test 'equal)
-                      :timestamp (float-time)))
-           (actions (supervisor--compute-actions plan snapshot)))
-      ;; Should have stop action for disabled entry
-      (let ((stop-action (cl-find 'stop actions :key (lambda (a) (plist-get a :op)))))
-        (should stop-action)
-        (should (equal "a" (plist-get stop-action :id)))
-        (should (eq 'disabled (plist-get stop-action :reason)))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "a" :disabled t))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           ;; Snapshot shows process is running
+           (process-alive (make-hash-table :test 'equal)))
+      (puthash "a" t process-alive)
+      (let* ((snapshot (supervisor-snapshot--create
+                        :process-alive process-alive
+                        :process-pids (make-hash-table :test 'equal)
+                        :failed (make-hash-table :test 'equal)
+                        :oneshot-exit (make-hash-table :test 'equal)
+                        :entry-state (make-hash-table :test 'equal)
+                        :invalid (make-hash-table :test 'equal)
+                        :enabled-override (make-hash-table :test 'equal)
+                        :restart-override (make-hash-table :test 'equal)
+                        :logging-override (make-hash-table :test 'equal)
+                        :timestamp (float-time)))
+             (actions (supervisor--compute-actions plan snapshot)))
+        ;; Should have stop action for disabled entry
+        (let ((stop-action (cl-find 'stop actions :key (lambda (a) (plist-get a :op)))))
+          (should stop-action)
+          (should (equal "a" (plist-get stop-action :id)))
+          (should (eq 'disabled (plist-get stop-action :reason))))))))
 
 (ert-deftest supervisor-test-compute-actions-noop-already-running ()
   "Compute-actions returns noop for entries already running."
-  (let* ((supervisor-programs '(("sleep 100" :id "a")))
-         (plan (supervisor--build-plan supervisor-programs))
-         ;; Snapshot shows process is running
-         (process-alive (make-hash-table :test 'equal)))
-    (puthash "a" t process-alive)
-    (let* ((snapshot (supervisor-snapshot--create
-                      :process-alive process-alive
-                      :process-pids (make-hash-table :test 'equal)
-                      :failed (make-hash-table :test 'equal)
-                      :oneshot-exit (make-hash-table :test 'equal)
-                      :entry-state (make-hash-table :test 'equal)
-                      :invalid (make-hash-table :test 'equal)
-                      :enabled-override (make-hash-table :test 'equal)
-                      :restart-override (make-hash-table :test 'equal)
-                      :logging-override (make-hash-table :test 'equal)
-                      :timestamp (float-time)))
-           (actions (supervisor--compute-actions plan snapshot)))
-      (should (= 1 (length actions)))
-      (should (eq 'noop (plist-get (car actions) :op)))
-      (should (equal "a" (plist-get (car actions) :id)))
-      (should (eq 'already-running (plist-get (car actions) :reason))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "a"))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           ;; Snapshot shows process is running
+           (process-alive (make-hash-table :test 'equal)))
+      (puthash "a" t process-alive)
+      (let* ((snapshot (supervisor-snapshot--create
+                        :process-alive process-alive
+                        :process-pids (make-hash-table :test 'equal)
+                        :failed (make-hash-table :test 'equal)
+                        :oneshot-exit (make-hash-table :test 'equal)
+                        :entry-state (make-hash-table :test 'equal)
+                        :invalid (make-hash-table :test 'equal)
+                        :enabled-override (make-hash-table :test 'equal)
+                        :restart-override (make-hash-table :test 'equal)
+                        :logging-override (make-hash-table :test 'equal)
+                        :timestamp (float-time)))
+             (actions (supervisor--compute-actions plan snapshot)))
+        (should (= 1 (length actions)))
+        (should (eq 'noop (plist-get (car actions) :op)))
+        (should (equal "a" (plist-get (car actions) :id)))
+        (should (eq 'already-running (plist-get (car actions) :reason)))))))
 
 (ert-deftest supervisor-test-compute-actions-skip-failed ()
   "Compute-actions returns skip for failed entries."
-  (let* ((supervisor-programs '(("sleep 100" :id "a")))
-         (plan (supervisor--build-plan supervisor-programs))
-         ;; Snapshot shows entry is failed
-         (failed (make-hash-table :test 'equal)))
-    (puthash "a" t failed)
-    (let* ((snapshot (supervisor-snapshot--create
-                      :process-alive (make-hash-table :test 'equal)
-                      :process-pids (make-hash-table :test 'equal)
-                      :failed failed
-                      :oneshot-exit (make-hash-table :test 'equal)
-                      :entry-state (make-hash-table :test 'equal)
-                      :invalid (make-hash-table :test 'equal)
-                      :enabled-override (make-hash-table :test 'equal)
-                      :restart-override (make-hash-table :test 'equal)
-                      :logging-override (make-hash-table :test 'equal)
-                      :timestamp (float-time)))
-           (actions (supervisor--compute-actions plan snapshot)))
-      (should (= 1 (length actions)))
-      (should (eq 'skip (plist-get (car actions) :op)))
-      (should (equal "a" (plist-get (car actions) :id)))
-      (should (eq 'failed (plist-get (car actions) :reason))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "a"))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           ;; Snapshot shows entry is failed
+           (failed (make-hash-table :test 'equal)))
+      (puthash "a" t failed)
+      (let* ((snapshot (supervisor-snapshot--create
+                        :process-alive (make-hash-table :test 'equal)
+                        :process-pids (make-hash-table :test 'equal)
+                        :failed failed
+                        :oneshot-exit (make-hash-table :test 'equal)
+                        :entry-state (make-hash-table :test 'equal)
+                        :invalid (make-hash-table :test 'equal)
+                        :enabled-override (make-hash-table :test 'equal)
+                        :restart-override (make-hash-table :test 'equal)
+                        :logging-override (make-hash-table :test 'equal)
+                        :timestamp (float-time)))
+             (actions (supervisor--compute-actions plan snapshot)))
+        (should (= 1 (length actions)))
+        (should (eq 'skip (plist-get (car actions) :op)))
+        (should (equal "a" (plist-get (car actions) :id)))
+        (should (eq 'failed (plist-get (car actions) :reason)))))))
 
 (ert-deftest supervisor-test-compute-actions-skip-oneshot-completed ()
   "Compute-actions returns skip for completed oneshots."
-  (let* ((supervisor-programs '(("echo done" :id "a" :type oneshot)))
-         (plan (supervisor--build-plan supervisor-programs))
-         ;; Snapshot shows oneshot completed
-         (oneshot-exit (make-hash-table :test 'equal)))
-    (puthash "a" 0 oneshot-exit)
-    (let* ((snapshot (supervisor-snapshot--create
+  (supervisor-test-with-unit-files
+      '(("echo done" :id "a" :type oneshot))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           ;; Snapshot shows oneshot completed
+           (oneshot-exit (make-hash-table :test 'equal)))
+      (puthash "a" 0 oneshot-exit)
+      (let* ((snapshot (supervisor-snapshot--create
+                        :process-alive (make-hash-table :test 'equal)
+                        :process-pids (make-hash-table :test 'equal)
+                        :failed (make-hash-table :test 'equal)
+                        :oneshot-exit oneshot-exit
+                        :entry-state (make-hash-table :test 'equal)
+                        :invalid (make-hash-table :test 'equal)
+                        :enabled-override (make-hash-table :test 'equal)
+                        :restart-override (make-hash-table :test 'equal)
+                        :logging-override (make-hash-table :test 'equal)
+                        :timestamp (float-time)))
+             (actions (supervisor--compute-actions plan snapshot)))
+        (should (= 1 (length actions)))
+        (should (eq 'skip (plist-get (car actions) :op)))
+        (should (equal "a" (plist-get (car actions) :id)))
+        (should (eq 'oneshot-completed (plist-get (car actions) :reason)))))))
+
+(ert-deftest supervisor-test-compute-actions-skip-disabled ()
+  "Compute-actions returns skip for disabled entries not running."
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "a" :disabled t))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           ;; Empty snapshot - nothing running
+           (snapshot (supervisor-snapshot--create
                       :process-alive (make-hash-table :test 'equal)
                       :process-pids (make-hash-table :test 'equal)
                       :failed (make-hash-table :test 'equal)
-                      :oneshot-exit oneshot-exit
+                      :oneshot-exit (make-hash-table :test 'equal)
                       :entry-state (make-hash-table :test 'equal)
                       :invalid (make-hash-table :test 'equal)
                       :enabled-override (make-hash-table :test 'equal)
@@ -1695,144 +1732,125 @@ Regression test: M-x supervisor must use shared snapshot like refresh does."
       (should (= 1 (length actions)))
       (should (eq 'skip (plist-get (car actions) :op)))
       (should (equal "a" (plist-get (car actions) :id)))
-      (should (eq 'oneshot-completed (plist-get (car actions) :reason))))))
-
-(ert-deftest supervisor-test-compute-actions-skip-disabled ()
-  "Compute-actions returns skip for disabled entries not running."
-  (let* ((supervisor-programs '(("sleep 100" :id "a" :disabled t)))
-         (plan (supervisor--build-plan supervisor-programs))
-         ;; Empty snapshot - nothing running
-         (snapshot (supervisor-snapshot--create
-                    :process-alive (make-hash-table :test 'equal)
-                    :process-pids (make-hash-table :test 'equal)
-                    :failed (make-hash-table :test 'equal)
-                    :oneshot-exit (make-hash-table :test 'equal)
-                    :entry-state (make-hash-table :test 'equal)
-                    :invalid (make-hash-table :test 'equal)
-                    :enabled-override (make-hash-table :test 'equal)
-                    :restart-override (make-hash-table :test 'equal)
-                    :logging-override (make-hash-table :test 'equal)
-                    :timestamp (float-time)))
-         (actions (supervisor--compute-actions plan snapshot)))
-    (should (= 1 (length actions)))
-    (should (eq 'skip (plist-get (car actions) :op)))
-    (should (equal "a" (plist-get (car actions) :id)))
-    (should (eq 'disabled (plist-get (car actions) :reason)))))
+      (should (eq 'disabled (plist-get (car actions) :reason))))))
 
 (ert-deftest supervisor-test-compute-actions-is-pure ()
   "Compute-actions does not modify any global state."
-  (let* ((supervisor-programs '(("sleep 100" :id "a")
-                                ("sleep 200" :id "b" :disabled t)))
-         (plan (supervisor--build-plan supervisor-programs))
-         ;; Set up some mutable globals
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--failed (make-hash-table :test 'equal))
-         (supervisor--oneshot-completed (make-hash-table :test 'equal))
-         (supervisor--restart-override (make-hash-table :test 'equal)))
-    (puthash "x" t supervisor--failed)
-    (let* ((failed-before (copy-hash-table supervisor--failed))
-           (process-alive (make-hash-table :test 'equal))
-           (snapshot (supervisor-snapshot--create
-                      :process-alive process-alive
-                      :process-pids (make-hash-table :test 'equal)
-                      :failed (copy-hash-table supervisor--failed)
-                      :oneshot-exit (make-hash-table :test 'equal)
-                      :entry-state (make-hash-table :test 'equal)
-                      :invalid (make-hash-table :test 'equal)
-                      :enabled-override (make-hash-table :test 'equal)
-                      :restart-override (make-hash-table :test 'equal)
-                      :logging-override (make-hash-table :test 'equal)
-                      :timestamp (float-time))))
-      ;; Call compute-actions multiple times
-      (supervisor--compute-actions plan snapshot)
-      (supervisor--compute-actions plan snapshot)
-      ;; Globals should be unchanged
-      (should (equal (hash-table-count supervisor--failed)
-                     (hash-table-count failed-before)))
-      (should (gethash "x" supervisor--failed))
-      (should (= 0 (hash-table-count supervisor--processes)))
-      (should (= 0 (hash-table-count supervisor--restart-override))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "a")
+        ("sleep 200" :id "b" :disabled t))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           ;; Set up some mutable globals
+           (supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--restart-override (make-hash-table :test 'equal)))
+      (puthash "x" t supervisor--failed)
+      (let* ((failed-before (copy-hash-table supervisor--failed))
+             (process-alive (make-hash-table :test 'equal))
+             (snapshot (supervisor-snapshot--create
+                        :process-alive process-alive
+                        :process-pids (make-hash-table :test 'equal)
+                        :failed (copy-hash-table supervisor--failed)
+                        :oneshot-exit (make-hash-table :test 'equal)
+                        :entry-state (make-hash-table :test 'equal)
+                        :invalid (make-hash-table :test 'equal)
+                        :enabled-override (make-hash-table :test 'equal)
+                        :restart-override (make-hash-table :test 'equal)
+                        :logging-override (make-hash-table :test 'equal)
+                        :timestamp (float-time))))
+        ;; Call compute-actions multiple times
+        (supervisor--compute-actions plan snapshot)
+        (supervisor--compute-actions plan snapshot)
+        ;; Globals should be unchanged
+        (should (equal (hash-table-count supervisor--failed)
+                       (hash-table-count failed-before)))
+        (should (gethash "x" supervisor--failed))
+        (should (= 0 (hash-table-count supervisor--processes)))
+        (should (= 0 (hash-table-count supervisor--restart-override)))))))
 
 (ert-deftest supervisor-test-compute-actions-idempotent ()
   "Idempotence: second call on converged state produces only noops/skips.
 When actual state matches desired state, no start/stop actions are needed."
-  (let* ((supervisor-programs '(("sleep 100" :id "a")
-                                ("sleep 200" :id "b")
-                                ("echo done" :id "c" :type oneshot)
-                                ("sleep 300" :id "d" :disabled t)))
-         (plan (supervisor--build-plan supervisor-programs))
-         ;; Simulate converged state: a and b running, c completed, d disabled
-         (process-alive (make-hash-table :test 'equal))
-         (oneshot-exit (make-hash-table :test 'equal)))
-    (puthash "a" t process-alive)
-    (puthash "b" t process-alive)
-    (puthash "c" 0 oneshot-exit)
-    (let* ((snapshot (supervisor-snapshot--create
-                      :process-alive process-alive
-                      :process-pids (make-hash-table :test 'equal)
-                      :failed (make-hash-table :test 'equal)
-                      :oneshot-exit oneshot-exit
-                      :entry-state (make-hash-table :test 'equal)
-                      :invalid (make-hash-table :test 'equal)
-                      :enabled-override (make-hash-table :test 'equal)
-                      :restart-override (make-hash-table :test 'equal)
-                      :logging-override (make-hash-table :test 'equal)
-                      :timestamp (float-time)))
-           (actions (supervisor--compute-actions plan snapshot)))
-      ;; Should have 4 actions, none of which are start or stop
-      (should (= 4 (length actions)))
-      (should-not (cl-find 'start actions :key (lambda (a) (plist-get a :op))))
-      (should-not (cl-find 'stop actions :key (lambda (a) (plist-get a :op))))
-      ;; All should be noop or skip
-      (dolist (action actions)
-        (should (memq (plist-get action :op) '(noop skip)))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "a")
+        ("sleep 200" :id "b")
+        ("echo done" :id "c" :type oneshot)
+        ("sleep 300" :id "d" :disabled t))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           ;; Simulate converged state: a and b running, c completed, d disabled
+           (process-alive (make-hash-table :test 'equal))
+           (oneshot-exit (make-hash-table :test 'equal)))
+      (puthash "a" t process-alive)
+      (puthash "b" t process-alive)
+      (puthash "c" 0 oneshot-exit)
+      (let* ((snapshot (supervisor-snapshot--create
+                        :process-alive process-alive
+                        :process-pids (make-hash-table :test 'equal)
+                        :failed (make-hash-table :test 'equal)
+                        :oneshot-exit oneshot-exit
+                        :entry-state (make-hash-table :test 'equal)
+                        :invalid (make-hash-table :test 'equal)
+                        :enabled-override (make-hash-table :test 'equal)
+                        :restart-override (make-hash-table :test 'equal)
+                        :logging-override (make-hash-table :test 'equal)
+                        :timestamp (float-time)))
+             (actions (supervisor--compute-actions plan snapshot)))
+        ;; Should have 4 actions, none of which are start or stop
+        (should (= 4 (length actions)))
+        (should-not (cl-find 'start actions :key (lambda (a) (plist-get a :op))))
+        (should-not (cl-find 'stop actions :key (lambda (a) (plist-get a :op))))
+        ;; All should be noop or skip
+        (dolist (action actions)
+          (should (memq (plist-get action :op) '(noop skip))))))))
 
 (ert-deftest supervisor-test-compute-actions-action-matrix ()
   "Comprehensive test of action matrix with mixed scenarios.
 Covers add, remove, disable (running), already-running, failed."
-  (let* (;; Plan: a (new), b (already running), c (running but now disabled),
-         ;;       d (failed), e (disabled from start)
-         (supervisor-programs '(("sleep 100" :id "a")
-                                ("sleep 200" :id "b")
-                                ("sleep 300" :id "c" :disabled t)
-                                ("sleep 400" :id "d")
-                                ("sleep 500" :id "e" :disabled t)))
-         (plan (supervisor--build-plan supervisor-programs))
-         ;; Runtime: b and c running, orphan running (removed), d failed
-         (process-alive (make-hash-table :test 'equal))
-         (failed (make-hash-table :test 'equal)))
-    (puthash "b" t process-alive)
-    (puthash "c" t process-alive)
-    (puthash "orphan" t process-alive)
-    (puthash "d" t failed)
-    (let* ((snapshot (supervisor-snapshot--create
-                      :process-alive process-alive
-                      :process-pids (make-hash-table :test 'equal)
-                      :failed failed
-                      :oneshot-exit (make-hash-table :test 'equal)
-                      :entry-state (make-hash-table :test 'equal)
-                      :invalid (make-hash-table :test 'equal)
-                      :enabled-override (make-hash-table :test 'equal)
-                      :restart-override (make-hash-table :test 'equal)
-                      :logging-override (make-hash-table :test 'equal)
-                      :timestamp (float-time)))
-           (actions (supervisor--compute-actions plan snapshot))
-           (by-id (make-hash-table :test 'equal)))
-      ;; Index actions by id for easy lookup
-      (dolist (a actions)
-        (puthash (plist-get a :id) a by-id))
-      ;; a: should start (added)
-      (should (eq 'start (plist-get (gethash "a" by-id) :op)))
-      ;; b: should noop (already-running)
-      (should (eq 'noop (plist-get (gethash "b" by-id) :op)))
-      ;; c: should stop (disabled)
-      (should (eq 'stop (plist-get (gethash "c" by-id) :op)))
-      ;; orphan: should stop (removed)
-      (should (eq 'stop (plist-get (gethash "orphan" by-id) :op)))
-      ;; d: should skip (failed)
-      (should (eq 'skip (plist-get (gethash "d" by-id) :op)))
-      ;; e: should skip (disabled)
-      (should (eq 'skip (plist-get (gethash "e" by-id) :op))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "a")
+        ("sleep 200" :id "b")
+        ("sleep 300" :id "c" :disabled t)
+        ("sleep 400" :id "d")
+        ("sleep 500" :id "e" :disabled t))
+    ;; Plan: a (new), b (already running), c (running but now disabled),
+    ;;       d (failed), e (disabled from start)
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           ;; Runtime: b and c running, orphan running (removed), d failed
+           (process-alive (make-hash-table :test 'equal))
+           (failed (make-hash-table :test 'equal)))
+      (puthash "b" t process-alive)
+      (puthash "c" t process-alive)
+      (puthash "orphan" t process-alive)
+      (puthash "d" t failed)
+      (let* ((snapshot (supervisor-snapshot--create
+                        :process-alive process-alive
+                        :process-pids (make-hash-table :test 'equal)
+                        :failed failed
+                        :oneshot-exit (make-hash-table :test 'equal)
+                        :entry-state (make-hash-table :test 'equal)
+                        :invalid (make-hash-table :test 'equal)
+                        :enabled-override (make-hash-table :test 'equal)
+                        :restart-override (make-hash-table :test 'equal)
+                        :logging-override (make-hash-table :test 'equal)
+                        :timestamp (float-time)))
+             (actions (supervisor--compute-actions plan snapshot))
+             (by-id (make-hash-table :test 'equal)))
+        ;; Index actions by id for easy lookup
+        (dolist (a actions)
+          (puthash (plist-get a :id) a by-id))
+        ;; a: should start (added)
+        (should (eq 'start (plist-get (gethash "a" by-id) :op)))
+        ;; b: should noop (already-running)
+        (should (eq 'noop (plist-get (gethash "b" by-id) :op)))
+        ;; c: should stop (disabled)
+        (should (eq 'stop (plist-get (gethash "c" by-id) :op)))
+        ;; orphan: should stop (removed)
+        (should (eq 'stop (plist-get (gethash "orphan" by-id) :op)))
+        ;; d: should skip (failed)
+        (should (eq 'skip (plist-get (gethash "d" by-id) :op)))
+        ;; e: should skip (disabled)
+        (should (eq 'skip (plist-get (gethash "e" by-id) :op)))))))
 
 (ert-deftest supervisor-test-apply-actions-atomic-on-invalid-plan ()
   "Apply-actions does not mutate state when plan has no matching entries.
@@ -2148,26 +2166,27 @@ Regression test: process-ready was incorrectly emitted for disabled entries."
 (ert-deftest supervisor-test-no-stderr-process-created ()
   "Starting a process does not create a separate stderr process.
 Regression test: stderr pipe processes used to pollute the process list."
-  (let* ((supervisor-programs '(("true" :id "test-no-stderr" :type oneshot)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--failed (make-hash-table :test 'equal))
-         (supervisor--enabled-override (make-hash-table :test 'equal))
-         (supervisor--logging (make-hash-table :test 'equal))
-         (supervisor--oneshot-completed (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (supervisor--restart-timestamps (make-hash-table :test 'equal))
-         (supervisor-log-directory (make-temp-file "supervisor-test-" t)))
-    (unwind-protect
-        (progn
-          (supervisor--start-process "test-no-stderr" "true" t 'oneshot nil nil)
-          ;; Main process should exist
-          (should (gethash "test-no-stderr" supervisor--processes))
-          ;; No stderr process should exist (with or without space prefix)
-          (should-not (get-process "test-no-stderr-stderr"))
-          (should-not (get-process " test-no-stderr-stderr")))
-      (when-let* ((proc (gethash "test-no-stderr" supervisor--processes)))
-        (delete-process proc))
-      (delete-directory supervisor-log-directory t))))
+  (supervisor-test-with-unit-files
+      '(("true" :id "test-no-stderr" :type oneshot))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--restart-timestamps (make-hash-table :test 'equal))
+           (supervisor-log-directory (make-temp-file "supervisor-test-" t)))
+      (unwind-protect
+          (progn
+            (supervisor--start-process "test-no-stderr" "true" t 'oneshot nil nil)
+            ;; Main process should exist
+            (should (gethash "test-no-stderr" supervisor--processes))
+            ;; No stderr process should exist (with or without space prefix)
+            (should-not (get-process "test-no-stderr-stderr"))
+            (should-not (get-process " test-no-stderr-stderr")))
+        (when-let* ((proc (gethash "test-no-stderr" supervisor--processes)))
+          (delete-process proc))
+        (delete-directory supervisor-log-directory t)))))
 
 (ert-deftest supervisor-test-dashboard-menu-keybinding ()
   "Dashboard ? key is bound to transient menu wrapper."
@@ -2310,25 +2329,26 @@ Regression test: stderr pipe processes used to pollute the process list."
 
 (ert-deftest supervisor-test-stop-allows-service-with-timer-id-collision ()
   "Stop on a service row works even if a timer has the same ID."
-  (let* ((supervisor-programs '(("sleep 60" :id "dup" :type simple)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--manually-stopped (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (supervisor--invalid (make-hash-table :test 'equal))
-         (supervisor--invalid-timers (make-hash-table :test 'equal)))
-    ;; Timer with same ID as service
-    (puthash "dup" "some schedule" supervisor--invalid-timers)
-    (with-temp-buffer
-      (supervisor-dashboard-mode)
-      ;; Row has type "simple" — this is a service row, not a timer row
-      (let ((tabulated-list-entries
-             (list (list "dup" (vector "dup" "simple" "stage3"
-                                      "yes" "stopped" "yes" "yes" "-" "-")))))
-        (tabulated-list-init-header)
-        (tabulated-list-print)
-        (goto-char (point-min))
-        ;; Should NOT error with "Cannot stop timer" — it's a service row
-        (should-not (supervisor--timer-row-p "dup"))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "dup" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--manually-stopped (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--invalid-timers (make-hash-table :test 'equal)))
+      ;; Timer with same ID as service
+      (puthash "dup" "some schedule" supervisor--invalid-timers)
+      (with-temp-buffer
+        (supervisor-dashboard-mode)
+        ;; Row has type "simple" — this is a service row, not a timer row
+        (let ((tabulated-list-entries
+               (list (list "dup" (vector "dup" "simple" "stage3"
+                                        "yes" "stopped" "yes" "yes" "-" "-")))))
+          (tabulated-list-init-header)
+          (tabulated-list-print)
+          (goto-char (point-min))
+          ;; Should NOT error with "Cannot stop timer" — it's a service row
+          (should-not (supervisor--timer-row-p "dup")))))))
 
 (ert-deftest supervisor-test-stop-rejects-oneshot ()
   "Stop rejects oneshot entries."
@@ -2351,20 +2371,21 @@ Regression test: stderr pipe processes used to pollute the process list."
 
 (ert-deftest supervisor-test-restart-rejects-oneshot ()
   "Restart rejects oneshot entries."
-  (let* ((supervisor-programs '(("true" :id "my-oneshot" :type oneshot)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (supervisor--invalid (make-hash-table :test 'equal)))
-    (with-temp-buffer
-      (supervisor-dashboard-mode)
-      (let ((tabulated-list-entries
-             (list (list "my-oneshot" (vector "my-oneshot" "oneshot" "stage3"
-                                             "yes" "done" "n/a" "yes" "-" "-")))))
-        (tabulated-list-init-header)
-        (tabulated-list-print)
-        (goto-char (point-min))
-        (should-error (supervisor-dashboard-restart)
-                      :type 'user-error)))))
+  (supervisor-test-with-unit-files
+      '(("true" :id "my-oneshot" :type oneshot))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal)))
+      (with-temp-buffer
+        (supervisor-dashboard-mode)
+        (let ((tabulated-list-entries
+               (list (list "my-oneshot" (vector "my-oneshot" "oneshot" "stage3"
+                                               "yes" "done" "n/a" "yes" "-" "-")))))
+          (tabulated-list-init-header)
+          (tabulated-list-print)
+          (goto-char (point-min))
+          (should-error (supervisor-dashboard-restart)
+                        :type 'user-error))))))
 
 (ert-deftest supervisor-test-stop-rejects-timer-row ()
   "Stop rejects timer rows."
@@ -2394,20 +2415,21 @@ Regression test: stderr pipe processes used to pollute the process list."
 
 (ert-deftest supervisor-test-restart-rejects-not-running ()
   "Restart rejects entries that are not currently running."
-  (let* ((supervisor-programs '(("sleep 60" :id "my-svc" :type simple)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (supervisor--invalid (make-hash-table :test 'equal)))
-    (with-temp-buffer
-      (supervisor-dashboard-mode)
-      (let ((tabulated-list-entries
-             (list (list "my-svc" (vector "my-svc" "simple" "stage3"
-                                         "yes" "stopped" "yes" "yes" "-" "-")))))
-        (tabulated-list-init-header)
-        (tabulated-list-print)
-        (goto-char (point-min))
-        (should-error (supervisor-dashboard-restart)
-                      :type 'user-error)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "my-svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal)))
+      (with-temp-buffer
+        (supervisor-dashboard-mode)
+        (let ((tabulated-list-entries
+               (list (list "my-svc" (vector "my-svc" "simple" "stage3"
+                                           "yes" "stopped" "yes" "yes" "-" "-")))))
+          (tabulated-list-init-header)
+          (tabulated-list-print)
+          (goto-char (point-min))
+          (should-error (supervisor-dashboard-restart)
+                        :type 'user-error))))))
 
 ;;; Unit-File Tests
 
@@ -2528,7 +2550,7 @@ Regression test: stderr pipe processes used to pollute the process list."
                "/tmp/test.el" 1)))
 
 (ert-deftest supervisor-test-unit-file-to-program-entry ()
-  "Unit file plist converts to supervisor-programs entry format."
+  "Unit file plist converts to program entry format."
   (let ((entry (supervisor--unit-file-to-program-entry
                 '(:id "nm" :command "nm-applet" :type simple :restart t))))
     ;; Car is the command string
@@ -2604,7 +2626,6 @@ Regression test: stderr pipe processes used to pollute the process list."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
          (supervisor-use-unit-files t)
-         (supervisor-programs nil)
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
          (supervisor--computed-deps (make-hash-table :test 'equal)))
@@ -2623,8 +2644,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-load-programs-empty-directory ()
   "With no unit files present, returns empty list."
   (let* ((dir (make-temp-file "units-" t))
-         (supervisor-unit-directory dir)
-         (supervisor-programs nil))
+         (supervisor-unit-directory dir))
     (unwind-protect
         (should (null (supervisor--effective-programs)))
       (delete-directory dir t))))
@@ -2632,8 +2652,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-load-programs-unit-file-merge ()
   "Unit file entries are loaded from disk via effective-programs."
   (let* ((dir (make-temp-file "units-" t))
-         (supervisor-unit-directory dir)
-         (supervisor-programs nil))
+         (supervisor-unit-directory dir))
     (unwind-protect
         (progn
           (with-temp-file (expand-file-name "svc.el" dir)
@@ -2648,8 +2667,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-load-programs-unit-file-adds-new ()
   "Multiple unit files are loaded and returned."
   (let* ((dir (make-temp-file "units-" t))
-         (supervisor-unit-directory dir)
-         (supervisor-programs nil))
+         (supervisor-unit-directory dir))
     (unwind-protect
         (progn
           (with-temp-file (expand-file-name "alpha.el" dir)
@@ -2667,8 +2685,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   "CLI validate reports invalid unit files in count and output."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
-         (supervisor-use-unit-files t)
-         (supervisor-programs nil))
+         (supervisor-use-unit-files t))
     (unwind-protect
         (progn
           (with-temp-file (expand-file-name "bad.el" dir)
@@ -2688,7 +2705,6 @@ Regression test: stderr pipe processes used to pollute the process list."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
          (supervisor-use-unit-files t)
-         (supervisor-programs nil)
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--entry-state (make-hash-table :test 'equal)))
     (unwind-protect
@@ -2706,7 +2722,6 @@ Regression test: stderr pipe processes used to pollute the process list."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
          (supervisor-use-unit-files t)
-         (supervisor-programs nil)
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--entry-state (make-hash-table :test 'equal)))
     (unwind-protect
@@ -2729,7 +2744,6 @@ Regression test: stderr pipe processes used to pollute the process list."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
          (supervisor-use-unit-files t)
-         (supervisor-programs nil)
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
          (supervisor--computed-deps (make-hash-table :test 'equal)))
@@ -3346,7 +3360,6 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Migration sees only one entry when unit-file loader deduplicates."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
-         (supervisor-programs nil)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
     ;; Two unit files with the same :id but different filenames
     (with-temp-file (expand-file-name "test-a.el" dir)
@@ -4025,18 +4038,19 @@ Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
 
 (ert-deftest supervisor-test-timer-trigger-disabled-timer ()
   "Timer trigger skips disabled timer and records miss."
-  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled nil))
-         (supervisor--timer-state (make-hash-table :test 'equal))
-         (supervisor-programs '(("true" :id "s1" :type oneshot))))
-    ;; Trigger disabled timer
-    (should-not (supervisor-timer--trigger timer 'scheduled))
-    ;; Should record miss with reason 'disabled
-    (let ((state (gethash "t1" supervisor--timer-state)))
-      (should state)
-      (should (plist-get state :last-missed-at))
-      (should (eq 'disabled (plist-get state :last-miss-reason))))
-    ;; Cleanup
-    (clrhash supervisor--timer-state)))
+  (supervisor-test-with-unit-files
+      '(("true" :id "s1" :type oneshot))
+    (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled nil))
+           (supervisor--timer-state (make-hash-table :test 'equal)))
+      ;; Trigger disabled timer
+      (should-not (supervisor-timer--trigger timer 'scheduled))
+      ;; Should record miss with reason 'disabled
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should state)
+        (should (plist-get state :last-missed-at))
+        (should (eq 'disabled (plist-get state :last-miss-reason))))
+      ;; Cleanup
+      (clrhash supervisor--timer-state))))
 
 (ert-deftest supervisor-test-timer-trigger-disabled-target ()
   "Timer trigger skips disabled target and records miss."
@@ -4085,41 +4099,42 @@ Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
 
 (ert-deftest supervisor-test-timer-trigger-target-not-found ()
   "Timer trigger handles missing target gracefully."
-  (let* ((timer (supervisor-timer--create :id "t1" :target "nonexistent" :enabled t))
-         (supervisor--timer-state (make-hash-table :test 'equal))
-         (supervisor-programs nil))
-    ;; Trigger timer with nonexistent target
-    (should-not (supervisor-timer--trigger timer 'scheduled))
-    ;; No state recorded (early return)
-    (should-not (gethash "t1" supervisor--timer-state))
-    ;; Cleanup
-    (clrhash supervisor--timer-state)))
+  (supervisor-test-with-unit-files nil
+    (let* ((timer (supervisor-timer--create :id "t1" :target "nonexistent" :enabled t))
+           (supervisor--timer-state (make-hash-table :test 'equal)))
+      ;; Trigger timer with nonexistent target
+      (should-not (supervisor-timer--trigger timer 'scheduled))
+      ;; No state recorded (early return)
+      (should-not (gethash "t1" supervisor--timer-state))
+      ;; Cleanup
+      (clrhash supervisor--timer-state))))
 
 (ert-deftest supervisor-test-timer-trigger-overlap-skips ()
   "Timer trigger skips when target is still running."
-  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
-         (supervisor--timer-state (make-hash-table :test 'equal))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--enabled-override (make-hash-table :test 'equal))
-         (supervisor--invalid (make-hash-table :test 'equal))
-         (supervisor-programs '(("sleep 10" :id "s1" :type oneshot))))
-    ;; Simulate running process
-    (puthash "s1" (start-process "test-overlap" nil "sleep" "10")
-             supervisor--processes)
-    ;; Trigger timer
-    (should-not (supervisor-timer--trigger timer 'scheduled))
-    ;; Should record miss with reason 'overlap
-    (let ((state (gethash "t1" supervisor--timer-state)))
-      (should state)
-      (should (eq 'overlap (plist-get state :last-miss-reason))))
-    ;; Cleanup
-    (let ((proc (gethash "s1" supervisor--processes)))
-      (when (process-live-p proc)
-        (delete-process proc)))
-    (clrhash supervisor--invalid)
-    (clrhash supervisor--timer-state)
-    (clrhash supervisor--processes)
-    (clrhash supervisor--enabled-override)))
+  (supervisor-test-with-unit-files
+      '(("sleep 10" :id "s1" :type oneshot))
+    (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+           (supervisor--timer-state (make-hash-table :test 'equal))
+           (supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal)))
+      ;; Simulate running process
+      (puthash "s1" (start-process "test-overlap" nil "sleep" "10")
+               supervisor--processes)
+      ;; Trigger timer
+      (should-not (supervisor-timer--trigger timer 'scheduled))
+      ;; Should record miss with reason 'overlap
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should state)
+        (should (eq 'overlap (plist-get state :last-miss-reason))))
+      ;; Cleanup
+      (let ((proc (gethash "s1" supervisor--processes)))
+        (when (process-live-p proc)
+          (delete-process proc)))
+      (clrhash supervisor--invalid)
+      (clrhash supervisor--timer-state)
+      (clrhash supervisor--processes)
+      (clrhash supervisor--enabled-override))))
 
 (ert-deftest supervisor-test-timer-trigger-success-path ()
   "Timer trigger succeeds and emits timer-trigger event."
@@ -4184,44 +4199,46 @@ Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
 (ert-deftest supervisor-test-timer-startup-consumed-on-skipped-run ()
   "Startup trigger is consumed even when run is skipped (disabled-target)."
   ;; Regression test: startup trigger must not cause 1s retry loop on skip
-  (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t
-                                          :on-startup-sec 10))
-         (supervisor--timer-state (make-hash-table :test 'equal))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--enabled-override (make-hash-table :test 'equal))
-         (supervisor--invalid (make-hash-table :test 'equal))
-         (supervisor--scheduler-startup-time 1000.0)
-         (supervisor-programs '(("true" :id "s1" :type oneshot :disabled t))))
-    ;; Initialize next-run-at to startup trigger time
-    (puthash "t1" '(:next-run-at 1010.0) supervisor--timer-state)
-    ;; Simulate time is now past startup trigger
-    (cl-letf (((symbol-function 'float-time) (lambda () 1015.0)))
-      ;; Trigger should fail (target disabled)
-      (should-not (supervisor-timer--trigger timer 'scheduled))
-      ;; But startup-triggered should be set to prevent retry loop
-      (let ((state (gethash "t1" supervisor--timer-state)))
-        (should (plist-get state :startup-triggered)))
-      ;; Next startup time should now be nil (consumed)
-      (should-not (supervisor-timer--next-startup-time timer)))
-    ;; Cleanup
-    (clrhash supervisor--timer-state)
-    (clrhash supervisor--processes)
-    (clrhash supervisor--enabled-override)
-    (clrhash supervisor--invalid)))
+  (supervisor-test-with-unit-files
+      '(("true" :id "s1" :type oneshot :disabled t))
+    (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t
+                                            :on-startup-sec 10))
+           (supervisor--timer-state (make-hash-table :test 'equal))
+           (supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--scheduler-startup-time 1000.0))
+      ;; Initialize next-run-at to startup trigger time
+      (puthash "t1" '(:next-run-at 1010.0) supervisor--timer-state)
+      ;; Simulate time is now past startup trigger
+      (cl-letf (((symbol-function 'float-time) (lambda () 1015.0)))
+        ;; Trigger should fail (target disabled)
+        (should-not (supervisor-timer--trigger timer 'scheduled))
+        ;; But startup-triggered should be set to prevent retry loop
+        (let ((state (gethash "t1" supervisor--timer-state)))
+          (should (plist-get state :startup-triggered)))
+        ;; Next startup time should now be nil (consumed)
+        (should-not (supervisor-timer--next-startup-time timer)))
+      ;; Cleanup
+      (clrhash supervisor--timer-state)
+      (clrhash supervisor--processes)
+      (clrhash supervisor--enabled-override)
+      (clrhash supervisor--invalid))))
 
 (ert-deftest supervisor-test-timer-scheduler-not-started-during-shutdown ()
   "Timer scheduler is not started when shutting down."
-  (let ((supervisor--shutting-down t)
-        (supervisor-timers '((:id "t1" :target "s1" :on-startup-sec 60)))
-        (supervisor-programs '(("true" :id "s1" :type oneshot)))
-        (scheduler-started nil))
-    ;; Mock the scheduler start function
-    (cl-letf (((symbol-function 'supervisor-timer-scheduler-start)
-               (lambda () (setq scheduler-started t))))
-      ;; Simulate stage completion with no remaining stages
-      (supervisor--start-stages-from-plan nil)
-      ;; Scheduler should NOT have been started
-      (should-not scheduler-started))))
+  (supervisor-test-with-unit-files
+      '(("true" :id "s1" :type oneshot))
+    (let ((supervisor--shutting-down t)
+          (supervisor-timers '((:id "t1" :target "s1" :on-startup-sec 60)))
+          (scheduler-started nil))
+      ;; Mock the scheduler start function
+      (cl-letf (((symbol-function 'supervisor-timer-scheduler-start)
+                 (lambda () (setq scheduler-started t))))
+        ;; Simulate stage completion with no remaining stages
+        (supervisor--start-stages-from-plan nil)
+        ;; Scheduler should NOT have been started
+        (should-not scheduler-started)))))
 
 ;;; Phase 3: Retry and Catch-up Tests
 
@@ -4817,21 +4834,22 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-gate-scheduler-start-noop ()
   "Scheduler start is a no-op when timer subsystem is disabled."
-  (let ((supervisor-timer-subsystem-mode nil)
-        (supervisor-programs '(("true" :id "s1" :type oneshot)))
-        (supervisor-timers '((:id "t1" :target "s1" :on-startup-sec 60)))
-        (supervisor--timer-list nil)
-        (supervisor--timer-scheduler nil)
-        (supervisor--shutting-down nil)
-        (supervisor--scheduler-startup-time nil)
-        (supervisor--timer-state-loaded nil)
-        (supervisor-timer-state-file nil))
-    ;; Start should do nothing when gated off
-    (supervisor-timer-scheduler-start)
-    ;; Timer list should remain empty
-    (should (null supervisor--timer-list))
-    ;; Scheduler should not be running
-    (should (null supervisor--timer-scheduler))))
+  (supervisor-test-with-unit-files
+      '(("true" :id "s1" :type oneshot))
+    (let ((supervisor-timer-subsystem-mode nil)
+          (supervisor-timers '((:id "t1" :target "s1" :on-startup-sec 60)))
+          (supervisor--timer-list nil)
+          (supervisor--timer-scheduler nil)
+          (supervisor--shutting-down nil)
+          (supervisor--scheduler-startup-time nil)
+          (supervisor--timer-state-loaded nil)
+          (supervisor-timer-state-file nil))
+      ;; Start should do nothing when gated off
+      (supervisor-timer-scheduler-start)
+      ;; Timer list should remain empty
+      (should (null supervisor--timer-list))
+      ;; Scheduler should not be running
+      (should (null supervisor--timer-scheduler)))))
 
 (ert-deftest supervisor-test-timer-gate-state-save-noop ()
   "State save is a no-op when timer subsystem is disabled."
@@ -5013,27 +5031,29 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-list-units-human-format ()
   "The `list-units' command returns human-readable table."
-  (let* ((supervisor-programs '(("test-cmd" :id "test" :type simple)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (result (supervisor--cli-dispatch '("list-units"))))
-    (should (supervisor-cli-result-p result))
-    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
-    (should (eq 'human (supervisor-cli-result-format result)))
-    ;; Should contain header row
-    (should (string-match "ID" (supervisor-cli-result-output result)))))
+  (supervisor-test-with-unit-files
+      '(("test-cmd" :id "test" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("list-units"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (eq 'human (supervisor-cli-result-format result)))
+      ;; Should contain header row
+      (should (string-match "ID" (supervisor-cli-result-output result))))))
 
 (ert-deftest supervisor-test-cli-list-units-json-format ()
   "The `list-units --json' returns JSON with entries array."
-  (let* ((supervisor-programs '(("test-cmd" :id "test" :type simple)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (result (supervisor--cli-dispatch '("list-units" "--json"))))
-    (should (supervisor-cli-result-p result))
-    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
-    (should (eq 'json (supervisor-cli-result-format result)))
-    ;; Should be valid JSON with entries array
-    (should (string-match "\"entries\"" (supervisor-cli-result-output result)))))
+  (supervisor-test-with-unit-files
+      '(("test-cmd" :id "test" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("list-units" "--json"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (eq 'json (supervisor-cli-result-format result)))
+      ;; Should be valid JSON with entries array
+      (should (string-match "\"entries\"" (supervisor-cli-result-output result))))))
 
 (ert-deftest supervisor-test-cli-show-requires-id ()
   "The `show' command without ID returns invalid-args exit code."
@@ -5149,44 +5169,45 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-reconcile-stops-masked-running ()
   "Reconcile stops masked entries that are currently running."
-  (let* ((supervisor--mask-override (make-hash-table :test 'equal))
-         (supervisor--enabled-override (make-hash-table :test 'equal))
-         (process-alive (make-hash-table :test 'equal))
-         (process-pids (make-hash-table :test 'equal))
-         (failed (make-hash-table :test 'equal))
-         (oneshot (make-hash-table :test 'equal))
-         (entry-state (make-hash-table :test 'equal))
-         (invalid (make-hash-table :test 'equal))
-         (logging (make-hash-table :test 'equal))
-         (restart (make-hash-table :test 'equal))
-         ;; Build a plan with one entry
-         (supervisor-programs '(("echo" :id "svc")))
-         (plan (supervisor--build-plan supervisor-programs)))
-    ;; Simulate running process
-    (puthash "svc" t process-alive)
-    (puthash "svc" 123 process-pids)
-    ;; Mask the entry
-    (puthash "svc" 'masked supervisor--mask-override)
-    (let ((snapshot (supervisor-snapshot--create
-                     :process-alive process-alive
-                     :process-pids process-pids
-                     :failed failed
-                     :oneshot-exit oneshot
-                     :entry-state entry-state
-                     :invalid invalid
-                     :enabled-override supervisor--enabled-override
-                     :restart-override restart
-                     :logging-override logging
-                     :mask-override supervisor--mask-override
-                     :timestamp (float-time))))
-      (let ((actions (supervisor--compute-actions plan snapshot)))
-        ;; Should have a stop action for the masked entry
-        (let ((stop-action (cl-find "svc" actions
-                                    :key (lambda (a) (plist-get a :id))
-                                    :test #'equal)))
-          (should stop-action)
-          (should (eq 'stop (plist-get stop-action :op)))
-          (should (eq 'masked (plist-get stop-action :reason))))))))
+  (supervisor-test-with-unit-files
+      '(("echo" :id "svc"))
+    (let* ((supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (process-alive (make-hash-table :test 'equal))
+           (process-pids (make-hash-table :test 'equal))
+           (failed (make-hash-table :test 'equal))
+           (oneshot (make-hash-table :test 'equal))
+           (entry-state (make-hash-table :test 'equal))
+           (invalid (make-hash-table :test 'equal))
+           (logging (make-hash-table :test 'equal))
+           (restart (make-hash-table :test 'equal))
+           ;; Build a plan with one entry
+           (plan (supervisor--build-plan (supervisor--effective-programs))))
+      ;; Simulate running process
+      (puthash "svc" t process-alive)
+      (puthash "svc" 123 process-pids)
+      ;; Mask the entry
+      (puthash "svc" 'masked supervisor--mask-override)
+      (let ((snapshot (supervisor-snapshot--create
+                       :process-alive process-alive
+                       :process-pids process-pids
+                       :failed failed
+                       :oneshot-exit oneshot
+                       :entry-state entry-state
+                       :invalid invalid
+                       :enabled-override supervisor--enabled-override
+                       :restart-override restart
+                       :logging-override logging
+                       :mask-override supervisor--mask-override
+                       :timestamp (float-time))))
+        (let ((actions (supervisor--compute-actions plan snapshot)))
+          ;; Should have a stop action for the masked entry
+          (let ((stop-action (cl-find "svc" actions
+                                      :key (lambda (a) (plist-get a :id))
+                                      :test #'equal)))
+            (should stop-action)
+            (should (eq 'stop (plist-get stop-action :op)))
+            (should (eq 'masked (plist-get stop-action :reason)))))))))
 
 (ert-deftest supervisor-test-mask-persistence-roundtrip ()
   "Mask override survives save/load cycle."
@@ -5345,18 +5366,20 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-list-dependencies-full ()
   "The `list-dependencies' command without ID returns full graph."
-  (let* ((supervisor-programs '(("a" :id "a") ("b" :id "b" :after "a")))
-         (result (supervisor--cli-dispatch '("list-dependencies"))))
-    (should (supervisor-cli-result-p result))
-    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))))
+  (supervisor-test-with-unit-files
+      '(("a" :id "a") ("b" :id "b" :after "a"))
+    (let* ((result (supervisor--cli-dispatch '("list-dependencies"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result))))))
 
 (ert-deftest supervisor-test-cli-list-dependencies-single ()
   "The `list-dependencies' command with ID returns single entry deps."
-  (let* ((supervisor-programs '(("a" :id "a") ("b" :id "b" :after "a")))
-         (result (supervisor--cli-dispatch '("list-dependencies" "b"))))
-    (should (supervisor-cli-result-p result))
-    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
-    (should (string-match "ID: b" (supervisor-cli-result-output result)))))
+  (supervisor-test-with-unit-files
+      '(("a" :id "a") ("b" :id "b" :after "a"))
+    (let* ((result (supervisor--cli-dispatch '("list-dependencies" "b"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (string-match "ID: b" (supervisor-cli-result-output result))))))
 
 (ert-deftest supervisor-test-cli-blame ()
   "Blame command returns timing info."
@@ -5430,14 +5453,15 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-status-no-args-shows-table ()
   "The `status' with no IDs shows overview table (delegates to `list-units')."
-  (let* ((supervisor-programs '(("test-cmd" :id "test" :type simple)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (result (supervisor--cli-dispatch '("status"))))
-    (should (supervisor-cli-result-p result))
-    (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
-    ;; Should contain header row (table format)
-    (should (string-match "ID" (supervisor-cli-result-output result)))))
+  (supervisor-test-with-unit-files
+      '(("test-cmd" :id "test" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("status"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      ;; Should contain header row (table format)
+      (should (string-match "ID" (supervisor-cli-result-output result))))))
 
 (ert-deftest supervisor-test-cli-status-with-id-shows-detail ()
   "The `status ID' shows detailed unit info."
@@ -5470,13 +5494,14 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-status-all-missing ()
   "The `status' with only missing IDs still shows warnings."
-  (let* ((supervisor-programs '(("test-cmd" :id "test" :type simple)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (result (supervisor--cli-dispatch '("status" "nope"))))
-    (should (supervisor-cli-result-p result))
-    (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
-    (should (string-match "could not be found" (supervisor-cli-result-output result)))))
+  (supervisor-test-with-unit-files
+      '(("test-cmd" :id "test" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("status" "nope"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
+      (should (string-match "could not be found" (supervisor-cli-result-output result))))))
 
 (ert-deftest supervisor-test-cli-list-units-filters-invalid ()
   "The `list-units ID' filters both valid and invalid entries."
@@ -5568,13 +5593,14 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-show-truly-missing-still-errors ()
   "The `show' with a truly missing ID still returns an error."
-  (let* ((supervisor-programs '(("good-cmd" :id "good" :type simple)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (result (supervisor--cli-dispatch '("show" "ghost"))))
-    (should (supervisor-cli-result-p result))
-    (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
-    (should (string-match "No entry with ID" (supervisor-cli-result-output result)))))
+  (supervisor-test-with-unit-files
+      '(("good-cmd" :id "good" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("show" "ghost"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-failure (supervisor-cli-result-exitcode result)))
+      (should (string-match "No entry with ID" (supervisor-cli-result-output result))))))
 
 (ert-deftest supervisor-test-cli-ping-rejects-extra-args ()
   "Ping with extra args returns invalid-args exit code."
@@ -5752,10 +5778,11 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-show-rejects-extra-args ()
   "The `show' with extra args returns invalid-args exit code."
-  (let* ((supervisor-programs '(("cmd" :id "test")))
-         (result (supervisor--cli-dispatch '("show" "test" "extra"))))
-    (should (supervisor-cli-result-p result))
-    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+  (supervisor-test-with-unit-files
+      '(("cmd" :id "test"))
+    (let* ((result (supervisor--cli-dispatch '("show" "test" "extra"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result))))))
 
 (ert-deftest supervisor-test-cli-status-rejects-unknown-flags ()
   "Status with unknown flag returns invalid-args exit code."
@@ -5765,41 +5792,38 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-list-dependencies-rejects-extra-args ()
   "The `list-dependencies' with multiple args returns invalid-args exit code."
-  (let* ((supervisor-programs '(("a" :id "a")))
-         (result (supervisor--cli-dispatch '("list-dependencies" "a" "b"))))
-    (should (supervisor-cli-result-p result))
-    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
+  (supervisor-test-with-unit-files
+      '(("a" :id "a"))
+    (let* ((result (supervisor--cli-dispatch '("list-dependencies" "a" "b"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result))))))
 
 ;;; CLI JSON Schema Tests
 
 (ert-deftest supervisor-test-cli-list-units-json-empty-arrays ()
   "The `list-units --json' returns arrays, not null, for empty results."
-  (let* ((dir (make-temp-file "units-" t))
-         (supervisor-unit-directory dir)
-         (supervisor-programs nil)
-         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
-         (result (supervisor--cli-dispatch '("list-units" "--json"))))
-    (unwind-protect
-        (progn
-          (should (supervisor-cli-result-p result))
-          (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
-          ;; Should have [] not null
-          (should (string-match "\"entries\":\\[\\]" (supervisor-cli-result-output result)))
-          (should (string-match "\"invalid\":\\[\\]" (supervisor-cli-result-output result))))
-      (delete-directory dir t))))
+  (supervisor-test-with-unit-files
+      nil
+    (let* ((result (supervisor--cli-dispatch '("list-units" "--json"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      ;; Should have [] not null
+      (should (string-match "\"entries\":\\[\\]" (supervisor-cli-result-output result)))
+      (should (string-match "\"invalid\":\\[\\]" (supervisor-cli-result-output result))))))
 
 ;;; CLI Wrapper Transport Tests
 
 (ert-deftest supervisor-test-cli-wrapper-dispatch-format ()
   "Wrapper dispatch returns base64-encoded format."
-  (let* ((supervisor-programs nil)
-         (result (supervisor--cli-dispatch-for-wrapper '("ping"))))
-    ;; Format is EXITCODE:BASE64OUTPUT
-    (should (stringp result))
-    (should (string-match "^0:" result))
-    ;; Decode the base64 part
-    (let ((b64 (substring result 2)))
-      (should (string-match "pong" (decode-coding-string (base64-decode-string b64) 'utf-8))))))
+  (supervisor-test-with-unit-files
+      nil
+    (let* ((result (supervisor--cli-dispatch-for-wrapper '("ping"))))
+      ;; Format is EXITCODE:BASE64OUTPUT
+      (should (stringp result))
+      (should (string-match "^0:" result))
+      ;; Decode the base64 part
+      (let ((b64 (substring result 2)))
+        (should (string-match "pong" (decode-coding-string (base64-decode-string b64) 'utf-8)))))))
 
 (ert-deftest supervisor-test-cli-wrapper-dispatch-error ()
   "Wrapper dispatch returns non-zero exit code for errors."
@@ -6086,13 +6110,14 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-is-active-unknown-id ()
   "The `is-active' returns exit 4 (no-such-unit) for unknown ID."
-  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (result (supervisor--cli-dispatch '("is-active" "nonexistent"))))
-    (should (= supervisor-cli-exit-no-such-unit
-               (supervisor-cli-result-exitcode result)))
-    (should (string-match "inactive" (supervisor-cli-result-output result)))))
+  (supervisor-test-with-unit-files
+      '(("echo hi" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("is-active" "nonexistent"))))
+      (should (= supervisor-cli-exit-no-such-unit
+                 (supervisor-cli-result-exitcode result)))
+      (should (string-match "inactive" (supervisor-cli-result-output result))))))
 
 (ert-deftest supervisor-test-cli-is-active-no-args ()
   "The `is-active' with no args returns exit 2."
@@ -6108,15 +6133,16 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-is-active-json ()
   "The `is-active --json' returns JSON with active field."
-  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (result (supervisor--cli-dispatch '("is-active" "svc" "--json"))))
-    (should (eq 'json (supervisor-cli-result-format result)))
-    (let ((parsed (json-read-from-string (supervisor-cli-result-output result))))
-      (should (equal "svc" (alist-get 'id parsed)))
-      (should (assoc 'active parsed))
-      (should (assoc 'status parsed)))))
+  (supervisor-test-with-unit-files
+      '(("echo hi" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("is-active" "svc" "--json"))))
+      (should (eq 'json (supervisor-cli-result-format result)))
+      (let ((parsed (json-read-from-string (supervisor-cli-result-output result))))
+        (should (equal "svc" (alist-get 'id parsed)))
+        (should (assoc 'active parsed))
+        (should (assoc 'status parsed))))))
 
 (ert-deftest supervisor-test-cli-is-active-json-running ()
   "The `is-active --json' returns active=true for running unit."
@@ -6175,13 +6201,14 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-is-enabled-unknown-id ()
   "The `is-enabled' returns exit 4 (no-such-unit) for unknown ID."
-  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (result (supervisor--cli-dispatch '("is-enabled" "nonexistent"))))
-    (should (= supervisor-cli-exit-no-such-unit
-               (supervisor-cli-result-exitcode result)))
-    (should (string-match "not-found" (supervisor-cli-result-output result)))))
+  (supervisor-test-with-unit-files
+      '(("echo hi" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("is-enabled" "nonexistent"))))
+      (should (= supervisor-cli-exit-no-such-unit
+                 (supervisor-cli-result-exitcode result)))
+      (should (string-match "not-found" (supervisor-cli-result-output result))))))
 
 (ert-deftest supervisor-test-cli-is-enabled-no-args ()
   "The `is-enabled' with no args returns exit 2."
@@ -6263,13 +6290,14 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-is-failed-unknown-id ()
   "The `is-failed' returns exit 4 (no-such-unit) for unknown ID."
-  (let* ((supervisor-programs '(("echo hi" :id "svc" :type simple)))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (result (supervisor--cli-dispatch '("is-failed" "nonexistent"))))
-    (should (= supervisor-cli-exit-no-such-unit
-               (supervisor-cli-result-exitcode result)))
-    (should (string-match "inactive" (supervisor-cli-result-output result)))))
+  (supervisor-test-with-unit-files
+      '(("echo hi" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("is-failed" "nonexistent"))))
+      (should (= supervisor-cli-exit-no-such-unit
+                 (supervisor-cli-result-exitcode result)))
+      (should (string-match "inactive" (supervisor-cli-result-output result))))))
 
 (ert-deftest supervisor-test-cli-is-failed-no-args ()
   "The `is-failed' with no args returns exit 2."
@@ -6322,28 +6350,22 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-daemon-reload-picks-up-config-change ()
   "The `daemon-reload' picks up added entries from disk."
-  (let* ((dir (make-temp-file "units-" t))
-         (supervisor-unit-directory dir)
-         (supervisor-programs nil)
-         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (supervisor--current-plan nil)
-         (supervisor--invalid (make-hash-table :test 'equal)))
-    (unwind-protect
-        (progn
-          ;; Write one unit file and reload
-          (with-temp-file (expand-file-name "a.el" dir)
-            (insert "(:id \"a\" :command \"echo a\" :type simple)"))
-          (supervisor-daemon-reload)
-          (should supervisor--current-plan)
-          (should (= 1 (length (supervisor-plan-entries supervisor--current-plan))))
-          ;; Add a second unit file and reload again
-          (with-temp-file (expand-file-name "b.el" dir)
-            (insert "(:id \"b\" :command \"echo b\" :type simple)"))
-          (supervisor-daemon-reload)
-          (should (= 2 (length (supervisor-plan-entries supervisor--current-plan)))))
-      (delete-directory dir t))))
+  (supervisor-test-with-unit-files nil
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--current-plan nil)
+           (supervisor--invalid (make-hash-table :test 'equal)))
+      ;; Write one unit file and reload
+      (with-temp-file (expand-file-name "a.el" supervisor-unit-directory)
+        (insert "(:id \"a\" :command \"echo a\" :type simple)"))
+      (supervisor-daemon-reload)
+      (should supervisor--current-plan)
+      (should (= 1 (length (supervisor-plan-entries supervisor--current-plan))))
+      ;; Add a second unit file and reload again
+      (with-temp-file (expand-file-name "b.el" supervisor-unit-directory)
+        (insert "(:id \"b\" :command \"echo b\" :type simple)"))
+      (supervisor-daemon-reload)
+      (should (= 2 (length (supervisor-plan-entries supervisor--current-plan)))))))
 
 (ert-deftest supervisor-test-daemon-reload-runtime-untouched ()
   "The `daemon-reload' does not start or stop processes."
@@ -6436,26 +6458,20 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-daemon-reload-counts-unit-file-invalid ()
   "The `daemon-reload' invalid count includes malformed unit files."
-  (let* ((dir (make-temp-file "units-" t))
-         (supervisor-unit-directory dir)
-         (supervisor-use-unit-files t)
-         (supervisor-programs nil)
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (supervisor--current-plan nil)
-         (supervisor--invalid (make-hash-table :test 'equal))
-         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
-         (supervisor--computed-deps (make-hash-table :test 'equal)))
-    (unwind-protect
-        (progn
-          ;; Create a malformed unit file (missing :command)
-          (with-temp-file (expand-file-name "bad.el" dir)
-            (insert "(:id \"bad-unit\")"))
-          (let ((result (supervisor-daemon-reload)))
-            ;; Invalid count should include the unit-file invalid
-            (should (= 1 (plist-get result :invalid)))
-            (should (gethash "bad-unit" supervisor--invalid))))
-      (delete-directory dir t))))
+  (supervisor-test-with-unit-files nil
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--current-plan nil)
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+           (supervisor--computed-deps (make-hash-table :test 'equal)))
+      ;; Create a malformed unit file (missing :command)
+      (with-temp-file (expand-file-name "bad.el" supervisor-unit-directory)
+        (insert "(:id \"bad-unit\")"))
+      (let ((result (supervisor-daemon-reload)))
+        ;; Invalid count should include the unit-file invalid
+        (should (= 1 (plist-get result :invalid)))
+        (should (gethash "bad-unit" supervisor--invalid))))))
 
 ;;; Phase 8: reload command tests
 
@@ -6534,26 +6550,27 @@ Reload bypasses `supervisor--manual-start' and calls
 
 (ert-deftest supervisor-test-reload-unit-masked-skips ()
   "Reloading a masked unit returns `skipped (masked)'."
-  (let* ((supervisor-programs '(("echo hi" :id "svc1")))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--mask-override (make-hash-table :test 'equal))
-         (supervisor--invalid (make-hash-table :test 'equal)))
-    (puthash "svc1" 'masked supervisor--mask-override)
-    (let ((result (supervisor--reload-unit "svc1")))
-      (should (equal "svc1" (plist-get result :id)))
-      (should (equal "skipped (masked)" (plist-get result :action))))))
+  (supervisor-test-with-unit-files
+      '(("echo hi" :id "svc1"))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal)))
+      (puthash "svc1" 'masked supervisor--mask-override)
+      (let ((result (supervisor--reload-unit "svc1")))
+        (should (equal "svc1" (plist-get result :id)))
+        (should (equal "skipped (masked)" (plist-get result :action)))))))
 
 (ert-deftest supervisor-test-reload-unit-unknown-errors ()
   "Reloading an unknown unit returns an error."
-  (let* ((supervisor-programs nil)
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--mask-override (make-hash-table :test 'equal))
-         (supervisor--invalid (make-hash-table :test 'equal))
-         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
-         (supervisor--computed-deps (make-hash-table :test 'equal)))
-    (let ((result (supervisor--reload-unit "nonexistent")))
-      (should (equal "nonexistent" (plist-get result :id)))
-      (should (equal "error: not found" (plist-get result :action))))))
+  (supervisor-test-with-unit-files nil
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+           (supervisor--computed-deps (make-hash-table :test 'equal)))
+      (let ((result (supervisor--reload-unit "nonexistent")))
+        (should (equal "nonexistent" (plist-get result :id)))
+        (should (equal "error: not found" (plist-get result :action)))))))
 
 (ert-deftest supervisor-test-cli-reload-requires-ids ()
   "CLI `reload' with no IDs returns exit 2."
@@ -6591,30 +6608,31 @@ Reload bypasses `supervisor--manual-start' and calls
 
 (ert-deftest supervisor-test-cli-reload-masked-human ()
   "CLI `reload' on masked unit shows `skipped (masked)' in human output."
-  (let* ((supervisor-programs '(("echo hi" :id "svc1")))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--mask-override (make-hash-table :test 'equal))
-         (supervisor--invalid (make-hash-table :test 'equal)))
-    (puthash "svc1" 'masked supervisor--mask-override)
-    (let ((result (supervisor--cli-dispatch '("reload" "svc1"))))
-      (should (= supervisor-cli-exit-success
-                 (supervisor-cli-result-exitcode result)))
-      (should (string-match-p "skipped (masked)"
-                              (supervisor-cli-result-output result))))))
+  (supervisor-test-with-unit-files
+      '(("echo hi" :id "svc1"))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal)))
+      (puthash "svc1" 'masked supervisor--mask-override)
+      (let ((result (supervisor--cli-dispatch '("reload" "svc1"))))
+        (should (= supervisor-cli-exit-success
+                   (supervisor-cli-result-exitcode result)))
+        (should (string-match-p "skipped (masked)"
+                                (supervisor-cli-result-output result)))))))
 
 (ert-deftest supervisor-test-cli-reload-unknown-id-human ()
   "CLI `reload' on unknown ID returns exit 1 with error."
-  (let* ((supervisor-programs nil)
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--mask-override (make-hash-table :test 'equal))
-         (supervisor--invalid (make-hash-table :test 'equal))
-         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
-         (supervisor--computed-deps (make-hash-table :test 'equal)))
-    (let ((result (supervisor--cli-dispatch '("reload" "ghost"))))
-      (should (= supervisor-cli-exit-failure
-                 (supervisor-cli-result-exitcode result)))
-      (should (string-match-p "error: not found"
-                              (supervisor-cli-result-output result))))))
+  (supervisor-test-with-unit-files nil
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+           (supervisor--computed-deps (make-hash-table :test 'equal)))
+      (let ((result (supervisor--cli-dispatch '("reload" "ghost"))))
+        (should (= supervisor-cli-exit-failure
+                   (supervisor-cli-result-exitcode result)))
+        (should (string-match-p "error: not found"
+                                (supervisor-cli-result-output result)))))))
 
 (ert-deftest supervisor-test-cli-reload-json ()
   "CLI `reload' with --json returns proper JSON structure."
@@ -6817,18 +6835,18 @@ Running oneshots get definition update only."
 (ert-deftest supervisor-test-reload-parse-error-returns-invalid-config ()
   "Reload on unparseable entry returns `error: invalid config'.
 This distinguishes config errors from truly missing entries."
-  (let* ((supervisor-programs nil)
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--mask-override (make-hash-table :test 'equal))
-         (supervisor--invalid (make-hash-table :test 'equal)))
-    (cl-letf (((symbol-function 'supervisor--effective-programs)
-               (lambda ()
-                 ;; Return a malformed entry: not a string or (string . plist)
-                 '(42))))
-      ;; The malformed entry's ID will be "malformed#0"
-      (let ((result (supervisor--reload-unit "malformed#0")))
-        (should (equal "malformed#0" (plist-get result :id)))
-        (should (equal "error: invalid config" (plist-get result :action)))))))
+  (supervisor-test-with-unit-files nil
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal)))
+      (cl-letf (((symbol-function 'supervisor--effective-programs)
+                 (lambda ()
+                   ;; Return a malformed entry: not a string or (string . plist)
+                   '(42))))
+        ;; The malformed entry's ID will be "malformed#0"
+        (let ((result (supervisor--reload-unit "malformed#0")))
+          (should (equal "malformed#0" (plist-get result :id)))
+          (should (equal "error: invalid config" (plist-get result :action))))))))
 
 ;;; Phase 9: enable/disable model alignment tests
 
@@ -6897,91 +6915,94 @@ change the override — it just runs the unit this session."
   "Reconcile does not stop disabled units that were manually started.
 Per the systemctl model, `start' on a disabled unit is session-only
 and reconcile should not undo it."
-  (let* ((supervisor-programs '(("sleep 100" :id "svc1" :disabled t)))
-         (plan (supervisor--build-plan supervisor-programs))
-         (process-alive (make-hash-table :test 'equal))
-         (manually-started (make-hash-table :test 'equal)))
-    (puthash "svc1" t process-alive)
-    (puthash "svc1" t manually-started)
-    (let* ((snapshot (supervisor-snapshot--create
-                      :process-alive process-alive
-                      :process-pids (make-hash-table :test 'equal)
-                      :failed (make-hash-table :test 'equal)
-                      :oneshot-exit (make-hash-table :test 'equal)
-                      :entry-state (make-hash-table :test 'equal)
-                      :invalid (make-hash-table :test 'equal)
-                      :enabled-override (make-hash-table :test 'equal)
-                      :restart-override (make-hash-table :test 'equal)
-                      :logging-override (make-hash-table :test 'equal)
-                      :manually-started manually-started
-                      :timestamp (float-time)))
-           (actions (supervisor--compute-actions plan snapshot)))
-      ;; Should be noop (manually-started), NOT stop (disabled)
-      (let ((action (cl-find "svc1" actions
-                             :key (lambda (a) (plist-get a :id))
-                             :test #'equal)))
-        (should action)
-        (should (eq 'noop (plist-get action :op)))
-        (should (eq 'manually-started (plist-get action :reason)))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "svc1" :disabled t))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           (process-alive (make-hash-table :test 'equal))
+           (manually-started (make-hash-table :test 'equal)))
+      (puthash "svc1" t process-alive)
+      (puthash "svc1" t manually-started)
+      (let* ((snapshot (supervisor-snapshot--create
+                        :process-alive process-alive
+                        :process-pids (make-hash-table :test 'equal)
+                        :failed (make-hash-table :test 'equal)
+                        :oneshot-exit (make-hash-table :test 'equal)
+                        :entry-state (make-hash-table :test 'equal)
+                        :invalid (make-hash-table :test 'equal)
+                        :enabled-override (make-hash-table :test 'equal)
+                        :restart-override (make-hash-table :test 'equal)
+                        :logging-override (make-hash-table :test 'equal)
+                        :manually-started manually-started
+                        :timestamp (float-time)))
+             (actions (supervisor--compute-actions plan snapshot)))
+        ;; Should be noop (manually-started), NOT stop (disabled)
+        (let ((action (cl-find "svc1" actions
+                               :key (lambda (a) (plist-get a :id))
+                               :test #'equal)))
+          (should action)
+          (should (eq 'noop (plist-get action :op)))
+          (should (eq 'manually-started (plist-get action :reason))))))))
 
 (ert-deftest supervisor-test-reconcile-stops-non-manual-disabled ()
   "Reconcile stops disabled units that were NOT manually started."
-  (let* ((supervisor-programs '(("sleep 100" :id "svc1" :disabled t)))
-         (plan (supervisor--build-plan supervisor-programs))
-         (process-alive (make-hash-table :test 'equal)))
-    (puthash "svc1" t process-alive)
-    (let* ((snapshot (supervisor-snapshot--create
-                      :process-alive process-alive
-                      :process-pids (make-hash-table :test 'equal)
-                      :failed (make-hash-table :test 'equal)
-                      :oneshot-exit (make-hash-table :test 'equal)
-                      :entry-state (make-hash-table :test 'equal)
-                      :invalid (make-hash-table :test 'equal)
-                      :enabled-override (make-hash-table :test 'equal)
-                      :restart-override (make-hash-table :test 'equal)
-                      :logging-override (make-hash-table :test 'equal)
-                      :manually-started (make-hash-table :test 'equal)
-                      :timestamp (float-time)))
-           (actions (supervisor--compute-actions plan snapshot)))
-      ;; Should stop (disabled, not manually started)
-      (let ((action (cl-find "svc1" actions
-                             :key (lambda (a) (plist-get a :id))
-                             :test #'equal)))
-        (should action)
-        (should (eq 'stop (plist-get action :op)))
-        (should (eq 'disabled (plist-get action :reason)))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "svc1" :disabled t))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           (process-alive (make-hash-table :test 'equal)))
+      (puthash "svc1" t process-alive)
+      (let* ((snapshot (supervisor-snapshot--create
+                        :process-alive process-alive
+                        :process-pids (make-hash-table :test 'equal)
+                        :failed (make-hash-table :test 'equal)
+                        :oneshot-exit (make-hash-table :test 'equal)
+                        :entry-state (make-hash-table :test 'equal)
+                        :invalid (make-hash-table :test 'equal)
+                        :enabled-override (make-hash-table :test 'equal)
+                        :restart-override (make-hash-table :test 'equal)
+                        :logging-override (make-hash-table :test 'equal)
+                        :manually-started (make-hash-table :test 'equal)
+                        :timestamp (float-time)))
+             (actions (supervisor--compute-actions plan snapshot)))
+        ;; Should stop (disabled, not manually started)
+        (let ((action (cl-find "svc1" actions
+                               :key (lambda (a) (plist-get a :id))
+                               :test #'equal)))
+          (should action)
+          (should (eq 'stop (plist-get action :op)))
+          (should (eq 'disabled (plist-get action :reason))))))))
 
 (ert-deftest supervisor-test-reconcile-stops-masked-even-if-manually-started ()
   "Reconcile stops masked units even if manually started.
 Mask overrides everything including manual-start tracking."
-  (let* ((supervisor-programs '(("sleep 100" :id "svc1")))
-         (plan (supervisor--build-plan supervisor-programs))
-         (process-alive (make-hash-table :test 'equal))
-         (manually-started (make-hash-table :test 'equal))
-         (mask-override (make-hash-table :test 'equal)))
-    (puthash "svc1" t process-alive)
-    (puthash "svc1" t manually-started)
-    (puthash "svc1" 'masked mask-override)
-    (let* ((snapshot (supervisor-snapshot--create
-                      :process-alive process-alive
-                      :process-pids (make-hash-table :test 'equal)
-                      :failed (make-hash-table :test 'equal)
-                      :oneshot-exit (make-hash-table :test 'equal)
-                      :entry-state (make-hash-table :test 'equal)
-                      :invalid (make-hash-table :test 'equal)
-                      :enabled-override (make-hash-table :test 'equal)
-                      :restart-override (make-hash-table :test 'equal)
-                      :logging-override (make-hash-table :test 'equal)
-                      :mask-override mask-override
-                      :manually-started manually-started
-                      :timestamp (float-time)))
-           (actions (supervisor--compute-actions plan snapshot)))
-      (let ((action (cl-find "svc1" actions
-                             :key (lambda (a) (plist-get a :id))
-                             :test #'equal)))
-        (should action)
-        (should (eq 'stop (plist-get action :op)))
-        (should (eq 'masked (plist-get action :reason)))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 100" :id "svc1"))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+           (process-alive (make-hash-table :test 'equal))
+           (manually-started (make-hash-table :test 'equal))
+           (mask-override (make-hash-table :test 'equal)))
+      (puthash "svc1" t process-alive)
+      (puthash "svc1" t manually-started)
+      (puthash "svc1" 'masked mask-override)
+      (let* ((snapshot (supervisor-snapshot--create
+                        :process-alive process-alive
+                        :process-pids (make-hash-table :test 'equal)
+                        :failed (make-hash-table :test 'equal)
+                        :oneshot-exit (make-hash-table :test 'equal)
+                        :entry-state (make-hash-table :test 'equal)
+                        :invalid (make-hash-table :test 'equal)
+                        :enabled-override (make-hash-table :test 'equal)
+                        :restart-override (make-hash-table :test 'equal)
+                        :logging-override (make-hash-table :test 'equal)
+                        :mask-override mask-override
+                        :manually-started manually-started
+                        :timestamp (float-time)))
+             (actions (supervisor--compute-actions plan snapshot)))
+        (let ((action (cl-find "svc1" actions
+                               :key (lambda (a) (plist-get a :id))
+                               :test #'equal)))
+          (should action)
+          (should (eq 'stop (plist-get action :op)))
+          (should (eq 'masked (plist-get action :reason))))))))
 
 (ert-deftest supervisor-test-manual-stop-clears-manually-started ()
   "Manually stopping a unit clears the manually-started flag.
@@ -7098,27 +7119,28 @@ Only mask blocks; disabled does not."
   "Failed manual start does not leave stale manually-started flag.
 Only successful starts should set the flag, otherwise reconcile
 could incorrectly preserve a non-running disabled unit."
-  (let* ((supervisor-programs '(("echo hi" :id "svc1")))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--failed (make-hash-table :test 'equal))
-         (supervisor--restart-times (make-hash-table :test 'equal))
-         (supervisor--oneshot-completed (make-hash-table :test 'equal))
-         (supervisor--manually-stopped (make-hash-table :test 'equal))
-         (supervisor--manually-started (make-hash-table :test 'equal))
-         (supervisor--entry-state (make-hash-table :test 'equal))
-         (supervisor--mask-override (make-hash-table :test 'equal))
-         (supervisor--enabled-override (make-hash-table :test 'equal))
-         (supervisor--invalid (make-hash-table :test 'equal))
-         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
-         (supervisor--computed-deps (make-hash-table :test 'equal))
-         (supervisor--logging (make-hash-table :test 'equal)))
-    (cl-letf (((symbol-function 'supervisor--start-process)
-               (lambda (_id _cmd _logging _type _restart &optional _is-restart)
-                 nil)))  ; Simulate spawn failure
-      (let ((result (supervisor--manual-start "svc1")))
-        (should (eq 'error (plist-get result :status)))
-        ;; Flag must NOT be set on failure
-        (should-not (gethash "svc1" supervisor--manually-started))))))
+  (supervisor-test-with-unit-files
+      '(("echo hi" :id "svc1"))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--restart-times (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--manually-stopped (make-hash-table :test 'equal))
+           (supervisor--manually-started (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+           (supervisor--computed-deps (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal)))
+      (cl-letf (((symbol-function 'supervisor--start-process)
+                 (lambda (_id _cmd _logging _type _restart &optional _is-restart)
+                   nil)))  ; Simulate spawn failure
+        (let ((result (supervisor--manual-start "svc1")))
+          (should (eq 'error (plist-get result :status)))
+          ;; Flag must NOT be set on failure
+          (should-not (gethash "svc1" supervisor--manually-started)))))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
