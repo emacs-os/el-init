@@ -37,6 +37,8 @@
 #   restart [-- ID...]          Restart units
 #   enable [--] ID...           Enable units
 #   disable [--] ID...          Disable units
+#   mask [--] ID...             Mask units (always disabled)
+#   unmask [--] ID...           Unmask units
 #   kill [--signal SIG] [--] ID Send signal to unit
 #   cat ID                      Show unit file content
 #   edit ID                     Edit unit file

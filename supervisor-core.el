@@ -596,6 +596,10 @@ cycle fallback behavior.  Uses the pure plan builder internally."
   "Hash table of enabled overrides: nil=inherit config, `enabled', `disabled'.
 Runtime overrides take effect on next start (manual or restart).")
 
+(defvar supervisor--mask-override (make-hash-table :test 'equal)
+  "Hash table of mask overrides: id to `masked' or nil.
+Masked entries are always disabled regardless of enable overrides.")
+
 (defvar supervisor--restart-times (make-hash-table :test 'equal)
   "Hash table mapping program names to list of recent restart timestamps.")
 
@@ -659,6 +663,12 @@ Returns nil if no overrides are set."
                      (setcdr existing (plist-put (cdr existing) :logging val))
                    (push (cons id (list :logging val)) overrides))))
              supervisor--logging)
+    (maphash (lambda (id val)
+               (let ((existing (assoc id overrides)))
+                 (if existing
+                     (setcdr existing (plist-put (cdr existing) :mask val))
+                   (push (cons id (list :mask val)) overrides))))
+             supervisor--mask-override)
     overrides))
 
 (defun supervisor--save-overrides ()
@@ -710,6 +720,7 @@ Clears existing in-memory overrides before loading to prevent stale state."
             (clrhash supervisor--enabled-override)
             (clrhash supervisor--restart-override)
             (clrhash supervisor--logging)
+            (clrhash supervisor--mask-override)
             ;; Load overrides into hashes
             (dolist (entry overrides)
               (let ((id (car entry))
@@ -719,7 +730,9 @@ Clears existing in-memory overrides before loading to prevent stale state."
                 (when-let* ((restart (plist-get plist :restart)))
                   (puthash id restart supervisor--restart-override))
                 (when-let* ((logging (plist-get plist :logging)))
-                  (puthash id logging supervisor--logging))))
+                  (puthash id logging supervisor--logging))
+                (when-let* ((mask (plist-get plist :mask)))
+                  (puthash id mask supervisor--mask-override))))
             (setq supervisor--overrides-loaded t)
             (supervisor--log 'info "Loaded %d overrides from %s"
                              (length overrides) path)
@@ -732,12 +745,13 @@ Clears existing in-memory overrides before loading to prevent stale state."
 
 (defun supervisor--merge-override (id key value)
   "Set override KEY for ID to VALUE and save.
-KEY is one of :enabled, :restart, or :logging.
-VALUE is `enabled', `disabled', or nil (to clear)."
+KEY is one of :enabled, :restart, :logging, or :mask.
+VALUE is `enabled', `disabled', `masked', or nil (to clear)."
   (let ((hash (pcase key
                 (:enabled supervisor--enabled-override)
                 (:restart supervisor--restart-override)
-                (:logging supervisor--logging))))
+                (:logging supervisor--logging)
+                (:mask supervisor--mask-override))))
     (if (null value)
         (remhash id hash)
       (puthash id value hash)))
@@ -748,6 +762,7 @@ VALUE is `enabled', `disabled', or nil (to clear)."
   (clrhash supervisor--enabled-override)
   (clrhash supervisor--restart-override)
   (clrhash supervisor--logging)
+  (clrhash supervisor--mask-override)
   (when-let* ((path (supervisor--overrides-file-path)))
     (when (file-exists-p path)
       (delete-file path)))
@@ -1158,7 +1173,12 @@ Skips invalid/malformed entries to avoid parse errors."
   "Compute status string and PID string for entry ID of TYPE.
 If SNAPSHOT is provided, read from it; otherwise read from globals.
 Return a cons cell (STATUS . PID)."
-  (let* ((alive (if snapshot
+  (let* ((mask-hash (if snapshot
+                        (or (supervisor-snapshot-mask-override snapshot)
+                            (make-hash-table :test 'equal))
+                      supervisor--mask-override))
+         (masked (eq (gethash id mask-hash) 'masked))
+         (alive (if snapshot
                     (gethash id (supervisor-snapshot-process-alive snapshot))
                   (let ((proc (gethash id supervisor--processes)))
                     (and proc (process-live-p proc)))))
@@ -1178,7 +1198,8 @@ Return a cons cell (STATUS . PID)."
          (pid (cond (alive (number-to-string pid-num))
                     ((and oneshot-p oneshot-done) (format "exit:%d" oneshot-exit))
                     (t "-")))
-         (status (cond (alive "running")
+         (status (cond (masked "masked")
+                       (alive "running")
                        (failed "dead")
                        ((and oneshot-p oneshot-failed) "failed")
                        ((and oneshot-p oneshot-done) "done")
@@ -1190,7 +1211,12 @@ Return a cons cell (STATUS . PID)."
   "Compute reason string for entry ID of TYPE.
 Returns a reason string, or nil if no specific reason applies.
 If SNAPSHOT is provided, read from it; otherwise read from globals."
-  (let* ((alive (if snapshot
+  (let* ((mask-hash (if snapshot
+                        (or (supervisor-snapshot-mask-override snapshot)
+                            (make-hash-table :test 'equal))
+                      supervisor--mask-override))
+         (masked (eq (gethash id mask-hash) 'masked))
+         (alive (if snapshot
                     (gethash id (supervisor-snapshot-process-alive snapshot))
                   (let ((proc (gethash id supervisor--processes)))
                     (and proc (process-live-p proc)))))
@@ -1206,6 +1232,7 @@ If SNAPSHOT is provided, read from it; otherwise read from globals."
                                       (supervisor-snapshot-entry-state snapshot)
                                     supervisor--entry-state))))
     (cond
+     (masked "masked")
      (alive nil)
      ((and oneshot-p oneshot-done) nil)
      ((eq entry-state 'disabled) "disabled")
@@ -1356,6 +1383,7 @@ status queries, and reconciliation without direct global access."
   enabled-override ; hash: id -> 'enabled, 'disabled, or nil
   restart-override ; hash: id -> 'enabled, 'disabled, or nil
   logging-override ; hash: id -> 'enabled, 'disabled, or nil
+  mask-override    ; hash: id -> 'masked or nil
   timestamp)       ; float-time when snapshot was taken
 
 (defun supervisor--build-snapshot ()
@@ -1380,6 +1408,7 @@ completion status, and overrides.  Safe to call at any time."
      :enabled-override (copy-hash-table supervisor--enabled-override)
      :restart-override (copy-hash-table supervisor--restart-override)
      :logging-override (copy-hash-table supervisor--logging)
+     :mask-override (copy-hash-table supervisor--mask-override)
      :timestamp (float-time))))
 
 (defun supervisor--build-plan (programs)
@@ -2199,12 +2228,14 @@ Return t if restart is enabled, nil if disabled."
 (defun supervisor--get-effective-enabled (id config-enabled)
   "Get effective enabled state for ID.
 CONFIG-ENABLED is the config's :enabled value (t or nil).
-Return t if enabled, nil if disabled.  Runtime overrides take
-effect on next start (manual or restart)."
-  (let ((override (gethash id supervisor--enabled-override)))
-    (cond ((eq override 'enabled) t)
-          ((eq override 'disabled) nil)
-          (t config-enabled))))
+Return t if enabled, nil if disabled.  Masked entries are always
+disabled.  Runtime overrides take effect on next start."
+  (if (eq (gethash id supervisor--mask-override) 'masked)
+      nil
+    (let ((override (gethash id supervisor--enabled-override)))
+      (cond ((eq override 'enabled) t)
+            ((eq override 'disabled) nil)
+            (t config-enabled)))))
 
 (defun supervisor--handle-oneshot-exit (name proc-status exit-code)
   "Handle exit of oneshot process NAME.
@@ -2424,6 +2455,9 @@ ensuring consistent behavior between dashboard and CLI."
           (list :status 'error :reason "not found")
         (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
           (cond
+           ;; Masked (highest precedence)
+           ((eq (gethash id supervisor--mask-override) 'masked)
+            (list :status 'skipped :reason "masked"))
            ;; Disabled
            ((not (supervisor--get-effective-enabled id enabled-p))
             (list :status 'skipped :reason "disabled"))
@@ -2576,6 +2610,7 @@ Ready semantics (when dependents are unblocked):
   ;; Reset runtime state for clean session
   (clrhash supervisor--restart-override)
   (clrhash supervisor--enabled-override)
+  (clrhash supervisor--mask-override)
   (clrhash supervisor--manually-stopped)
   (clrhash supervisor--failed)
   (clrhash supervisor--invalid)
@@ -2782,33 +2817,41 @@ This function does not modify any state."
         (process-alive (supervisor-snapshot-process-alive snapshot))
         (failed-hash (supervisor-snapshot-failed snapshot))
         (oneshot-hash (supervisor-snapshot-oneshot-exit snapshot))
-        (enabled-override (supervisor-snapshot-enabled-override snapshot)))
+        (enabled-override (supervisor-snapshot-enabled-override snapshot))
+        (mask-override (or (supervisor-snapshot-mask-override snapshot)
+                           (make-hash-table :test 'equal))))
     ;; Collect running IDs from snapshot
     (let ((running-ids nil))
       (maphash (lambda (id _) (push id running-ids)) process-alive)
-      ;; Check for processes to stop (running but not in plan, or now disabled)
+      ;; Check for processes to stop (running but not in plan, or now disabled/masked)
       (dolist (id running-ids)
         (let ((in-plan (member id plan-ids)))
           (if (not in-plan)
               ;; Removed from config
               (push (list :op 'stop :id id :reason 'removed) actions)
-            ;; Check if now disabled
+            ;; Check if now disabled or masked
             (let* ((entry (cl-find id plan-entries :key #'car :test #'equal))
                    (enabled-p (nth 3 entry))
+                   (is-masked (eq (gethash id mask-override) 'masked))
                    (override (gethash id enabled-override))
-                   (effective-enabled (cond ((eq override 'enabled) t)
+                   (effective-enabled (cond (is-masked nil)
+                                            ((eq override 'enabled) t)
                                             ((eq override 'disabled) nil)
                                             (t enabled-p))))
               (if (not effective-enabled)
-                  (push (list :op 'stop :id id :reason 'disabled) actions)
+                  (push (list :op 'stop :id id
+                              :reason (if is-masked 'masked 'disabled))
+                        actions)
                 (push (list :op 'noop :id id :reason 'already-running) actions)))))))
     ;; Check for processes to start (in plan but not running)
     (dolist (entry plan-entries)
       (let* ((id (car entry))
              (enabled-p (nth 3 entry))
              (type (nth 6 entry))
+             (is-masked (eq (gethash id mask-override) 'masked))
              (override (gethash id enabled-override))
-             (effective-enabled (cond ((eq override 'enabled) t)
+             (effective-enabled (cond (is-masked nil)
+                                      ((eq override 'enabled) t)
                                       ((eq override 'disabled) nil)
                                       (t enabled-p)))
              (is-running (gethash id process-alive))
@@ -2819,7 +2862,9 @@ This function does not modify any state."
           ;; Already handled in running-ids loop
           nil)
          ((not effective-enabled)
-          (push (list :op 'skip :id id :reason 'disabled) actions))
+          (push (list :op 'skip :id id
+                      :reason (if is-masked 'masked 'disabled))
+                actions))
          (is-failed
           (push (list :op 'skip :id id :reason 'failed) actions))
          ((and (eq type 'oneshot) oneshot-done)

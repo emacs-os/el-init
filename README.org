@@ -454,15 +454,17 @@ This is used by status/reporting and timer retry eligibility.
 
 ** Runtime Overrides
 
-Three override tables are supported:
+Four override tables are supported:
 
+- mask override (~supervisor--mask-override~)
 - enabled override (~supervisor--enabled-override~)
 - restart override (~supervisor--restart-override~)
 - logging override (~supervisor--logging~)
 
-Effective value resolution is:
+Effective value resolution for enabled state:
 
-- explicit runtime override if present,
+- if masked, always disabled (highest precedence),
+- else explicit enabled override if present,
 - otherwise config default.
 
 ** Persistence of Overrides
@@ -479,7 +481,7 @@ Interactive helpers:
 - ~M-x supervisor-overrides-save~
 - ~M-x supervisor-overrides-clear~
 
-Dashboard toggles for enabled/restart persist immediately.
+Dashboard toggles for enabled/restart/mask persist immediately.
 Dashboard logging toggle updates runtime state; use explicit save command (or CLI
 logging command) when you want persistence written immediately. In other words:
 dashboard logging toggle does not auto-save, but CLI ~logging on|off ...~ does.
@@ -496,7 +498,7 @@ Reconcile flow:
 Effects:
 
 - Stops removed entries
-- Stops entries now effectively disabled
+- Stops entries now effectively disabled or masked
 - Starts newly eligible entries
 - Leaves converged entries running
 
@@ -692,12 +694,15 @@ Dashboard buffer: ~*supervisor*~, major mode ~supervisor-dashboard-mode~
 - ~dead~
 - ~pending~
 - ~stopped~
+- ~masked~
 - ~invalid~
 
-~invalid~ here means configuration/validation failure, not a runtime FSM state.
+~masked~ means the entry has been explicitly masked and is always disabled.
+~invalid~ means configuration/validation failure, not a runtime FSM state.
 
 ** Service Reason Values
 
+- ~masked~
 - ~disabled~
 - ~delayed~
 - ~waiting-on-deps~
@@ -726,6 +731,7 @@ Timer reason column shows either:
 
 | Key | Function |
 | ~e~ | Toggle enabled override |
+| ~m~ | Toggle mask (masked entries are always disabled) |
 | ~f~ | Cycle stage filter |
 | ~t~ | Cycle tag filter |
 | ~s~ | Start selected service |
@@ -850,6 +856,8 @@ Systemctl-compatible commands:
 - ~restart [-- ID...]~
 - ~enable [--] ID...~
 - ~disable [--] ID...~
+- ~mask [--] ID...~ (always disabled, overrides enable)
+- ~unmask [--] ID...~
 - ~kill [--signal SIG] [--] ID~
 - ~cat ID~ (display raw unit file content)
 - ~edit ID~ (edit unit file; creates scaffold if missing)
@@ -1126,6 +1134,7 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-quit~ | Quit dashboard |
 | ~M-x supervisor-dashboard-toggle-restart~ | Toggle restart override |
 | ~M-x supervisor-dashboard-toggle-enabled~ | Toggle enabled override |
+| ~M-x supervisor-dashboard-toggle-mask~ | Toggle mask (always disabled) |
 | ~M-x supervisor-dashboard-start~ | Start selected service |
 | ~M-x supervisor-dashboard-stop~ | Stop selected service (graceful, suppresses restart) |
 | ~M-x supervisor-dashboard-restart~ | Restart selected service (stop + start) |
@@ -1171,6 +1180,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Log rotation and log file paths: [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Logging pipeline (~supervisor--log~, ~supervisor-verbose~, ~supervisor-log-to-file~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Manual stop behavior and restart suppression: [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
+- Mask/unmask (~mask~, ~unmask~, ~m~ in dashboard): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Max concurrent stage starts (~supervisor-max-concurrent-starts~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Override precedence (runtime override vs config default): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Override persistence (~supervisor-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]

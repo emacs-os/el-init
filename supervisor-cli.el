@@ -883,6 +883,54 @@ Use -- before IDs that start with a hyphen."
              (format "Disabled: %s\n" (mapconcat #'identity args ", ")))
            (if json-p 'json 'human))))))))
 
+(defun supervisor--cli-cmd-mask (args json-p)
+  "Handle `mask [--] ID...' command with ARGS.  JSON-P enables JSON output.
+Use -- before IDs that start with a hyphen."
+  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+    (if unknown
+        (supervisor--cli-error supervisor-cli-exit-invalid-args
+                               (format "Unknown option: %s" unknown)
+                               (if json-p 'json 'human))
+      (let ((args (supervisor--cli-strip-separator args)))
+        (cond
+         ((null args)
+          (supervisor--cli-error supervisor-cli-exit-invalid-args
+                                 "mask requires at least one ID"
+                                 (if json-p 'json 'human)))
+         (t
+          (dolist (id args)
+            (puthash id 'masked supervisor--mask-override))
+          (supervisor--save-overrides)
+          (supervisor--cli-success
+           (if json-p
+               (json-encode `((masked . ,args)))
+             (format "Masked: %s\n" (mapconcat #'identity args ", ")))
+           (if json-p 'json 'human))))))))
+
+(defun supervisor--cli-cmd-unmask (args json-p)
+  "Handle `unmask [--] ID...' command with ARGS.  JSON-P enables JSON output.
+Use -- before IDs that start with a hyphen."
+  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+    (if unknown
+        (supervisor--cli-error supervisor-cli-exit-invalid-args
+                               (format "Unknown option: %s" unknown)
+                               (if json-p 'json 'human))
+      (let ((args (supervisor--cli-strip-separator args)))
+        (cond
+         ((null args)
+          (supervisor--cli-error supervisor-cli-exit-invalid-args
+                                 "unmask requires at least one ID"
+                                 (if json-p 'json 'human)))
+         (t
+          (dolist (id args)
+            (remhash id supervisor--mask-override))
+          (supervisor--save-overrides)
+          (supervisor--cli-success
+           (if json-p
+               (json-encode `((unmasked . ,args)))
+             (format "Unmasked: %s\n" (mapconcat #'identity args ", ")))
+           (if json-p 'json 'human))))))))
+
 (defun supervisor--cli-cmd-restart-policy (args json-p)
   "Handle `restart-policy (on|off) [--] ID...' with ARGS.  JSON-P for JSON.
 Use -- before IDs that start with a hyphen."
@@ -1502,6 +1550,8 @@ Returns a `supervisor-cli-result' struct."
                    "  restart [-- ID...]         Restart units\n"
                    "  enable [--] ID...          Enable units\n"
                    "  disable [--] ID...         Disable units\n"
+                   "  mask [--] ID...            Mask units (always disabled)\n"
+                   "  unmask [--] ID...          Unmask units\n"
                    "  kill [--signal SIG] [--] ID  Send signal to unit\n"
                    "  cat ID                     Show unit file content\n"
                    "  edit ID                    Edit unit file\n"
@@ -1538,6 +1588,10 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-enable args json-p))
          ((equal command "disable")
           (supervisor--cli-cmd-disable args json-p))
+         ((equal command "mask")
+          (supervisor--cli-cmd-mask args json-p))
+         ((equal command "unmask")
+          (supervisor--cli-cmd-unmask args json-p))
          ((equal command "restart-policy")
           (supervisor--cli-cmd-restart-policy args json-p))
          ((equal command "logging")

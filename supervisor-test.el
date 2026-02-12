@@ -4967,6 +4967,195 @@ at minute boundaries."
     (supervisor--cli-dispatch '("disable" "test-id"))
     (should (eq 'disabled (gethash "test-id" supervisor--enabled-override)))))
 
+(ert-deftest supervisor-test-cli-mask-sets-override ()
+  "Mask command sets masked override."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))
+    (supervisor--cli-dispatch '("mask" "test-id"))
+    (should (eq 'masked (gethash "test-id" supervisor--mask-override)))))
+
+(ert-deftest supervisor-test-cli-unmask-clears-override ()
+  "Unmask command clears masked override."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))
+    (puthash "test-id" 'masked supervisor--mask-override)
+    (supervisor--cli-dispatch '("unmask" "test-id"))
+    (should-not (gethash "test-id" supervisor--mask-override))))
+
+(ert-deftest supervisor-test-cli-mask-requires-id ()
+  "Mask command requires at least one ID."
+  (let ((result (supervisor--cli-dispatch '("mask"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-unmask-requires-id ()
+  "Unmask command requires at least one ID."
+  (let ((result (supervisor--cli-dispatch '("unmask"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-mask-json-output ()
+  "Mask command returns JSON with masked IDs."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))
+    (let ((result (supervisor--cli-dispatch '("mask" "a" "b" "--json"))))
+      (should (eq 'json (supervisor-cli-result-format result)))
+      (let ((parsed (json-read-from-string
+                     (supervisor-cli-result-output result))))
+        (should (assoc 'masked parsed))))))
+
+(ert-deftest supervisor-test-cli-mask-with-separator ()
+  "Mask command supports -- separator for hyphen-prefixed IDs."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))
+    (supervisor--cli-dispatch '("mask" "--" "-my-id"))
+    (should (eq 'masked (gethash "-my-id" supervisor--mask-override)))))
+
+(ert-deftest supervisor-test-cli-unmask-json-output ()
+  "Unmask command returns JSON with unmasked IDs."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))
+    (puthash "a" 'masked supervisor--mask-override)
+    (puthash "b" 'masked supervisor--mask-override)
+    (let ((result (supervisor--cli-dispatch '("unmask" "a" "b" "--json"))))
+      (should (eq 'json (supervisor-cli-result-format result)))
+      (let ((parsed (json-read-from-string
+                     (supervisor-cli-result-output result))))
+        (should (assoc 'unmasked parsed))))))
+
+(ert-deftest supervisor-test-cli-unmask-with-separator ()
+  "Unmask command supports -- separator for hyphen-prefixed IDs."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))
+    (puthash "-my-id" 'masked supervisor--mask-override)
+    (supervisor--cli-dispatch '("unmask" "--" "-my-id"))
+    (should-not (gethash "-my-id" supervisor--mask-override))))
+
+(ert-deftest supervisor-test-mask-precedence-over-enabled ()
+  "Masked entry is always disabled regardless of enabled override."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal)))
+    ;; Even with enabled override, mask takes precedence
+    (puthash "test" 'masked supervisor--mask-override)
+    (puthash "test" 'enabled supervisor--enabled-override)
+    (should-not (supervisor--get-effective-enabled "test" t))))
+
+(ert-deftest supervisor-test-mask-blocks-manual-start ()
+  "Masked entry cannot be manually started."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor-programs '(("echo hi" :id "svc"))))
+    (puthash "svc" 'masked supervisor--mask-override)
+    (let ((result (supervisor--manual-start "svc")))
+      (should (eq 'skipped (plist-get result :status)))
+      (should (equal "masked" (plist-get result :reason))))))
+
+(ert-deftest supervisor-test-reconcile-stops-masked-running ()
+  "Reconcile stops masked entries that are currently running."
+  (let* ((supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (process-alive (make-hash-table :test 'equal))
+         (process-pids (make-hash-table :test 'equal))
+         (failed (make-hash-table :test 'equal))
+         (oneshot (make-hash-table :test 'equal))
+         (entry-state (make-hash-table :test 'equal))
+         (invalid (make-hash-table :test 'equal))
+         (logging (make-hash-table :test 'equal))
+         (restart (make-hash-table :test 'equal))
+         ;; Build a plan with one entry
+         (supervisor-programs '(("echo" :id "svc")))
+         (plan (supervisor--build-plan supervisor-programs)))
+    ;; Simulate running process
+    (puthash "svc" t process-alive)
+    (puthash "svc" 123 process-pids)
+    ;; Mask the entry
+    (puthash "svc" 'masked supervisor--mask-override)
+    (let ((snapshot (supervisor-snapshot--create
+                     :process-alive process-alive
+                     :process-pids process-pids
+                     :failed failed
+                     :oneshot-exit oneshot
+                     :entry-state entry-state
+                     :invalid invalid
+                     :enabled-override supervisor--enabled-override
+                     :restart-override restart
+                     :logging-override logging
+                     :mask-override supervisor--mask-override
+                     :timestamp (float-time))))
+      (let ((actions (supervisor--compute-actions plan snapshot)))
+        ;; Should have a stop action for the masked entry
+        (let ((stop-action (cl-find "svc" actions
+                                    :key (lambda (a) (plist-get a :id))
+                                    :test #'equal)))
+          (should stop-action)
+          (should (eq 'stop (plist-get stop-action :op)))
+          (should (eq 'masked (plist-get stop-action :reason))))))))
+
+(ert-deftest supervisor-test-mask-persistence-roundtrip ()
+  "Mask override survives save/load cycle."
+  (let* ((dir (make-temp-file "overrides-" t))
+         (supervisor-overrides-file (expand-file-name "overrides.eld" dir))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--overrides-loaded nil))
+    (unwind-protect
+        (progn
+          (puthash "svc" 'masked supervisor--mask-override)
+          (supervisor--save-overrides)
+          ;; Clear and reload
+          (clrhash supervisor--mask-override)
+          (should-not (gethash "svc" supervisor--mask-override))
+          (supervisor--load-overrides)
+          (should (eq 'masked (gethash "svc" supervisor--mask-override))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-compute-entry-status-masked ()
+  "Compute-entry-status returns masked even when process is running."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+    (puthash "svc" 'masked supervisor--mask-override)
+    ;; Non-running masked entry
+    (let ((result (supervisor--compute-entry-status "svc" 'simple)))
+      (should (equal "masked" (car result))))
+    ;; Running masked entry still shows masked
+    (let ((proc (start-process "test" nil "sleep" "999")))
+      (unwind-protect
+          (progn
+            (puthash "svc" proc supervisor--processes)
+            (let ((result (supervisor--compute-entry-status "svc" 'simple)))
+              (should (equal "masked" (car result)))))
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-compute-entry-reason-masked ()
+  "Compute-entry-reason returns masked even when process is running."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal)))
+    (puthash "svc" 'masked supervisor--mask-override)
+    ;; Non-running masked entry
+    (should (equal "masked" (supervisor--compute-entry-reason "svc" 'simple)))
+    ;; Running masked entry still shows masked
+    (let ((proc (start-process "test" nil "sleep" "999")))
+      (unwind-protect
+          (progn
+            (puthash "svc" proc supervisor--processes)
+            (should (equal "masked"
+                           (supervisor--compute-entry-reason "svc" 'simple))))
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-dashboard-mask-keybinding ()
+  "Dashboard keymap binds `m' to toggle-mask."
+  (should (eq #'supervisor-dashboard-toggle-mask
+              (lookup-key supervisor-dashboard-mode-map "m"))))
+
 (ert-deftest supervisor-test-cli-restart-policy-on ()
   "Restart-policy on sets override."
   (let ((supervisor--restart-override (make-hash-table :test 'equal))

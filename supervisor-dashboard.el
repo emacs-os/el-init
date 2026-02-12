@@ -90,6 +90,7 @@
   "Face for stopped status in dashboard."
   :group 'supervisor)
 
+
 (defface supervisor-type-simple
   '((t :foreground "#87ceeb"))
   "Face for simple process type in dashboard."
@@ -186,6 +187,7 @@ nil means show all entries, otherwise a tag symbol or string.")
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
     (define-key map "e" #'supervisor-dashboard-toggle-enabled)
+    (define-key map "m" #'supervisor-dashboard-toggle-mask)
     (define-key map "f" #'supervisor-dashboard-cycle-filter)
     (define-key map "t" #'supervisor-dashboard-cycle-tag-filter)
     (define-key map "r" #'supervisor-dashboard-toggle-restart)
@@ -234,6 +236,7 @@ This is called on first use to avoid loading transient at package load time."
           ("K" "Kill (force)" supervisor-dashboard-kill-force)]
          ["Toggles"
           ("e" "Enabled" supervisor-dashboard-toggle-enabled)
+          ("m" "Mask" supervisor-dashboard-toggle-mask)
           ("r" "Restart" supervisor-dashboard-toggle-restart)
           ("l" "Logging" supervisor-dashboard-toggle-logging)]
          ["Views"
@@ -308,6 +311,7 @@ Requires the `transient' package to be installed."
     ("invalid" 'supervisor-status-invalid)
     ("pending" 'supervisor-status-pending)
     ("stopped" 'supervisor-status-stopped)
+    ("masked" 'supervisor-status-dead)
     (_ nil)))
 
 (defun supervisor--propertize-status (status)
@@ -347,10 +351,17 @@ If SNAPSHOT is provided, read runtime state from it."
          (pid (cdr status-pid))
          (reason (supervisor--compute-entry-reason id type snapshot))
          ;; For overrides, use snapshot if provided, otherwise globals
+         (mask-hash (if snapshot
+                       (or (supervisor-snapshot-mask-override snapshot)
+                           (make-hash-table :test 'equal))
+                     supervisor--mask-override))
+         (mask-val (gethash id mask-hash))
+         (is-masked (eq mask-val 'masked))
          (enabled-override (if snapshot
                                (gethash id (supervisor-snapshot-enabled-override snapshot))
                              (gethash id supervisor--enabled-override)))
-         (effective-enabled (cond ((eq enabled-override 'enabled) t)
+         (effective-enabled (cond (is-masked nil)
+                                  ((eq enabled-override 'enabled) t)
                                   ((eq enabled-override 'disabled) nil)
                                   (t enabled-p)))
          (restart-override (if snapshot
@@ -601,7 +612,7 @@ If SNAPSHOT is provided, read state from it; otherwise read from globals."
             " inv")))
 
 (defvar supervisor--help-text
-  (concat "[e]nable [f]ilter [t]ag [s]tart [x]stop [R]estart [k]ill [K]force "
+  (concat "[e]nable [m]ask [f]ilter [t]ag [s]tart [x]stop [R]estart [k]ill [K]force "
           "[r]estart-toggle [l]og [L]view [c]at [E]dit [p]roced [P]auto "
           "[d]eps [D]graph [B]lame [g]refresh [G]live [?]menu [i]nfo [h]elp [q]uit")
   "Key hints displayed in dashboard header.")
@@ -723,6 +734,7 @@ With prefix argument, show status legend instead."
     (princ "KEYBINDINGS\n")
     (princ "-----------\n")
     (princ "  e     Toggle enabled/disabled for entry\n")
+    (princ "  m     Toggle mask (masked entries are always disabled)\n")
     (princ "  f     Cycle stage filter (all -> stage1 -> stage2 -> ...)\n")
     (princ "  t     Cycle tag filter\n")
     (princ "  s     Start process (if stopped)\n")
@@ -754,6 +766,7 @@ With prefix argument, show status legend instead."
     (princ "  dead      Process crash-looped (exceeded restart limit)\n")
     (princ "  pending   Not yet started (waiting for stage/deps)\n")
     (princ "  stopped   Simple process terminated (not crash-loop)\n")
+    (princ "  masked    Entry is masked (always disabled)\n")
     (princ "  invalid   Config entry has errors\n\n")
     (princ "COLUMN MEANINGS\n")
     (princ "---------------\n")
@@ -853,6 +866,25 @@ Cycles: config default -> override opposite -> back to config default."
             ;; Persist the override
             (supervisor--save-overrides)
             (supervisor--refresh-dashboard)))))))
+
+(defun supervisor-dashboard-toggle-mask ()
+  "Toggle mask state for entry at point.
+Masked entries are always disabled regardless of enabled overrides.
+Cycles: unmasked -> masked -> unmasked.  Persists immediately."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot toggle mask on separator row"))
+    (when (supervisor--timer-row-p id)
+      (user-error "Cannot mask timer '%s'" id))
+    (if (gethash id supervisor--invalid)
+        (message "Cannot toggle mask for invalid entry: %s" id)
+      (let ((currently-masked (eq (gethash id supervisor--mask-override) 'masked)))
+        (if currently-masked
+            (remhash id supervisor--mask-override)
+          (puthash id 'masked supervisor--mask-override))
+        (supervisor--save-overrides)
+        (supervisor--refresh-dashboard)))))
 
 (defun supervisor-dashboard-stop ()
   "Stop process at point with confirmation.
