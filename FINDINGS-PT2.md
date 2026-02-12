@@ -104,7 +104,7 @@ Source: `supervisor-units.el` keyword whitelist + `supervisor-core.el` parsing d
 | `:id` | Yes (unit-file validator enforces) | Derived from command basename in generic parser | Unit name |
 | `:command` | Yes (unit-file validator enforces) | None | `ExecStart=` |
 | `:type` | No | `simple` | `Type=` (partial) |
-| `:stage` | No | `stage3` | No direct systemd equivalent |
+| `:stage` | No | `stage3` | Fixed startup tier (closer to runit-style stages/runlevels than systemd targets) |
 | `:delay` | No | `0` | Roughly timer-ish delay, not a direct service key |
 | `:after` | No | `nil` | `After=` |
 | `:requires` | No | `nil` | `Requires=` |
@@ -122,6 +122,7 @@ Important reality check:
 
 - Current unit-file schema is plist-based and supervisor-specific.
 - It is not `.service`-syntax compatible (no `[Unit]/[Service]/[Install]` sections yet).
+- `:stage` is a fixed stage model, closer to runit/runlevel-style startup than systemd's target/dependency model.
 
 ## Table 7: High-value options outside strict baseline (good candidates)
 
@@ -153,4 +154,5 @@ Important reality check:
 
 - Strict common baseline in real units is tiny (`Description=` only).
 - Practical baseline for your scope is: command, type, ordering/dependencies, restart/stop/reload behavior, env/cwd.
+- Supervisor startup orchestration is stage-based (runit-like), not target-based (systemd-style).
 - For `supervisor.el` as a userland supervisor, a focused subset is the right approach; full systemd service spec is unnecessary and likely harmful complexity.
