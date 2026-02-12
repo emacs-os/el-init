@@ -2951,7 +2951,7 @@ Returns a plist with :stopped and :started counts."
 
 (defun supervisor--reconcile ()
   "Reconcile configuration and running processes.
-Internal function called by the config-watcher and CLI reconcile command.
+Internal function called by the config-watcher.
 Uses declarative reconciliation: build plan, build snapshot, compute
 actions, then apply.  The action list can be inspected before apply
 by calling `supervisor--compute-actions' directly.

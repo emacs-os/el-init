@@ -5405,6 +5405,15 @@ at minute boundaries."
     (should (string-match "reload requires at least one ID"
                           (supervisor-cli-result-output result)))))
 
+(ert-deftest supervisor-test-cli-reconcile-is-unknown-command ()
+  "Removed `reconcile' command is rejected as unknown."
+  (let ((result (supervisor--cli-dispatch '("reconcile"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match "Unknown command: reconcile"
+                          (supervisor-cli-result-output result)))))
+
 (ert-deftest supervisor-test-cli-list-is-unknown-command ()
   "Legacy `list' command is rejected after rename to `list-units'."
   (let ((result (supervisor--cli-dispatch '("list"))))
