@@ -2,7 +2,6 @@
 
 Date: 2026-02-12
 Status: Approved planning baseline
-Source of truth: `FINDINGS.md` TODO items 1-6 and 9
 
 ## Scope
 
@@ -13,7 +12,8 @@ This plan covers:
 - restart policy model replacement,
 - oneshot keyword rename and consistency pass,
 - oneshot/systemd comparison documentation,
-- CLI rename `validate` -> `verify` (with `blame` unchanged).
+- CLI rename `validate` -> `verify` (with `blame` unchanged),
+- `reset-failed` support in both `supervisorctl` and interactive dashboard.
 
 This plan explicitly excludes logging architecture work (covered by `PLAN-logging.md`).
 
@@ -45,6 +45,9 @@ This plan explicitly excludes logging architecture work (covered by `PLAN-loggin
 
 8. ABI policy for this plan:
 - hard break is intentional; no compatibility aliases/shims for removed names.
+
+9. `reset-failed` command support:
+- implement for both CLI and interactive dashboard command surface.
 
 ## Canonical Contracts
 
@@ -99,6 +102,16 @@ Restart suppression gates (still apply to all non-`no` policies):
 - Emacs command is `supervisor-verify` (not `supervisor-validate`).
 - Internal low-level helper names may remain `supervisor--validate-*` where private.
 - `blame` command name remains unchanged.
+
+### F) `reset-failed` command contract
+
+- CLI command: `reset-failed [ID...]`.
+- Interactive dashboard exposes a `reset-failed` action.
+- With IDs: clear failed/crash-loop state only for specified units.
+- With no IDs: clear failed/crash-loop state for all units.
+- Also clear failed oneshot completion results (non-zero or signal exit status).
+- Command does not start or stop services.
+- Unknown IDs are reported and return non-zero exit for CLI.
 
 ## Phase Plan (10 Phases)
 
@@ -211,19 +224,24 @@ Acceptance:
 - no stale old-key wording in user-facing docs/messages,
 - README includes accurate oneshot/systemd comparison note.
 
-### Phase 10: `validate` -> `verify` Command Cutover
+### Phase 10: `validate` -> `verify` + `reset-failed` Command Cutover
 
 Deliverables:
 
 - rename CLI command path and help strings to `verify`,
 - update wrapper docs/help,
 - rename interactive command surface to `supervisor-verify`,
-- keep `blame` unchanged and do not add `analyze` namespace.
+- keep `blame` unchanged and do not add `analyze` namespace,
+- add CLI `reset-failed [ID...]` command,
+- add interactive dashboard `reset-failed` action,
+- document and test `reset-failed` behavior for per-unit and global mode.
 
 Acceptance:
 
 - `supervisorctl verify` works,
 - `supervisorctl validate` fails as unknown command,
+- `supervisorctl reset-failed` works,
+- interactive `reset-failed` action works,
 - no `analyze` command path introduced.
 
 ## Required File Categories to Update
@@ -247,7 +265,6 @@ Acceptance:
 
 - No logging pipeline changes in this plan.
 - No `analyze` namespace introduction.
-- No `reset-failed` implementation.
 - No journal-style log query functionality.
 
 ## Definition of Done
@@ -262,6 +279,6 @@ All must be true:
 6. README includes oneshot/systemd comparison note.
 7. CLI command is `verify`; `validate` is removed.
 8. `blame` remains unchanged.
-9. `analyze` namespace is not introduced.
-10. `make check` passes.
-
+9. `reset-failed` exists in both CLI and interactive dashboard and follows contract.
+10. `analyze` namespace is not introduced.
+11. `make check` passes.

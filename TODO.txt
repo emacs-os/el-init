@@ -1,0 +1,1 @@
+- Discuss and design a better, more standardized mnemonic keybind system for the interactive `M-x supervisor` console.
