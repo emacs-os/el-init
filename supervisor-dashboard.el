@@ -517,7 +517,7 @@ If SNAPSHOT is provided, read runtime state from it."
          (tag-filter supervisor--dashboard-tag-filter)
          (invalid-hash (supervisor-snapshot-invalid snapshot))
          (idx 0))
-    (dolist (entry supervisor-programs)
+    (dolist (entry (supervisor--effective-programs))
       (let* ((raw-id (supervisor--extract-id entry idx))
              (invalid-reason (gethash raw-id invalid-hash)))
         (cl-incf idx)
@@ -575,7 +575,7 @@ If SNAPSHOT is provided, read state from it; otherwise read from globals."
                           (supervisor-snapshot-oneshot-exit snapshot)
                         supervisor--oneshot-completed))
         (idx 0))
-    (dolist (entry supervisor-programs)
+    (dolist (entry (supervisor--effective-programs))
       (let ((raw-id (supervisor--extract-id entry idx)))
         (cl-incf idx)
         ;; Skip duplicates to match runtime behavior
@@ -659,7 +659,7 @@ ensuring consistency within a single refresh cycle."
 (defun supervisor--all-tags ()
   "Return list of all unique tags used in entries."
   (let ((tags nil))
-    (dolist (entry supervisor-programs)
+    (dolist (entry (supervisor--effective-programs))
       (unless (stringp entry)
         (let ((entry-tags (plist-get (cdr entry) :tags)))
           (dolist (tag (if (listp entry-tags) entry-tags (list entry-tags)))
@@ -1222,7 +1222,7 @@ Displays computed dependencies after validation and cycle fallback."
         (let ((stage-entries nil))
           ;; Collect entries for this stage
           (let ((idx 0))
-            (dolist (entry supervisor-programs)
+            (dolist (entry (supervisor--effective-programs))
               (let ((id (supervisor--extract-id entry idx)))
                 (cl-incf idx)
                 (unless (gethash id supervisor--invalid)

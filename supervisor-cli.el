@@ -251,8 +251,7 @@ Includes both plan-level and unit-file-level invalid entries."
     ;; Merge plan invalids and unit-file invalids into combined hash
     (maphash (lambda (k v) (puthash k v combined-invalid))
              (supervisor-plan-invalid plan))
-    (when (and (bound-and-true-p supervisor-use-unit-files)
-               (boundp 'supervisor--unit-file-invalid))
+    (when (boundp 'supervisor--unit-file-invalid)
       (maphash (lambda (k v) (puthash k v combined-invalid))
                (symbol-value 'supervisor--unit-file-invalid)))
     ;; Collect invalid entries
@@ -551,6 +550,7 @@ Show all properties of a single unit."
 
 (defun supervisor--cli-cmd-validate (args json-p)
   "Handle `validate' command with ARGS.  JSON-P enables JSON output."
+
   (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
       (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
@@ -560,8 +560,7 @@ Show all properties of a single unit."
         ;; Merge plan invalids and unit-file invalids
         (maphash (lambda (k v) (puthash k v combined-invalid))
                  (supervisor-plan-invalid plan))
-        (when (and (bound-and-true-p supervisor-use-unit-files)
-                   (boundp 'supervisor--unit-file-invalid))
+        (when (boundp 'supervisor--unit-file-invalid)
           (maphash (lambda (k v) (puthash k v combined-invalid))
                    (symbol-value 'supervisor--unit-file-invalid)))
         (maphash (lambda (id reason)

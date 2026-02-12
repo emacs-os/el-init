@@ -50,7 +50,7 @@ See supervisor-timer.el for the full mode definition.")
 (declare-function supervisor-timer-enabled "supervisor-timer" (timer))
 (declare-function supervisor-timer-target "supervisor-timer" (timer))
 
-;; Forward declarations for unit-file module (optional)
+;; Forward declarations for unit-file module
 (declare-function supervisor--load-programs "supervisor-units" ())
 
 ;; Forward declarations for optional features
@@ -70,12 +70,12 @@ This allows supervisor-core to work standalone without dashboard."
   "Emacs Lisp process supervisor."
   :group 'processes)
 
-(defcustom supervisor-programs nil
-  "List of programs to supervise.
+(defvar supervisor-programs nil
+  "Cached effective program list from unit files.
 Each entry is either a command string or (COMMAND . PLIST).
-See README.org for available keywords."
-  :type '(repeat (choice string (list string &rest plist)))
-  :group 'supervisor)
+This variable is populated by plan-building functions from unit files
+loaded via `supervisor--effective-programs'.  Do not set directly;
+define services as unit files in `supervisor-unit-directory' instead.")
 
 (defcustom supervisor-timers nil
   "List of timer definitions for scheduled oneshot execution.
@@ -200,25 +200,20 @@ cleared by `supervisor-start' (which builds its own fresh plan).")
 ;;; Program Loading
 
 (defun supervisor--effective-programs ()
-  "Return the effective program list for plan building.
-When the units module is loaded and `supervisor-use-unit-files' is
-non-nil, delegates to `supervisor--load-programs' which merges
-unit-file entries with `supervisor-programs'.
-Otherwise returns `supervisor-programs' directly."
-  (if (and (fboundp 'supervisor--load-programs)
-           (bound-and-true-p supervisor-use-unit-files))
-      (supervisor--load-programs)
-    supervisor-programs))
+  "Return the program list by loading unit files from disk.
+Always reads unit files via `supervisor--load-programs' so that
+newly added or modified files are visible immediately.  Returns
+nil when the units module is not loaded (standalone core mode)."
+  (when (fboundp 'supervisor--load-programs)
+    (supervisor--load-programs)))
 
 (defvar supervisor--invalid)
 
 (defun supervisor--merge-unit-file-invalid ()
   "Merge invalid unit-file entries into `supervisor--invalid'.
-When the units module is loaded and unit files are enabled, copies
-entries from `supervisor--unit-file-invalid' into the runtime
+Copies entries from `supervisor--unit-file-invalid' into the runtime
 invalid hash so they appear in the dashboard and CLI."
-  (when (and (bound-and-true-p supervisor-use-unit-files)
-             (boundp 'supervisor--unit-file-invalid))
+  (when (boundp 'supervisor--unit-file-invalid)
     (maphash (lambda (k v) (puthash k v supervisor--invalid))
              (symbol-value 'supervisor--unit-file-invalid))))
 
@@ -458,6 +453,7 @@ and `supervisor--invalid-timers' so the dashboard reflects validation state."
   (clrhash supervisor--invalid)
   (when (boundp 'supervisor--invalid-timers)
     (clrhash supervisor--invalid-timers))
+
   ;; Build plan to get entry validation results
   (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
          (entry-valid (length (supervisor-plan-entries plan)))
@@ -507,6 +503,7 @@ and `supervisor--invalid-timers' so the dashboard reflects validation state."
 Display staged startup order, including dependency resolution and
 cycle fallback behavior.  Uses the pure plan builder internally."
   (interactive)
+
   ;; Build plan using pure function
   (let ((plan (supervisor--build-plan (supervisor--effective-programs))))
     ;; Populate legacy globals for dashboard compatibility
@@ -1170,9 +1167,11 @@ A value of :defer means the default is resolved at runtime.")
 (defun supervisor--get-entry-for-id (id)
   "Get the parsed entry for ID.
 Return a list of entry properties or nil if not found.
+Ensures the program list is loaded (calls `supervisor--effective-programs'
+when `supervisor-programs' is nil) so this works in cold-state.
 Skips invalid/malformed entries to avoid parse errors."
   (let ((idx 0))
-    (cl-loop for entry in supervisor-programs
+    (cl-loop for entry in (supervisor--effective-programs)
              for entry-id = (supervisor--extract-id entry idx)
              do (cl-incf idx)
              ;; Skip invalid entries - don't try to parse them
@@ -1839,11 +1838,12 @@ edges removed.  Stores computed deps in `supervisor--computed-deps'."
 (defun supervisor--all-parsed-entries ()
   "Parse and validate all entries, returning list of valid parsed entries.
 Invalid entries are stored in `supervisor--invalid' with reason strings.
-Duplicate IDs are skipped with a warning."
+Duplicate IDs are skipped with a warning.
+Ensures the program list is loaded when `supervisor-programs' is nil."
   (let ((seen (make-hash-table :test 'equal))
         (idx 0)
         result)
-    (dolist (entry supervisor-programs)
+    (dolist (entry (supervisor--effective-programs))
       (let* ((id (supervisor--extract-id entry idx))
              (reason (supervisor--validate-entry entry))
              (parsed (unless reason (supervisor--parse-entry entry))))
@@ -2664,6 +2664,7 @@ Ready semantics (when dependents are unblocked):
   (supervisor--load-overrides)
   (supervisor--dag-cleanup)
   (supervisor--rotate-logs)
+
   ;; Build execution plan (pure, deterministic)
   (let ((plan (supervisor--build-plan (supervisor--effective-programs))))
     ;; Populate legacy globals from plan for dashboard/other code
@@ -2967,6 +2968,7 @@ by calling `supervisor--compute-actions' directly.
 Stops processes removed from config or now disabled, starts new processes.
 Does not restart changed entries - use dashboard kill/start for that."
   (interactive)
+
   ;; Build plan and snapshot
   (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
          (snapshot (supervisor--build-snapshot))
@@ -3000,6 +3002,7 @@ reload to pick up both unit-file-only entries and entries whose
 config has been fixed since the last plan build.
 Return the parsed entry, the symbol `parse-error' if the entry
 exists but cannot be parsed, or nil if ID is not found."
+
   (let ((idx 0))
     (cl-loop for entry in (supervisor--effective-programs)
              for entry-id = (supervisor--extract-id entry idx)
@@ -3011,8 +3014,7 @@ exists but cannot be parsed, or nil if ID is not found."
 
 (defun supervisor--reload-unit (id)
   "Reload a single unit ID from current config.
-Re-reads the unit definition from effective programs (including
-unit files when `supervisor-use-unit-files' is non-nil) by calling
+Re-reads the unit definition from unit files by calling
 `supervisor--reload-find-entry', then applies the change:
 
 - Running simple process: stop gracefully, start with new definition.
@@ -3082,16 +3084,16 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
 ;;;###autoload
 (defun supervisor-daemon-reload ()
   "Reload unit definitions from disk into memory without affecting runtime.
-Re-reads `supervisor-programs' and unit files (when
-`supervisor-use-unit-files' is non-nil), rebuilds the plan, and
-stores the result in `supervisor--current-plan'.
+Re-reads unit files from `supervisor-unit-directory', rebuilds the plan,
+and stores the result in `supervisor--current-plan'.
 
 Does NOT start, stop, or restart anything.  Runtime state is untouched.
-After daemon-reload, the next `reconcile', `start', or `reload' operates
-on the refreshed plan.
+After daemon-reload, the next `start' or `reload' operates on the
+refreshed plan.
 
 Returns a plist with :entries and :invalid counts."
   (interactive)
+
   (let ((plan (supervisor--build-plan (supervisor--effective-programs))))
     ;; Store plan for later use
     (setq supervisor--current-plan plan)

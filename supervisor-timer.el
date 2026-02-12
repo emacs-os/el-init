@@ -41,9 +41,9 @@
 (declare-function supervisor-entry-id "supervisor-core" (entry))
 (declare-function supervisor-entry-type "supervisor-core" (entry))
 (declare-function supervisor-entry-enabled-p "supervisor-core" (entry))
+(declare-function supervisor--get-entry-for-id "supervisor-core" (id))
 
 ;; Forward declarations for variables from supervisor-core
-(defvar supervisor-programs)
 (defvar supervisor-mode)
 (defvar supervisor--shutting-down)
 (defvar supervisor--processes)
@@ -675,36 +675,10 @@ Return timestamp or nil if no trigger is due."
 ;;; Timer Execution
 
 (defun supervisor-timer--get-entry-for-id (id)
-  "Get the parsed entry for ID from supervisor-programs.
+  "Get the parsed entry for ID.
+Delegates to `supervisor--get-entry-for-id' in supervisor-core.
 Return a list of entry properties or nil if not found."
-  (let ((idx 0))
-    (cl-loop for entry in supervisor-programs
-             for entry-id = (supervisor-timer--extract-id entry idx)
-             do (cl-incf idx)
-             ;; Skip invalid entries
-             unless (gethash entry-id supervisor--invalid)
-             when (string= entry-id id)
-             return (supervisor-timer--parse-entry entry))))
-
-(defun supervisor-timer--extract-id (entry idx)
-  "Extract a stable ID from ENTRY at position IDX.
-For valid entries, returns the configured or derived ID.
-For malformed entries, returns \"malformed#IDX\" for consistency."
-  (cond
-   ((stringp entry)
-    (file-name-nondirectory (car (split-string-and-unquote entry))))
-   ((and (listp entry) (stringp (car entry)))
-    (or (plist-get (cdr entry) :id)
-        (file-name-nondirectory (car (split-string-and-unquote (car entry))))))
-   (t (format "malformed#%d" idx))))
-
-(defun supervisor-timer--parse-entry (entry)
-  "Parse ENTRY into tuple format for timer use.
-Simplified parsing - returns (id cmd delay enabled-p ...)."
-  ;; This delegates to supervisor-core's parsing
-  ;; We need to forward declare this
-  (declare-function supervisor--parse-entry "supervisor-core" (entry))
-  (supervisor--parse-entry entry))
+  (supervisor--get-entry-for-id id))
 
 (defun supervisor-timer--maybe-mark-startup-consumed (timer)
   "Mark TIMER's startup trigger as consumed if due.

@@ -32,10 +32,6 @@
 
 ;; Forward declarations for supervisor-core functions
 (declare-function supervisor--log "supervisor-core" (level format-string &rest args))
-(declare-function supervisor--extract-id "supervisor-core" (entry idx))
-
-(defvar supervisor-programs)
-
 ;;; Customization
 
 (defcustom supervisor-unit-directory
@@ -45,12 +41,6 @@
   "Directory containing unit files.
 Each unit is a single `.el' file with a plist expression."
   :type 'directory
-  :group 'supervisor)
-
-(defcustom supervisor-use-unit-files nil
-  "When non-nil, load unit files and merge with `supervisor-programs'.
-Unit-file entries take precedence on ID collision."
-  :type 'boolean
   :group 'supervisor)
 
 ;;; Valid unit-file keywords
@@ -138,7 +128,7 @@ Return nil if valid, or a reason string with file:line context if invalid."
       bad))))
 
 (defun supervisor--unit-file-to-program-entry (plist)
-  "Convert unit-file PLIST to `supervisor-programs' entry format.
+  "Convert unit-file PLIST to program entry format.
 Input: (:id \"x\" :command \"cmd\" :type simple ...)
 Output: (\"cmd\" :id \"x\" :type simple ...)
 The `:command' key is consumed and becomes the car of the entry."
@@ -195,41 +185,23 @@ Missing directory returns nil with a log message."
         (nreverse results))))))
 
 (defun supervisor--load-programs ()
-  "Return the unified program list for plan building.
-When `supervisor-use-unit-files' is non-nil, loads unit files from
-`supervisor-unit-directory' and merges them with `supervisor-programs'.
-Unit-file entries take precedence on ID collision.
-Invalid unit files are recorded in `supervisor--unit-file-invalid'.
-
-When `supervisor-use-unit-files' is nil, returns `supervisor-programs'
-unchanged (legacy path)."
-  (if (not supervisor-use-unit-files)
-      supervisor-programs
-    (let ((unit-plists (supervisor--load-all-unit-files))
-          (unit-entries nil)
-          (unit-ids (make-hash-table :test 'equal)))
-      ;; Convert valid plists to program entries
-      (dolist (plist unit-plists)
-        (let* ((id (plist-get plist :id))
-               (entry (supervisor--unit-file-to-program-entry plist)))
-          (if (gethash id unit-ids)
-              (supervisor--log 'warning
-                               "Duplicate unit-file ID '%s', skipping" id)
-            (puthash id t unit-ids)
-            (push entry unit-entries))))
-      (setq unit-entries (nreverse unit-entries))
-      ;; Filter legacy programs: remove entries whose ID collides with unit files
-      (let ((legacy-filtered nil)
-            (idx 0))
-        (dolist (entry supervisor-programs)
-          (let ((id (supervisor--extract-id entry idx)))
-            (if (gethash id unit-ids)
-                (supervisor--log 'info
-                                 "Unit file overrides legacy entry '%s'" id)
-              (push entry legacy-filtered)))
-          (cl-incf idx))
-        ;; Unit-file entries first, then surviving legacy entries
-        (append unit-entries (nreverse legacy-filtered))))))
+  "Return the program list for plan building from unit files.
+Loads unit files from `supervisor-unit-directory' and converts them
+to program entry format.  Duplicate IDs are skipped with a warning.
+Invalid unit files are recorded in `supervisor--unit-file-invalid'."
+  (let ((unit-plists (supervisor--load-all-unit-files))
+        (unit-entries nil)
+        (unit-ids (make-hash-table :test 'equal)))
+    ;; Convert valid plists to program entries
+    (dolist (plist unit-plists)
+      (let* ((id (plist-get plist :id))
+             (entry (supervisor--unit-file-to-program-entry plist)))
+        (if (gethash id unit-ids)
+            (supervisor--log 'warning
+                             "Duplicate unit-file ID '%s', skipping" id)
+          (puthash id t unit-ids)
+          (push entry unit-entries))))
+    (nreverse unit-entries)))
 
 ;;; Unit-File Template
 
