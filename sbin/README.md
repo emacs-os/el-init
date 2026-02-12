@@ -1,3 +1,5 @@
+# FIXME: this is probably out of date.
+
 # CLI Control Plane Plan (Minimal Wrapper + Pure Elisp)
 
 This folder will hold a single minimal CLI shim that controls `supervisor.el`
