@@ -20,8 +20,8 @@ crashes, it restarts. When you log out, everything stops cleanly.
   your X session setup runs before your system tray, and your tray runs before
   the applets that need it.
 
-- *Dependencies*: Say "start polkit before nm-applet" with ~:after~, or "only
-  start this if that exists" with ~:requires~.
+- *Dependencies*: Control start order with ~:after~, or pull in requirements
+  with ~:requires~.
 
 - *Two service types*: Long-running daemons (~simple~) that restart on crash,
   and run-once scripts (~oneshot~) for initialization commands.
@@ -695,6 +695,13 @@ All dashboard faces are in customization group ~supervisor~:
 
 The shell wrapper is transport-only; behavior is implemented in
 ~supervisor-cli.el~ dispatchers.
+
+Requires the Emacs server to be running:
+
+#+begin_src emacs-lisp
+(require 'server)
+(unless (server-running-p) (server-start))
+#+end_src
 
 ** Wrapper Syntax
 
