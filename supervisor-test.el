@@ -2122,6 +2122,194 @@ Regression test: stderr pipe processes used to pollute the process list."
     (should (fboundp 'supervisor-dashboard-menu))
     (should (get 'supervisor-dashboard-menu 'transient--prefix))))
 
+;;; Dashboard Stop/Restart Tests
+
+(ert-deftest supervisor-test-dashboard-stop-keybinding ()
+  "Dashboard x key is bound to stop."
+  (should (eq (lookup-key supervisor-dashboard-mode-map "x")
+              'supervisor-dashboard-stop)))
+
+(ert-deftest supervisor-test-dashboard-restart-keybinding ()
+  "Dashboard R key is bound to restart."
+  (should (eq (lookup-key supervisor-dashboard-mode-map "R")
+              'supervisor-dashboard-restart)))
+
+(ert-deftest supervisor-test-dashboard-stop-is-defined ()
+  "Dashboard stop command is defined as interactive."
+  (should (fboundp 'supervisor-dashboard-stop))
+  (should (commandp 'supervisor-dashboard-stop)))
+
+(ert-deftest supervisor-test-dashboard-restart-is-defined ()
+  "Dashboard restart command is defined as interactive."
+  (should (fboundp 'supervisor-dashboard-restart))
+  (should (commandp 'supervisor-dashboard-restart)))
+
+(ert-deftest supervisor-test-manual-stop-not-running ()
+  "Manual stop on non-running entry returns skipped."
+  (let ((supervisor--processes (make-hash-table :test 'equal)))
+    (let ((result (supervisor--manual-stop "nonexistent")))
+      (should (eq 'skipped (plist-get result :status)))
+      (should (string= "not running" (plist-get result :reason))))))
+
+(ert-deftest supervisor-test-manual-stop-sets-manually-stopped ()
+  "Manual stop sets the manually-stopped flag."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (buf (generate-new-buffer " *test-proc*"))
+         (proc (start-process "test-stop" buf "sleep" "60")))
+    (unwind-protect
+        (progn
+          (puthash "test-svc" proc supervisor--processes)
+          (let ((result (supervisor--manual-stop "test-svc")))
+            (should (eq 'stopped (plist-get result :status)))
+            (should (eq t (gethash "test-svc" supervisor--manually-stopped)))))
+      (when (process-live-p proc) (delete-process proc))
+      (kill-buffer buf))))
+
+(ert-deftest supervisor-test-manual-kill-does-not-set-manually-stopped ()
+  "Manual kill does not set manually-stopped flag."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (buf (generate-new-buffer " *test-proc*"))
+         (proc (start-process "test-kill" buf "sleep" "60")))
+    (unwind-protect
+        (progn
+          (puthash "test-svc" proc supervisor--processes)
+          (let ((result (supervisor--manual-kill "test-svc" 'SIGTERM)))
+            (should (eq 'signaled (plist-get result :status)))
+            (should-not (gethash "test-svc" supervisor--manually-stopped))))
+      (when (process-live-p proc) (delete-process proc))
+      (kill-buffer buf))))
+
+(ert-deftest supervisor-test-help-text-includes-stop-restart ()
+  "Dashboard help text includes stop and restart keys."
+  (should (string-match "\\[x\\]stop" supervisor--help-text))
+  (should (string-match "\\[R\\]estart" supervisor--help-text)))
+
+(ert-deftest supervisor-test-timer-row-p-detects-timer ()
+  "Timer row predicate detects timer rows by Type column content."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list "my-timer" (vector "my-timer" "timer" "-"
+                                         "-" "pending" "-" "-" "-" "-")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should (supervisor--timer-row-p "my-timer")))))
+
+(ert-deftest supervisor-test-timer-row-p-rejects-service-row ()
+  "Timer row predicate returns nil for service rows."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list "my-svc" (vector "my-svc" "simple" "stage3"
+                                       "yes" "running" "yes" "yes" "1234" "-")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should-not (supervisor--timer-row-p "my-svc")))))
+
+(ert-deftest supervisor-test-stop-allows-service-with-timer-id-collision ()
+  "Stop on a service row works even if a timer has the same ID."
+  (let* ((supervisor-programs '(("sleep 60" :id "dup" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    ;; Timer with same ID as service
+    (puthash "dup" "some schedule" supervisor--invalid-timers)
+    (with-temp-buffer
+      (supervisor-dashboard-mode)
+      ;; Row has type "simple" — this is a service row, not a timer row
+      (let ((tabulated-list-entries
+             (list (list "dup" (vector "dup" "simple" "stage3"
+                                      "yes" "stopped" "yes" "yes" "-" "-")))))
+        (tabulated-list-init-header)
+        (tabulated-list-print)
+        (goto-char (point-min))
+        ;; Should NOT error with "Cannot stop timer" — it's a service row
+        (should-not (supervisor--timer-row-p "dup"))))))
+
+(ert-deftest supervisor-test-stop-rejects-oneshot ()
+  "Stop rejects oneshot entries."
+  (let* ((supervisor-programs '(("true" :id "my-oneshot" :type oneshot)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    ;; Simulate being in dashboard with oneshot at point
+    (with-temp-buffer
+      (supervisor-dashboard-mode)
+      (let ((tabulated-list-entries
+             (list (list "my-oneshot" (vector "my-oneshot" "oneshot" "stage3"
+                                             "yes" "done" "n/a" "yes" "-" "-")))))
+        (tabulated-list-init-header)
+        (tabulated-list-print)
+        (goto-char (point-min))
+        (should-error (supervisor-dashboard-stop)
+                      :type 'user-error)))))
+
+(ert-deftest supervisor-test-restart-rejects-oneshot ()
+  "Restart rejects oneshot entries."
+  (let* ((supervisor-programs '(("true" :id "my-oneshot" :type oneshot)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (with-temp-buffer
+      (supervisor-dashboard-mode)
+      (let ((tabulated-list-entries
+             (list (list "my-oneshot" (vector "my-oneshot" "oneshot" "stage3"
+                                             "yes" "done" "n/a" "yes" "-" "-")))))
+        (tabulated-list-init-header)
+        (tabulated-list-print)
+        (goto-char (point-min))
+        (should-error (supervisor-dashboard-restart)
+                      :type 'user-error)))))
+
+(ert-deftest supervisor-test-stop-rejects-timer-row ()
+  "Stop rejects timer rows."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list "my-timer" (vector "my-timer" "timer" "-"
+                                         "-" "pending" "-" "-" "-" "-")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should-error (supervisor-dashboard-stop)
+                    :type 'user-error))))
+
+(ert-deftest supervisor-test-restart-rejects-timer-row ()
+  "Restart rejects timer rows."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list "my-timer" (vector "my-timer" "timer" "-"
+                                         "-" "pending" "-" "-" "-" "-")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should-error (supervisor-dashboard-restart)
+                    :type 'user-error))))
+
+(ert-deftest supervisor-test-restart-rejects-not-running ()
+  "Restart rejects entries that are not currently running."
+  (let* ((supervisor-programs '(("sleep 60" :id "my-svc" :type simple)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (with-temp-buffer
+      (supervisor-dashboard-mode)
+      (let ((tabulated-list-entries
+             (list (list "my-svc" (vector "my-svc" "simple" "stage3"
+                                         "yes" "stopped" "yes" "yes" "-" "-")))))
+        (tabulated-list-init-header)
+        (tabulated-list-print)
+        (goto-char (point-min))
+        (should-error (supervisor-dashboard-restart)
+                      :type 'user-error)))))
+
 ;;; Schema v1 Tests
 
 (ert-deftest supervisor-test-service-schema-version ()

@@ -625,8 +625,10 @@ Timer reason column shows either:
 | ~f~ | Cycle stage filter |
 | ~t~ | Cycle tag filter |
 | ~s~ | Start selected service |
-| ~k~ | Kill selected service (confirm) |
-| ~K~ | Kill selected service (force) |
+| ~x~ | Stop selected service (graceful, suppresses restart) |
+| ~R~ | Restart selected service (stop + start) |
+| ~k~ | Kill selected service (send signal, restart policy unchanged) |
+| ~K~ | Kill selected service (force, no confirmation) |
 | ~r~ | Toggle restart override |
 | ~l~ | Toggle logging override |
 | ~L~ | Open selected service log file |
@@ -647,6 +649,10 @@ Notes:
 - Separator rows reject service actions.
 - ~?~ requires the ~transient~ package.
 - Full ID is echoed in minibuffer when current row ID exceeds table width.
+- *Stop vs Kill*: ~x~ (stop) gracefully terminates and suppresses auto-restart;
+  ~k~ (kill) sends a signal without changing restart policy.  Use ~s~ to start a
+  stopped service again.
+- *Restart*: ~R~ performs a stop-then-start cycle.  Only for ~simple~ entries.
 
 ** Mode Interaction and Buffer-Local State
 
@@ -992,9 +998,11 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-quit~ | Quit dashboard |
 | ~M-x supervisor-dashboard-toggle-restart~ | Toggle restart override |
 | ~M-x supervisor-dashboard-toggle-enabled~ | Toggle enabled override |
-| ~M-x supervisor-dashboard-kill~ | Kill selected service (confirm) |
-| ~M-x supervisor-dashboard-kill-force~ | Kill selected service (no confirm) |
 | ~M-x supervisor-dashboard-start~ | Start selected service |
+| ~M-x supervisor-dashboard-stop~ | Stop selected service (graceful, suppresses restart) |
+| ~M-x supervisor-dashboard-restart~ | Restart selected service (stop + start) |
+| ~M-x supervisor-dashboard-kill~ | Kill selected service (send signal, restart unchanged) |
+| ~M-x supervisor-dashboard-kill-force~ | Kill selected service (no confirm) |
 | ~M-x supervisor-dashboard-toggle-logging~ | Toggle logging override |
 | ~M-x supervisor-dashboard-view-log~ | Open selected service log |
 | ~M-x supervisor-dashboard-toggle-proced-auto-update~ | Toggle proced auto-update |

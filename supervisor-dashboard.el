@@ -184,9 +184,11 @@ nil means show all entries, otherwise a tag symbol or string.")
     (define-key map "f" #'supervisor-dashboard-cycle-filter)
     (define-key map "t" #'supervisor-dashboard-cycle-tag-filter)
     (define-key map "r" #'supervisor-dashboard-toggle-restart)
+    (define-key map "x" #'supervisor-dashboard-stop)
     (define-key map "k" #'supervisor-dashboard-kill)
     (define-key map "K" #'supervisor-dashboard-kill-force)
     (define-key map "s" #'supervisor-dashboard-start)
+    (define-key map "R" #'supervisor-dashboard-restart)
     (define-key map "l" #'supervisor-dashboard-toggle-logging)
     (define-key map "L" #'supervisor-dashboard-view-log)
     (define-key map "p" #'proced)
@@ -219,6 +221,8 @@ This is called on first use to avoid loading transient at package load time."
            (supervisor--health-summary (supervisor--build-snapshot)))
          ["Entry Actions"
           ("s" "Start" supervisor-dashboard-start)
+          ("x" "Stop" supervisor-dashboard-stop)
+          ("R" "Restart" supervisor-dashboard-restart)
           ("k" "Kill" supervisor-dashboard-kill)
           ("K" "Kill (force)" supervisor-dashboard-kill-force)]
          ["Toggles"
@@ -316,6 +320,13 @@ Requires the `transient' package to be installed."
 (defun supervisor--separator-row-p (id)
   "Return non-nil if ID represents a stage separator row."
   (and id (symbolp id) (string-prefix-p "--" (symbol-name id))))
+
+(defun supervisor--timer-row-p (_id)
+  "Return non-nil if the dashboard row at point is a timer row.
+Checks the Type column of the current `tabulated-list' entry.
+_ID is accepted for signature consistency but ignored."
+  (when-let* ((entry (tabulated-list-get-entry)))
+    (string= "timer" (substring-no-properties (aref entry 1)))))
 
 (defun supervisor--make-dashboard-entry (id type stage enabled-p restart-p logging-p
                                             &optional snapshot)
@@ -581,8 +592,8 @@ If SNAPSHOT is provided, read state from it; otherwise read from globals."
             " inv")))
 
 (defvar supervisor--help-text
-  (concat "[e]nable [f]ilter [t]ag [s]tart [k]ill [K]force [r]estart "
-          "[l]og [L]view [p]roced [P]auto [d]eps [D]graph "
+  (concat "[e]nable [f]ilter [t]ag [s]tart [x]stop [R]estart [k]ill [K]force "
+          "[r]estart-toggle [l]og [L]view [p]roced [P]auto [d]eps [D]graph "
           "[B]lame [g]refresh [G]live [?]menu [i]nfo [h]elp [q]uit")
   "Key hints displayed in dashboard header.")
 
@@ -706,7 +717,9 @@ With prefix argument, show status legend instead."
     (princ "  f     Cycle stage filter (all -> stage1 -> stage2 -> ...)\n")
     (princ "  t     Cycle tag filter\n")
     (princ "  s     Start process (if stopped)\n")
-    (princ "  k     Kill process (with confirmation)\n")
+    (princ "  x     Stop process (graceful, suppresses restart)\n")
+    (princ "  R     Restart process (stop + start)\n")
+    (princ "  k     Kill process (send signal, restart policy unchanged)\n")
     (princ "  K     Kill process (force, no confirmation)\n")
     (princ "  r     Toggle auto-restart for entry\n")
     (princ "  l     Toggle logging for entry\n")
@@ -829,6 +842,60 @@ Cycles: config default -> override opposite -> back to config default."
             ;; Persist the override
             (supervisor--save-overrides)
             (supervisor--refresh-dashboard)))))))
+
+(defun supervisor-dashboard-stop ()
+  "Stop process at point with confirmation.
+Gracefully stops the process and suppresses auto-restart.
+Rejects separator rows, timer rows, and oneshot entries.
+Use `s' to start the process again later."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot stop separator row"))
+    (when (supervisor--timer-row-p id)
+      (user-error "Cannot stop timer '%s'" id))
+    (let ((entry (supervisor--get-entry-for-id id)))
+      (when (and entry (eq (supervisor-entry-type entry) 'oneshot))
+        (user-error "Cannot stop oneshot entry '%s'" id)))
+    (when (yes-or-no-p (format "Stop process '%s'? " id))
+      (let ((result (supervisor--manual-stop id)))
+        (pcase (plist-get result :status)
+          ('stopped (supervisor--refresh-dashboard))
+          ('skipped (message "Entry %s is %s" id (plist-get result :reason))))))))
+
+(defun supervisor-dashboard-restart ()
+  "Restart process at point with confirmation.
+Stops the process gracefully, then starts it again.
+Only for `simple' entries that are currently running.
+Rejects separator rows, timer rows, and oneshot entries."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot restart separator row"))
+    (when (supervisor--timer-row-p id)
+      (user-error "Cannot restart timer '%s'" id))
+    (let ((entry (supervisor--get-entry-for-id id)))
+      (when (and entry (eq (supervisor-entry-type entry) 'oneshot))
+        (user-error "Cannot restart oneshot entry '%s'" id)))
+    ;; Pre-validate running state before prompting
+    (let ((proc (gethash id supervisor--processes)))
+      (unless (and proc (process-live-p proc))
+        (user-error "Entry '%s' is not running" id)))
+    (when (yes-or-no-p (format "Restart process '%s'? " id))
+      (let ((stop-result (supervisor--manual-stop id)))
+        (pcase (plist-get stop-result :status)
+          ('stopped
+           (let ((start-result (supervisor--manual-start id)))
+             (pcase (plist-get start-result :status)
+               ('started (supervisor--refresh-dashboard))
+               ('skipped
+                (message "Stopped %s but cannot start: %s"
+                         id (plist-get start-result :reason)))
+               ('error
+                (message "Stopped %s but failed to start: %s"
+                         id (plist-get start-result :reason))))))
+          ('skipped
+           (message "Entry %s is %s" id (plist-get stop-result :reason))))))))
 
 (defun supervisor-dashboard-kill (&optional force)
   "Kill process at point with confirmation.
