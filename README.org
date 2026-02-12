@@ -52,12 +52,12 @@ it in Emacs at any time.
 The [[#quick-start][Quick Start]] below gets you running immediately. The rest of the handbook
 provides detailed reference material:
 
-- [[#service-definition-handbook-supervisor-programs][Service Definition Handbook]] - all the options for defining services
+- [[#service-definition-handbook-supervisor-programs][Service Definition]] - all the options for defining services
 - [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] - how stages, dependencies, and restarts work
 - [[#runtime-overrides-and-reconciliation][Runtime Overrides]] - enabling, disabling, and policy changes at runtime
 - [[#timer-subsystem-handbook-experimental][Timer Subsystem]] - scheduled oneshot execution (experimental)
-- [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook]] - the interactive UI
-- [[#cli-handbook-sbinsupervisorctl][CLI Handbook]] - terminal control with ~supervisorctl~
+- [[#dashboard-handbook-m-x-supervisor][Dashboard]] - the interactive UI
+- [[#cli-handbook-sbinsupervisorctl][CLI]] - terminal control with ~supervisorctl~
 - [[#events-and-hooks][Events and Hooks]] - programmatic integration
 - [[#customization-reference][Customization Reference]] - all variables and faces
 - [[#command-reference][Command Reference]] - every interactive command
@@ -163,7 +163,7 @@ Enable the experimental timer subsystem only if you are using timers:
 (supervisor-timer-subsystem-mode 1)
 #+end_src
 
-* Service Definition Handbook (~supervisor-programs~)
+* Service Definition (~supervisor-programs~)
 :PROPERTIES:
 :CUSTOM_ID: service-definition-handbook-supervisor-programs
 :END:
@@ -422,7 +422,7 @@ Effects:
 - Starts newly eligible entries
 - Leaves converged entries running
 
-* Timer Subsystem Handbook (Experimental)
+* Timer Subsystem (Experimental)
 :PROPERTIES:
 :CUSTOM_ID: timer-subsystem-handbook-experimental
 :END:
@@ -586,7 +586,7 @@ CLI:
 - ~supervisorctl timers~ shows timer runtime/invalid definitions
 - If subsystem is gated off, command returns explicit disabled status
 
-* Dashboard Handbook (~M-x supervisor~)
+* Dashboard (~M-x supervisor~)
 :PROPERTIES:
 :CUSTOM_ID: dashboard-handbook-m-x-supervisor
 :END:
@@ -711,7 +711,7 @@ All dashboard faces are in customization group ~supervisor~:
 | ~supervisor-reason~ | Reason column values |
 | ~supervisor-stage-separator~ | Stage separator rows |
 
-* CLI Handbook (~sbin/supervisorctl~)
+* CLI (~sbin/supervisorctl~)
 :PROPERTIES:
 :CUSTOM_ID: cli-handbook-sbinsupervisorctl
 :END:
@@ -1010,22 +1010,22 @@ This is a topical index for targeted lookup of less-obvious behavior.
 
 ** Topical Index
 
-- Async oneshots (~:async~, ~:oneshot-wait~): [[#service-definition-handbook-supervisor-programs][Service Definition Handbook]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Blocking oneshot timeout (~:oneshot-timeout~, ~supervisor-oneshot-timeout~): [[#service-definition-handbook-supervisor-programs][Service Definition Handbook]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Async oneshots (~:async~, ~:oneshot-wait~): [[#service-definition-handbook-supervisor-programs][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Blocking oneshot timeout (~:oneshot-timeout~, ~supervisor-oneshot-timeout~): [[#service-definition-handbook-supervisor-programs][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Command parsing (no implicit shell, use ~sh -c~ when needed): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Config file watch and debounce (~supervisor-watch-config~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Crash-loop detection (~supervisor-max-restarts~, ~supervisor-restart-window~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
-- Cycle fallback behavior for dependencies: [[#service-definition-handbook-supervisor-programs][Service Definition Handbook]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Dashboard filtering (stage/tag): [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook (~M-x supervisor~)]]
-- Dashboard live updates (~supervisor-auto-refresh-interval~): [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook (~M-x supervisor~)]], [[#customization-reference][Customization Reference]]
-- Dashboard mode/filter state (buffer-local stage/tag/auto-refresh): [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook (~M-x supervisor~)]]
-- Dashboard visual customization (status/type/stage faces): [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook (~M-x supervisor~)]]
-- Dependency semantics split (~:after~ vs ~:requires~): [[#service-definition-handbook-supervisor-programs][Service Definition Handbook]]
+- Cycle fallback behavior for dependencies: [[#service-definition-handbook-supervisor-programs][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Dashboard filtering (stage/tag): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Dashboard live updates (~supervisor-auto-refresh-interval~): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]], [[#customization-reference][Customization Reference]]
+- Dashboard mode/filter state (buffer-local stage/tag/auto-refresh): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Dashboard visual customization (status/type/stage faces): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Dependency semantics split (~:after~ vs ~:requires~): [[#service-definition-handbook-supervisor-programs][Service Definition]]
 - Event API (~supervisor-event-hook~ and event types): [[#events-and-hooks][Events and Hooks]]
 - Exit code semantics for oneshots (signals stored negative): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Graceful vs hard stop (~supervisor-stop~ vs ~supervisor-stop-now~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#command-reference][Command Reference]]
-- Hyphen-prefixed IDs in CLI (use ~--~ separator): [[#cli-handbook-sbinsupervisorctl][CLI Handbook (~sbin/supervisorctl~)]]
-- JSON contracts (status/validate/timers + error shape): [[#cli-handbook-sbinsupervisorctl][CLI Handbook (~sbin/supervisorctl~)]]
+- Hyphen-prefixed IDs in CLI (use ~--~ separator): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
+- JSON contracts (status/validate/timers + error shape): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Log rotation and log file paths: [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Logging pipeline (~supervisor--log~, ~supervisor-verbose~, ~supervisor-log-to-file~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Manual stop behavior and restart suppression: [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
@@ -1034,13 +1034,13 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Override persistence (~supervisor-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
 - Reload reconciler action model (~start~, ~stop~, ~noop~, ~skip~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
-- Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI Handbook (~sbin/supervisorctl~)]]
+- Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
-- Timer catch-up window (~supervisor-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook-experimental][Timer Subsystem Handbook (Experimental)]], [[#customization-reference][Customization Reference]]
-- Timer disabled/gated behavior (~supervisor-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook-experimental][Timer Subsystem Handbook (Experimental)]], [[#command-reference][Command Reference]]
-- Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~): [[#timer-subsystem-handbook-experimental][Timer Subsystem Handbook (Experimental)]], [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook (~M-x supervisor~)]]
-- Timer retry policy (~supervisor-timer-retry-intervals~, signal non-retry): [[#timer-subsystem-handbook-experimental][Timer Subsystem Handbook (Experimental)]], [[#customization-reference][Customization Reference]]
-- Timer state persistence and schema compatibility (~supervisor-timer-state-file~): [[#timer-subsystem-handbook-experimental][Timer Subsystem Handbook (Experimental)]], [[#persistence-and-files][Persistence and Files]]
+- Timer catch-up window (~supervisor-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#customization-reference][Customization Reference]]
+- Timer disabled/gated behavior (~supervisor-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#command-reference][Command Reference]]
+- Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Timer retry policy (~supervisor-timer-retry-intervals~, signal non-retry): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#customization-reference][Customization Reference]]
+- Timer state persistence and schema compatibility (~supervisor-timer-state-file~): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#persistence-and-files][Persistence and Files]]
 
 * Security
 :PROPERTIES:
