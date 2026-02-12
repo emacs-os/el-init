@@ -831,18 +831,6 @@ Use -- before IDs that start with a hyphen."
              "Supervisor restarted\n")
            (if json-p 'json 'human))))))))
 
-(defun supervisor--cli-cmd-reconcile (args json-p)
-  "Handle `reconcile' command with ARGS.  JSON-P enables JSON output."
-  (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
-    (if extra-err extra-err
-      (progn
-        (supervisor-reconcile)
-        (supervisor--cli-success
-         (if json-p
-             (json-encode '((message . "Reconcile complete")))
-           "Reconcile complete\n")
-         (if json-p 'json 'human))))))
-
 (defun supervisor--cli-cmd-daemon-reload (args json-p)
   "Handle `daemon-reload' command with ARGS.  JSON-P enables JSON output.
 Reload unit definitions without affecting runtime state."
@@ -1722,9 +1710,7 @@ In non-interactive context, launch $VISUAL or $EDITOR."
                      (concat preamble
                              "\nNext steps after editing:\n"
                              "  supervisorctl daemon-reload"
-                             "    Reload unit definitions\n"
-                             "  supervisorctl reconcile"
-                             "        Apply changes to running state")
+                             "    Reload unit definitions")
                      'human)
                   (supervisor--cli-error
                    supervisor-cli-exit-failure
@@ -1733,7 +1719,7 @@ In non-interactive context, launch $VISUAL or $EDITOR."
                    'human)))
             (supervisor--cli-error
              supervisor-cli-exit-failure
-             (format "%sNo $VISUAL or $EDITOR set.  Edit the file manually:\n  %s\n\nNext steps after editing:\n  supervisorctl daemon-reload    Reload unit definitions\n  supervisorctl reconcile        Apply changes to running state"
+             (format "%sNo $VISUAL or $EDITOR set.  Edit the file manually:\n  %s\n\nNext steps after editing:\n  supervisorctl daemon-reload    Reload unit definitions"
                      (if created
                          (format "Created new unit file: %s\n" path)
                        "")
@@ -1775,7 +1761,6 @@ Returns a `supervisor-cli-result' struct."
                    "  list-dependencies [ID]     Show dependency graph\n"
                    "  list-timers                Show timer units\n\n"
                    "Supervisor-specific commands:\n"
-                   "  reconcile                  Reconcile config and runtime\n"
                    "  validate                   Validate config\n"
                    "  restart-policy (on|off) ID...  Set restart policy\n"
                    "  logging (on|off) ID...     Set logging policy\n"
@@ -1799,8 +1784,6 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-stop args json-p))
          ((equal command "restart")
           (supervisor--cli-cmd-restart args json-p))
-         ((equal command "reconcile")
-          (supervisor--cli-cmd-reconcile args json-p))
          ((equal command "daemon-reload")
           (supervisor--cli-cmd-daemon-reload args json-p))
          ((equal command "reload")

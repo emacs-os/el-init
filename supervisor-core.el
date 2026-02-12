@@ -174,7 +174,7 @@ to file when enabled, regardless of verbose setting."
 
 (defcustom supervisor-watch-config nil
   "When non-nil, watch the Emacs init file for modification.
-When the init file is modified, automatically run `supervisor-reconcile'.
+When the init file is modified, automatically run `supervisor--reconcile'.
 The file watched is the value of `user-init-file'.
 Set to a file path string to watch a specific file instead."
   :type '(choice (const :tag "Disabled" nil)
@@ -2949,17 +2949,15 @@ Returns a plist with :stopped and :started counts."
           (_ nil))))
     (list :stopped stopped :started started)))
 
-;;;###autoload
-(defun supervisor-reconcile ()
+(defun supervisor--reconcile ()
   "Reconcile configuration and running processes.
+Internal function called by the config-watcher and CLI reconcile command.
 Uses declarative reconciliation: build plan, build snapshot, compute
 actions, then apply.  The action list can be inspected before apply
 by calling `supervisor--compute-actions' directly.
 
 Stops processes removed from config or now disabled, starts new processes.
 Does not restart changed entries - use dashboard kill/start for that."
-  (interactive)
-
   ;; Build plan and snapshot
   (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
          (snapshot (supervisor--build-snapshot))
@@ -3126,7 +3124,7 @@ Returns a plist with :entries and :invalid counts."
        (run-at-time 1 nil
                     (lambda ()
                       (supervisor--log 'info "config file changed, reconciling...")
-                      (supervisor-reconcile)))))
+                      (supervisor--reconcile)))))
 
 (defun supervisor--start-config-watch ()
   "Start watching config file if configured."

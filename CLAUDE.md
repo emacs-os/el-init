@@ -112,7 +112,7 @@ All runtime state lives in `supervisor--*` hash tables:
 - `supervisor--mask-override`: id → `masked` or nil
 - `supervisor--oneshot-completed`: id → exit code
 - `supervisor--manually-stopped`: ids stopped via CLI/dashboard (suppresses restart)
-- `supervisor--manually-started`: ids started via CLI/dashboard (reconcile preserves disabled)
+- `supervisor--manually-started`: ids started via CLI/dashboard (session-only, does not change enabled state)
 
 DAG scheduler state (`supervisor--dag-*` variables) is per-stage and reset between stages.
 

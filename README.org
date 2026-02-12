@@ -190,7 +190,7 @@ Validation is performed by ~supervisor--validate-entry~ and plan building.
   ~:no-restart~; ~simple~ rejects ~:oneshot-wait~, ~:async~, and
   ~:oneshot-timeout~.
 
-Invalid entries are skipped at start/reconcile and shown as ~invalid~ in dashboard
+Invalid entries are skipped at start and shown as ~invalid~ in dashboard
 and CLI status/validate output.
 
 ** ID Resolution and Duplicate Handling
@@ -286,6 +286,47 @@ All other keys from ~supervisor-programs~ entry plists are supported (~:type~,
 ~:stage~, ~:delay~, ~:after~, ~:requires~, ~:enabled~, ~:disabled~, ~:restart~,
 ~:no-restart~, ~:logging~, ~:oneshot-wait~, ~:async~, ~:oneshot-timeout~,
 ~:tags~).
+
+** Unit File Best Practices (Data-Only Declarations)
+
+Unit files are Lisp syntax, but they should be treated as static data
+declarations, not mini programs, so validation stays reliable, behavior stays
+reproducible, and unit loading stays deterministic.
+
+Recommended:
+
+- Keep values literal and explicit.
+- Put conditional logic in wrapper scripts or the service program itself.
+- Keep runtime behavior reproducible across machines and restarts.
+
+Discouraged:
+
+- Embedding logic in unit declarations (~if~, ~when~, filesystem checks,
+  environment-dependent branching, or read-time evaluation tricks).
+
+Good example (declarative):
+
+#+begin_src emacs-lisp
+(:id "backup"
+ :command "/usr/local/bin/backup-runner --mode=incremental"
+ :type oneshot
+ :stage stage4
+ :enabled t
+ :logging t)
+#+end_src
+
+Bad example (logic in declaration):
+
+#+begin_src emacs-lisp
+;; Discouraged: dynamic branching in unit data.
+;; Keep this kind of logic in a script/program, not the unit file.
+(:id "backup"
+ :command (if (file-exists-p "/mnt/backup")
+              "/usr/local/bin/backup-runner --mode=incremental"
+            "/usr/local/bin/backup-runner --mode=local")
+ :type oneshot
+ :stage stage4)
+#+end_src
 
 ** Unit Directory
 
@@ -396,8 +437,7 @@ gradually---services not yet extracted remain in ~supervisor-programs~.
 
 *** Step 5: Reload
 
-Run ~supervisorctl daemon-reload~ or ~M-x supervisor-reconcile~ to pick up the
-new configuration.
+Run ~supervisorctl daemon-reload~ to pick up the new configuration.
 
 * Startup and Lifecycle Model
 :PROPERTIES:
@@ -523,13 +563,11 @@ Effective value resolution for enabled state:
 
 Enable/disable semantics follow the systemctl model:
 
-- ~enable ID~: unit should start on next ~supervisor-start~ / ~reconcile~.
-  Persisted as override.
+- ~enable ID~: unit should start on next ~supervisor-start~.  Persisted as
+  override.
 - ~disable ID~: unit should NOT start automatically.  Persisted.
 - ~start ID~ on a disabled unit: starts it this session only.  Does not
   change enabled state.  Only mask blocks manual start.
-- Reconcile skips disabled units but does not stop disabled units that
-  were manually started (preserves session-only starts).
 
 ** Persistence of Overrides
 
@@ -549,24 +587,6 @@ Dashboard toggles for enabled/restart/mask persist immediately.
 Dashboard logging toggle updates runtime state; use explicit save command (or CLI
 logging command) when you want persistence written immediately. In other words:
 dashboard logging toggle does not auto-save, but CLI ~logging on|off ...~ does.
-
-** Reconcile (~supervisor-reconcile~)
-
-Reconcile flow:
-
-1. Build plan
-2. Build runtime snapshot
-3. Compute actions (~start~, ~stop~, ~noop~, ~skip~)
-4. Apply actions
-
-Effects:
-
-- Stops removed entries
-- Stops masked entries (mask overrides manual start)
-- Stops entries newly disabled (but preserves disabled entries that were
-  manually started, per the systemctl model)
-- Starts newly eligible entries
-- Leaves converged entries running
 
 * Timer Subsystem (Experimental)
 :PROPERTIES:
@@ -937,7 +957,6 @@ Systemctl-compatible commands:
 
 Supervisor-specific commands:
 
-- ~reconcile~
 - ~validate~
 - ~restart-policy (on|off) [--] ID...~
 - ~logging (on|off) [--] ID...~
@@ -999,8 +1018,8 @@ IDs.
 - re-reads ~supervisor-programs~ and unit files (when ~supervisor-use-unit-files~
   is non-nil), rebuilds the internal plan
 - does NOT start, stop, or restart anything; runtime state is untouched
-- after daemon-reload, the next ~reconcile~, ~start~, or ~reload~ operates on
-  the refreshed plan
+- after daemon-reload, the next ~start~ or ~reload~ operates on the refreshed
+  plan
 - JSON: ~{"reloaded": true, "entries": N, "invalid": N}~
 - available in dashboard transient menu under "System" group (~X~)
 
@@ -1014,7 +1033,7 @@ IDs.
   (action: ~updated~)
 - masked unit: skip with warning (action: ~skipped (masked)~)
 - unknown ID: error (action: ~error: not found~)
-- does NOT affect other units (no global convergence; use ~reconcile~ for that)
+- does NOT affect other units (operates only on the specified IDs)
 - exit 0 if all units succeed, exit 1 if any unit has an error
 - human output: one line per ID showing ~ID: action~
 - JSON: ~{"results": [{"id": "x", "action": "reloaded"}, ...]}~
@@ -1188,7 +1207,7 @@ All user options (defcustom) are listed below.
 | ~supervisor-max-concurrent-starts~ | ~nil~ | Max concurrent stage spawns |
 | ~supervisor-verbose~ | ~nil~ | Show info-level messages |
 | ~supervisor-log-to-file~ | ~nil~ | Write supervisor events to file |
-| ~supervisor-watch-config~ | ~nil~ | Config file watch/reconcile |
+| ~supervisor-watch-config~ | ~nil~ | Config file watch and auto-reload |
 | ~supervisor-overrides-file~ | ~(XDG_STATE_HOME or ~/.local/state)/supervisor/overrides.eld~ | Override persistence path |
 
 ** Unit-File Options
@@ -1226,7 +1245,6 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-start~ | Build plan and start staged scheduler |
 | ~M-x supervisor-stop~ | Async graceful stop |
 | ~M-x supervisor-stop-now~ | Sync hard stop |
-| ~M-x supervisor-reconcile~ | Reconcile running state against config |
 | ~M-x supervisor-validate~ | Validate config without start |
 | ~M-x supervisor-dry-run~ | Show execution plan without start |
 | ~M-x supervisor-migrate-config~ | Emit canonical schema v1 config |
@@ -1301,7 +1319,6 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Migration from ~supervisor-programs~ to unit files (~supervisor-migrate-config~): [[#migrating-to-unit-files][Migrating to Unit Files]]
 - Override precedence (runtime override vs config default): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Override persistence (~supervisor-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
-- Reconcile action model (~start~, ~stop~, ~noop~, ~skip~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Reload unit (~reload~, ~u~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]

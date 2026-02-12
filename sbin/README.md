@@ -33,7 +33,6 @@ Lifecycle:
 - `supervisorctl start [ID...]`
 - `supervisorctl stop [ID...]`
 - `supervisorctl restart [ID...]`
-- `supervisorctl reconcile`
 - `supervisorctl validate`
 
 State and inspect:
@@ -184,7 +183,6 @@ Command handlers (all private, `supervisor--cli-cmd-*`):
 - `supervisor--cli-cmd-start` - start command
 - `supervisor--cli-cmd-stop` - stop command
 - `supervisor--cli-cmd-restart` - restart command
-- `supervisor--cli-cmd-reconcile` - reconcile command
 - `supervisor--cli-cmd-validate` - validate command
 - `supervisor--cli-cmd-enable` - enable command
 - `supervisor--cli-cmd-disable` - disable command

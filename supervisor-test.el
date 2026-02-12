@@ -119,7 +119,7 @@ Spawns a subprocess to test CLI dispatch without dashboard or timer module."
                   "--eval" "(require 'supervisor-core)"
                   "--eval" "(require 'supervisor-cli)"
                   "--eval" "(setq supervisor-unit-directory (make-temp-file \"units-\" t))"
-                  "--eval" "(supervisor--cli-dispatch '(\"reconcile\"))")))
+                  "--eval" "(supervisor--cli-dispatch '(\"status\"))")))
     (should (= result 0))))
 
 (ert-deftest supervisor-test-module-no-cycles ()
@@ -904,7 +904,7 @@ core symbols exist without dashboard/cli-specific dependencies."
                    (push id started-ids)))
                 ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
                 ((symbol-function 'executable-find) (lambda (_) t)))
-        (supervisor-reconcile)
+        (supervisor--reconcile)
         ;; Entry should NOT have been started due to override
         (should-not (member "new-entry" started-ids))))))
 
@@ -932,7 +932,7 @@ Only auto-started (not manually-started) disabled units are stopped."
                      (push (process-name proc) killed-ids)
                      (delete-process proc)))
                   ((symbol-function 'supervisor--refresh-dashboard) #'ignore))
-          (supervisor-reconcile)
+          (supervisor--reconcile)
           ;; Entry should have been killed due to :disabled (not manually started)
           (should (member "test-proc" killed-ids)))))))
 
@@ -2625,7 +2625,6 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Invalid unit files appear in supervisor--invalid after plan build."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
-         (supervisor-use-unit-files t)
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
          (supervisor--computed-deps (make-hash-table :test 'equal)))
@@ -2684,8 +2683,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-cli-validate-invalid-unit-file ()
   "CLI validate reports invalid unit files in count and output."
   (let* ((dir (make-temp-file "units-" t))
-         (supervisor-unit-directory dir)
-         (supervisor-use-unit-files t))
+         (supervisor-unit-directory dir))
     (unwind-protect
         (progn
           (with-temp-file (expand-file-name "bad.el" dir)
@@ -2704,7 +2702,6 @@ Regression test: stderr pipe processes used to pollute the process list."
   "CLI list-units includes invalid unit files in output."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
-         (supervisor-use-unit-files t)
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--entry-state (make-hash-table :test 'equal)))
     (unwind-protect
@@ -2721,7 +2718,6 @@ Regression test: stderr pipe processes used to pollute the process list."
   "CLI status ID recognizes invalid unit files, not just plan-level invalids."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
-         (supervisor-use-unit-files t)
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--entry-state (make-hash-table :test 'equal)))
     (unwind-protect
@@ -2743,7 +2739,6 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Dry-run summary includes invalid unit files in count and listing."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
-         (supervisor-use-unit-files t)
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
          (supervisor--computed-deps (make-hash-table :test 'equal)))
@@ -5400,11 +5395,6 @@ at minute boundaries."
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
-(ert-deftest supervisor-test-cli-reconcile-rejects-extra-args ()
-  "Reconcile with extra args returns invalid-args exit code."
-  (let ((result (supervisor--cli-dispatch '("reconcile" "extra"))))
-    (should (supervisor-cli-result-p result))
-    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
 (ert-deftest supervisor-test-cli-reload-requires-at-least-one-id ()
   "CLI `reload' with no arguments returns exit 2 (invalid args)."

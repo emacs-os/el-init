@@ -51,7 +51,6 @@
 #   list-timers                 Show timer units
 #
 # Supervisor-specific commands:
-#   reconcile                   Reconcile config and runtime
 #   validate                    Validate config and show errors
 #   restart-policy (on|off) ID...  Set restart policy
 #   logging (on|off) ID...      Set logging policy
