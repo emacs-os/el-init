@@ -34,6 +34,7 @@
 (declare-function supervisor--log "supervisor-core" (level format-string &rest args))
 (declare-function supervisor--emit-event "supervisor-core" (type id msg &optional metadata))
 (declare-function supervisor--build-plan "supervisor-core" (programs))
+(declare-function supervisor--effective-programs "supervisor-core" ())
 (declare-function supervisor--start-entry-async "supervisor-core" (entry callback))
 (declare-function supervisor--get-effective-enabled "supervisor-core" (id config-enabled))
 (declare-function supervisor-plan-entries "supervisor-core" (plan))
@@ -941,7 +942,7 @@ Does nothing if timer subsystem is not active."
     (cl-return-from supervisor-timer-scheduler-start nil))
   (setq supervisor--scheduler-startup-time (float-time))
   ;; Build timer list from config
-  (let ((plan (supervisor--build-plan supervisor-programs)))
+  (let ((plan (supervisor--build-plan (supervisor--effective-programs))))
     (setq supervisor--timer-list (supervisor-timer-build-list plan)))
   ;; Load persisted state
   (supervisor-timer--load-state)

@@ -228,16 +228,24 @@ Returns alist with all fields needed for status display."
 (defun supervisor--cli-all-entries-info (&optional snapshot)
   "Build info alists for all valid entries, using optional SNAPSHOT.
 Returns (entries invalid) where entries is list of alists and
-invalid is list of (id . reason) pairs, sorted by ID for determinism."
-  (let* ((plan (supervisor--build-plan supervisor-programs))
+invalid is list of (id . reason) pairs, sorted by ID for determinism.
+Includes both plan-level and unit-file-level invalid entries."
+  (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
          (entries (supervisor-plan-entries plan))
-         (invalid-hash (supervisor-plan-invalid plan))
+         (combined-invalid (make-hash-table :test 'equal))
          (invalid-list nil)
          (entry-infos nil))
+    ;; Merge plan invalids and unit-file invalids into combined hash
+    (maphash (lambda (k v) (puthash k v combined-invalid))
+             (supervisor-plan-invalid plan))
+    (when (and (bound-and-true-p supervisor-use-unit-files)
+               (boundp 'supervisor--unit-file-invalid))
+      (maphash (lambda (k v) (puthash k v combined-invalid))
+               (symbol-value 'supervisor--unit-file-invalid)))
     ;; Collect invalid entries
     (maphash (lambda (id reason)
                (push `((id . ,id) (reason . ,reason)) invalid-list))
-             invalid-hash)
+             combined-invalid)
     ;; Sort invalid list by ID for deterministic output
     (setq invalid-list (sort invalid-list
                              (lambda (a b)
@@ -532,13 +540,20 @@ Show all properties of a single unit."
   "Handle `validate' command with ARGS.  JSON-P enables JSON output."
   (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
-      (let* ((plan (supervisor--build-plan supervisor-programs))
+      (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
              (service-valid (length (supervisor-plan-entries plan)))
-             (invalid-hash (supervisor-plan-invalid plan))
+             (combined-invalid (make-hash-table :test 'equal))
              (service-invalid-list nil))
+        ;; Merge plan invalids and unit-file invalids
+        (maphash (lambda (k v) (puthash k v combined-invalid))
+                 (supervisor-plan-invalid plan))
+        (when (and (bound-and-true-p supervisor-use-unit-files)
+                   (boundp 'supervisor--unit-file-invalid))
+          (maphash (lambda (k v) (puthash k v combined-invalid))
+                   (symbol-value 'supervisor--unit-file-invalid)))
         (maphash (lambda (id reason)
                    (push `((id . ,id) (reason . ,reason)) service-invalid-list))
-                 invalid-hash)
+                 combined-invalid)
         ;; Sort invalid list by ID for deterministic output
         (setq service-invalid-list
               (sort service-invalid-list
@@ -979,7 +994,7 @@ Use -- before IDs that start with a hyphen."
                            (format "Unknown option: %s" (car args))
                            (if json-p 'json 'human)))
    (t
-    (let* ((plan (supervisor--build-plan supervisor-programs))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
            (deps (supervisor-plan-deps plan))
            (requires (supervisor-plan-requires-deps plan))
            (dependents (supervisor-plan-dependents plan))

@@ -53,6 +53,7 @@ The [[#quick-start][Quick Start]] below gets you running immediately. The rest o
 provides detailed reference material:
 
 - [[#service-definition-handbook-supervisor-programs][Service Definition]] - all the options for defining services
+- [[#unit-files-modular-configuration][Unit Files]] - modular one-file-per-unit configuration
 - [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] - how stages, dependencies, and restarts work
 - [[#runtime-overrides-and-reconciliation][Runtime Overrides]] - enabling, disabling, and policy changes at runtime
 - [[#timer-subsystem-handbook-experimental][Timer Subsystem]] - scheduled oneshot execution (experimental)
@@ -240,6 +241,71 @@ the canonical way to read entry fields.
 - prints stage order and resolved dependency metadata
 - prints timer validation summary when timers are configured
 - opens ~*supervisor-dry-run*~ report buffer
+
+* Unit Files (Modular Configuration)
+:PROPERTIES:
+:CUSTOM_ID: unit-files-modular-configuration
+:END:
+
+In addition to the monolithic ~supervisor-programs~ list, services can be defined
+as individual unit files.  Each unit file is a single ~.el~ file containing one
+plist expression.
+
+** Enabling Unit Files
+
+#+begin_src emacs-lisp
+(setq supervisor-use-unit-files t)
+#+end_src
+
+When enabled, unit files are loaded from ~supervisor-unit-directory~ and merged
+with ~supervisor-programs~.  Unit-file entries take precedence on ID collision.
+
+** Unit File Format
+
+Each file contains a single plist:
+
+#+begin_src emacs-lisp
+;; ~/.config/supervisor/units/nm-applet.el
+(:id "nm-applet"
+ :command "nm-applet"
+ :type simple
+ :stage stage3
+ :restart t)
+#+end_src
+
+Required keys:
+
+- ~:id~ (non-empty string)
+- ~:command~ (string, the shell command)
+
+All other keys from ~supervisor-programs~ entry plists are supported (~:type~,
+~:stage~, ~:delay~, ~:after~, ~:requires~, ~:enabled~, ~:disabled~, ~:restart~,
+~:no-restart~, ~:logging~, ~:oneshot-wait~, ~:async~, ~:oneshot-timeout~,
+~:tags~).
+
+** Unit Directory
+
+Default: ~$XDG_CONFIG_HOME/supervisor/units/~ or ~~/.config/supervisor/units/~.
+
+Configure with ~supervisor-unit-directory~.
+
+** Merge Semantics
+
+- Unit files are scanned in alphabetical order.
+- Duplicate IDs within unit files: first file wins, later duplicates are skipped
+  with warning.
+- ID collision between unit file and ~supervisor-programs~: unit file wins, legacy
+  entry is dropped with informational log.
+
+** Validation
+
+Unit files are validated at load time:
+
+- Unknown keywords are rejected.
+- Missing ~:id~ or ~:command~ is rejected.
+- ~:id~ must be a non-empty string; ~:command~ must be a string.
+- File path is included in validation error messages.
+- Invalid unit files are skipped and logged.
 
 * Startup and Lifecycle Model
 :PROPERTIES:
@@ -946,6 +1012,12 @@ All user options (defcustom) are listed below.
 | ~supervisor-log-to-file~ | ~nil~ | Write supervisor events to file |
 | ~supervisor-watch-config~ | ~nil~ | Config file watch/reconcile |
 | ~supervisor-overrides-file~ | ~(XDG_STATE_HOME or ~/.local/state)/supervisor/overrides.eld~ | Override persistence path |
+
+** Unit-File Options
+
+| Variable | Default | Purpose |
+| ~supervisor-use-unit-files~ | ~nil~ | Enable unit-file loading and merge |
+| ~supervisor-unit-directory~ | ~(XDG_CONFIG_HOME or ~/.config)/supervisor/units/~ | Unit files directory |
 
 ** Timer Options
 

@@ -50,6 +50,9 @@ See supervisor-timer.el for the full mode definition.")
 (declare-function supervisor-timer-enabled "supervisor-timer" (timer))
 (declare-function supervisor-timer-target "supervisor-timer" (timer))
 
+;; Forward declarations for unit-file module (optional)
+(declare-function supervisor--load-programs "supervisor-units" ())
+
 ;; Forward declarations for optional features
 (declare-function file-notify-add-watch "filenotify" (file flags callback))
 (declare-function file-notify-rm-watch "filenotify" (descriptor))
@@ -187,6 +190,31 @@ Set to a file path string to watch a specific file instead."
 
 (defvar supervisor--config-watch-descriptor nil
   "File notification descriptor for config watching.")
+
+;;; Program Loading
+
+(defun supervisor--effective-programs ()
+  "Return the effective program list for plan building.
+When the units module is loaded and `supervisor-use-unit-files' is
+non-nil, delegates to `supervisor--load-programs' which merges
+unit-file entries with `supervisor-programs'.
+Otherwise returns `supervisor-programs' directly."
+  (if (and (fboundp 'supervisor--load-programs)
+           (bound-and-true-p supervisor-use-unit-files))
+      (supervisor--load-programs)
+    supervisor-programs))
+
+(defvar supervisor--invalid)
+
+(defun supervisor--merge-unit-file-invalid ()
+  "Merge invalid unit-file entries into `supervisor--invalid'.
+When the units module is loaded and unit files are enabled, copies
+entries from `supervisor--unit-file-invalid' into the runtime
+invalid hash so they appear in the dashboard and CLI."
+  (when (and (bound-and-true-p supervisor-use-unit-files)
+             (boundp 'supervisor--unit-file-invalid))
+    (maphash (lambda (k v) (puthash k v supervisor--invalid))
+             (symbol-value 'supervisor--unit-file-invalid))))
 
 ;;; Logging
 
@@ -425,21 +453,22 @@ and `supervisor--invalid-timers' so the dashboard reflects validation state."
   (when (boundp 'supervisor--invalid-timers)
     (clrhash supervisor--invalid-timers))
   ;; Build plan to get entry validation results
-  (let* ((plan (supervisor--build-plan supervisor-programs))
+  (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
          (entry-valid (length (supervisor-plan-entries plan)))
-         (entry-invalid (hash-table-count (supervisor-plan-invalid plan)))
          (entry-results nil))
-    ;; Populate supervisor--invalid from plan
+    ;; Populate supervisor--invalid from plan and unit-file invalids
     (maphash (lambda (k v) (puthash k v supervisor--invalid))
              (supervisor-plan-invalid plan))
+    (supervisor--merge-unit-file-invalid)
     ;; Collect entry results (entry is a tuple where car is the id)
     (dolist (entry (supervisor-plan-entries plan))
       (push (format "OK      %s" (car entry)) entry-results))
     (maphash (lambda (id reason)
                (push (format "INVALID %s: %s" id reason) entry-results))
-             (supervisor-plan-invalid plan))
+             supervisor--invalid)
     ;; Validate timers using plan (only if timer module is loaded)
-    (let* ((timers (when (fboundp 'supervisor-timer-build-list)
+    (let* ((entry-invalid (hash-table-count supervisor--invalid))
+           (timers (when (fboundp 'supervisor-timer-build-list)
                      (supervisor-timer-build-list plan)))
            (timer-valid (length timers))
            (timer-invalid (if (boundp 'supervisor--invalid-timers)
@@ -473,7 +502,7 @@ Display staged startup order, including dependency resolution and
 cycle fallback behavior.  Uses the pure plan builder internally."
   (interactive)
   ;; Build plan using pure function
-  (let ((plan (supervisor--build-plan supervisor-programs)))
+  (let ((plan (supervisor--build-plan (supervisor--effective-programs))))
     ;; Populate legacy globals for dashboard compatibility
     (clrhash supervisor--invalid)
     (when (boundp 'supervisor--invalid-timers)
@@ -482,6 +511,7 @@ cycle fallback behavior.  Uses the pure plan builder internally."
     (clrhash supervisor--computed-deps)
     (maphash (lambda (k v) (puthash k v supervisor--invalid))
              (supervisor-plan-invalid plan))
+    (supervisor--merge-unit-file-invalid)
     (maphash (lambda (k v) (puthash k v supervisor--cycle-fallback-ids))
              (supervisor-plan-cycle-fallback-ids plan))
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
@@ -494,7 +524,7 @@ cycle fallback behavior.  Uses the pure plan builder internally."
         (princ "=== Supervisor Dry Run ===\n\n")
         (princ (format "Services: %d valid, %d invalid\n"
                        (length (supervisor-plan-entries plan))
-                       (hash-table-count (supervisor-plan-invalid plan))))
+                       (hash-table-count supervisor--invalid)))
         (when (and supervisor-timers (fboundp 'supervisor-timer-build-list))
           (princ (format "Timers: %d valid, %d invalid\n"
                          (length timers)
@@ -502,12 +532,12 @@ cycle fallback behavior.  Uses the pure plan builder internally."
                              (hash-table-count supervisor--invalid-timers)
                            0))))
         (princ "\n")
-        ;; Show invalid entries first
-        (when (> (hash-table-count (supervisor-plan-invalid plan)) 0)
+        ;; Show invalid entries first (includes unit-file invalids)
+        (when (> (hash-table-count supervisor--invalid) 0)
           (princ "--- Invalid Services (skipped) ---\n")
           (maphash (lambda (id reason)
                      (princ (format "  %s: %s\n" id reason)))
-                   (supervisor-plan-invalid plan))
+                   supervisor--invalid)
           (princ "\n"))
         ;; Show invalid timers (only if timer module loaded)
         (when (and (boundp 'supervisor--invalid-timers)
@@ -2576,10 +2606,11 @@ Ready semantics (when dependents are unblocked):
   (supervisor--dag-cleanup)
   (supervisor--rotate-logs)
   ;; Build execution plan (pure, deterministic)
-  (let ((plan (supervisor--build-plan supervisor-programs)))
+  (let ((plan (supervisor--build-plan (supervisor--effective-programs))))
     ;; Populate legacy globals from plan for dashboard/other code
     (maphash (lambda (k v) (puthash k v supervisor--invalid))
              (supervisor-plan-invalid plan))
+    (supervisor--merge-unit-file-invalid)
     (maphash (lambda (k v) (puthash k v supervisor--cycle-fallback-ids))
              (supervisor-plan-cycle-fallback-ids plan))
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
@@ -2855,7 +2886,7 @@ Stops processes removed from config or now disabled, starts new processes.
 Does not restart changed entries - use dashboard kill/start for that."
   (interactive)
   ;; Build plan and snapshot
-  (let* ((plan (supervisor--build-plan supervisor-programs))
+  (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
          (snapshot (supervisor--build-snapshot))
          ;; Compute actions (pure)
          (actions (supervisor--compute-actions plan snapshot))
@@ -2869,6 +2900,7 @@ Does not restart changed entries - use dashboard kill/start for that."
       (clrhash supervisor--invalid-timers))
     (maphash (lambda (k v) (puthash k v supervisor--invalid))
              (supervisor-plan-invalid plan))
+    (supervisor--merge-unit-file-invalid)
     ;; Validate timers only when timer subsystem is active (and timer module loaded)
     (when (and (fboundp 'supervisor-timer-subsystem-active-p)
                (supervisor-timer-subsystem-active-p)

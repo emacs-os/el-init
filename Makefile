@@ -2,7 +2,7 @@ EMACS ?= emacs
 BATCH = $(EMACS) -Q --batch -L .
 
 EL_MAIN = supervisor.el
-EL_MODULES = supervisor-core.el supervisor-dashboard.el supervisor-cli.el
+EL_MODULES = supervisor-core.el supervisor-units.el supervisor-timer.el supervisor-dashboard.el supervisor-cli.el
 EL_ALL = $(EL_MODULES) $(EL_MAIN)
 TEST_EL = supervisor-test.el
 

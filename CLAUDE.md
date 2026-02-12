@@ -13,14 +13,16 @@ The package is split into focused modules:
 | File | Purpose |
 |------|---------|
 | `supervisor-core.el` | Engine, parsing, scheduling, process lifecycle, state management |
+| `supervisor-units.el` | Unit-file loading, validation, merge with legacy config |
 | `supervisor-dashboard.el` | UI rendering, keymaps, interactive commands |
 | `supervisor-cli.el` | CLI dispatcher, formatters, command handlers |
 | `supervisor.el` | Entry point that loads all modules and provides the `supervisor` feature |
 
-**Load order:** core → timer → dashboard → cli (loaded by entry point).
+**Load order:** core → units → timer → dashboard → cli (loaded by entry point).
 
 **Dependency rules:**
-- `supervisor-core.el` has no dependencies on dashboard or CLI (can load standalone)
+- `supervisor-core.el` has no dependencies on other modules (can load standalone)
+- `supervisor-units.el` uses `declare-function` for core (no hard require)
 - `supervisor-dashboard.el` requires only `supervisor-core`
 - `supervisor-cli.el` requires only `supervisor-core`
 - `supervisor.el` requires all modules

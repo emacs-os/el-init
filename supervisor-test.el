@@ -2335,6 +2335,339 @@ Regression test: stderr pipe processes used to pollute the process list."
         (should-error (supervisor-dashboard-restart)
                       :type 'user-error)))))
 
+;;; Unit-File Tests
+
+(ert-deftest supervisor-test-unit-file-path-resolution ()
+  "Unit file path resolves to directory/ID.el."
+  (let ((supervisor-unit-directory "/tmp/test-units"))
+    (should (equal "/tmp/test-units/nm-applet.el"
+                   (supervisor--unit-file-path "nm-applet")))))
+
+(ert-deftest supervisor-test-unit-file-keywords-include-command ()
+  "Unit-file valid keywords include :command."
+  (should (memq :command supervisor--unit-file-keywords))
+  (should (memq :id supervisor--unit-file-keywords))
+  (should (memq :type supervisor--unit-file-keywords)))
+
+(ert-deftest supervisor-test-load-unit-file-valid ()
+  "Loading a valid unit file returns (LINE . PLIST)."
+  (let ((path (make-temp-file "unit-test-" nil ".el")))
+    (unwind-protect
+        (progn
+          (with-temp-file path
+            (insert "(:id \"test\" :command \"echo hello\" :type simple)"))
+          (let* ((result (supervisor--load-unit-file path))
+                 (line (car result))
+                 (plist (cdr result)))
+            (should (integerp line))
+            (should (equal "test" (plist-get plist :id)))
+            (should (equal "echo hello" (plist-get plist :command)))
+            (should (eq 'simple (plist-get plist :type)))))
+      (delete-file path))))
+
+(ert-deftest supervisor-test-load-unit-file-line-number ()
+  "Line number reflects plist position after leading whitespace."
+  (let ((path (make-temp-file "unit-test-" nil ".el")))
+    (unwind-protect
+        (progn
+          (with-temp-file path
+            (insert "\n\n(:id \"test\" :command \"echo\")"))
+          (let* ((result (supervisor--load-unit-file path))
+                 (line (car result)))
+            (should (= 3 line))))
+      (delete-file path))))
+
+(ert-deftest supervisor-test-load-unit-file-missing ()
+  "Loading a missing unit file signals error with path:line context."
+  (let ((err (should-error
+              (supervisor--load-unit-file "/tmp/nonexistent-unit-file.el")
+              :type 'error)))
+    (should (string-match "/tmp/nonexistent-unit-file\\.el:1:"
+                          (error-message-string err)))))
+
+(ert-deftest supervisor-test-load-unit-file-empty ()
+  "Loading an empty unit file signals error with path:line context."
+  (let ((path (make-temp-file "unit-test-" nil ".el")))
+    (unwind-protect
+        (let ((err (should-error (supervisor--load-unit-file path)
+                                 :type 'error)))
+          (should (string-match (regexp-quote (concat path ":1:"))
+                                (error-message-string err))))
+      (delete-file path))))
+
+(ert-deftest supervisor-test-load-unit-file-not-plist ()
+  "Loading a non-plist unit file signals error with path:line context."
+  (let ((path (make-temp-file "unit-test-" nil ".el")))
+    (unwind-protect
+        (progn
+          (with-temp-file path
+            (insert "(defun foo () nil)"))
+          (let ((err (should-error (supervisor--load-unit-file path)
+                                   :type 'error)))
+            (should (string-match (regexp-quote path)
+                                  (error-message-string err)))
+            (should (string-match ":[0-9]+:" (error-message-string err)))))
+      (delete-file path))))
+
+(ert-deftest supervisor-test-load-unit-file-trailing-content ()
+  "Loading a unit file with trailing content signals error with path:line."
+  (let ((path (make-temp-file "unit-test-" nil ".el")))
+    (unwind-protect
+        (progn
+          (with-temp-file path
+            (insert "(:id \"test\" :command \"echo\")\n(extra stuff)"))
+          (let ((err (should-error (supervisor--load-unit-file path)
+                                   :type 'error)))
+            (should (string-match (regexp-quote path)
+                                  (error-message-string err)))
+            (should (string-match ":[0-9]+:" (error-message-string err)))))
+      (delete-file path))))
+
+(ert-deftest supervisor-test-validate-unit-file-missing-id ()
+  "Unit file plist without :id is invalid with path:line context."
+  (let ((reason (supervisor--validate-unit-file-plist
+                 '(:command "echo") "/tmp/test.el" 1)))
+    (should (stringp reason))
+    (should (string-match "missing :id" reason))
+    (should (string-match "/tmp/test\\.el:1:" reason))))
+
+(ert-deftest supervisor-test-validate-unit-file-missing-command ()
+  "Unit file plist without :command is invalid with path:line context."
+  (let ((reason (supervisor--validate-unit-file-plist
+                 '(:id "test") "/tmp/test.el" 3)))
+    (should (stringp reason))
+    (should (string-match "missing :command" reason))
+    (should (string-match "/tmp/test\\.el:3:" reason))))
+
+(ert-deftest supervisor-test-validate-unit-file-unknown-keyword ()
+  "Unit file plist with unknown keyword is invalid with path:line context."
+  (let ((reason (supervisor--validate-unit-file-plist
+                 '(:id "test" :command "echo" :bogus 42) "/tmp/test.el" 1)))
+    (should (stringp reason))
+    (should (string-match "unknown keyword" reason))
+    (should (string-match "/tmp/test\\.el:1:" reason))))
+
+(ert-deftest supervisor-test-validate-unit-file-valid ()
+  "Valid unit file plist returns nil."
+  (should-not (supervisor--validate-unit-file-plist
+               '(:id "test" :command "echo" :type simple :stage stage3)
+               "/tmp/test.el" 1)))
+
+(ert-deftest supervisor-test-unit-file-to-program-entry ()
+  "Unit file plist converts to supervisor-programs entry format."
+  (let ((entry (supervisor--unit-file-to-program-entry
+                '(:id "nm" :command "nm-applet" :type simple :restart t))))
+    ;; Car is the command string
+    (should (equal "nm-applet" (car entry)))
+    ;; Rest is a plist with :id but no :command
+    (should (equal "nm" (plist-get (cdr entry) :id)))
+    (should (eq 'simple (plist-get (cdr entry) :type)))
+    (should (eq t (plist-get (cdr entry) :restart)))
+    ;; :command should not be in the output plist
+    (should-not (plist-member (cdr entry) :command))))
+
+(ert-deftest supervisor-test-load-all-unit-files-missing-dir ()
+  "Loading from nonexistent directory returns nil."
+  (let ((supervisor-unit-directory "/tmp/nonexistent-supervisor-units-dir"))
+    (should-not (supervisor--load-all-unit-files))))
+
+(ert-deftest supervisor-test-load-all-unit-files-alphabetical ()
+  "Unit files are loaded in alphabetical order as plists."
+  (let ((dir (make-temp-file "units-" t)))
+    (unwind-protect
+        (let ((supervisor-unit-directory dir))
+          (with-temp-file (expand-file-name "bravo.el" dir)
+            (insert "(:id \"bravo\" :command \"bravo-cmd\")"))
+          (with-temp-file (expand-file-name "alpha.el" dir)
+            (insert "(:id \"alpha\" :command \"alpha-cmd\")"))
+          (let ((results (supervisor--load-all-unit-files)))
+            (should (= 2 (length results)))
+            ;; Alpha first (alphabetical); results are plists directly
+            (should (equal "alpha" (plist-get (nth 0 results) :id)))
+            (should (equal "bravo" (plist-get (nth 1 results) :id)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-load-all-unit-files-invalid-tracked ()
+  "Invalid unit files are recorded in supervisor--unit-file-invalid."
+  (let ((dir (make-temp-file "units-" t)))
+    (unwind-protect
+        (let ((supervisor-unit-directory dir))
+          ;; Valid file
+          (with-temp-file (expand-file-name "good.el" dir)
+            (insert "(:id \"good\" :command \"echo ok\")"))
+          ;; Invalid file (missing :command)
+          (with-temp-file (expand-file-name "bad.el" dir)
+            (insert "(:id \"bad\")"))
+          (let ((results (supervisor--load-all-unit-files)))
+            ;; Only valid entries returned
+            (should (= 1 (length results)))
+            (should (equal "good" (plist-get (nth 0 results) :id)))
+            ;; Invalid tracked in hash with path:line context
+            (should (= 1 (hash-table-count supervisor--unit-file-invalid)))
+            (let ((reason (gethash "bad" supervisor--unit-file-invalid)))
+              (should (stringp reason))
+              (should (string-match "missing :command" reason))
+              (should (string-match ":[0-9]+:" reason)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-load-all-unit-files-load-error-tracked ()
+  "Unit files that fail to parse are recorded in invalid hash with path:line."
+  (let ((dir (make-temp-file "units-" t)))
+    (unwind-protect
+        (let ((supervisor-unit-directory dir))
+          (with-temp-file (expand-file-name "broken.el" dir)
+            (insert "not a plist at all"))
+          (let ((results (supervisor--load-all-unit-files)))
+            (should (= 0 (length results)))
+            (should (= 1 (hash-table-count supervisor--unit-file-invalid)))
+            (let ((reason (gethash "broken" supervisor--unit-file-invalid)))
+              (should (stringp reason))
+              (should (string-match ":[0-9]+:" reason)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-unit-file-invalid-merged-into-plan ()
+  "Invalid unit files appear in supervisor--invalid after plan build."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (supervisor-use-unit-files t)
+         (supervisor-programs nil)
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "bad.el" dir)
+            (insert "(:id \"bad-unit\")"))
+          (let ((plan (supervisor--build-plan (supervisor--effective-programs))))
+            (maphash (lambda (k v) (puthash k v supervisor--invalid))
+                     (supervisor-plan-invalid plan))
+            (supervisor--merge-unit-file-invalid)
+            ;; The invalid unit file should now be visible
+            (should (gethash "bad-unit" supervisor--invalid))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-load-programs-legacy-path ()
+  "With unit files disabled, returns supervisor-programs unchanged."
+  (let ((supervisor-use-unit-files nil)
+        (supervisor-programs '(("test" :id "test" :type simple))))
+    (should (equal supervisor-programs (supervisor--effective-programs)))))
+
+(ert-deftest supervisor-test-load-programs-unit-file-merge ()
+  "With unit files enabled, unit entries override legacy on ID collision."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (supervisor-use-unit-files t)
+         (supervisor-programs '(("old-cmd" :id "svc" :type simple))))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "svc.el" dir)
+            (insert "(:id \"svc\" :command \"new-cmd\" :type simple)"))
+          (let ((programs (supervisor--effective-programs)))
+            ;; Should have exactly one entry (unit-file wins)
+            (should (= 1 (length programs)))
+            ;; The command should be the unit-file version
+            (should (equal "new-cmd" (car (nth 0 programs))))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-load-programs-unit-file-adds-new ()
+  "Unit files can introduce new entries alongside legacy programs."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (supervisor-use-unit-files t)
+         (supervisor-programs '(("legacy-cmd" :id "legacy" :type simple))))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "new-svc.el" dir)
+            (insert "(:id \"new-svc\" :command \"new-cmd\" :type simple)"))
+          (let ((programs (supervisor--effective-programs)))
+            ;; Should have both entries
+            (should (= 2 (length programs)))
+            ;; Unit-file entries come first
+            (should (equal "new-cmd" (car (nth 0 programs))))
+            (should (equal "legacy-cmd" (car (nth 1 programs))))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-validate-invalid-unit-file ()
+  "CLI validate reports invalid unit files in count and output."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (supervisor-use-unit-files t)
+         (supervisor-programs nil))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "bad.el" dir)
+            (insert "(:id \"bad-unit\")"))
+          (let ((result (supervisor--cli-dispatch '("validate"))))
+            (should (supervisor-cli-result-p result))
+            (should (= supervisor-cli-exit-validation-failed
+                        (supervisor-cli-result-exitcode result)))
+            (should (string-match "1 invalid"
+                                  (supervisor-cli-result-output result)))
+            (should (string-match "bad-unit"
+                                  (supervisor-cli-result-output result)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-list-units-shows-invalid-unit-file ()
+  "CLI list-units includes invalid unit files in output."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (supervisor-use-unit-files t)
+         (supervisor-programs nil)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "bad.el" dir)
+            (insert "(:id \"bad-unit\")"))
+          (let ((result (supervisor--cli-dispatch '("list-units"))))
+            (should (supervisor-cli-result-p result))
+            (should (string-match "bad-unit"
+                                  (supervisor-cli-result-output result)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-status-invalid-unit-file ()
+  "CLI status ID recognizes invalid unit files, not just plan-level invalids."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (supervisor-use-unit-files t)
+         (supervisor-programs nil)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "bad.el" dir)
+            (insert "(:id \"bad-unit\")"))
+          (let ((result (supervisor--cli-dispatch '("status" "bad-unit"))))
+            (should (supervisor-cli-result-p result))
+            ;; Should find it as invalid, not "not found"
+            (should (= supervisor-cli-exit-success
+                        (supervisor-cli-result-exitcode result)))
+            (should (string-match "invalid"
+                                  (supervisor-cli-result-output result)))
+            (should-not (string-match "could not be found"
+                                      (supervisor-cli-result-output result)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-dry-run-shows-invalid-unit-files ()
+  "Dry-run summary includes invalid unit files in count and listing."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (supervisor-use-unit-files t)
+         (supervisor-programs nil)
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "bad.el" dir)
+            (insert "(:id \"bad-unit\")"))
+          (supervisor-dry-run)
+          (with-current-buffer "*supervisor-dry-run*"
+            (let ((content (buffer-string)))
+              (should (string-match "1 invalid" content))
+              (should (string-match "bad-unit" content)))))
+      (delete-directory dir t))))
+
 ;;; Schema v1 Tests
 
 (ert-deftest supervisor-test-service-schema-version ()
