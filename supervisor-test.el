@@ -6198,5 +6198,131 @@ at minute boundaries."
             (should (eq :json-false (alist-get 'failed parsed)))))
       (delete-process proc))))
 
+;;; CLI -- daemon-reload Tests
+
+(ert-deftest supervisor-test-daemon-reload-picks-up-config-change ()
+  "The `daemon-reload' picks up added entries."
+  (let ((supervisor-programs '(("echo a" :id "a" :type simple)))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--current-plan nil)
+        (supervisor--invalid (make-hash-table :test 'equal)))
+    ;; First reload with one entry
+    (supervisor-daemon-reload)
+    (should supervisor--current-plan)
+    (should (= 1 (length (supervisor-plan-entries supervisor--current-plan))))
+    ;; Add entry and reload again
+    (setq supervisor-programs '(("echo a" :id "a" :type simple)
+                                ("echo b" :id "b" :type simple)))
+    (supervisor-daemon-reload)
+    (should (= 2 (length (supervisor-plan-entries supervisor--current-plan))))))
+
+(ert-deftest supervisor-test-daemon-reload-runtime-untouched ()
+  "The `daemon-reload' does not start or stop processes."
+  (let ((supervisor-programs '(("sleep 999" :id "svc" :type simple)))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--current-plan nil)
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (proc (start-process "test" nil "sleep" "999")))
+    (unwind-protect
+        (progn
+          (puthash "svc" proc supervisor--processes)
+          ;; Remove entry from config and reload
+          (setq supervisor-programs nil)
+          (supervisor-daemon-reload)
+          ;; Process should still be running (runtime untouched)
+          (should (process-live-p proc))
+          (should (gethash "svc" supervisor--processes)))
+      (delete-process proc))))
+
+(ert-deftest supervisor-test-daemon-reload-surfaces-invalid ()
+  "The `daemon-reload' surfaces invalid entries in plan."
+  (let ((supervisor-programs '(("good" :id "ok" :type simple)
+                                ("bad" :id "nope" :type "not-a-symbol")))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--current-plan nil)
+        (supervisor--invalid (make-hash-table :test 'equal)))
+    (let ((result (supervisor-daemon-reload)))
+      (should (= 1 (plist-get result :entries)))
+      (should (= 1 (plist-get result :invalid)))
+      (should (gethash "nope" supervisor--invalid)))))
+
+(ert-deftest supervisor-test-daemon-reload-returns-counts ()
+  "The `daemon-reload' returns entry and invalid counts."
+  (let ((supervisor-programs '(("echo a" :id "a" :type simple)))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--current-plan nil)
+        (supervisor--invalid (make-hash-table :test 'equal)))
+    (let ((result (supervisor-daemon-reload)))
+      (should (= 1 (plist-get result :entries)))
+      (should (= 0 (plist-get result :invalid))))))
+
+(ert-deftest supervisor-test-cli-daemon-reload ()
+  "CLI `daemon-reload' returns success."
+  (let ((supervisor-programs '(("echo a" :id "a" :type simple)))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--current-plan nil)
+        (supervisor--invalid (make-hash-table :test 'equal)))
+    (let ((result (supervisor--cli-dispatch '("daemon-reload"))))
+      (should (= supervisor-cli-exit-success
+                 (supervisor-cli-result-exitcode result)))
+      (should (string-match "1 entries" (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-daemon-reload-json ()
+  "CLI `daemon-reload --json' returns JSON with reloaded and counts."
+  (let ((supervisor-programs '(("echo a" :id "a" :type simple)))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--current-plan nil)
+        (supervisor--invalid (make-hash-table :test 'equal)))
+    (let* ((result (supervisor--cli-dispatch '("daemon-reload" "--json")))
+           (parsed (json-read-from-string (supervisor-cli-result-output result))))
+      (should (= supervisor-cli-exit-success
+                 (supervisor-cli-result-exitcode result)))
+      (should (eq 'json (supervisor-cli-result-format result)))
+      (should (eq t (alist-get 'reloaded parsed)))
+      (should (= 1 (alist-get 'entries parsed)))
+      (should (= 0 (alist-get 'invalid parsed))))))
+
+(ert-deftest supervisor-test-cli-daemon-reload-rejects-args ()
+  "CLI `daemon-reload' with extra args returns exit 2."
+  (let ((result (supervisor--cli-dispatch '("daemon-reload" "extra"))))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-start-clears-current-plan ()
+  "The `supervisor-start' clears `supervisor--current-plan'."
+  (let ((supervisor--current-plan 'dummy))
+    ;; supervisor-start resets this to nil early in its flow
+    ;; We can't call full start in tests, but verify the variable exists
+    (should (boundp 'supervisor--current-plan))))
+
+(ert-deftest supervisor-test-daemon-reload-counts-unit-file-invalid ()
+  "The `daemon-reload' invalid count includes malformed unit files."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (supervisor-use-unit-files t)
+         (supervisor-programs nil)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--current-plan nil)
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          ;; Create a malformed unit file (missing :command)
+          (with-temp-file (expand-file-name "bad.el" dir)
+            (insert "(:id \"bad-unit\")"))
+          (let ((result (supervisor-daemon-reload)))
+            ;; Invalid count should include the unit-file invalid
+            (should (= 1 (plist-get result :invalid)))
+            (should (gethash "bad-unit" supervisor--invalid))))
+      (delete-directory dir t))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

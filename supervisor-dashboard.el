@@ -254,7 +254,8 @@ This is called on first use to avoid loading transient at package load time."
           ("G" "Auto-refresh" supervisor-dashboard-toggle-auto-refresh)]
          ["System"
           ("p" "Proced" proced)
-          ("P" "Proced auto" supervisor-dashboard-toggle-proced-auto-update)]
+          ("P" "Proced auto" supervisor-dashboard-toggle-proced-auto-update)
+          ("X" "Daemon-reload" supervisor-dashboard-daemon-reload)]
          ["Help"
           ("i" "Entry info" supervisor-dashboard-describe-entry)
           ("h" "Full help" supervisor-dashboard-help)
@@ -1117,6 +1118,16 @@ Intended as `kill-buffer-hook' for edited unit files."
     (message "Proced auto-update (global): %s"
              (pcase proced-auto-update-flag
                ('nil "off") ('visible "visible") (_ "on")))))
+
+(defun supervisor-dashboard-daemon-reload ()
+  "Reload unit definitions from disk without affecting runtime.
+Calls `supervisor-daemon-reload' and refreshes the dashboard."
+  (interactive)
+  (let ((result (supervisor-daemon-reload)))
+    (supervisor-dashboard-refresh)
+    (message "Daemon-reload: %d entries, %d invalid"
+             (plist-get result :entries)
+             (plist-get result :invalid))))
 
 (defun supervisor-dashboard-show-deps ()
   "Show computed dependencies for entry at point.

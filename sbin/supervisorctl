@@ -45,6 +45,7 @@
 #   is-failed ID                Test if unit is failed (0/1/4)
 #   cat ID                      Show unit file content
 #   edit ID                     Edit unit file
+#   daemon-reload               Reload unit definitions from disk
 #   list-dependencies [ID]      Show dependency graph
 #   list-timers                 Show timer units
 #

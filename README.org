@@ -862,6 +862,7 @@ Systemctl-compatible commands:
 - ~is-active ID~ (exit 0 if running, 3 if not active, 4 if unknown)
 - ~is-enabled ID~ (exit 0 if enabled, 1 if disabled/masked, 4 if unknown)
 - ~is-failed ID~ (exit 0 if failed/dead, 1 if not failed, 4 if unknown)
+- ~daemon-reload~ (reload unit definitions from disk)
 - ~cat ID~ (display raw unit file content)
 - ~edit ID~ (edit unit file; creates scaffold if missing)
 - ~list-dependencies [ID]~
@@ -922,6 +923,17 @@ IDs.
 - creates scaffold template if unit file does not exist
 - non-interactive: launches ~$VISUAL~ or ~$EDITOR~
 - JSON: ~{"path": "...", "created": true/false}~
+
+~daemon-reload~:
+
+- no arguments
+- re-reads ~supervisor-programs~ and unit files (when ~supervisor-use-unit-files~
+  is non-nil), rebuilds the internal plan
+- does NOT start, stop, or restart anything; runtime state is untouched
+- after daemon-reload, the next ~reconcile~, ~start~, or ~reload~ operates on
+  the refreshed plan
+- JSON: ~{"reloaded": true, "entries": N, "invalid": N}~
+- available in dashboard transient menu under "System" group (~X~)
 
 ~is-active~, ~is-enabled~, ~is-failed~:
 

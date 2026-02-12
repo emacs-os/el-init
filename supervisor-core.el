@@ -191,6 +191,12 @@ Set to a file path string to watch a specific file instead."
 (defvar supervisor--config-watch-descriptor nil
   "File notification descriptor for config watching.")
 
+(defvar supervisor--current-plan nil
+  "The last plan built by `supervisor-daemon-reload'.
+When non-nil, holds a `supervisor-plan' struct representing the most
+recently loaded configuration.  Set by `supervisor-daemon-reload' and
+cleared by `supervisor-start' (which builds its own fresh plan).")
+
 ;;; Program Loading
 
 (defun supervisor--effective-programs ()
@@ -2636,6 +2642,7 @@ Ready semantics (when dependents are unblocked):
     (setq supervisor--scheduler-startup-time nil))
   (setq supervisor--current-stage nil)
   (setq supervisor--completed-stages nil)
+  (setq supervisor--current-plan nil)
   ;; Load persisted overrides (restores enabled/restart/logging overrides)
   (supervisor--load-overrides)
   (supervisor--dag-cleanup)
@@ -2953,6 +2960,41 @@ Does not restart changed entries - use dashboard kill/start for that."
       (supervisor-timer-build-list plan))
     (supervisor--maybe-refresh-dashboard)
     (message "Supervisor reconcile: stopped %d, started %d" stopped started)))
+
+;;;###autoload
+(defun supervisor-daemon-reload ()
+  "Reload unit definitions from disk into memory without affecting runtime.
+Re-reads `supervisor-programs' and unit files (when
+`supervisor-use-unit-files' is non-nil), rebuilds the plan, and
+stores the result in `supervisor--current-plan'.
+
+Does NOT start, stop, or restart anything.  Runtime state is untouched.
+After daemon-reload, the next `reconcile', `start', or `reload' operates
+on the refreshed plan.
+
+Returns a plist with :entries and :invalid counts."
+  (interactive)
+  (let ((plan (supervisor--build-plan (supervisor--effective-programs))))
+    ;; Store plan for later use
+    (setq supervisor--current-plan plan)
+    ;; Populate legacy globals from plan for dashboard/CLI visibility
+    (clrhash supervisor--invalid)
+    (when (boundp 'supervisor--invalid-timers)
+      (clrhash supervisor--invalid-timers))
+    (maphash (lambda (k v) (puthash k v supervisor--invalid))
+             (supervisor-plan-invalid plan))
+    (supervisor--merge-unit-file-invalid)
+    ;; Validate timers when subsystem is active
+    (when (and (fboundp 'supervisor-timer-subsystem-active-p)
+               (supervisor-timer-subsystem-active-p)
+               (fboundp 'supervisor-timer-build-list))
+      (supervisor-timer-build-list plan))
+    (supervisor--maybe-refresh-dashboard)
+    (let ((n-entries (length (supervisor-plan-entries plan)))
+          (n-invalid (hash-table-count supervisor--invalid)))
+      (message "Supervisor daemon-reload: %d entries, %d invalid"
+               n-entries n-invalid)
+      (list :entries n-entries :invalid n-invalid))))
 
 
 ;;; File Watch

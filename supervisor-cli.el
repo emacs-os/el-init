@@ -844,6 +844,22 @@ Use -- before IDs that start with a hyphen."
            "Reconcile complete\n")
          (if json-p 'json 'human))))))
 
+(defun supervisor--cli-cmd-daemon-reload (args json-p)
+  "Handle `daemon-reload' command with ARGS.  JSON-P enables JSON output.
+Reload unit definitions without affecting runtime state."
+  (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
+    (if extra-err extra-err
+      (let ((result (supervisor-daemon-reload)))
+        (supervisor--cli-success
+         (if json-p
+             (json-encode `((reloaded . t)
+                            (entries . ,(plist-get result :entries))
+                            (invalid . ,(plist-get result :invalid))))
+           (format "Reloaded: %d entries, %d invalid\n"
+                   (plist-get result :entries)
+                   (plist-get result :invalid)))
+         (if json-p 'json 'human))))))
+
 (defun supervisor--cli-cmd-enable (args json-p)
   "Handle `enable [--] ID...' command with ARGS.  JSON-P enables JSON output.
 Use -- before IDs that start with a hyphen."
@@ -1702,6 +1718,7 @@ Returns a `supervisor-cli-result' struct."
                    "  is-failed ID               Test if unit is failed (0/1/4)\n"
                    "  cat ID                     Show unit file content\n"
                    "  edit ID                    Edit unit file\n"
+                   "  daemon-reload              Reload unit definitions from disk\n"
                    "  list-dependencies [ID]     Show dependency graph\n"
                    "  list-timers                Show timer units\n\n"
                    "Supervisor-specific commands:\n"
@@ -1731,6 +1748,8 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-restart args json-p))
          ((equal command "reconcile")
           (supervisor--cli-cmd-reconcile args json-p))
+         ((equal command "daemon-reload")
+          (supervisor--cli-cmd-daemon-reload args json-p))
          ((equal command "enable")
           (supervisor--cli-cmd-enable args json-p))
          ((equal command "disable")
