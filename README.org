@@ -4,7 +4,7 @@
 
 *A process supervisor for Emacs.*
 
-~supervisor.el~ aims to be robust enough to serve as PID 2---but not
+~supervisor.el~ aims to be robust enough to serve as PID 2, but not
 init. In practice, it is best suited for userland: managing desktop sessions
 under window managers like EXWM, or running inside
 long-lived daemonized Emacs instances that need to manage child processes or
@@ -14,7 +14,7 @@ Define your services in Elisp, organize them into startup stages, declare
 dependencies between them, and let supervisor handle the rest. When something
 crashes, it restarts. When you log out, everything stops cleanly.
 
-** What You Get
+** Features
 
 - *Staged startup*: Services start in four stages (stage1 through stage4), so
   your X session setup runs before your system tray, and your tray runs before
@@ -33,25 +33,10 @@ crashes, it restarts. When you log out, everything stops cleanly.
   start, stop, restart, enable, and disable services with single keystrokes.
 
 - *CLI control*: The included ~sbin/supervisorctl~ script lets you manage
-  services from any terminal---even remotely via SSH.
+  services from any terminal, even remotely via SSH.
 
 - *Scheduled tasks*: An experimental timer subsystem can run oneshots on cron-like
   schedules.
-
-** When to Use This
-
-~supervisor.el~ is a *per-user session supervisor*. It shines when:
-
-- Emacs is your window manager (EXWM) and you need to start X utilities, tray
-  applets, and background services in the right order.
-
-- You run Emacs as a daemon and want session services that live as long as
-  Emacs does.
-
-- You want your services defined in one place, in Elisp, versioned with your
-  dotfiles.
-
-It is not a system init replacement---it manages your session, not your system.
 
 ** Requirements
 
@@ -67,15 +52,15 @@ it in Emacs at any time.
 The [[#quick-start][Quick Start]] below gets you running immediately. The rest of the handbook
 provides detailed reference material:
 
-- [[#service-definition-handbook-supervisor-programs][Service Definition Handbook]] --- all the options for defining services
-- [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] --- how stages, dependencies, and restarts work
-- [[#runtime-overrides-and-reconciliation][Runtime Overrides]] --- enabling, disabling, and policy changes at runtime
-- [[#timer-subsystem-handbook-experimental][Timer Subsystem]] --- scheduled oneshot execution (experimental)
-- [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook]] --- the interactive UI
-- [[#cli-handbook-sbinsupervisorctl][CLI Handbook]] --- terminal control with ~supervisorctl~
-- [[#events-and-hooks][Events and Hooks]] --- programmatic integration
-- [[#customization-reference][Customization Reference]] --- all variables and faces
-- [[#command-reference][Command Reference]] --- every interactive command
+- [[#service-definition-handbook-supervisor-programs][Service Definition Handbook]] - all the options for defining services
+- [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] - how stages, dependencies, and restarts work
+- [[#runtime-overrides-and-reconciliation][Runtime Overrides]] - enabling, disabling, and policy changes at runtime
+- [[#timer-subsystem-handbook-experimental][Timer Subsystem]] - scheduled oneshot execution (experimental)
+- [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook]] - the interactive UI
+- [[#cli-handbook-sbinsupervisorctl][CLI Handbook]] - terminal control with ~supervisorctl~
+- [[#events-and-hooks][Events and Hooks]] - programmatic integration
+- [[#customization-reference][Customization Reference]] - all variables and faces
+- [[#command-reference][Command Reference]] - every interactive command
 
 * Quick Start
 :PROPERTIES:
