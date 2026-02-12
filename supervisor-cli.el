@@ -860,6 +860,59 @@ Reload unit definitions without affecting runtime state."
                    (plist-get result :invalid)))
          (if json-p 'json 'human))))))
 
+(defun supervisor--cli-cmd-reload (args json-p)
+  "Handle `reload [--] ID...' command with ARGS.  JSON-P enables JSON output.
+Hot-reload specific units: re-reads config and restarts running units.
+Use -- before IDs that start with a hyphen."
+  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+    (if unknown
+        (supervisor--cli-error supervisor-cli-exit-invalid-args
+                               (format "Unknown option: %s" unknown)
+                               (if json-p 'json 'human))
+      (let ((args (supervisor--cli-strip-separator args)))
+        (cond
+         ((null args)
+          (supervisor--cli-error supervisor-cli-exit-invalid-args
+                                 "reload requires at least one ID"
+                                 (if json-p 'json 'human)))
+         (t
+          (let ((results nil)
+                (has-error nil))
+            (dolist (id args)
+              (let ((r (supervisor--reload-unit id)))
+                (push r results)
+                (when (string-prefix-p "error:" (plist-get r :action))
+                  (setq has-error t))))
+            (setq results (nreverse results))
+            (supervisor--maybe-refresh-dashboard)
+            (let ((msg (mapconcat
+                        (lambda (r)
+                          (format "%s: %s\n"
+                                  (plist-get r :id) (plist-get r :action)))
+                        results "")))
+              (if has-error
+                  (supervisor--cli-make-result
+                   supervisor-cli-exit-failure
+                   (if json-p 'json 'human)
+                   (if json-p
+                       (json-encode
+                        `((results
+                           . ,(mapcar (lambda (r)
+                                        `((id . ,(plist-get r :id))
+                                          (action . ,(plist-get r :action))))
+                                      results))))
+                     msg))
+                (supervisor--cli-success
+                 (if json-p
+                     (json-encode
+                      `((results
+                         . ,(mapcar (lambda (r)
+                                      `((id . ,(plist-get r :id))
+                                        (action . ,(plist-get r :action))))
+                                    results))))
+                   msg)
+                 (if json-p 'json 'human)))))))))))
+
 (defun supervisor--cli-cmd-enable (args json-p)
   "Handle `enable [--] ID...' command with ARGS.  JSON-P enables JSON output.
 Use -- before IDs that start with a hyphen."
@@ -1719,6 +1772,7 @@ Returns a `supervisor-cli-result' struct."
                    "  cat ID                     Show unit file content\n"
                    "  edit ID                    Edit unit file\n"
                    "  daemon-reload              Reload unit definitions from disk\n"
+                   "  reload [--] ID...          Hot-reload specific units\n"
                    "  list-dependencies [ID]     Show dependency graph\n"
                    "  list-timers                Show timer units\n\n"
                    "Supervisor-specific commands:\n"
@@ -1750,6 +1804,8 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-reconcile args json-p))
          ((equal command "daemon-reload")
           (supervisor--cli-cmd-daemon-reload args json-p))
+         ((equal command "reload")
+          (supervisor--cli-cmd-reload args json-p))
          ((equal command "enable")
           (supervisor--cli-cmd-enable args json-p))
          ((equal command "disable")

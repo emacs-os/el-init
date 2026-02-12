@@ -2961,6 +2961,94 @@ Does not restart changed entries - use dashboard kill/start for that."
     (supervisor--maybe-refresh-dashboard)
     (message "Supervisor reconcile: stopped %d, started %d" stopped started)))
 
+(defun supervisor--reload-find-entry (id)
+  "Find and parse entry for ID by re-reading from disk.
+Unlike `supervisor--get-entry-for-id', this reads from
+`supervisor--effective-programs' (including unit files) and does
+not skip entries present in `supervisor--invalid'.  This allows
+reload to pick up both unit-file-only entries and entries whose
+config has been fixed since the last plan build.
+Return the parsed entry, the symbol `parse-error' if the entry
+exists but cannot be parsed, or nil if ID is not found."
+  (let ((idx 0))
+    (cl-loop for entry in (supervisor--effective-programs)
+             for entry-id = (supervisor--extract-id entry idx)
+             do (cl-incf idx)
+             when (string= entry-id id)
+             return (condition-case nil
+                        (supervisor--parse-entry entry)
+                      (error 'parse-error)))))
+
+(defun supervisor--reload-unit (id)
+  "Reload a single unit ID from current config.
+Re-reads the unit definition from effective programs (including
+unit files when `supervisor-use-unit-files' is non-nil) by calling
+`supervisor--reload-find-entry', then applies the change:
+
+- Running simple process: stop gracefully, start with new definition.
+  Bypasses enabled/disabled policy so a running unit is never left
+  stopped by reload.
+- Running oneshot: update definition only (let it finish naturally).
+- Not running: update stored definition only (next start uses new config).
+- Masked: skip with warning.
+- Unknown ID: error.
+
+Returns a plist (:id ID :action ACTION) where ACTION is one of:
+  \"reloaded\"        - running simple unit restarted with new config
+  \"updated\"         - definition refreshed (stopped or running oneshot)
+  \"skipped (masked)\" - unit is masked, no action taken
+  \"error: REASON\"   - not found, invalid config, or start failed"
+  (cond
+   ;; Masked: skip
+   ((eq (gethash id supervisor--mask-override) 'masked)
+    (list :id id :action "skipped (masked)"))
+   ;; Look up entry fresh from effective programs (disk)
+   (t
+    (let ((entry (supervisor--reload-find-entry id)))
+      (cond
+       ((null entry)
+        (list :id id :action "error: not found"))
+       ((eq entry 'parse-error)
+        (list :id id :action "error: invalid config"))
+       (t
+        ;; Entry found and parseable - clear stale invalid state
+        (remhash id supervisor--invalid)
+        (let* ((proc (gethash id supervisor--processes))
+               (running (and proc (process-live-p proc)))
+               (type (nth 6 entry)))
+          (cond
+           ;; Running simple: stop + start with new definition.
+           ;; Bypass supervisor--manual-start to avoid disabled-policy
+           ;; refusal; reload's contract is config hot-swap, not
+           ;; enable/disable enforcement.
+           ((and running (eq type 'simple))
+            (supervisor--manual-stop id)
+            (remhash id supervisor--failed)
+            (remhash id supervisor--restart-times)
+            (remhash id supervisor--manually-stopped)
+            (let* ((cmd (nth 1 entry))
+                   (logging-p (nth 5 entry))
+                   (restart-p (nth 4 entry))
+                   (exe (car (split-string-and-unquote cmd))))
+              (if (not (executable-find exe))
+                  (list :id id :action "error: executable not found")
+                (let ((new-proc (supervisor--start-process
+                                 id cmd logging-p type restart-p)))
+                  (if new-proc
+                      (list :id id :action "reloaded")
+                    (list :id id
+                          :action "error: failed to start process"))))))
+           ;; Running oneshot: don't interrupt; let it finish naturally.
+           ;; Next invocation uses the new definition.
+           (running
+            (list :id id :action "updated"))
+           ;; Not running: update definition only.  Clear stale state.
+           (t
+            (remhash id supervisor--failed)
+            (remhash id supervisor--restart-times)
+            (remhash id supervisor--oneshot-completed)
+            (list :id id :action "updated"))))))))))
+
 ;;;###autoload
 (defun supervisor-daemon-reload ()
   "Reload unit definitions from disk into memory without affecting runtime.

@@ -863,6 +863,7 @@ Systemctl-compatible commands:
 - ~is-enabled ID~ (exit 0 if enabled, 1 if disabled/masked, 4 if unknown)
 - ~is-failed ID~ (exit 0 if failed/dead, 1 if not failed, 4 if unknown)
 - ~daemon-reload~ (reload unit definitions from disk)
+- ~reload [--] ID...~ (hot-reload specific units)
 - ~cat ID~ (display raw unit file content)
 - ~edit ID~ (edit unit file; creates scaffold if missing)
 - ~list-dependencies [ID]~
@@ -934,6 +935,22 @@ IDs.
   the refreshed plan
 - JSON: ~{"reloaded": true, "entries": N, "invalid": N}~
 - available in dashboard transient menu under "System" group (~X~)
+
+~reload~:
+
+- requires at least one ID argument
+- hot-reloads specific units: re-reads config and applies changes per unit
+- running simple process: stop gracefully, then start with new definition
+  (action: ~reloaded~)
+- not running: update stored definition only; next start uses new config
+  (action: ~updated~)
+- masked unit: skip with warning (action: ~skipped (masked)~)
+- unknown ID: error (action: ~error: not found~)
+- does NOT affect other units (no global convergence; use ~reconcile~ for that)
+- exit 0 if all units succeed, exit 1 if any unit has an error
+- human output: one line per ID showing ~ID: action~
+- JSON: ~{"results": [{"id": "x", "action": "reloaded"}, ...]}~
+- available in dashboard transient menu under "System" group (~R~)
 
 ~is-active~, ~is-enabled~, ~is-failed~:
 
@@ -1173,6 +1190,7 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-view-log~ | Open selected service log |
 | ~M-x supervisor-dashboard-cat~ | View unit file (read-only) |
 | ~M-x supervisor-dashboard-edit~ | Edit unit file (scaffold if missing) |
+| ~M-x supervisor-dashboard-reload-unit~ | Hot-reload unit at point |
 | ~M-x supervisor-dashboard-toggle-proced-auto-update~ | Toggle proced auto-update |
 | ~M-x supervisor-dashboard-show-deps~ | Show selected service deps |
 | ~M-x supervisor-dashboard-blame~ | Show startup timing view |
@@ -1214,6 +1232,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Override precedence (runtime override vs config default): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Override persistence (~supervisor-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
 - Reconcile action model (~start~, ~stop~, ~noop~, ~skip~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
+- Reload unit (~reload~, ~R~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]

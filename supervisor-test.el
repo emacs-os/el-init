@@ -5290,13 +5290,13 @@ at minute boundaries."
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
-(ert-deftest supervisor-test-cli-reload-is-unknown-command ()
-  "Legacy reload command is rejected."
+(ert-deftest supervisor-test-cli-reload-requires-at-least-one-id ()
+  "CLI `reload' with no arguments returns exit 2 (invalid args)."
   (let ((result (supervisor--cli-dispatch '("reload"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args
                (supervisor-cli-result-exitcode result)))
-    (should (string-match "Unknown command: reload"
+    (should (string-match "reload requires at least one ID"
                           (supervisor-cli-result-output result)))))
 
 (ert-deftest supervisor-test-cli-list-is-unknown-command ()
@@ -6323,6 +6323,379 @@ at minute boundaries."
             (should (= 1 (plist-get result :invalid)))
             (should (gethash "bad-unit" supervisor--invalid))))
       (delete-directory dir t))))
+
+;;; Phase 8: reload command tests
+
+(ert-deftest supervisor-test-reload-unit-running-simple-restarts ()
+  "Reloading a running simple unit stops and restarts it.
+Reload bypasses `supervisor--manual-start' and calls
+`supervisor--start-process' directly to avoid disabled-policy refusal."
+  (let* ((supervisor-programs '(("sleep 999" :id "svc1")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (stop-called nil)
+         (start-called nil))
+    ;; Simulate a running process
+    (puthash "svc1" (start-process "test" nil "sleep" "999")
+             supervisor--processes)
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--manual-stop)
+                   (lambda (id)
+                     (setq stop-called id)
+                     (let ((p (gethash id supervisor--processes)))
+                       (when (and p (process-live-p p))
+                         (delete-process p)))
+                     (list :status 'stopped :reason nil)))
+                  ((symbol-function 'supervisor--start-process)
+                   (lambda (id _cmd _logging _type _restart &optional _is-restart)
+                     (setq start-called id)
+                     t)))
+          (let ((result (supervisor--reload-unit "svc1")))
+            (should (equal "svc1" (plist-get result :id)))
+            (should (equal "reloaded" (plist-get result :action)))
+            (should (equal "svc1" stop-called))
+            (should (equal "svc1" start-called))))
+      ;; Cleanup
+      (let ((p (gethash "svc1" supervisor--processes)))
+        (when (and p (process-live-p p))
+          (delete-process p))))))
+
+(ert-deftest supervisor-test-reload-unit-stopped-updates ()
+  "Reloading a stopped unit returns `updated' and clears stale state."
+  (let* ((supervisor-programs '(("echo hi" :id "svc1")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal)))
+    ;; Set some stale state
+    (puthash "svc1" t supervisor--failed)
+    (puthash "svc1" '(12345) supervisor--restart-times)
+    (puthash "svc1" 0 supervisor--oneshot-completed)
+    (let ((result (supervisor--reload-unit "svc1")))
+      (should (equal "svc1" (plist-get result :id)))
+      (should (equal "updated" (plist-get result :action)))
+      ;; Stale state should be cleared
+      (should-not (gethash "svc1" supervisor--failed))
+      (should-not (gethash "svc1" supervisor--restart-times))
+      (should-not (gethash "svc1" supervisor--oneshot-completed)))))
+
+(ert-deftest supervisor-test-reload-unit-masked-skips ()
+  "Reloading a masked unit returns `skipped (masked)'."
+  (let* ((supervisor-programs '(("echo hi" :id "svc1")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (puthash "svc1" 'masked supervisor--mask-override)
+    (let ((result (supervisor--reload-unit "svc1")))
+      (should (equal "svc1" (plist-get result :id)))
+      (should (equal "skipped (masked)" (plist-get result :action))))))
+
+(ert-deftest supervisor-test-reload-unit-unknown-errors ()
+  "Reloading an unknown unit returns an error."
+  (let* ((supervisor-programs nil)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal)))
+    (let ((result (supervisor--reload-unit "nonexistent")))
+      (should (equal "nonexistent" (plist-get result :id)))
+      (should (equal "error: not found" (plist-get result :action))))))
+
+(ert-deftest supervisor-test-cli-reload-requires-ids ()
+  "CLI `reload' with no IDs returns exit 2."
+  (let ((result (supervisor--cli-dispatch '("reload"))))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-reload-unknown-flag ()
+  "CLI `reload' with unknown flag returns exit 2."
+  (let ((result (supervisor--cli-dispatch '("reload" "--bogus" "svc1"))))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-reload-stopped-human ()
+  "CLI `reload' on stopped unit shows `updated' in human output."
+  (let* ((supervisor-programs '(("echo hi" :id "svc1")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal)))
+    (let ((result (supervisor--cli-dispatch '("reload" "--" "svc1"))))
+      (should (= supervisor-cli-exit-success
+                 (supervisor-cli-result-exitcode result)))
+      (should (string-match-p "svc1: updated"
+                              (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-reload-masked-human ()
+  "CLI `reload' on masked unit shows `skipped (masked)' in human output."
+  (let* ((supervisor-programs '(("echo hi" :id "svc1")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (puthash "svc1" 'masked supervisor--mask-override)
+    (let ((result (supervisor--cli-dispatch '("reload" "svc1"))))
+      (should (= supervisor-cli-exit-success
+                 (supervisor-cli-result-exitcode result)))
+      (should (string-match-p "skipped (masked)"
+                              (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-reload-unknown-id-human ()
+  "CLI `reload' on unknown ID returns exit 1 with error."
+  (let* ((supervisor-programs nil)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal)))
+    (let ((result (supervisor--cli-dispatch '("reload" "ghost"))))
+      (should (= supervisor-cli-exit-failure
+                 (supervisor-cli-result-exitcode result)))
+      (should (string-match-p "error: not found"
+                              (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-reload-json ()
+  "CLI `reload' with --json returns proper JSON structure."
+  (let* ((supervisor-programs '(("echo hi" :id "svc1") ("echo bye" :id "svc2")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal)))
+    (puthash "svc2" 'masked supervisor--mask-override)
+    (let* ((result (supervisor--cli-dispatch '("reload" "svc1" "svc2" "--json")))
+           (json-data (json-read-from-string
+                       (supervisor-cli-result-output result)))
+           (results (cdr (assoc 'results json-data))))
+      (should (= supervisor-cli-exit-success
+                 (supervisor-cli-result-exitcode result)))
+      (should (= 2 (length results)))
+      (should (equal "updated" (cdr (assoc 'action (aref results 0)))))
+      (should (equal "skipped (masked)" (cdr (assoc 'action (aref results 1))))))))
+
+(ert-deftest supervisor-test-cli-reload-mixed-error-json ()
+  "CLI `reload' with mix of valid and unknown IDs returns exit 1 JSON."
+  (let* ((supervisor-programs '(("echo hi" :id "svc1")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal)))
+    (let* ((result (supervisor--cli-dispatch '("reload" "svc1" "ghost" "--json")))
+           (json-data (json-read-from-string
+                       (supervisor-cli-result-output result)))
+           (results (cdr (assoc 'results json-data))))
+      (should (= supervisor-cli-exit-failure
+                 (supervisor-cli-result-exitcode result)))
+      (should (= 2 (length results)))
+      (should (equal "updated" (cdr (assoc 'action (aref results 0)))))
+      (should (string-match-p "error:" (cdr (assoc 'action (aref results 1))))))))
+
+(ert-deftest supervisor-test-cli-reload-help-listed ()
+  "CLI help text includes the `reload' command."
+  (let ((result (supervisor--cli-dispatch nil)))
+    (should (string-match-p "reload \\[--\\] ID"
+                            (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-reload-unit-file-only ()
+  "Reload finds unit-file-only entries via effective programs."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (supervisor-use-unit-files t)
+         (supervisor-programs nil)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          ;; Create a valid unit file (not in supervisor-programs)
+          (with-temp-file (expand-file-name "uf-svc.el" dir)
+            (insert "(:id \"uf-svc\" :command \"echo hello\")"))
+          (let ((result (supervisor--reload-unit "uf-svc")))
+            (should (equal "uf-svc" (plist-get result :id)))
+            (should (equal "updated" (plist-get result :action)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-reload-clears-stale-invalid ()
+  "Reload succeeds on a previously-invalid entry after config fix.
+When an entry was recorded in `supervisor--invalid' but has since
+been fixed, reload should find and parse it fresh, clearing the
+stale invalid state."
+  (let* ((supervisor-programs '(("echo fixed" :id "svc1")))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal)))
+    ;; Simulate stale invalid entry (was broken, now fixed in config)
+    (puthash "svc1" "previously broken" supervisor--invalid)
+    (let ((result (supervisor--reload-unit "svc1")))
+      (should (equal "svc1" (plist-get result :id)))
+      (should (equal "updated" (plist-get result :action)))
+      ;; Invalid cache should be cleared for this entry
+      (should-not (gethash "svc1" supervisor--invalid)))))
+
+(ert-deftest supervisor-test-reload-find-entry-uses-effective-programs ()
+  "The `supervisor--reload-find-entry' reads from effective programs."
+  (let* ((supervisor-programs '(("echo hi" :id "from-config")))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    ;; Without unit files, should find config entry
+    (should (supervisor--reload-find-entry "from-config"))
+    ;; Should not find nonexistent entry
+    (should-not (supervisor--reload-find-entry "nonexistent"))
+    ;; Should find entry even if it's in the invalid cache
+    (puthash "from-config" "some reason" supervisor--invalid)
+    (should (supervisor--reload-find-entry "from-config"))))
+
+(ert-deftest supervisor-test-reload-running-disabled-unit-succeeds ()
+  "Reloading a running disabled unit keeps it running.
+Reload bypasses enabled/disabled policy since the unit is already
+running and reload's contract is config hot-swap."
+  (let* ((supervisor-programs '(("sleep 999" :id "svc1" :disabled t)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (start-process-called nil))
+    ;; Simulate a running process (was started before being disabled)
+    (puthash "svc1" (start-process "test" nil "sleep" "999")
+             supervisor--processes)
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--manual-stop)
+                   (lambda (id)
+                     (let ((p (gethash id supervisor--processes)))
+                       (when (and p (process-live-p p))
+                         (delete-process p)))
+                     (list :status 'stopped :reason nil)))
+                  ((symbol-function 'supervisor--start-process)
+                   (lambda (id _cmd _logging _type _restart &optional _is-restart)
+                     (setq start-process-called id)
+                     t)))
+          (let ((result (supervisor--reload-unit "svc1")))
+            ;; Must succeed, not fail with "disabled"
+            (should (equal "reloaded" (plist-get result :action)))
+            (should (equal "svc1" start-process-called))))
+      ;; Cleanup
+      (let ((p (gethash "svc1" supervisor--processes)))
+        (when (and p (process-live-p p))
+          (delete-process p))))))
+
+(ert-deftest supervisor-test-reload-running-oneshot-updates-only ()
+  "Reloading a running oneshot does not interrupt it.
+Per Phase 8 spec, only running simple units are restarted.
+Running oneshots get definition update only."
+  (let* ((supervisor-programs
+          '(("sleep 999" :id "osh1" :type oneshot)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+         (supervisor--computed-deps (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (stop-called nil))
+    ;; Simulate a running oneshot process
+    (puthash "osh1" (start-process "test" nil "sleep" "999")
+             supervisor--processes)
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--manual-stop)
+                   (lambda (id)
+                     (setq stop-called id)
+                     (list :status 'stopped :reason nil))))
+          (let ((result (supervisor--reload-unit "osh1")))
+            ;; Should return "updated", not "reloaded"
+            (should (equal "updated" (plist-get result :action)))
+            ;; Should NOT have called stop
+            (should-not stop-called)))
+      ;; Cleanup
+      (let ((p (gethash "osh1" supervisor--processes)))
+        (when (and p (process-live-p p))
+          (delete-process p))))))
+
+(ert-deftest supervisor-test-reload-parse-error-returns-invalid-config ()
+  "Reload on unparseable entry returns `error: invalid config'.
+This distinguishes config errors from truly missing entries."
+  (let* ((supervisor-programs nil)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'supervisor--effective-programs)
+               (lambda ()
+                 ;; Return a malformed entry: not a string or (string . plist)
+                 '(42))))
+      ;; The malformed entry's ID will be "malformed#0"
+      (let ((result (supervisor--reload-unit "malformed#0")))
+        (should (equal "malformed#0" (plist-get result :id)))
+        (should (equal "error: invalid config" (plist-get result :action)))))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

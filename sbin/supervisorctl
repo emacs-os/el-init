@@ -46,6 +46,7 @@
 #   cat ID                      Show unit file content
 #   edit ID                     Edit unit file
 #   daemon-reload               Reload unit definitions from disk
+#   reload [--] ID...           Hot-reload specific units
 #   list-dependencies [ID]      Show dependency graph
 #   list-timers                 Show timer units
 #

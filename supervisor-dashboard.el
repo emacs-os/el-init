@@ -255,6 +255,7 @@ This is called on first use to avoid loading transient at package load time."
          ["System"
           ("p" "Proced" proced)
           ("P" "Proced auto" supervisor-dashboard-toggle-proced-auto-update)
+          ("R" "Reload unit" supervisor-dashboard-reload-unit)
           ("X" "Daemon-reload" supervisor-dashboard-daemon-reload)]
          ["Help"
           ("i" "Entry info" supervisor-dashboard-describe-entry)
@@ -1118,6 +1119,17 @@ Intended as `kill-buffer-hook' for edited unit files."
     (message "Proced auto-update (global): %s"
              (pcase proced-auto-update-flag
                ('nil "off") ('visible "visible") (_ "on")))))
+
+(defun supervisor-dashboard-reload-unit ()
+  "Hot-reload the unit at point.
+Re-reads config and restarts if running."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot reload separator row"))
+    (let ((result (supervisor--reload-unit id)))
+      (supervisor-dashboard-refresh)
+      (message "Reload %s: %s" id (plist-get result :action)))))
 
 (defun supervisor-dashboard-daemon-reload ()
   "Reload unit definitions from disk without affecting runtime.
