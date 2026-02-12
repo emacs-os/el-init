@@ -3334,22 +3334,32 @@ Regression test: stderr pipe processes used to pollute the process list."
 
 (ert-deftest supervisor-test-migrate-all-entries-skips-invalid ()
   "Migration skips invalid entries with reason."
-  (let ((supervisor-programs '(("valid" :type simple)
-                               ("invalid" :type "bad"))))
+  (supervisor-test-with-unit-files
+      '(("valid-cmd" :id "valid" :type simple)
+        ("invalid-cmd" :id "invalid" :type "bad"))
     (let ((result (supervisor--migrate-all-entries)))
       (should (= 1 (length (plist-get result :migrated))))
       (should (= 1 (length (plist-get result :skipped))))
       (should (assoc "invalid" (plist-get result :skipped))))))
 
 (ert-deftest supervisor-test-migrate-all-entries-skips-duplicates ()
-  "Migration skips duplicate IDs."
-  (let ((supervisor-programs '(("a" :id "test" :type simple)
-                               ("b" :id "test" :type oneshot))))
-    (let ((result (supervisor--migrate-all-entries)))
-      (should (= 1 (length (plist-get result :migrated))))
-      (should (= 1 (length (plist-get result :skipped))))
-      (let ((skipped-reason (cdr (assoc "test" (plist-get result :skipped)))))
-        (should (string-match "duplicate" skipped-reason))))))
+  "Migration sees only one entry when unit-file loader deduplicates."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-directory dir)
+         (supervisor-programs nil)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+    ;; Two unit files with the same :id but different filenames
+    (with-temp-file (expand-file-name "test-a.el" dir)
+      (insert "(:id \"test\" :command \"a\" :type simple)"))
+    (with-temp-file (expand-file-name "test-b.el" dir)
+      (insert "(:id \"test\" :command \"b\" :type oneshot)"))
+    (unwind-protect
+        (let ((result (supervisor--migrate-all-entries)))
+          ;; Unit-file loader deduplicates, so migration sees only one
+          (should (= 1 (length (plist-get result :migrated))))
+          ;; No skipped entries at migration level (dedup happened upstream)
+          (should (= 0 (length (plist-get result :skipped)))))
+      (delete-directory dir t))))
 
 (ert-deftest supervisor-test-migrate-entry-to-service ()
   "High-level migration function works."

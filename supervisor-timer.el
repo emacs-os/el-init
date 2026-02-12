@@ -428,7 +428,7 @@ PLAN is used to verify the target exists and is a oneshot."
                                       :test #'equal)))
           (unless target-entry
             (throw 'invalid
-                   (format ":target '%s' not found in supervisor-programs" target)))
+                   (format ":target '%s' not found in loaded unit files" target)))
           (unless (eq (supervisor-entry-type target-entry) 'oneshot)
             (throw 'invalid
                    (format ":target '%s' must be a oneshot service, not %s"
