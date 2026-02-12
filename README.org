@@ -2,82 +2,78 @@
 
 * supervisor.el Handbook
 
-A userspace service manager for Emacs sessions.
+*Manage your session processes from Emacs.*
 
-~supervisor.el~ provides deterministic process supervision, staged startup,
-dependency ordering, crash recovery, interactive operations, CLI control, and
-an experimental timer subsystem for scheduled ~oneshot~ services.
+If you run Emacs as your window manager (EXWM), keep a long-lived daemon, or
+just want your tray applets and background services to start automatically and
+restart when they crash---~supervisor.el~ is for you.
 
-This handbook is the implementation reference for current behavior.
+Define your services in Elisp, organize them into startup stages, declare
+dependencies between them, and let supervisor handle the rest. When something
+crashes, it restarts. When you log out, everything stops cleanly.
 
-Run ~M-x supervisor-handbook~ to open this file in Emacs at any time.
+** What You Get
 
-* Navigation
+- *Staged startup*: Services start in four stages (stage1 through stage4), so
+  your X session setup runs before your system tray, and your tray runs before
+  the applets that need it.
 
-- [[#scope-and-goals][Scope and Goals]]
-- [[#module-layout][Module Layout]]
-- [[#requirements][Requirements]]
-- [[#quick-start][Quick Start]]
-- [[#service-definition-handbook-supervisor-programs][Service Definition Handbook (~supervisor-programs~)]]
-- [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
-- [[#timer-subsystem-handbook-experimental][Timer Subsystem Handbook (Experimental)]]
-- [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook (~M-x supervisor~)]]
-- [[#cli-handbook-sbinsupervisorctl][CLI Handbook (~sbin/supervisorctl~)]]
-- [[#events-and-hooks][Events and Hooks]]
-- [[#persistence-and-files][Persistence and Files]]
-- [[#customization-reference][Customization Reference]]
-- [[#command-reference][Command Reference]]
-- [[#indexes][Indexes]]
-- [[#security][Security]]
-- [[#development][Development]]
-- [[#license][License]]
+- *Dependencies*: Say "start polkit before nm-applet" with ~:after~, or "only
+  start this if that exists" with ~:requires~.
 
-* Scope and Goals
-:PROPERTIES:
-:CUSTOM_ID: scope-and-goals
-:END:
+- *Two service types*: Long-running daemons (~simple~) that restart on crash,
+  and run-once scripts (~oneshot~) for initialization commands.
 
-~supervisor.el~ is a *per-user session supervisor*.
+- *Crash recovery*: Simple services automatically restart when they die.
+  Crash-looping services are marked failed after repeated crashes.
 
-It is designed for long-lived Emacs sessions (for example EXWM or daemon +
-emacsclient workflows) where you want to define and manage session services in
-Elisp.
+- *Interactive dashboard*: ~M-x supervisor~ opens a live view where you can
+  start, stop, restart, enable, and disable services with single keystrokes.
 
-It is not a system init replacement in current release scope.
+- *CLI control*: The included ~sbin/supervisorctl~ script lets you manage
+  services from any terminal---even remotely via SSH.
 
-* Module Layout
-:PROPERTIES:
-:CUSTOM_ID: module-layout
-:END:
+- *Scheduled tasks*: An experimental timer subsystem can run oneshots on cron-like
+  schedules.
 
-| File | Purpose |
-| ~supervisor.el~ | Entry point; loads all modules and provides feature ~supervisor~ |
-| ~supervisor-core.el~ | Engine: parsing, validation, planning, DAG scheduler, lifecycle, overrides |
-| ~supervisor-timer.el~ | Experimental timer subsystem: timers, scheduler, retry/catch-up, timer state |
-| ~supervisor-dashboard.el~ | Dashboard UI, keybindings, transient menu integration |
-| ~supervisor-cli.el~ | CLI parser/dispatcher/formatters and wrapper adapter |
-| ~sbin/supervisorctl~ | Transport wrapper around ~emacsclient --eval~ |
+** When to Use This
 
-Load order in entry point: core -> timer -> dashboard -> cli.
+~supervisor.el~ is a *per-user session supervisor*. It shines when:
 
-Module dependency rules:
+- Emacs is your window manager (EXWM) and you need to start X utilities, tray
+  applets, and background services in the right order.
 
-- ~supervisor-core.el~ has no hard dependency on timer/dashboard/CLI modules.
-  Optional timer and dashboard calls are guarded with ~fboundp~/~boundp~ so core
-  can run standalone.
-- ~supervisor-timer.el~ depends on core.
-- ~supervisor-dashboard.el~ depends on core (+ optional timer symbols).
-- ~supervisor-cli.el~ depends on core (+ optional timer symbols).
+- You run Emacs as a daemon and want session services that live as long as
+  Emacs does.
 
-* Requirements
-:PROPERTIES:
-:CUSTOM_ID: requirements
-:END:
+- You want your services defined in one place, in Elisp, versioned with your
+  dotfiles.
 
-- Emacs 28.1+
-- Optional: ~transient~ for dashboard menu key ~?~
-- For CLI wrapper: ~emacsclient~, ~base64~, and ~sed~ in ~PATH~
+It is not a system init replacement---it manages your session, not your system.
+
+** Requirements
+
+- Emacs 28.1 or later
+- Optional: ~transient~ package for the dashboard help menu (~?~ key)
+- For CLI: ~emacsclient~, ~base64~, and ~sed~ in your ~PATH~
+
+** Handbook Overview
+
+This document is the complete reference. Run ~M-x supervisor-handbook~ to open
+it in Emacs at any time.
+
+The [[#quick-start][Quick Start]] below gets you running immediately. The rest of the handbook
+provides detailed reference material:
+
+- [[#service-definition-handbook-supervisor-programs][Service Definition Handbook]] --- all the options for defining services
+- [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] --- how stages, dependencies, and restarts work
+- [[#runtime-overrides-and-reconciliation][Runtime Overrides]] --- enabling, disabling, and policy changes at runtime
+- [[#timer-subsystem-handbook-experimental][Timer Subsystem]] --- scheduled oneshot execution (experimental)
+- [[#dashboard-handbook-m-x-supervisor][Dashboard Handbook]] --- the interactive UI
+- [[#cli-handbook-sbinsupervisorctl][CLI Handbook]] --- terminal control with ~supervisorctl~
+- [[#events-and-hooks][Events and Hooks]] --- programmatic integration
+- [[#customization-reference][Customization Reference]] --- all variables and faces
+- [[#command-reference][Command Reference]] --- every interactive command
 
 * Quick Start
 :PROPERTIES:
@@ -85,16 +81,60 @@ Module dependency rules:
 :END:
 
 #+begin_src emacs-lisp
+(add-to-list 'load-path "~/repos/supervisor.el")
 (require 'supervisor)
 
-(setq supervisor-programs
-      '(("xsetroot -cursor_name left_ptr" :type oneshot :stage stage1 :id "cursor")
-        ("/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
-         :type simple :stage stage2 :id "polkit" :restart t)
-        ("nm-applet" :type simple :stage stage3 :id "nm" :restart t)
-        ("pasystray" :type simple :stage stage4 :id "tray" :restart t)))
+;; Event hook for failures only - stage messages are handled by core
+(add-hook 'supervisor-event-hook
+          (lambda (event)
+            (pcase (plist-get event :type)
+              ('process-failed
+               (message "Supervisor: FAILED to start %s" (plist-get event :id)))
+              ('process-exit
+               (let ((code (plist-get (plist-get event :data) :code)))
+                 (unless (eq code 0)
+                   (message "Supervisor: %s exited with code %s"
+                            (plist-get event :id) code)))))))
 
-(supervisor-mode 1)
+(setq supervisor-programs
+      `(;; Stage 1: X session setup (oneshots)
+        ;; Use backtick+comma for Elisp expansion instead of sh -c for shell expansion
+        (,(format "xhost +SI:localuser:%s" (user-login-name))
+         :type oneshot :id "xhost" :stage stage1 :tags (x-setup))
+        (,(format "xrdb -merge %s" (expand-file-name "~/.Xresources"))
+         :type oneshot :id "xrdb" :stage stage1 :after "xhost" :tags (x-setup))
+        ("xsetroot -cursor_name left_ptr" :type oneshot :id "xsetroot" :stage stage1
+         :tags (x-setup))
+        ("xset r rate 200 60" :type oneshot :id "xset-repeat" :stage stage1
+         :tags (x-setup))
+        ("xset -dpms" :type oneshot :id "xset-dpms" :stage stage1
+         :tags (x-setup))
+        ("xset s off" :type oneshot :id "xset-s" :stage stage1
+         :tags (x-setup))
+        ("xinput set-prop \"Kingsis Peripherals ZOWIE Gaming mouse\" \"libinput Accel Profile Enabled\" 0 1"
+         :type oneshot :id "xinput-mouse" :stage stage1 :tags (x-setup))
+        ("redshift -P -O 2500"
+         :type oneshot :id "redshift" :stage stage1 :tags (x-setup))
+
+        ;; Stage 2: system agents
+        ("/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
+         :type simple :id "polkit" :stage stage2 :restart t :tags (system))
+
+        ;; Stage 3: tray applets (delay for EXWM systray init)
+        ("nm-applet" :type simple :stage stage3 :delay 3 :restart t :tags (applet tray))
+
+        ;; Stage 4: more tray applets
+        ("blueman-applet" :type simple :stage stage4 :delay 3 :restart t :tags (applet tray))
+        ("pasystray" :type simple :stage stage4 :delay 3 :restart t :tags (applet tray))))
+
+;; Use supervisor-stop-now for immediate SIGKILL - ensures clean X session exit
+(add-hook 'kill-emacs-hook #'supervisor-stop-now)
+
+;; Don't ask about running processes on exit - supervisor handles cleanup
+(setq confirm-kill-processes nil)
+
+;; Start supervisor
+(supervisor-start)
 #+end_src
 
 Suggested hooks when Emacs is your session owner:
@@ -107,6 +147,26 @@ Suggested hooks when Emacs is your session owner:
 ;; (add-hook 'elpaca-after-init-hook #'supervisor-start)
 (add-hook 'kill-emacs-hook #'supervisor-stop-now)
 #+end_src
+
+Once running, ~sbin/supervisorctl status~ shows the current state:
+
+#+begin_example
+$ sbin/supervisorctl status
+ID               TYPE     STAGE    ENABLED  STATUS     RESTART  LOG   PID     REASON
+----------------------------------------------------------------------------------------------------
+xhost            oneshot  stage1   yes      done       n/a      yes   -       -
+xrdb             oneshot  stage1   yes      done       n/a      yes   -       -
+xsetroot         oneshot  stage1   yes      done       n/a      yes   -       -
+xset-repeat      oneshot  stage1   yes      done       n/a      yes   -       -
+xset-dpms        oneshot  stage1   yes      done       n/a      yes   -       -
+xset-s           oneshot  stage1   yes      done       n/a      yes   -       -
+xinput-mouse     oneshot  stage1   yes      done       n/a      yes   -       -
+redshift         oneshot  stage1   yes      done       n/a      yes   -       -
+polkit           simple   stage2   yes      running    yes      yes   1280    -
+nm-applet        simple   stage3   yes      running    yes      yes   1396    -
+blueman-applet   simple   stage4   yes      running    yes      yes   1927    -
+pasystray        simple   stage4   yes      running    yes      yes   1442    -
+#+end_example
 
 Enable the experimental timer subsystem only if you are using timers:
 

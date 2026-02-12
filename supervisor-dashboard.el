@@ -34,7 +34,7 @@
 (declare-function supervisor-dashboard-menu "supervisor-dashboard" ())
 
 ;; Forward declaration for proced function
-(declare-function proced-toggle-auto-update "proced" (&optional arg))
+(declare-function proced-toggle-auto-update "proced" (arg))
 
 ;; Forward declarations for timer subsystem (defined in supervisor-timer.el)
 (declare-function supervisor-timer-subsystem-active-p "supervisor-timer" ())
@@ -914,7 +914,7 @@ Respects runtime enable/disable overrides."
   (require 'proced)
   (if-let* ((proced-buf (get-buffer "*Proced*")))
       (with-current-buffer proced-buf
-        (proced-toggle-auto-update)  ; no arg to cycle
+        (call-interactively #'proced-toggle-auto-update)
         (message "Proced auto-update: %s"
                  (pcase proced-auto-update-flag
                    ('nil "off") ('visible "visible") (_ "on"))))

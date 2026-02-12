@@ -140,7 +140,9 @@ A stage is complete only when:
 
 - **README.org**: The authoritative user handbook. Requirements:
   - **Source of truth**: Must accurately reflect the codebase (the actual source of truth)
-  - **Handbook style**: Thorough reference work, not a quick-start guide
+  - **Two-part style**: The intro through Quick Start is beginner-friendly and welcoming,
+    explaining what the package does and who it's for. Everything after Quick Start is
+    thorough technical reference handbook style.
   - **Complete coverage**: Document every single feature, option, and configuration possible
   - **Indexed and searchable**: Well-organized with clear headings for navigation
   - **No aspirational content**: Only document what currently exists in the code

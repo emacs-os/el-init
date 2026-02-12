@@ -25,7 +25,7 @@
 #   --json           Output JSON instead of human-readable text
 #   --socket NAME    Use specific Emacs server socket (emacsclient -s)
 #   --server-file P  Use server file for TCP (emacsclient -f)
-#   --timeout N      Wait at most N seconds for response
+#   --timeout N      Wait at most N seconds for response (default: 10)
 #   --help           Show this help message
 #
 # Commands:
@@ -85,7 +85,7 @@ show_help() {
 # Parse our options (before command)
 while [ "${#}" -gt 0 ]; do
     case "${1}" in
-        --help|-h)
+        --help|-h|help)
             show_help
             ;;
         --json)
@@ -173,10 +173,12 @@ case "${json_flag}" in
 esac
 
 # Build emacsclient command
+# Default timeout of 10 seconds to avoid indefinite hangs
+default_timeout=10
 set -- emacsclient
 [ -n "${socket_name}" ] && set -- "${@}" -s "${socket_name}"
 [ -n "${server_file}" ] && set -- "${@}" -f "${server_file}"
-[ -n "${timeout}" ] && set -- "${@}" -w "${timeout}"
+set -- "${@}" -w "${timeout:-${default_timeout}}"
 
 # The Elisp expression to evaluate
 # supervisor--cli-dispatch-for-wrapper returns EXITCODE:BASE64OUTPUT
