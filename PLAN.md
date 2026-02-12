@@ -11,6 +11,8 @@ This plan also introduces a human-centered modular Elisp unit-file model to supp
 
 ## Policy Baseline
 - Default: prefer 1:1 `systemctl` naming and behavior.
+- Hard ABI break policy: do not preserve legacy command names/aliases unless explicitly requested.
+- This project has no legacy compatibility constraints; establish a clean base now.
 - Keep supervisor-specific features only when they are deliberate value-add.
 - Keep explicitly unplanned items unplanned unless direction changes.
 
@@ -78,7 +80,7 @@ Deliverables:
 Acceptance:
 - Command usage/help reflects normalized names.
 - `status` provides detailed unit view semantics, while `list-units` is overview/list semantics.
-- Old names removed or retained only if explicitly approved.
+- Old names are removed by default (hard ABI break; no compatibility aliases).
 - `make check` passes.
 
 ## 2) Interactive Command Parity
@@ -127,8 +129,9 @@ Objective:
 
 Proposed model:
 - A configurable unit directory (example: `~/.config/supervisor/units/`).
-- One unit per file, deterministic naming (`<unit-id>.el` or `<unit-id>.eld`).
-- Each file defines one canonical unit form.
+- Single directory policy for phase 1 (no layered precedence in initial implementation).
+- One unit per file, deterministic naming (`<unit-id>.el`).
+- Each file defines one canonical pure plist form (data-first, no helper macro wrapper).
 - Loader builds runtime plan from unit files (and optional legacy bridge from `supervisor-programs` during transition).
 
 Human factors requirements:
@@ -149,9 +152,13 @@ Objective:
 CLI/interactive workflow target:
 1. User runs `supervisorctl edit UNIT` (or dashboard edit action).
 2. Supervisor resolves the unit file path; if missing, offers scaffold template.
-3. Opens the unit buffer in Emacs.
+3. Opens editor based on context:
+- dashboard/interactive context: open unit file buffer in Emacs.
+- non-interactive CLI context: launch `$VISUAL` or `$EDITOR` against unit file path (do not assume `emacsclient`).
 4. On save, validate just that unit (and dependency references as needed).
-5. On close, return user context to overview (dashboard/command flow), with clear next action hint (`daemon-reload` and/or `reconcile` as appropriate).
+5. On close:
+- if invoked from dashboard, return focus to dashboard overview.
+- otherwise, print clear next-step hints (`daemon-reload`, `reload`, `reconcile`) in CLI output.
 
 UX constraints:
 - No surprising auto-apply without clear feedback.
@@ -166,15 +173,18 @@ Acceptance:
 
 ## 8) Additional Systemctl Parity Commands
 Deliverables:
-- Implement `cat UNIT` to show effective unit-file content from modular unit sources.
+- Implement `cat UNIT` as raw unit-file content output in CLI (literal file content).
+- Implement interactive/unit-inspection equivalent by opening unit file read-only in buffer.
 - Implement `mask UNIT` and `unmask UNIT` semantics and persistence model.
-- Implement `is-active`, `is-enabled`, `is-failed` with script-friendly exit-code behavior.
+- Implement mask model as persistent file-state with precedence:
+- `mask` > `enable/disable` > manual start.
+- Implement `is-active`, `is-enabled`, `is-failed` with strict systemctl-compatible exit-code behavior.
 - Verify `version` output/exit behavior remains systemctl-comparable.
 
 Acceptance:
 - `cat`, `mask/unmask`, and `is-*` are present and documented.
 - Exit codes for `is-*` are deterministic for automation use.
-- Mask state composes predictably with enable/disable semantics.
+- Mask state precedence is enforced exactly as specified.
 
 ## 9) Documentation and Migration
 Deliverables:
@@ -228,26 +238,34 @@ This plan is complete when:
 - `edit UNIT` and `cat UNIT` are implemented with modular unit files and human-centered flow.
 - Dashboard and CLI command semantics remain consistent.
 - Only explicitly unplanned items remain out of scope (`journalctl -u` parity and `reset-failed`).
+- ABI remains intentionally clean: no legacy compatibility aliases unless explicitly approved.
 - `make check` passes across all phases.
 
-## Open Design Questions (to resolve before implementation)
-1. Unit-file format canonical form:
-- pure plist expression vs helper macro wrapper.
+## Locked Design Decisions
+1. Unit-file canonical form:
+- pure plist expression (no helper macro wrapper).
 
 2. Unit-file location policy:
-- single directory vs layered directories (system/user/local precedence).
+- single directory in phase 1 (`~/.config/supervisor/units/`).
 
-3. Edit return behavior:
-- always return to dashboard buffer when invoked from dashboard,
-- and what CLI should do when no interactive frame is available.
+3. Edit behavior:
+- from dashboard: return to dashboard buffer after close.
+- from CLI without interactive frame: use `$VISUAL` or `$EDITOR` (no `emacsclient` assumption).
 
-4. Reload application semantics:
-- whether `reload UNIT` should auto-apply to live process immediately,
-- or stage changes until `reconcile`.
+4. Reload semantics:
+- `reload UNIT` auto-applies to live units immediately.
+- `reconcile` remains a broader convergence operation.
 
-5. Mask model details:
-- whether masked units are represented as file-state, override-state, or both,
-- and precedence with enable/disable and manual start.
+5. Mask model:
+- persistent file-state mask.
+- precedence: `mask` > `enable/disable` > manual start.
 
-6. `is-*` exit code contract:
-- exact success/failure semantics to mirror systemctl scripting expectations.
+6. `is-*` contract:
+- use strict systemctl-compatible exit-code behavior.
+
+7. ABI stance:
+- hard break by default; no legacy aliases unless explicitly approved.
+
+8. `cat` behavior:
+- CLI: literal/raw unit file content.
+- interactive: open unit file as read-only buffer for inspection.
