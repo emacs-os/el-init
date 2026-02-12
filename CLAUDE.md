@@ -40,6 +40,24 @@ Cross-module calls use `declare-function` for proper byte-compilation.
 
 This is a **hard requirement** for all Elisp projects. Read `STANDARDS.md` before writing or modifying any code.
 
+## Git Workflow (MANDATORY)
+
+Use only basic git commands. **Never** use `git commit --amend`, `git rebase`,
+`git reset`, or any history-rewriting commands. Every commit is a new commit.
+
+```bash
+git add <specific-files>
+git commit -m "message"
+git push
+```
+
+Rules:
+- **No amending**: if a commit needs a fix, make a new commit on top.
+- **No resets**: if something went wrong, fix forward with a new commit.
+- **No rebasing**: keep a linear append-only history.
+- **Always push** after committing to keep local and remote in sync.
+- **Always `make check`** before committing.
+
 ## Development Commands
 
 ```bash
