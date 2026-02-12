@@ -71,18 +71,6 @@ provides detailed reference material:
 (add-to-list 'load-path "~/repos/supervisor.el")
 (require 'supervisor)
 
-;; Event hook for failures only - stage messages are handled by core
-(add-hook 'supervisor-event-hook
-          (lambda (event)
-            (pcase (plist-get event :type)
-              ('process-failed
-               (message "Supervisor: FAILED to start %s" (plist-get event :id)))
-              ('process-exit
-               (let ((code (plist-get (plist-get event :data) :code)))
-                 (unless (eq code 0)
-                   (message "Supervisor: %s exited with code %s"
-                            (plist-get event :id) code)))))))
-
 (setq supervisor-programs
       `(;; Stage 1: X session setup (oneshots)
         ;; Use backtick+comma for Elisp expansion instead of sh -c for shell expansion
@@ -855,6 +843,26 @@ Event types:
 - ~timer-overlap~
 - ~timer-success~
 - ~timer-failure~
+
+** Minibuffer Notifications
+
+By default, supervisor does not show minibuffer messages for process failures
+or non-zero exits. Use an event hook if you want immediate notification:
+
+#+begin_src emacs-lisp
+(add-hook 'supervisor-event-hook
+          (lambda (event)
+            (pcase (plist-get event :type)
+              ('process-failed
+               (message "Supervisor: FAILED to start %s" (plist-get event :id)))
+              ('process-exit
+               (let ((code (plist-get (plist-get event :data) :code)))
+                 (unless (eq code 0)
+                   (message "Supervisor: %s exited with code %s"
+                            (plist-get event :id) code)))))))
+#+end_src
+
+This is optional. You can also check the dashboard or logs.
 
 ** Legacy Compatibility Hooks
 
