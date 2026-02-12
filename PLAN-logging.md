@@ -116,6 +116,12 @@ Required default service ID: `logrotate`
 
 Required default timer ID: `logrotate-daily`
 
+Authority placement contract:
+
+- shipped defaults live in the vendor/unit base tier,
+- higher-precedence unit tiers may fully override `logrotate` and
+  `logrotate-daily` definitions by ID.
+
 Timer schedule (current timer schema): daily at 03:00 local time:
 
 ```elisp
@@ -312,4 +318,3 @@ All must be true:
 6. command surface (`logging`, `logs`, dashboard `l`/`L`) is unchanged.
 7. `make check` passes.
 8. `README.org` and `sbin/README.md` are in sync with implementation.
-

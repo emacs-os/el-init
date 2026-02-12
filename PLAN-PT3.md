@@ -269,7 +269,11 @@ Acceptance:
 ## Explicit Non-Goals
 
 - Any MUST-HAVE item from `PLAN-PT2.md`.
-- Any | PROBABLY BLOAT from `PLAN-PT2.md` | `DefaultDependencies`, boot-target/install graph semantics beyond simple enable/disable, cgroup hardening matrix (`ProtectSystem`, `NoNewPrivileges`, namespace knobs), deep init-only controls (`OOMPolicy`, `FailureAction`, etc.) | These are mostly PID1/system-manager concerns and would add large complexity with limited userland payoff. |
+- Any PROBABLY-BLOAT item from `FINDINGS-PT2.md`, including:
+  - `DefaultDependencies`,
+  - boot-target/install graph semantics beyond simple enable/disable,
+  - cgroup hardening matrix (`ProtectSystem`, `NoNewPrivileges`, namespace knobs),
+  - deep init-only controls (`OOMPolicy`, `FailureAction`, etc.).
 - systemd target model, cgroup model, or full unit-spec parity.
 - INI `[Unit]/[Service]/[Install]` parser support.
 

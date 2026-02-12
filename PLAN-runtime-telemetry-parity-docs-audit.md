@@ -37,6 +37,7 @@ For each unit, detail views should expose where available:
 - PID and process-tree summary (best effort),
 - restart count and last failure reason (exit/signal),
 - next restart ETA when backoff is pending,
+- authoritative unit source path (and tier when available),
 - lightweight memory/CPU/tasks metrics when obtainable without blocking,
 - recent log tail preview.
 

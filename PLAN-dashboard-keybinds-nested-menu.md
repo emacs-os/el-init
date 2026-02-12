@@ -91,6 +91,8 @@ Inspect keys are read-only presentation workflows.
 
 - They must not mutate runtime state.
 - Output/behavior should match CLI intent where equivalent commands exist.
+- `cat`/`edit` must target the authoritative unit file selected by the unit
+  authority resolver (not a shadowed lower-tier file).
 
 ### D) Top-level key behavior
 

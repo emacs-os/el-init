@@ -54,7 +54,10 @@ This plan explicitly excludes logging architecture work (covered by `PLAN-loggin
 ### A) Service source model
 
 - Runtime service definitions come from unit files only.
-- `supervisor-unit-directory` remains the canonical source path.
+- Unit loading must go through one canonical resolver API.
+- Pre-cascade, that resolver may read `supervisor-unit-directory`.
+- Post-cascade (`PLAN-unit-file-authority-cascade.md`), that resolver must use
+  authority-root precedence from `supervisor-unit-authority-path`.
 - No merge path from `supervisor-programs`.
 - Dashboard/CLI/core/timer must all consume the same effective unit-file set.
 

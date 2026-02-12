@@ -39,6 +39,8 @@ This plan implements exactly these six options:
    both `simple` and `oneshot`.
 7. No PID magic variable injection (no `$SUPERVISOR_MAINPID`).
 8. No expansion into NICE-TO-HAVE/PROBABLY-BLOAT items.
+9. Relative path semantics are source-file-relative: resolve against the
+   authoritative unit file directory for that unit.
 
 ## Canonical Value Shapes (Unambiguous)
 
@@ -89,8 +91,8 @@ Example:
 
 - If set, process starts with that cwd.
 - `"~"` and `~/...` are expanded to home.
-- Relative paths are resolved against `supervisor-unit-directory` (not buffer
-  `default-directory`) for deterministic behavior.
+- Relative paths are resolved against the directory containing the authoritative
+  unit file for that unit (never buffer `default-directory`).
 - If resolved directory does not exist or is not a directory: start fails with a
   clear validation/runtime error.
 
@@ -111,7 +113,8 @@ Env-file parsing subset (explicitly defined):
 - Parse first `=` as separator.
 - Key must match `[A-Za-z_][A-Za-z0-9_]*`.
 - Value is taken as raw text after `=` (trim outer whitespace).
-- Relative file paths are resolved against `supervisor-unit-directory`.
+- Relative file paths are resolved against the directory containing the
+  authoritative unit file for that unit.
 - Optional leading `-` in path means "missing file is ignored".
 - Without leading `-`, missing file is an error.
 
@@ -181,6 +184,8 @@ Acceptance:
 
 Deliverables:
 
+- Ensure unit runtime context includes authoritative source file path metadata
+  for deterministic relative-path resolution.
 - Apply `:working-directory` to process spawn context.
 - Apply `:environment-file` and `:environment` merge pipeline.
 - Apply per-unit `:restart-sec` in restart scheduler.
