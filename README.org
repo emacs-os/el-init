@@ -124,17 +124,6 @@ provides detailed reference material:
 (supervisor-start)
 #+end_src
 
-Suggested hooks when Emacs is your session owner:
-
-#+begin_src emacs-lisp
-(add-hook 'after-init-hook #'supervisor-start)
-;; Alternative for some init flows:
-;; (add-hook 'emacs-startup-hook #'supervisor-start)
-;; Example package-manager-specific hook:
-;; (add-hook 'elpaca-after-init-hook #'supervisor-start)
-(add-hook 'kill-emacs-hook #'supervisor-stop-now)
-#+end_src
-
 Once running, ~sbin/supervisorctl status~ shows the current state:
 
 #+begin_example
