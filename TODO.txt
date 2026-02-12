@@ -1,1 +1,52 @@
 - Discuss and design a better, more standardized mnemonic keybind system for the interactive `M-x supervisor` console.
+- Keybind redesign proposal for `M-x supervisor` (Magit-style nested menu):
+  - Keep top-level for navigation/system only: `f` (filters), `g`/`G` (refresh/live), `t` (open `proced` “top” view), `T` (proced live refresh / auto-update toggle).
+  - Free top-level `p` for policy namespace (move direct `proced` binding from `p` -> `t`).
+  - Add nested groups under menu dispatch:
+    - `l` Lifecycle:
+      - `s` -> start
+      - `t` -> stop
+      - `r` -> restart
+      - `k` -> kill
+      - `u` -> reload
+      - `f` -> reset-failed
+    - `p` Policy:
+      - `e` -> enable
+      - `d` -> disable
+      - `m` -> mask
+      - `u` -> unmask
+      - `r` -> set restart-policy (`no|on-success|on-failure|always`)
+      - `l` -> set logging (`on|off`)
+      - prefer explicit set actions over interactive toggles/twiddles for parity with systemctl-style verbs.
+    - `i` Inspect: info / deps / graph / blame / log / cat / edit.
+  - Keep migration ergonomic: preserve current high-frequency direct keys during transition where practical, but make nested groups canonical in help text.
+- Add richer per-service status telemetry for both CLI and interactive dashboard detail views (systemctl-status-inspired): uptime/running-since, PID + process tree summary, restart count, last exit/signal + reason, next restart ETA (if backoff), lightweight memory/CPU/task metrics (best-effort), and recent log tail inline.
+- Comparative design review: supervisor stage model vs runit stage model.
+  - Compare and contrast semantics, startup/shutdown ordering guarantees, failure handling, recovery behavior, and operator ergonomics.
+  - Identify any lessons we should adopt from runit (or justify why current supervisor stages are preferable).
+  - Produce a short recommendation: keep as-is vs targeted stage-model refinements.
+- Documentation needed: systemd alignment + explicit differences.
+  - Add a handbook section explaining where `supervisorctl` intentionally mirrors systemd behavior (terminology, command verbs, unit-file concept), while clarifying that supervisor unit files use Elisp plist format instead of INI sections.
+  - Add a table: systemd service/unit features vs supervisor support status (supported/partial/unplanned), with current canonical supervisor key/command mapping.
+  - Add worked examples: at least 2-3 systemd unit snippets and equivalent supervisor Elisp unit definitions.
+  - Add architecture comparison section: systemd target model vs supervisor stage model (and why supervisor stages are runit-like).
+  - Add comparison table: supervisor stages vs runit stage model (intent, ordering, operational behavior, and tradeoffs).
+- Consistency audit: explicit-verb mutations vs toggle/cycle semantics (policy and beyond).
+  - Problem statement:
+    - We now have full `supervisorctl` verbs (`enable/disable`, `mask/unmask`, `restart-policy`, `logging`, and much more) and are adding matching interactive flows.
+    - Risk: legacy toggle/cycle UI paths may still mutate state in ways that conflict with explicit command semantics, causing mode drift between CLI and interactive behavior.
+    - Scope is broader than policy: lifecycle and state-changing actions must also be checked (`start/stop/restart/kill/reload/reset-failed`, daemon-reload/reload-unit, etc.).
+    - Governance rule to align with systemd-like operator expectations:
+      - Operational state changes are command verbs (start/stop/restart/enable/disable/mask/unmask/reset-failed, etc.).
+      - Unit-definition changes (service configuration semantics) should require editing the unit file (`edit` flow), not hidden interactive toggles.
+  - Scan plan:
+    - Inventory all mutating entry points in `supervisor-cli.el`, `supervisor-dashboard.el`, and core helpers (`supervisor-core.el`), including direct hash writes and wrappers.
+    - Classify each mutator as explicit verb (`enable`, `disable`, `mask`, `unmask`, `set ...`) vs implicit toggle/cycle.
+    - Verify command/interactive parity matrix for policy and lifecycle domains: enabled, mask, restart-policy, logging, start/stop/restart/kill/reload/reset-failed.
+    - Mark each mutable setting as either:
+      - runtime-operational (allowed via verbs), or
+      - unit-definition (must be changed via unit-file edit and reload path).
+    - Remove/replace interactive toggles that currently mutate unit-definition semantics directly; route users to `edit` where appropriate.
+    - Confirm persistence paths (`supervisor--save-overrides` and related override maps) are called consistently and only after validated transitions.
+    - Add/adjust ERT coverage to enforce no hidden toggle behavior where explicit verbs are required.
+    - Document any intentional remaining toggles as UI-only convenience and ensure they map 1:1 to canonical explicit operations.
