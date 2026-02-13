@@ -209,6 +209,7 @@ nil means show all entries, otherwise a tag symbol or string.")
     (define-key map "c" #'supervisor-dashboard-cat)
     (define-key map "E" #'supervisor-dashboard-edit)
     (define-key map "B" #'supervisor-dashboard-blame)
+    (define-key map "F" #'supervisor-dashboard-reset-failed)
     (define-key map "?" #'supervisor-dashboard-menu-open)
     (define-key map "q" #'supervisor-dashboard-quit)
     map)
@@ -233,7 +234,8 @@ This is called on first use to avoid loading transient at package load time."
           ("x" "Stop" supervisor-dashboard-stop)
           ("R" "Restart" supervisor-dashboard-restart)
           ("k" "Kill" supervisor-dashboard-kill)
-          ("K" "Kill (force)" supervisor-dashboard-kill-force)]
+          ("K" "Kill (force)" supervisor-dashboard-kill-force)
+          ("F" "Reset failed" supervisor-dashboard-reset-failed)]
          ["Toggles"
           ("e" "Enabled" supervisor-dashboard-toggle-enabled)
           ("m" "Mask" supervisor-dashboard-toggle-mask)
@@ -753,6 +755,7 @@ With prefix argument, show status legend instead."
     (princ "  R     Restart process (stop + start)\n")
     (princ "  k     Kill process (send signal, restart policy unchanged)\n")
     (princ "  K     Kill process (force, no confirmation)\n")
+    (princ "  F     Reset failed state for entry\n")
     (princ "  r     Cycle restart policy (no/on-success/on-failure/always)\n")
     (princ "  l     Toggle logging for entry\n")
     (princ "  L     View log file for entry\n")
@@ -973,6 +976,20 @@ With prefix argument FORCE, skip confirmation."
 Sends kill signal immediately and leaves restart policy unchanged."
   (interactive)
   (supervisor-dashboard-kill t))
+
+(defun supervisor-dashboard-reset-failed ()
+  "Reset failed state for entry at point.
+Clears crash-loop tracking so the entry can be restarted."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot reset failed on separator row"))
+    (let ((result (supervisor--reset-failed id)))
+      (pcase (plist-get result :status)
+        ('reset
+         (message "Reset failed state for %s" id)
+         (supervisor--refresh-dashboard))
+        ('skipped (message "%s is %s" id (plist-get result :reason)))))))
 
 (defun supervisor-dashboard-start ()
   "Start process at point if stopped.

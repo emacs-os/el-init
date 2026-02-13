@@ -503,8 +503,8 @@ For malformed entries, returns \"malformed#IDX\" for consistency."
       (user-error "Cannot locate README.org in supervisor package directory"))))
 
 ;;;###autoload
-(defun supervisor-validate ()
-  "Validate all unit-file entries and `supervisor-timers'.
+(defun supervisor-verify ()
+  "Verify all unit-file entries and `supervisor-timers'.
 Display results in a temporary buffer and populate `supervisor--invalid'
 and `supervisor--invalid-timers' so the dashboard reflects validation state."
   (interactive)
@@ -544,7 +544,7 @@ and `supervisor--invalid-timers' so the dashboard reflects validation state."
                    (push (format "INVALID %s: %s" id reason) timer-results))
                  supervisor--invalid-timers))
       ;; Display results
-      (with-output-to-temp-buffer "*supervisor-validate*"
+      (with-output-to-temp-buffer "*supervisor-verify*"
         (princ (format "Services: %d valid, %d invalid\n" entry-valid entry-invalid))
         (dolist (line (nreverse entry-results))
           (princ (format "  %s\n" line)))
@@ -2616,6 +2616,17 @@ in effect."
      (t
       (signal-process proc sig)
       (list :status 'signaled :reason nil)))))
+
+(defun supervisor--reset-failed (id)
+  "Reset the failed state for entry ID.
+Returns a plist with :status and :reason.
+:status is one of: reset, skipped
+Clears crash-loop tracking so the entry can be restarted."
+  (if (not (gethash id supervisor--failed))
+      (list :status 'skipped :reason "not failed")
+    (remhash id supervisor--failed)
+    (remhash id supervisor--restart-times)
+    (list :status 'reset :reason nil)))
 
 (defun supervisor--dag-force-stage-complete ()
   "Force stage completion due to timeout.

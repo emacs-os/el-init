@@ -232,12 +232,12 @@ the canonical way to read entry fields.
 
 ** Validation and Dry-Run Commands
 
-~M-x supervisor-validate~:
+~M-x supervisor-verify~:
 
 - validates services
 - validates timers when timer module is available
 - populates invalid hashes for dashboard/CLI visibility
-- opens ~*supervisor-validate*~ report buffer
+- opens ~*supervisor-verify*~ report buffer
 
 ~M-x supervisor-dry-run~:
 
@@ -880,6 +880,7 @@ Timer reason column shows either:
 | ~R~ | Restart selected service (stop + start) |
 | ~k~ | Kill selected service (send signal, restart policy unchanged) |
 | ~K~ | Kill selected service (force, no confirmation) |
+| ~F~ | Reset failed state for selected service |
 | ~r~ | Cycle restart policy (no/on-success/on-failure/always) |
 | ~l~ | Toggle logging override |
 | ~L~ | Open selected service log file |
@@ -1012,7 +1013,8 @@ Systemctl-compatible commands:
 
 Supervisor-specific commands:
 
-- ~validate~
+- ~verify~
+- ~reset-failed [--] [ID...]~ (with IDs: reset those; without: reset all)
 - ~restart-policy (no|on-success|on-failure|always) [--] ID...~
 - ~logging (on|off) [--] ID...~
 - ~blame~
@@ -1032,10 +1034,16 @@ IDs.
   exit only when IDs are truly missing (not just invalid)
 - without IDs: overview table (delegates to ~list-units~)
 
-~validate~:
+~verify~:
 
 - returns exit code ~4~ if service or timer validation errors exist
 - returns both service and timer invalid sets
+
+~reset-failed~:
+
+- with IDs: reset failed state for those entries
+- without IDs: reset all failed entries
+- clears crash-loop tracking so entries can be restarted
 
 ~start~, ~stop~, ~restart~:
 
@@ -1112,7 +1120,7 @@ IDs.
 Human format is default.
 
 ~--json~ returns stable object structures per command (for example status,
-validate, list-dependencies, list-timers).
+verify, list-dependencies, list-timers).
 
 Status JSON top-level keys (~status~ without IDs / ~list-units~):
 
@@ -1150,7 +1158,7 @@ Empty collections are encoded as arrays (not ~null~).
 | ~1~ | Runtime failure (also: ~is-enabled~ disabled/masked, ~is-failed~ not failed) |
 | ~2~ | Invalid arguments |
 | ~3~ | ~is-active~: unit exists but not active (systemctl parity) |
-| ~4~ | ~is-*~: no such unit; also: ~validate~ validation failed |
+| ~4~ | ~is-*~: no such unit; also: ~verify~ validation failed |
 | ~69~ | Emacs server unavailable (EX_UNAVAILABLE) |
 
 * Events and Hooks
@@ -1300,7 +1308,7 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-start~ | Build plan and start staged scheduler |
 | ~M-x supervisor-stop~ | Async graceful stop |
 | ~M-x supervisor-stop-now~ | Sync hard stop |
-| ~M-x supervisor-validate~ | Validate config without start |
+| ~M-x supervisor-verify~ | Verify config without start |
 | ~M-x supervisor-dry-run~ | Show execution plan without start |
 | ~M-x supervisor-migrate-config~ | Emit canonical schema v1 config |
 | ~M-x supervisor-overrides-load~ | Load overrides from disk |
@@ -1365,7 +1373,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Exit code semantics for oneshots (signals stored negative): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Graceful vs hard stop (~supervisor-stop~ vs ~supervisor-stop-now~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#command-reference][Command Reference]]
 - Hyphen-prefixed IDs in CLI (use ~--~ separator): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
-- JSON contracts (status/validate/list-timers + error shape): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
+- JSON contracts (status/verify/list-timers + error shape): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Log rotation and log file paths: [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Logging pipeline (~supervisor--log~, ~supervisor-verbose~, ~supervisor-log-to-file~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Manual stop behavior and restart suppression: [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
@@ -1375,6 +1383,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Override precedence (runtime override vs config default): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Override persistence (~supervisor-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
 - Reload unit (~reload~, ~u~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
+- Reset failed state (~reset-failed~, ~F~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]

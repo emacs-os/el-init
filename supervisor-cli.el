@@ -549,8 +549,8 @@ Show all properties of a single unit."
                                (format "No entry with ID '%s'" id)
                                (if json-p 'json 'human))))))))
 
-(defun supervisor--cli-cmd-validate (args json-p)
-  "Handle `validate' command with ARGS.  JSON-P enables JSON output."
+(defun supervisor--cli-cmd-verify (args json-p)
+  "Handle `verify' command with ARGS.  JSON-P enables JSON output."
 
   (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
@@ -1131,6 +1131,58 @@ exit 4 if no such unit.  Uses systemctl-compatible exit codes."
                               (failed . ,(if is-failed t :json-false))
                               (status . ,status)))
              (format "%s\n" status)))))))))
+
+(defun supervisor--cli-cmd-reset-failed (args json-p)
+  "Handle `reset-failed [--] [ID...]' with ARGS.  JSON-P enables JSON output.
+With IDs: reset failed state for those entries.
+Without IDs: reset all failed entries.
+Use -- before IDs that start with a hyphen."
+  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+    (if unknown
+        (supervisor--cli-error supervisor-cli-exit-invalid-args
+                               (format "Unknown option: %s" unknown)
+                               (if json-p 'json 'human))
+      (let* ((ids (supervisor--cli-strip-separator args))
+             (targets (if ids
+                         ids
+                       ;; No IDs: collect all failed entries
+                       (let ((all nil))
+                         (maphash (lambda (k _v) (push k all))
+                                  supervisor--failed)
+                         (sort all #'string<)))))
+        (if (null targets)
+            (supervisor--cli-success
+             (if json-p
+                 (json-encode '((reset . []) (skipped . [])))
+               "No failed units\n")
+             (if json-p 'json 'human))
+          (let ((reset-ids nil)
+                (skipped nil))
+            (dolist (id targets)
+              (let ((result (supervisor--reset-failed id)))
+                (pcase (plist-get result :status)
+                  ('reset (push id reset-ids))
+                  ('skipped (push (cons id (plist-get result :reason)) skipped)))))
+            (setq reset-ids (nreverse reset-ids)
+                  skipped (nreverse skipped))
+            (supervisor--maybe-refresh-dashboard)
+            (supervisor--cli-success
+             (if json-p
+                 (json-encode
+                  `((reset . ,reset-ids)
+                    (skipped . ,(mapcar (lambda (p)
+                                          `((id . ,(car p))
+                                            (reason . ,(cdr p))))
+                                        skipped))))
+               (concat
+                (when reset-ids
+                  (format "Reset: %s\n"
+                          (mapconcat #'identity reset-ids ", ")))
+                (when skipped
+                  (mapconcat (lambda (pair)
+                               (format "Skipped: %s (%s)\n" (car pair) (cdr pair)))
+                             skipped ""))))
+             (if json-p 'json 'human))))))))
 
 (defun supervisor--cli-cmd-restart-policy (args json-p)
   "Handle `restart-policy POLICY [--] ID...' with ARGS.  JSON-P for JSON.
@@ -1764,7 +1816,8 @@ Returns a `supervisor-cli-result' struct."
                    "  list-dependencies [ID]     Show dependency graph\n"
                    "  list-timers                Show timer units\n\n"
                    "Supervisor-specific commands:\n"
-                   "  validate                   Validate config\n"
+                   "  verify                     Verify config\n"
+                   "  reset-failed [--] [ID...]  Reset failed state\n"
                    "  restart-policy POLICY ID...    Set restart policy (no|on-success|on-failure|always)\n"
                    "  logging (on|off) ID...     Set logging policy\n"
                    "  blame                      Show startup timing\n"
@@ -1779,8 +1832,8 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-list-units args json-p))
          ((equal command "show")
           (supervisor--cli-cmd-show args json-p))
-         ((equal command "validate")
-          (supervisor--cli-cmd-validate args json-p))
+         ((equal command "verify")
+          (supervisor--cli-cmd-verify args json-p))
          ((equal command "start")
           (supervisor--cli-cmd-start args json-p))
          ((equal command "stop")
@@ -1827,6 +1880,8 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-is-enabled args json-p))
          ((equal command "is-failed")
           (supervisor--cli-cmd-is-failed args json-p))
+         ((equal command "reset-failed")
+          (supervisor--cli-cmd-reset-failed args json-p))
          (t
           (supervisor--cli-error supervisor-cli-exit-invalid-args
                                  (format "Unknown command: %s" command)

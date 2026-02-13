@@ -33,7 +33,8 @@ Lifecycle:
 - `supervisorctl start [ID...]`
 - `supervisorctl stop [ID...]`
 - `supervisorctl restart [ID...]`
-- `supervisorctl validate`
+- `supervisorctl verify`
+- `supervisorctl reset-failed [ID...]`
 
 State and inspect:
 
@@ -89,7 +90,7 @@ Delay: 0
 After: none
 ```
 
-`validate` example:
+`verify` example:
 
 ```
 Services: 5 valid, 1 invalid
@@ -183,7 +184,8 @@ Command handlers (all private, `supervisor--cli-cmd-*`):
 - `supervisor--cli-cmd-start` - start command
 - `supervisor--cli-cmd-stop` - stop command
 - `supervisor--cli-cmd-restart` - restart command
-- `supervisor--cli-cmd-validate` - validate command
+- `supervisor--cli-cmd-verify` - verify command
+- `supervisor--cli-cmd-reset-failed` - reset-failed command
 - `supervisor--cli-cmd-enable` - enable command
 - `supervisor--cli-cmd-disable` - disable command
 - `supervisor--cli-cmd-restart-policy` - restart-policy command

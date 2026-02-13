@@ -51,7 +51,8 @@
 #   list-timers                 Show timer units
 #
 # Supervisor-specific commands:
-#   validate                    Validate config and show errors
+#   verify                      Verify config and show errors
+#   reset-failed [--] [ID...]   Reset failed state for units
 #   restart-policy POLICY ID...   Set restart policy (no|on-success|on-failure|always)
 #   logging (on|off) ID...      Set logging policy
 #   blame                       Show startup timing info

@@ -76,14 +76,14 @@ afterward."
 (ert-deftest supervisor-test-module-core-standalone ()
   "Verify supervisor-core loads and works without dashboard, CLI, or timer.
 Spawns a subprocess to test true standalone behavior.
-Core guards timer calls with fboundp, so validate works without timer module."
+Core guards timer calls with fboundp, so verify works without timer module."
   (let* ((default-directory (file-name-directory (locate-library "supervisor")))
          (result (call-process
                   "emacs" nil nil nil
                   "-Q" "--batch" "-L" "."
                   "--eval" "(require 'supervisor-core)"
                   "--eval" "(setq supervisor-unit-directory (make-temp-file \"units-\" t))"
-                  "--eval" "(supervisor-validate)")))
+                  "--eval" "(supervisor-verify)")))
     (should (= result 0))))
 
 (ert-deftest supervisor-test-module-core-standalone-stop ()
@@ -656,15 +656,15 @@ restart-timer cancellation on `no'."
 
 ;;; Integration tests
 
-(ert-deftest supervisor-test-validate-populates-invalid-hash ()
-  "supervisor-validate populates supervisor--invalid hash table."
+(ert-deftest supervisor-test-verify-populates-invalid-hash ()
+  "supervisor-verify populates supervisor--invalid hash table."
   (supervisor-test-with-unit-files
       '(("valid-entry" :id "valid-entry" :type simple)
         ("invalid-entry" :id "invalid-entry" :type "bad"))
     (let ((supervisor--invalid (make-hash-table :test 'equal)))
       (with-temp-buffer
         (let ((standard-output (current-buffer)))
-          (supervisor-validate)))
+          (supervisor-verify)))
       (should (null (gethash "valid-entry" supervisor--invalid)))
       (should (gethash "invalid-entry" supervisor--invalid)))))
 
@@ -684,8 +684,8 @@ restart-timer cancellation on `no'."
         (should (cl-find "valid" entries :key #'car :test #'equal))
         (should (cl-find "also-valid" entries :key #'car :test #'equal))))))
 
-(ert-deftest supervisor-test-validate-handles-malformed-entry ()
-  "supervisor-validate handles malformed unit files gracefully."
+(ert-deftest supervisor-test-verify-handles-malformed-entry ()
+  "supervisor-verify handles malformed unit files gracefully."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal))
@@ -699,7 +699,7 @@ restart-timer cancellation on `no'."
             (insert "42"))
           (with-temp-buffer
             (let ((standard-output (current-buffer)))
-              (supervisor-validate)))
+              (supervisor-verify)))
           ;; Malformed file should be tracked in invalid
           (should (gethash "broken" supervisor--invalid))
           ;; Valid entry should not be in invalid
@@ -2954,15 +2954,15 @@ Regression test: stderr pipe processes used to pollute the process list."
             (should (equal "beta-cmd" (car (nth 1 programs))))))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-cli-validate-invalid-unit-file ()
-  "CLI validate reports invalid unit files in count and output."
+(ert-deftest supervisor-test-cli-verify-invalid-unit-file ()
+  "CLI verify reports invalid unit files in count and output."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-directory dir))
     (unwind-protect
         (progn
           (with-temp-file (expand-file-name "bad.el" dir)
             (insert "(:id \"bad-unit\")"))
-          (let ((result (supervisor--cli-dispatch '("validate"))))
+          (let ((result (supervisor--cli-dispatch '("verify"))))
             (should (supervisor-cli-result-p result))
             (should (= supervisor-cli-exit-validation-failed
                         (supervisor-cli-result-exitcode result)))
@@ -5281,19 +5281,19 @@ at minute boundaries."
     (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
     (should (string-match "supervisorctl" (supervisor-cli-result-output result)))))
 
-(ert-deftest supervisor-test-cli-validate-no-programs ()
-  "Validate with no programs returns success."
+(ert-deftest supervisor-test-cli-verify-no-programs ()
+  "Verify with no programs returns success."
   (supervisor-test-with-unit-files nil
-    (let ((result (supervisor--cli-dispatch '("validate"))))
+    (let ((result (supervisor--cli-dispatch '("verify"))))
       (should (supervisor-cli-result-p result))
       (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
       (should (string-match "0 valid" (supervisor-cli-result-output result))))))
 
-(ert-deftest supervisor-test-cli-validate-invalid-entry ()
-  "Validate with invalid entry returns validation-failed exit code."
+(ert-deftest supervisor-test-cli-verify-invalid-entry ()
+  "Verify with invalid entry returns validation-failed exit code."
   (supervisor-test-with-unit-files
       '(("cmd" :id "cmd" :type "bad"))
-    (let ((result (supervisor--cli-dispatch '("validate"))))
+    (let ((result (supervisor--cli-dispatch '("verify"))))
       (should (supervisor-cli-result-p result))
       (should (= supervisor-cli-exit-validation-failed (supervisor-cli-result-exitcode result)))
       (should (string-match "1 invalid" (supervisor-cli-result-output result))))))
@@ -5685,12 +5685,80 @@ at minute boundaries."
 
 ;;; CLI Arg Validation Tests
 
-(ert-deftest supervisor-test-cli-validate-rejects-extra-args ()
-  "Validate with extra args returns invalid-args exit code."
-  (let ((result (supervisor--cli-dispatch '("validate" "extra"))))
+(ert-deftest supervisor-test-cli-verify-rejects-extra-args ()
+  "Verify with extra args returns invalid-args exit code."
+  (let ((result (supervisor--cli-dispatch '("verify" "extra"))))
     (should (supervisor-cli-result-p result))
     (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))))
 
+(ert-deftest supervisor-test-cli-validate-is-unknown-command ()
+  "CLI `validate' is rejected as unknown command (renamed to `verify')."
+  (let ((result (supervisor--cli-dispatch '("validate"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args (supervisor-cli-result-exitcode result)))
+    (should (string-match "Unknown command" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-reset-failed-per-unit ()
+  "CLI reset-failed clears failed state for a specific unit."
+  (let ((supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal)))
+    (puthash "svc-a" t supervisor--failed)
+    (puthash "svc-a" '(100 99 98) supervisor--restart-times)
+    (let ((result (supervisor--cli-dispatch '("reset-failed" "svc-a"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (string-match "Reset.*svc-a" (supervisor-cli-result-output result)))
+      (should-not (gethash "svc-a" supervisor--failed))
+      (should-not (gethash "svc-a" supervisor--restart-times)))))
+
+(ert-deftest supervisor-test-cli-reset-failed-global ()
+  "CLI reset-failed with no IDs clears all failed entries."
+  (let ((supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal)))
+    (puthash "svc-a" t supervisor--failed)
+    (puthash "svc-b" t supervisor--failed)
+    (puthash "svc-a" '(100) supervisor--restart-times)
+    (puthash "svc-b" '(100) supervisor--restart-times)
+    (let ((result (supervisor--cli-dispatch '("reset-failed"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (string-match "svc-a" (supervisor-cli-result-output result)))
+      (should (string-match "svc-b" (supervisor-cli-result-output result)))
+      (should (= 0 (hash-table-count supervisor--failed))))))
+
+(ert-deftest supervisor-test-cli-reset-failed-not-failed ()
+  "CLI reset-failed on a non-failed unit reports skipped."
+  (let ((supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal)))
+    (let ((result (supervisor--cli-dispatch '("reset-failed" "svc-x"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (string-match "Skipped.*svc-x" (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-reset-failed-no-failed-units ()
+  "CLI reset-failed with no IDs and no failed units shows message."
+  (let ((supervisor--failed (make-hash-table :test 'equal)))
+    (let ((result (supervisor--cli-dispatch '("reset-failed"))))
+      (should (supervisor-cli-result-p result))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (string-match "No failed" (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-reset-failed-core ()
+  "Core reset-failed function clears failed and restart-times."
+  (let ((supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal)))
+    (puthash "test-id" t supervisor--failed)
+    (puthash "test-id" '(100 99) supervisor--restart-times)
+    (let ((result (supervisor--reset-failed "test-id")))
+      (should (eq 'reset (plist-get result :status)))
+      (should-not (gethash "test-id" supervisor--failed))
+      (should-not (gethash "test-id" supervisor--restart-times)))))
+
+(ert-deftest supervisor-test-reset-failed-not-failed ()
+  "Core reset-failed on non-failed ID returns skipped."
+  (let ((supervisor--failed (make-hash-table :test 'equal)))
+    (let ((result (supervisor--reset-failed "test-id")))
+      (should (eq 'skipped (plist-get result :status))))))
 
 (ert-deftest supervisor-test-cli-reload-requires-at-least-one-id ()
   "CLI `reload' with no arguments returns exit 2 (invalid args)."
