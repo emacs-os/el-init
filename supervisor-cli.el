@@ -195,7 +195,7 @@ Returns alist with all fields needed for status display."
          (type (supervisor-entry-type entry))
          (stage (supervisor-entry-stage entry))
          (enabled-cfg (supervisor-entry-enabled-p entry))
-         (restart-cfg (supervisor-entry-restart-p entry))
+         (restart-cfg (supervisor-entry-restart-policy entry))
          (logging-cfg (supervisor-entry-logging-p entry))
          (delay (supervisor-entry-delay entry))
          (after (supervisor-entry-after entry))
@@ -291,7 +291,8 @@ Includes both plan-level and unit-file-level invalid entries."
             (supervisor--cli-format-bool enabled)
             (or status "-")
             (if (eq type 'oneshot) "n/a"
-              (supervisor--cli-format-bool restart))
+              (supervisor--cli-format-bool
+               (supervisor--restart-policy-to-bool restart)))
             (supervisor--cli-format-bool logging)
             (if pid (number-to-string pid) "-")
             (or reason "-"))))
@@ -345,7 +346,8 @@ Includes both plan-level and unit-file-level invalid entries."
              (if (not (eq enabled enabled-cfg)) " (override)" ""))
      (when (not (eq type 'oneshot))
        (format "Restart: %s%s\n"
-               (supervisor--cli-format-bool restart)
+               (supervisor--cli-format-bool
+                (supervisor--restart-policy-to-bool restart))
                (if (not (eq restart restart-cfg)) " (override)" "")))
      (format "Logging: %s%s\n"
              (supervisor--cli-format-bool logging)
@@ -376,7 +378,9 @@ Includes both plan-level and unit-file-level invalid entries."
     (stage . ,(symbol-name (alist-get 'stage info)))
     (enabled . ,(if (alist-get 'enabled info) t :json-false))
     (status . ,(alist-get 'status info))
-    (restart . ,(if (alist-get 'restart info) t :json-false))
+    (restart . ,(if (supervisor--restart-policy-to-bool
+                     (alist-get 'restart info))
+                    t :json-false))
     (logging . ,(if (alist-get 'logging info) t :json-false))
     (pid . ,(alist-get 'pid info))
     (reason . ,(alist-get 'reason info))
@@ -1148,8 +1152,8 @@ Use -- before IDs that start with a hyphen."
          (t
           (let* ((policy (car args))
                  (ids (cdr args))
-                 (value (cond ((equal policy "on") 'enabled)
-                              ((equal policy "off") 'disabled)
+                 (value (cond ((equal policy "on") 'always)
+                              ((equal policy "off") 'no)
                               (t nil))))
             (if (null value)
                 (supervisor--cli-error supervisor-cli-exit-invalid-args

@@ -305,11 +305,57 @@ Check PLIST for :oneshot-timeout and fall back to default."
 (defconst supervisor--valid-types '(simple oneshot)
   "List of valid :type values.")
 
+(defconst supervisor--valid-restart-policies '(no on-success on-failure always)
+  "List of valid restart policy symbols.
+`no' means never restart.
+`on-success' means restart only on clean exit (exit 0 or clean signal).
+`on-failure' means restart only on failure (non-zero exit or unclean signal).
+`always' means restart on any exit.")
+
+(defconst supervisor--clean-exit-signals '(1 2 13 15)
+  "Signal numbers considered clean exits.
+HUP (1), INT (2), PIPE (13), TERM (15).")
+
 (defconst supervisor--simple-only-keywords '(:restart :no-restart)
   "Keywords valid only for :type simple.")
 
 (defconst supervisor--oneshot-only-keywords '(:oneshot-wait :async :oneshot-timeout)
   "Keywords valid only for :type oneshot.")
+
+(defun supervisor--clean-exit-p (proc-status exit-code)
+  "Return non-nil if PROC-STATUS and EXIT-CODE indicate a clean exit.
+A clean exit is exit code 0, or a signal in `supervisor--clean-exit-signals'."
+  (or (and (eq proc-status 'exit) (eq exit-code 0))
+      (and (eq proc-status 'signal)
+           (memq exit-code supervisor--clean-exit-signals))))
+
+(defun supervisor--should-restart-p (policy proc-status exit-code)
+  "Return non-nil if POLICY dictates restart given PROC-STATUS and EXIT-CODE.
+POLICY is a restart policy symbol: `always', `no', `on-failure', `on-success'.
+Legacy boolean values are accepted: t is treated as `always', nil as `no'."
+  (let ((p (cond ((eq policy t) 'always)
+                 ((eq policy nil) 'no)
+                 (t policy))))
+    (pcase p
+      ('always t)
+      ('no nil)
+      ('on-failure (not (supervisor--clean-exit-p proc-status exit-code)))
+      ('on-success (supervisor--clean-exit-p proc-status exit-code))
+      (_ nil))))
+
+(defun supervisor--normalize-restart-policy (value)
+  "Normalize VALUE to a restart policy symbol.
+Accepts boolean t/nil and policy symbols.
+Returns a member of `supervisor--valid-restart-policies'."
+  (cond ((eq value t) 'always)
+        ((eq value nil) 'no)
+        ((memq value supervisor--valid-restart-policies) value)
+        (t value)))
+
+(defun supervisor--restart-policy-to-bool (policy)
+  "Convert restart POLICY symbol to boolean for display.
+Returns non-nil for any policy other than `no' or nil."
+  (and policy (not (eq policy 'no))))
 
 (defun supervisor--validate-entry (entry)
   "Validate ENTRY configuration.
@@ -357,6 +403,14 @@ Return nil if valid, or a reason string if invalid."
         (let ((delay (plist-get plist :delay)))
           (unless (and (numberp delay) (>= delay 0))
             (push ":delay must be a non-negative number" errors))))
+      ;; Check :restart value is boolean or valid policy symbol
+      (when (plist-member plist :restart)
+        (let ((val (plist-get plist :restart)))
+          (unless (or (eq val t) (eq val nil)
+                      (memq val supervisor--valid-restart-policies))
+            (push (format ":restart must be t, nil, or one of %s"
+                          supervisor--valid-restart-policies)
+                  errors))))
       ;; Check :oneshot-timeout is number or nil
       (when (plist-member plist :oneshot-timeout)
         (let ((timeout (plist-get plist :oneshot-timeout)))
@@ -587,7 +641,9 @@ cycle fallback behavior.  Uses the pure plan builder internally."
   "Hash table mapping program names to their process objects.")
 
 (defvar supervisor--restart-override (make-hash-table :test 'equal)
-  "Hash table of restart overrides: nil=inherit config, `enabled', `disabled'.")
+  "Hash table of restart overrides: nil=inherit config.
+Values are policy symbols (`always', `no', `on-success', `on-failure')
+or legacy values (`enabled', `disabled') which are migrated on read.")
 
 (defvar supervisor--enabled-override (make-hash-table :test 'equal)
   "Hash table of enabled overrides: nil=inherit config, `enabled', `disabled'.
@@ -731,7 +787,11 @@ Clears existing in-memory overrides before loading to prevent stale state."
                 (when-let* ((enabled (plist-get plist :enabled)))
                   (puthash id enabled supervisor--enabled-override))
                 (when-let* ((restart (plist-get plist :restart)))
-                  (puthash id restart supervisor--restart-override))
+                  ;; Migrate legacy enabled/disabled to policy symbols
+                  (let ((migrated (cond ((eq restart 'enabled) 'always)
+                                        ((eq restart 'disabled) 'no)
+                                        (t restart))))
+                    (puthash id migrated supervisor--restart-override)))
                 (when-let* ((logging (plist-get plist :logging)))
                   (puthash id logging supervisor--logging))
                 (when-let* ((mask (plist-get plist :mask)))
@@ -1064,7 +1124,7 @@ Field documentation:
   (stage 'stage3 :type symbol :documentation "Startup stage")
   (delay 0 :type number :documentation "Delay before starting (seconds)")
   (enabled t :type boolean :documentation "Whether to start this service")
-  (restart t :type boolean :documentation "Restart on crash (simple only)")
+  (restart 'always :type symbol :documentation "Restart policy: always, no, on-success, on-failure")
   (logging t :type boolean :documentation "Log stdout/stderr to file")
   (after nil :type list :documentation "Ordering dependencies (same stage)")
   (requires nil :type list :documentation "Requirement dependencies")
@@ -1080,7 +1140,7 @@ Field documentation:
     (stage . stage3)
     (delay . 0)
     (enabled . t)
-    (restart . t)
+    (restart . always)
     (logging . t)
     (after . nil)
     (requires . nil)
@@ -1095,7 +1155,7 @@ A value of :defer means the default is resolved at runtime.")
 ;; These functions abstract the internal tuple representation.
 ;; Use these instead of direct (nth N entry) indexing for maintainability.
 ;; The tuple format is:
-;;   (id cmd delay enabled-p restart-p logging-p type stage after
+;;   (id cmd delay enabled-p restart-policy logging-p type stage after
 ;;    oneshot-wait oneshot-timeout tags requires)
 
 (defsubst supervisor-entry-id (entry)
@@ -1115,7 +1175,12 @@ A value of :defer means the default is resolved at runtime.")
   (nth 3 entry))
 
 (defsubst supervisor-entry-restart-p (entry)
-  "Return non-nil if parsed ENTRY should restart on crash."
+  "Return non-nil if parsed ENTRY has any restart policy other than `no'."
+  (not (eq (nth 4 entry) 'no)))
+
+(defsubst supervisor-entry-restart-policy (entry)
+  "Return the restart policy symbol of parsed ENTRY.
+Value is one of `always', `no', `on-success', or `on-failure'."
   (nth 4 entry))
 
 (defsubst supervisor-entry-logging-p (entry)
@@ -1264,7 +1329,7 @@ This normalizes short-form entries to their explicit form."
          (stage (supervisor-entry-stage parsed))
          (delay (supervisor-entry-delay parsed))
          (enabled (supervisor-entry-enabled-p parsed))
-         (restart (supervisor-entry-restart-p parsed))
+         (restart (supervisor-entry-restart-policy parsed))
          (logging (supervisor-entry-logging-p parsed))
          (after (supervisor-entry-after parsed))
          (requires (supervisor-entry-requires parsed))
@@ -1286,8 +1351,8 @@ This normalizes short-form entries to their explicit form."
         (setq plist (plist-put plist :oneshot-timeout oneshot-timeout))))
     (when (not logging)
       (setq plist (plist-put plist :logging nil)))
-    (when (and (eq type 'simple) (not restart))
-      (setq plist (plist-put plist :no-restart t)))
+    (when (and (eq type 'simple) (not (eq restart 'always)))
+      (setq plist (plist-put plist :restart restart)))
     (when (not enabled)
       (setq plist (plist-put plist :disabled t)))
     (when (> delay 0)
@@ -1383,7 +1448,7 @@ status queries, and reconciliation without direct global access."
   entry-state      ; hash: id -> state symbol
   invalid          ; hash: id -> reason string
   enabled-override ; hash: id -> 'enabled, 'disabled, or nil
-  restart-override ; hash: id -> 'enabled, 'disabled, or nil
+  restart-override ; hash: id -> policy symbol or legacy 'enabled/'disabled
   logging-override ; hash: id -> 'enabled, 'disabled, or nil
   mask-override    ; hash: id -> 'masked or nil
   manually-started ; hash: id -> t if manually started (for reconcile)
@@ -1652,7 +1717,7 @@ Returns sorted entries list."
 
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
-Return a list: (id cmd delay enabled-p restart-p logging-p type
+Return a list: (id cmd delay enabled-p restart-policy logging-p type
 stage after oneshot-wait oneshot-timeout tags requires).
 
 Indices (schema v1):
@@ -1660,7 +1725,7 @@ Indices (schema v1):
   1  cmd            - shell command string
   2  delay          - seconds to wait before starting
   3  enabled-p      - whether to start this service
-  4  restart-p      - whether to restart on crash (simple only)
+  4  restart-policy - restart policy symbol (always, no, on-success, on-failure)
   5  logging-p      - whether to log stdout/stderr
   6  type           - `simple' or `oneshot'
   7  stage          - startup stage symbol
@@ -1674,7 +1739,7 @@ ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
   (if (stringp entry)
       (let ((id (file-name-nondirectory (car (split-string-and-unquote entry)))))
-        (list id entry 0 t t t 'simple 'stage3 nil
+        (list id entry 0 t 'always t 'simple 'stage3 nil
               supervisor-oneshot-default-wait supervisor-oneshot-timeout nil nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
@@ -1694,12 +1759,16 @@ Use accessor functions instead of direct indexing for new code."
                           ((plist-member plist :disabled)
                            (not (plist-get plist :disabled)))
                           (t t)))
-           ;; :restart t (default) or :no-restart t (inverse) - whether to restart on crash
+           ;; :restart POLICY or :no-restart t — restart policy symbol
+           ;; Accepts: symbol (always, no, on-success, on-failure),
+           ;;          boolean t (→ always) or nil (→ no),
+           ;;          :no-restart t (→ no)
            (restart (cond ((plist-member plist :restart)
-                           (plist-get plist :restart))
+                           (supervisor--normalize-restart-policy
+                            (plist-get plist :restart)))
                           ((plist-member plist :no-restart)
-                           (not (plist-get plist :no-restart)))
-                          (t t)))
+                           (if (plist-get plist :no-restart) 'no 'always))
+                          (t 'always)))
            (logging (if (plist-member plist :logging)
                         (plist-get plist :logging)
                       t))
@@ -1735,7 +1804,7 @@ Use accessor functions instead of direct indexing for new code."
    :stage (supervisor-entry-stage entry)
    :delay (supervisor-entry-delay entry)
    :enabled (supervisor-entry-enabled-p entry)
-   :restart (supervisor-entry-restart-p entry)
+   :restart (supervisor-entry-restart-policy entry)
    :logging (supervisor-entry-logging-p entry)
    :after (supervisor-entry-after entry)
    :requires (supervisor-entry-requires entry)
@@ -2091,7 +2160,7 @@ No-op if DAG scheduler is not active (e.g., manual starts)."
 (defun supervisor--dag-start-entry-async (entry)
   "Start ENTRY asynchronously.
 Mark ready immediately for simple processes, on exit for oneshot."
-  (pcase-let ((`(,id ,cmd ,delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,oneshot-wait ,oneshot-timeout ,_tags) entry))
+  (pcase-let ((`(,id ,cmd ,delay ,enabled-p ,restart-policy ,logging-p ,type ,_stage ,_after ,oneshot-wait ,oneshot-timeout ,_tags) entry))
     ;; Check effective enabled state (config + runtime override)
     (let ((effective-enabled (supervisor--get-effective-enabled id enabled-p)))
       (cond
@@ -2109,11 +2178,11 @@ Mark ready immediately for simple processes, on exit for oneshot."
                  (run-at-time delay nil
                               (lambda ()
                                 (remhash id supervisor--dag-delay-timers)
-                                (supervisor--dag-do-start id cmd logging-p type restart-p oneshot-wait oneshot-timeout)))
+                                (supervisor--dag-do-start id cmd logging-p type restart-policy oneshot-wait oneshot-timeout)))
                  supervisor--dag-delay-timers))
        ;; Start immediately
        (t
-        (supervisor--dag-do-start id cmd logging-p type restart-p oneshot-wait oneshot-timeout))))))
+        (supervisor--dag-do-start id cmd logging-p type restart-policy oneshot-wait oneshot-timeout))))))
 
 (defun supervisor--dag-finish-spawn-attempt ()
   "Finish a spawn attempt by decrementing count and processing queue."
@@ -2153,8 +2222,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
     (supervisor--dag-mark-ready id)
     (supervisor--emit-event 'process-ready id nil (list :type type))))
 
-(defun supervisor--dag-do-start (id cmd logging-p type restart-p _oneshot-wait oneshot-timeout)
-  "Start process ID with CMD, LOGGING-P, TYPE, RESTART-P, and ONESHOT-TIMEOUT."
+(defun supervisor--dag-do-start (id cmd logging-p type restart-policy _oneshot-wait oneshot-timeout)
+  "Start process ID with CMD, LOGGING-P, TYPE, RESTART-POLICY, ONESHOT-TIMEOUT."
   (puthash id t supervisor--dag-started)
   (puthash id (float-time) supervisor--start-times)
   (cl-incf supervisor--dag-active-starts)
@@ -2163,7 +2232,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
         (progn
           (supervisor--log 'warning "executable not found for %s: %s" id (car args))
           (supervisor--dag-handle-spawn-failure id))
-      (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
+      (let ((proc (supervisor--start-process id cmd logging-p type restart-policy)))
         (if (not proc)
             (supervisor--dag-handle-spawn-failure id)
           (supervisor--dag-handle-spawn-success id type oneshot-timeout))))))
@@ -2222,13 +2291,19 @@ Mark ready immediately for simple processes, on exit for oneshot."
     (if override (eq override 'enabled) default-logging)))
 
 (defun supervisor--get-effective-restart (id config-restart)
-  "Get effective restart state for ID.
-CONFIG-RESTART is the config's :restart value (t or nil).
-Return t if restart is enabled, nil if disabled."
-  (let ((override (gethash id supervisor--restart-override)))
-    (cond ((eq override 'enabled) t)
-          ((eq override 'disabled) nil)
-          (t config-restart))))
+  "Get effective restart policy for ID.
+CONFIG-RESTART is the config's restart policy symbol.
+Legacy boolean values in config are normalized.
+Returns a policy symbol from `supervisor--valid-restart-policies'."
+  (let ((override (gethash id supervisor--restart-override))
+        (normalized (supervisor--normalize-restart-policy config-restart)))
+    (cond ((eq override 'enabled) 'always)
+          ((eq override 'disabled) 'no)
+          ((eq override 'always) 'always)
+          ((eq override 'no) 'no)
+          ((eq override 'on-failure) 'on-failure)
+          ((eq override 'on-success) 'on-success)
+          (t normalized))))
 
 (defun supervisor--get-effective-enabled (id config-enabled)
   "Get effective enabled state for ID.
@@ -2325,7 +2400,9 @@ CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart."
                     supervisor--shutting-down
                     (gethash name supervisor--manually-stopped)
                     (eq (gethash name supervisor--enabled-override) 'disabled)
-                    (not (supervisor--get-effective-restart name config-restart))
+                    (not (supervisor--should-restart-p
+                          (supervisor--get-effective-restart name config-restart)
+                          proc-status exit-code))
                     (gethash name supervisor--failed)
                     (supervisor--check-crash-loop name))
           (supervisor--schedule-restart id cmd default-logging type config-restart
@@ -2335,7 +2412,7 @@ CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart."
   "Start CMD with identifier ID.
 DEFAULT-LOGGING is the config value; runtime override is checked at restart.
 TYPE is `simple' (long-running) or `oneshot' (run once).
-CONFIG-RESTART is the config's :restart value (t or nil).
+CONFIG-RESTART is the restart policy symbol.
 IS-RESTART is t when called from a crash-triggered restart timer."
   ;; Clear any pending restart timer for this ID first
   (when-let* ((timer (gethash id supervisor--restart-timers)))
@@ -2349,7 +2426,7 @@ IS-RESTART is t when called from a crash-triggered restart timer."
   ;; - this is a crash-restart AND (restart disabled or failed or runtime-disabled)
   ;; - already running (race with pending timer)
   (unless (or supervisor--shutting-down
-              (and is-restart (not (supervisor--get-effective-restart id config-restart)))
+              (and is-restart (eq (supervisor--get-effective-restart id config-restart) 'no))
               (and is-restart (gethash id supervisor--failed))
               (and is-restart (eq (gethash id supervisor--enabled-override) 'disabled))
               (and (gethash id supervisor--processes)
@@ -2402,7 +2479,7 @@ Uses sentinel-driven notification instead of polling."
 (defun supervisor--start-entry-async (entry callback)
   "Start ENTRY asynchronously for dashboard manual start.
 CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
-  (pcase-let ((`(,id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,otimeout ,_tags) entry))
+  (pcase-let ((`(,id ,cmd ,_delay ,enabled-p ,restart-policy ,logging-p ,type ,_stage ,_after ,_owait ,otimeout ,_tags) entry))
     (if (not (supervisor--get-effective-enabled id enabled-p))
         (progn
           (supervisor--log 'info "%s disabled (config or override), skipping" id)
@@ -2414,7 +2491,7 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
               (supervisor--emit-event 'process-failed id nil nil)
               (when callback (funcall callback nil)))
           ;; Start the process
-          (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
+          (let ((proc (supervisor--start-process id cmd logging-p type restart-policy)))
             (if (not proc)
                 (progn
                   (supervisor--emit-event 'process-failed id nil nil)
@@ -2463,7 +2540,7 @@ are blocked.  Manually started disabled units are tracked in
     (let ((entry (supervisor--get-entry-for-id id)))
       (if (not entry)
           (list :status 'error :reason "not found")
-        (pcase-let ((`(,_id ,cmd ,_delay ,_enabled-p ,restart-p ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
+        (pcase-let ((`(,_id ,cmd ,_delay ,_enabled-p ,restart-policy ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
           (cond
            ;; Masked (highest precedence - only mask blocks manual start)
            ((eq (gethash id supervisor--mask-override) 'masked)
@@ -2479,7 +2556,7 @@ are blocked.  Manually started disabled units are tracked in
             (remhash id supervisor--oneshot-completed)
             ;; Clear manually-stopped so restart works again
             (remhash id supervisor--manually-stopped)
-            (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
+            (let ((proc (supervisor--start-process id cmd logging-p type restart-policy)))
               (if proc
                   (progn
                     ;; Track manual start only on success so reconcile
@@ -2925,7 +3002,7 @@ Returns a plist with :stopped and :started counts."
                (cl-incf stopped))))
           ('start
            (when-let* ((entry (cl-find id plan-entries :key #'car :test #'equal)))
-             (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-p ,logging-p
+             (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-policy ,logging-p
                                  ,type ,_stage ,_after ,_owait ,_otimeout ,_tags)
                           entry))
                (when (supervisor--get-effective-enabled id enabled-p)
@@ -2936,7 +3013,7 @@ Returns a plist with :stopped and :started counts."
                                           id (car args))
                          (supervisor--emit-event 'process-failed id nil nil))
                      (supervisor--log 'info "reconcile: starting %s entry %s" reason id)
-                     (let ((proc (supervisor--start-process id cmd logging-p type restart-p)))
+                     (let ((proc (supervisor--start-process id cmd logging-p type restart-policy)))
                        (if proc
                            (progn
                              (supervisor--emit-event 'process-started id nil (list :type type))
@@ -3049,12 +3126,12 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
             (remhash id supervisor--manually-stopped)
             (let* ((cmd (nth 1 entry))
                    (logging-p (nth 5 entry))
-                   (restart-p (nth 4 entry))
+                   (restart-policy (nth 4 entry))
                    (exe (car (split-string-and-unquote cmd))))
               (if (not (executable-find exe))
                   (list :id id :action "error: executable not found")
                 (let ((new-proc (supervisor--start-process
-                                 id cmd logging-p type restart-p)))
+                                 id cmd logging-p type restart-policy)))
                   (if new-proc
                       (list :id id :action "reloaded")
                     (list :id id
@@ -3182,7 +3259,7 @@ Or with `use-package':
     (supervisor-mode 1))
 
 Process types:
-- simple: Long-running daemons, restarted on crash if :restart t
+- simple: Long-running daemons, restarted on crash per :restart policy
 - oneshot: Run-once scripts, exit is expected
 
 Stages (run sequentially):

@@ -343,10 +343,10 @@ _ID is accepted for signature consistency but ignored."
   (when-let* ((entry (tabulated-list-get-entry)))
     (string= "timer" (substring-no-properties (aref entry 1)))))
 
-(defun supervisor--make-dashboard-entry (id type stage enabled-p restart-p logging-p
+(defun supervisor--make-dashboard-entry (id type stage enabled-p restart-policy logging-p
                                             &optional snapshot)
   "Create a dashboard entry vector for ID.
-TYPE, STAGE, ENABLED-P, RESTART-P, LOGGING-P are parsed entry fields.
+TYPE, STAGE, ENABLED-P, RESTART-POLICY, LOGGING-P are parsed entry fields.
 If SNAPSHOT is provided, read runtime state from it."
   (let* ((status-pid (supervisor--compute-entry-status id type snapshot))
          (status (car status-pid))
@@ -369,12 +369,17 @@ If SNAPSHOT is provided, read runtime state from it."
          (restart-override (if snapshot
                                (gethash id (supervisor-snapshot-restart-override snapshot))
                              (gethash id supervisor--restart-override)))
-         (effective-restart (cond ((eq restart-override 'enabled) t)
-                                  ((eq restart-override 'disabled) nil)
-                                  (t restart-p)))
+         (effective-restart (cond ((eq restart-override 'enabled) 'always)
+                                  ((eq restart-override 'disabled) 'no)
+                                  ((memq restart-override
+                                         supervisor--valid-restart-policies)
+                                   restart-override)
+                                  (t (supervisor--normalize-restart-policy
+                                      restart-policy))))
          (restart-str (if (eq type 'oneshot)
                           "-"
-                        (if effective-restart "yes" "no")))
+                        (if (supervisor--restart-policy-to-bool effective-restart)
+                            "yes" "no")))
          (log-override (if snapshot
                            (gethash id (supervisor-snapshot-logging-override snapshot))
                          (gethash id supervisor--logging)))
@@ -532,14 +537,14 @@ If SNAPSHOT is provided, read runtime state from it."
                                     invalid-reason)
                             nil)
                       entries))
-            (pcase-let ((`(,id ,_cmd ,_delay ,enabled-p ,restart-p ,logging-p
+            (pcase-let ((`(,id ,_cmd ,_delay ,enabled-p ,restart-policy ,logging-p
                                ,type ,stage ,_after ,_owait ,_otimeout ,tags)
                          (supervisor--parse-entry entry)))
               (when (and (or (null stage-filter) (eq stage stage-filter))
                          (or (null tag-filter) (member tag-filter tags)))
                 (push (list id
                             (supervisor--make-dashboard-entry
-                             id type stage enabled-p restart-p logging-p snapshot)
+                             id type stage enabled-p restart-policy logging-p snapshot)
                             stage)
                       entries)))))))
     (setq entries (nreverse entries))
@@ -710,13 +715,14 @@ With prefix argument, show status legend instead."
             ;; Valid entry - show resolved config
             (let ((entry (supervisor--get-entry-for-id id)))
               (if entry
-                  (pcase-let ((`(,id ,_cmd ,delay ,enabled-p ,restart-p ,logging-p
+                  (pcase-let ((`(,id ,_cmd ,delay ,enabled-p ,restart-policy ,logging-p
                                      ,type ,stage ,after ,oneshot-wait ,oneshot-timeout ,_tags)
                                entry))
                     (message "%s: type=%s stage=%s enabled=%s restart=%s log=%s delay=%s after=%s%s"
                              id type stage
                              (if enabled-p "yes" "no")
-                             (if (eq type 'oneshot) "n/a" (if restart-p "yes" "no"))
+                             (if (eq type 'oneshot) "n/a"
+                               (if (supervisor--restart-policy-to-bool restart-policy) "yes" "no"))
                              (if logging-p "yes" "no")
                              delay
                              (or after "none")
@@ -820,7 +826,8 @@ With prefix argument, show status legend instead."
 
 (defun supervisor-dashboard-toggle-restart ()
   "Toggle auto-restart for process at point (no-op for oneshot).
-Cycles: config default -> override opposite -> back to config default."
+Toggles between `always' and `no'.  When the result matches the
+config default, the override is cleared."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
     (when (supervisor--separator-row-p id)
@@ -828,19 +835,20 @@ Cycles: config default -> override opposite -> back to config default."
     (if (gethash id supervisor--invalid)
         (message "Cannot toggle restart for invalid entry: %s" id)
       (when-let* ((entry (supervisor--get-entry-for-id id)))
-        (pcase-let ((`(,_id ,_cmd ,_delay ,_enabled-p ,restart-p ,_logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
+        (pcase-let ((`(,_id ,_cmd ,_delay ,_enabled-p ,restart-policy ,_logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
           ;; Oneshot processes don't have restart semantics
           (unless (eq type 'oneshot)
-            (let* ((currently-enabled (supervisor--get-effective-restart id restart-p))
-                   (new-enabled (not currently-enabled)))
+            (let* ((effective (supervisor--get-effective-restart id restart-policy))
+                   (new-policy (if (supervisor--restart-policy-to-bool effective)
+                                   'no 'always)))
               ;; If new state matches config, clear override; otherwise set override
-              (if (eq new-enabled restart-p)
+              (if (eq new-policy restart-policy)
                   (remhash id supervisor--restart-override)
-                (puthash id (if new-enabled 'enabled 'disabled) supervisor--restart-override))
+                (puthash id new-policy supervisor--restart-override))
               ;; Persist the override
               (supervisor--save-overrides)
               ;; Cancel pending restart timer when disabling
-              (unless new-enabled
+              (when (eq new-policy 'no)
                 (when-let* ((timer (gethash id supervisor--restart-timers)))
                   (when (timerp timer)
                     (cancel-timer timer))
@@ -858,7 +866,7 @@ Cycles: config default -> override opposite -> back to config default."
     (if (gethash id supervisor--invalid)
         (message "Cannot toggle enabled for invalid entry: %s" id)
       (when-let* ((entry (supervisor--get-entry-for-id id)))
-        (pcase-let ((`(,_id ,_cmd ,_delay ,enabled-p ,_restart-p ,_logging-p ,_type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
+        (pcase-let ((`(,_id ,_cmd ,_delay ,enabled-p ,_restart-policy ,_logging-p ,_type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
           (let* ((currently-enabled (supervisor--get-effective-enabled id enabled-p))
                  (new-enabled (not currently-enabled)))
             ;; If new state matches config, clear override; otherwise set override

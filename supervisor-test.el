@@ -152,7 +152,7 @@ core symbols exist without dashboard/cli-specific dependencies."
     (should (equal (nth 1 parsed) "nm-applet"))  ; cmd
     (should (= (nth 2 parsed) 0))                ; delay
     (should (eq (nth 3 parsed) t))               ; enabled-p
-    (should (eq (nth 4 parsed) t))               ; restart-p
+    (should (eq (nth 4 parsed) 'always))          ; restart-policy
     (should (eq (nth 5 parsed) t))               ; logging-p
     (should (eq (nth 6 parsed) 'simple))         ; type
     (should (eq (nth 7 parsed) 'stage3))))      ; stage (default)
@@ -163,7 +163,7 @@ core symbols exist without dashboard/cli-specific dependencies."
                  '("nm-applet" :type simple :stage stage2 :delay 3 :restart nil))))
     (should (equal (nth 0 parsed) "nm-applet"))
     (should (= (nth 2 parsed) 3))                ; delay
-    (should (eq (nth 4 parsed) nil))             ; restart-p
+    (should (eq (nth 4 parsed) 'no))              ; restart-policy
     (should (eq (nth 6 parsed) 'simple))
     (should (eq (nth 7 parsed) 'stage2))))
 
@@ -194,9 +194,9 @@ core symbols exist without dashboard/cli-specific dependencies."
   (let ((restart (supervisor--parse-entry '("foo" :restart t)))
         (no-restart (supervisor--parse-entry '("foo" :no-restart t)))
         (explicit-nil (supervisor--parse-entry '("foo" :restart nil))))
-    (should (eq (nth 4 restart) t))
-    (should (eq (nth 4 no-restart) nil))
-    (should (eq (nth 4 explicit-nil) nil))))
+    (should (eq (nth 4 restart) 'always))
+    (should (eq (nth 4 no-restart) 'no))
+    (should (eq (nth 4 explicit-nil) 'no))))
 
 (ert-deftest supervisor-test-parse-after-string ()
   "Parse :after as string."
@@ -207,6 +207,191 @@ core symbols exist without dashboard/cli-specific dependencies."
   "Parse :after as list."
   (let ((parsed (supervisor--parse-entry '("baz" :after ("foo" "bar")))))
     (should (equal (nth 8 parsed) '("foo" "bar")))))
+
+;;; Restart policy tests
+
+(ert-deftest supervisor-test-parse-restart-policy-symbols ()
+  "All four restart policy symbols parse correctly."
+  (let ((always (supervisor--parse-entry '("foo" :restart always)))
+        (no (supervisor--parse-entry '("foo" :restart no)))
+        (on-failure (supervisor--parse-entry '("foo" :restart on-failure)))
+        (on-success (supervisor--parse-entry '("foo" :restart on-success))))
+    (should (eq (nth 4 always) 'always))
+    (should (eq (nth 4 no) 'no))
+    (should (eq (nth 4 on-failure) 'on-failure))
+    (should (eq (nth 4 on-success) 'on-success))))
+
+(ert-deftest supervisor-test-parse-restart-policy-boolean-compat ()
+  "Boolean :restart values are normalized to policy symbols."
+  (let ((bool-t (supervisor--parse-entry '("foo" :restart t)))
+        (bool-nil (supervisor--parse-entry '("foo" :restart nil)))
+        (no-restart (supervisor--parse-entry '("foo" :no-restart t))))
+    (should (eq (nth 4 bool-t) 'always))
+    (should (eq (nth 4 bool-nil) 'no))
+    (should (eq (nth 4 no-restart) 'no))))
+
+(ert-deftest supervisor-test-validate-restart-invalid-symbol ()
+  "Invalid :restart symbol is rejected by validation."
+  (let ((reason (supervisor--validate-entry '("foo" :restart bogus))))
+    (should reason)
+    (should (string-match-p ":restart" reason))))
+
+(ert-deftest supervisor-test-clean-exit-p ()
+  "Clean exit predicate handles all cases."
+  ;; Exit code 0 is always clean
+  (should (supervisor--clean-exit-p 'exit 0))
+  ;; Non-zero exit is not clean
+  (should-not (supervisor--clean-exit-p 'exit 1))
+  (should-not (supervisor--clean-exit-p 'exit 127))
+  ;; Clean signals: HUP(1), INT(2), PIPE(13), TERM(15)
+  (should (supervisor--clean-exit-p 'signal 1))
+  (should (supervisor--clean-exit-p 'signal 2))
+  (should (supervisor--clean-exit-p 'signal 13))
+  (should (supervisor--clean-exit-p 'signal 15))
+  ;; Non-clean signals: KILL(9), SEGV(11)
+  (should-not (supervisor--clean-exit-p 'signal 9))
+  (should-not (supervisor--clean-exit-p 'signal 11)))
+
+(ert-deftest supervisor-test-should-restart-p ()
+  "Full policy x exit-type matrix for restart decisions."
+  ;; always: restart on any exit
+  (should (supervisor--should-restart-p 'always 'exit 0))
+  (should (supervisor--should-restart-p 'always 'exit 1))
+  (should (supervisor--should-restart-p 'always 'signal 9))
+  (should (supervisor--should-restart-p 'always 'signal 15))
+  ;; no: never restart
+  (should-not (supervisor--should-restart-p 'no 'exit 0))
+  (should-not (supervisor--should-restart-p 'no 'exit 1))
+  (should-not (supervisor--should-restart-p 'no 'signal 9))
+  (should-not (supervisor--should-restart-p 'no 'signal 15))
+  ;; on-failure: restart only on non-clean exit
+  (should-not (supervisor--should-restart-p 'on-failure 'exit 0))
+  (should (supervisor--should-restart-p 'on-failure 'exit 1))
+  (should (supervisor--should-restart-p 'on-failure 'signal 9))
+  (should-not (supervisor--should-restart-p 'on-failure 'signal 15))
+  ;; on-success: restart only on clean exit
+  (should (supervisor--should-restart-p 'on-success 'exit 0))
+  (should-not (supervisor--should-restart-p 'on-success 'exit 1))
+  (should-not (supervisor--should-restart-p 'on-success 'signal 9))
+  (should (supervisor--should-restart-p 'on-success 'signal 15))
+  ;; Legacy boolean compat
+  (should (supervisor--should-restart-p t 'exit 1))
+  (should-not (supervisor--should-restart-p nil 'exit 1)))
+
+(ert-deftest supervisor-test-overrides-load-migrates-legacy-restart ()
+  "Loading overrides with legacy enabled/disabled migrates to policy symbols."
+  (let* ((temp-file (make-temp-file "supervisor-test-migrate-" nil ".eld"))
+         (supervisor-overrides-file temp-file)
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--overrides-loaded nil))
+    (unwind-protect
+        (progn
+          ;; Write file with legacy enabled/disabled restart values
+          (with-temp-file temp-file
+            (insert ";; test overrides\n")
+            (prin1 `((version . 1)
+                     (timestamp . "2025-01-01T00:00:00+0000")
+                     (overrides . (("svc-a" :restart enabled)
+                                   ("svc-b" :restart disabled))))
+                   (current-buffer)))
+          ;; Load
+          (should (supervisor--load-overrides))
+          ;; Legacy values should be migrated
+          (should (eq 'always (gethash "svc-a" supervisor--restart-override)))
+          (should (eq 'no (gethash "svc-b" supervisor--restart-override))))
+      (delete-file temp-file))))
+
+(ert-deftest supervisor-test-entry-restart-p-accessor ()
+  "The restart-p accessor returns boolean from policy symbol."
+  (let ((always-entry (list "id" "cmd" 0 t 'always t 'simple 'stage3 nil t 30 nil nil))
+        (no-entry (list "id" "cmd" 0 t 'no t 'simple 'stage3 nil t 30 nil nil))
+        (on-failure-entry (list "id" "cmd" 0 t 'on-failure t 'simple 'stage3 nil t 30 nil nil)))
+    (should (supervisor-entry-restart-p always-entry))
+    (should-not (supervisor-entry-restart-p no-entry))
+    (should (supervisor-entry-restart-p on-failure-entry))))
+
+(ert-deftest supervisor-test-entry-restart-policy-accessor ()
+  "The restart-policy accessor returns the raw policy symbol."
+  (let ((entry (list "id" "cmd" 0 t 'on-failure t 'simple 'stage3 nil t 30 nil nil)))
+    (should (eq 'on-failure (supervisor-entry-restart-policy entry)))))
+
+(ert-deftest supervisor-test-get-effective-restart-policy ()
+  "Effective restart returns policy symbols with override migration."
+  (let ((supervisor--restart-override (make-hash-table :test 'equal)))
+    ;; No override: return config value
+    (should (eq 'always (supervisor--get-effective-restart "svc" 'always)))
+    (should (eq 'on-failure (supervisor--get-effective-restart "svc" 'on-failure)))
+    ;; Legacy boolean config: normalized
+    (should (eq 'always (supervisor--get-effective-restart "svc" t)))
+    (should (eq 'no (supervisor--get-effective-restart "svc" nil)))
+    ;; Override with policy symbol
+    (puthash "svc" 'no supervisor--restart-override)
+    (should (eq 'no (supervisor--get-effective-restart "svc" 'always)))
+    ;; Override with legacy enabled/disabled
+    (puthash "svc" 'enabled supervisor--restart-override)
+    (should (eq 'always (supervisor--get-effective-restart "svc" 'no)))
+    (puthash "svc" 'disabled supervisor--restart-override)
+    (should (eq 'no (supervisor--get-effective-restart "svc" 'always)))))
+
+(ert-deftest supervisor-test-restart-policy-to-bool-nil ()
+  "Nil restart policy (oneshot n/a) converts to false, not true."
+  (should-not (supervisor--restart-policy-to-bool nil))
+  (should-not (supervisor--restart-policy-to-bool 'no))
+  (should (supervisor--restart-policy-to-bool 'always))
+  (should (supervisor--restart-policy-to-bool 'on-failure))
+  (should (supervisor--restart-policy-to-bool 'on-success)))
+
+(ert-deftest supervisor-test-oneshot-json-restart-false ()
+  "Oneshot entries emit restart false in JSON, not true."
+  (let* ((supervisor-programs '(("true" :type oneshot :stage stage3)))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--start-times (make-hash-table :test 'equal))
+         (supervisor--ready-times (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor-unit-directory "/nonexistent-supervisor-test-dir"))
+    (let* ((result (supervisor--cli-all-entries-info))
+           (entries (car result))
+           (info (car entries))
+           (json-obj (supervisor--cli-entry-to-json-obj info)))
+      ;; restart field must be :json-false for oneshot, not t
+      (should (eq :json-false (alist-get 'restart json-obj))))))
+
+(ert-deftest supervisor-test-dashboard-restart-uses-snapshot ()
+  "Dashboard restart resolution uses snapshot, not global state."
+  (let* ((snapshot-restart (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal)))
+    ;; Global says always, snapshot says no
+    (puthash "svc" 'always supervisor--restart-override)
+    (puthash "svc" 'no snapshot-restart)
+    (let* ((snapshot (supervisor-snapshot--create
+                      :process-alive (make-hash-table :test 'equal)
+                      :process-pids (make-hash-table :test 'equal)
+                      :failed (make-hash-table :test 'equal)
+                      :oneshot-exit (make-hash-table :test 'equal)
+                      :entry-state (make-hash-table :test 'equal)
+                      :invalid (make-hash-table :test 'equal)
+                      :enabled-override (make-hash-table :test 'equal)
+                      :restart-override snapshot-restart
+                      :logging-override (make-hash-table :test 'equal)
+                      :mask-override (make-hash-table :test 'equal)
+                      :manually-started (make-hash-table :test 'equal)
+                      :timestamp (float-time)))
+           (vec (supervisor--make-dashboard-entry
+                 "svc" 'simple 'stage3 t 'always t snapshot)))
+      ;; Restart column (index 5) should say "no" from snapshot, not "yes" from global
+      (should (equal "no" (aref vec 5))))))
 
 ;;; Stage conversion tests
 
@@ -436,18 +621,18 @@ core symbols exist without dashboard/cli-specific dependencies."
 
 (ert-deftest supervisor-test-topo-sort-stable-ordering ()
   "Unconstrained nodes maintain original list order."
-  (let* ((entries '(("a" "cmd" 0 t t t simple stage3 nil t 30)
-                    ("b" "cmd" 0 t t t simple stage3 nil t 30)
-                    ("c" "cmd" 0 t t t simple stage3 nil t 30)))
+  (let* ((entries '(("a" "cmd" 0 t always t simple stage3 nil t 30)
+                    ("b" "cmd" 0 t always t simple stage3 nil t 30)
+                    ("c" "cmd" 0 t always t simple stage3 nil t 30)))
          (sorted (supervisor--stable-topo-sort entries)))
     ;; With no dependencies, order should be preserved
     (should (equal (mapcar #'car sorted) '("a" "b" "c")))))
 
 (ert-deftest supervisor-test-topo-sort-respects-after ()
   "Entries with :after come after their dependencies."
-  (let* ((entries '(("c" "cmd" 0 t t t simple stage3 ("a") t 30)
-                    ("a" "cmd" 0 t t t simple stage3 nil t 30)
-                    ("b" "cmd" 0 t t t simple stage3 nil t 30)))
+  (let* ((entries '(("c" "cmd" 0 t always t simple stage3 ("a") t 30)
+                    ("a" "cmd" 0 t always t simple stage3 nil t 30)
+                    ("b" "cmd" 0 t always t simple stage3 nil t 30)))
          (sorted (supervisor--stable-topo-sort entries))
          (order (mapcar #'car sorted)))
     ;; "a" must come before "c" (dependency constraint)
@@ -459,8 +644,8 @@ core symbols exist without dashboard/cli-specific dependencies."
 
 (ert-deftest supervisor-test-topo-sort-cycle-fallback ()
   "Cycle detection returns list order with :after cleared."
-  (let* ((entries '(("a" "cmd" 0 t t t simple stage3 ("b") t 30)
-                    ("b" "cmd" 0 t t t simple stage3 ("a") t 30)))
+  (let* ((entries '(("a" "cmd" 0 t always t simple stage3 ("b") t 30)
+                    ("b" "cmd" 0 t always t simple stage3 ("a") t 30)))
          (sorted (supervisor--stable-topo-sort entries)))
     ;; Should return in original order
     (should (equal (mapcar #'car sorted) '("a" "b")))
@@ -471,10 +656,10 @@ core symbols exist without dashboard/cli-specific dependencies."
 (ert-deftest supervisor-test-topo-sort-complex-dag ()
   "Complex DAG with multiple dependencies."
   ;; d depends on b and c, b depends on a
-  (let* ((entries '(("a" "cmd" 0 t t t simple stage3 nil t 30)
-                    ("b" "cmd" 0 t t t simple stage3 ("a") t 30)
-                    ("c" "cmd" 0 t t t simple stage3 nil t 30)
-                    ("d" "cmd" 0 t t t simple stage3 ("b" "c") t 30)))
+  (let* ((entries '(("a" "cmd" 0 t always t simple stage3 nil t 30)
+                    ("b" "cmd" 0 t always t simple stage3 ("a") t 30)
+                    ("c" "cmd" 0 t always t simple stage3 nil t 30)
+                    ("d" "cmd" 0 t always t simple stage3 ("b" "c") t 30)))
          (sorted (supervisor--stable-topo-sort entries))
          (order (mapcar #'car sorted)))
     ;; a must come before b
@@ -497,10 +682,10 @@ core symbols exist without dashboard/cli-specific dependencies."
         (supervisor--dag-timeout-timers nil)
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
-    ;; Entry: (id cmd delay enabled-p restart-p logging-p type stage after oneshot-wait oneshot-timeout)
-    (let ((entries '(("blocking" "cmd" 0 t t t oneshot stage3 nil t 30)
-                     ("non-blocking" "cmd" 0 t t t oneshot stage3 nil nil 30)
-                     ("simple" "cmd" 0 t t t simple stage3 nil t 30))))
+    ;; Entry: (id cmd delay enabled-p restart-policy logging-p type stage after oneshot-wait oneshot-timeout)
+    (let ((entries '(("blocking" "cmd" 0 t always t oneshot stage3 nil t 30)
+                     ("non-blocking" "cmd" 0 t always t oneshot stage3 nil nil 30)
+                     ("simple" "cmd" 0 t always t simple stage3 nil t 30))))
       (supervisor--dag-init entries)
       ;; Blocking oneshot should be in blocking set
       (should (gethash "blocking" supervisor--dag-blocking))
@@ -520,9 +705,9 @@ core symbols exist without dashboard/cli-specific dependencies."
         (supervisor--dag-timeout-timers nil)
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
-    (let ((entries '(("a" "cmd" 0 t t t simple stage3 nil t 30)
-                     ("b" "cmd" 0 t t t simple stage3 ("a") t 30)
-                     ("c" "cmd" 0 t t t simple stage3 ("a" "b") t 30))))
+    (let ((entries '(("a" "cmd" 0 t always t simple stage3 nil t 30)
+                     ("b" "cmd" 0 t always t simple stage3 ("a") t 30)
+                     ("c" "cmd" 0 t always t simple stage3 ("a" "b") t 30))))
       (supervisor--dag-init entries)
       ;; a has no dependencies
       (should (= (gethash "a" supervisor--dag-in-degree) 0))
@@ -542,9 +727,9 @@ core symbols exist without dashboard/cli-specific dependencies."
         (supervisor--dag-timeout-timers nil)
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
-    (let ((entries '(("a" "cmd" 0 t t t simple stage3 nil t 30)
-                     ("b" "cmd" 0 t t t simple stage3 ("a") t 30)
-                     ("c" "cmd" 0 t t t simple stage3 ("a") t 30))))
+    (let ((entries '(("a" "cmd" 0 t always t simple stage3 nil t 30)
+                     ("b" "cmd" 0 t always t simple stage3 ("a") t 30)
+                     ("c" "cmd" 0 t always t simple stage3 ("a") t 30))))
       (supervisor--dag-init entries)
       ;; a should have b and c as dependents
       (let ((deps (gethash "a" supervisor--dag-dependents)))
@@ -565,9 +750,9 @@ core symbols exist without dashboard/cli-specific dependencies."
         (supervisor--entry-state (make-hash-table :test 'equal))
         (supervisor--ready-times (make-hash-table :test 'equal)))
     ;; "a" is disabled, "b" depends on "a"
-    ;;           (id   cmd   delay enabled-p restart-p logging-p type   stage   after oneshot-wait timeout)
-    (let ((entries '(("a" "cmd" 0 nil t t simple stage3 nil t 30)
-                     ("b" "cmd" 0 t   t t simple stage3 ("a") t 30))))
+    ;;           (id   cmd   delay enabled-p restart-policy logging-p type   stage   after oneshot-wait timeout)
+    (let ((entries '(("a" "cmd" 0 nil always t simple stage3 nil t 30)
+                     ("b" "cmd" 0 t   always t simple stage3 ("a") t 30))))
       (supervisor--dag-init entries)
       ;; Disabled entry should be marked ready immediately
       (should (gethash "a" supervisor--dag-ready))
@@ -589,7 +774,7 @@ core symbols exist without dashboard/cli-specific dependencies."
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
     ;; Entry with :async t means oneshot-wait = nil
-    (let ((entries '(("async-oneshot" "cmd" 0 t t t oneshot stage3 nil nil 30))))
+    (let ((entries '(("async-oneshot" "cmd" 0 t always t oneshot stage3 nil nil 30))))
       (supervisor--dag-init entries)
       ;; Async oneshot should NOT be in blocking set
       (should-not (gethash "async-oneshot" supervisor--dag-blocking)))))
@@ -636,7 +821,7 @@ core symbols exist without dashboard/cli-specific dependencies."
         (supervisor--dag-stage-complete-callback nil)
         (callback-called nil))
     ;; Blocking oneshot entry
-    (puthash "blocking" '("blocking" "sleep 10" 0 t t t oneshot stage3 nil t 30) supervisor--dag-entries)
+    (puthash "blocking" '("blocking" "sleep 10" 0 t always t oneshot stage3 nil t 30) supervisor--dag-entries)
     (puthash "blocking" 0 supervisor--dag-in-degree)
     (puthash "blocking" t supervisor--dag-started)
     ;; Oneshot is blocking
@@ -660,7 +845,7 @@ core symbols exist without dashboard/cli-specific dependencies."
         (supervisor--dag-stage-complete-callback nil)
         (supervisor-verbose nil))
     ;; Set up blocking oneshot
-    (puthash "oneshot" '("oneshot" "cmd" 0 t t t oneshot stage3 nil t 30) supervisor--dag-entries)
+    (puthash "oneshot" '("oneshot" "cmd" 0 t always t oneshot stage3 nil t 30) supervisor--dag-entries)
     (puthash "oneshot" 0 supervisor--dag-in-degree)
     (puthash "oneshot" t supervisor--dag-started)
     (puthash "oneshot" t supervisor--dag-blocking)
@@ -691,8 +876,8 @@ core symbols exist without dashboard/cli-specific dependencies."
     (cl-letf (((symbol-function 'supervisor--dag-start-entry-async)
                (lambda (entry) (push (car entry) started-ids))))
       ;; Set up: b depends on a
-      (puthash "a" '("a" "cmd" 0 t t t simple stage3 nil t 30) supervisor--dag-entries)
-      (puthash "b" '("b" "cmd" 0 t t t simple stage3 ("a") t 30) supervisor--dag-entries)
+      (puthash "a" '("a" "cmd" 0 t always t simple stage3 nil t 30) supervisor--dag-entries)
+      (puthash "b" '("b" "cmd" 0 t always t simple stage3 ("a") t 30) supervisor--dag-entries)
       (puthash "a" 0 supervisor--dag-in-degree)
       (puthash "b" 1 supervisor--dag-in-degree)
       (puthash "a" t supervisor--dag-started)
@@ -728,8 +913,8 @@ core symbols exist without dashboard/cli-specific dependencies."
     (cl-letf (((symbol-function 'supervisor--dag-start-entry-async)
                (lambda (entry) (push (car entry) started-ids))))
       ;; Set up: blocking oneshot "slow" with dependent "after-slow"
-      (puthash "slow" '("slow" "sleep 999" 0 t t t oneshot stage3 nil t 5) supervisor--dag-entries)
-      (puthash "after-slow" '("after-slow" "echo done" 0 t t t simple stage3 ("slow") t 30) supervisor--dag-entries)
+      (puthash "slow" '("slow" "sleep 999" 0 t always t oneshot stage3 nil t 5) supervisor--dag-entries)
+      (puthash "after-slow" '("after-slow" "echo done" 0 t always t simple stage3 ("slow") t 30) supervisor--dag-entries)
       (puthash "slow" 0 supervisor--dag-in-degree)
       (puthash "after-slow" 1 supervisor--dag-in-degree)
       (puthash "slow" t supervisor--dag-started)
@@ -815,8 +1000,8 @@ core symbols exist without dashboard/cli-specific dependencies."
         (supervisor-max-concurrent-starts 2)
         (started-ids nil))
     ;; Queue entries
-    (puthash "a" '("a" "true" 0 t t t simple stage3 nil t 30) supervisor--dag-entries)
-    (puthash "b" '("b" "true" 0 t t t simple stage3 nil t 30) supervisor--dag-entries)
+    (puthash "a" '("a" "true" 0 t always t simple stage3 nil t 30) supervisor--dag-entries)
+    (puthash "b" '("b" "true" 0 t always t simple stage3 nil t 30) supervisor--dag-entries)
     (setq supervisor--dag-pending-starts '("a" "b"))
     ;; Before processing, count should be 0
     (should (= supervisor--dag-active-starts 0))
@@ -941,8 +1126,8 @@ Only auto-started (not manually-started) disabled units are stopped."
   (let ((supervisor--computed-deps (make-hash-table :test 'equal))
         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
     ;; Entry c depends on a and b, but b doesn't exist in this stage
-    (let ((entries '(("a" "cmd" 0 t t t simple stage3 nil t 30)
-                     ("c" "cmd" 0 t t t simple stage3 ("a" "b") t 30))))
+    (let ((entries '(("a" "cmd" 0 t always t simple stage3 nil t 30)
+                     ("c" "cmd" 0 t always t simple stage3 ("a" "b") t 30))))
       (supervisor--stable-topo-sort entries)
       ;; c's computed deps should only include "a" (b doesn't exist)
       (should (equal (gethash "c" supervisor--computed-deps) '("a")))
@@ -954,8 +1139,8 @@ Only auto-started (not manually-started) disabled units are stopped."
   (let ((supervisor--computed-deps (make-hash-table :test 'equal))
         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
     ;; Create a cycle: a -> b -> a
-    (let ((entries '(("a" "cmd" 0 t t t simple stage3 ("b") t 30)
-                     ("b" "cmd" 0 t t t simple stage3 ("a") t 30))))
+    (let ((entries '(("a" "cmd" 0 t always t simple stage3 ("b") t 30)
+                     ("b" "cmd" 0 t always t simple stage3 ("a") t 30))))
       (supervisor--stable-topo-sort entries)
       ;; Both should be marked as cycle fallback
       (should (gethash "a" supervisor--cycle-fallback-ids))
@@ -2091,7 +2276,7 @@ Regression test: process-ready was incorrectly emitted for failures."
         (supervisor--dag-entries (make-hash-table :test 'equal)))
     ;; Set up initial state
     (supervisor--transition-state "test" 'stage-not-started)
-    (puthash "test" '("test" "cmd" 0 t t t simple stage3 nil t 30 nil)
+    (puthash "test" '("test" "cmd" 0 t always t simple stage3 nil t 30 nil)
              supervisor--dag-entries)
     ;; Capture events
     (cl-letf (((symbol-function 'run-hook-with-args)
@@ -2120,7 +2305,7 @@ Regression test: process-ready was incorrectly emitted for disabled entries."
         (supervisor--dag-entries (make-hash-table :test 'equal))
         (supervisor--enabled-override (make-hash-table :test 'equal)))
     ;; Set up as disabled entry
-    (puthash "test" '("test" "cmd" 0 nil t t simple stage3 nil t 30 nil)
+    (puthash "test" '("test" "cmd" 0 nil always t simple stage3 nil t 30 nil)
              supervisor--dag-entries)
     ;; Capture events
     (cl-letf (((symbol-function 'run-hook-with-args)
@@ -2129,7 +2314,7 @@ Regression test: process-ready was incorrectly emitted for disabled entries."
                    (push (car args) events))))
               ((symbol-function 'run-hooks) #'ignore))
       (supervisor--dag-start-entry-async
-       '("test" "cmd" 0 nil t t simple stage3 nil t 30 nil)))
+       '("test" "cmd" 0 nil always t simple stage3 nil t 30 nil)))
     ;; Should NOT have process-ready
     (should-not (cl-find 'process-ready events :key (lambda (e) (plist-get e :type))))))
 
@@ -2150,7 +2335,7 @@ Regression test: process-ready was incorrectly emitted for disabled entries."
         (supervisor--dag-entries (make-hash-table :test 'equal)))
     ;; Set up initial state
     (supervisor--transition-state "test" 'stage-not-started)
-    (puthash "test" '("test" "sleep" 0 t t t simple stage3 nil t 30 nil)
+    (puthash "test" '("test" "sleep" 0 t always t simple stage3 nil t 30 nil)
              supervisor--dag-entries)
     ;; Capture events
     (cl-letf (((symbol-function 'run-hook-with-args)
@@ -3130,7 +3315,7 @@ Regression test: stderr pipe processes used to pollute the process list."
                   :stage 'stage2
                   :delay 5
                   :enabled t
-                  :restart nil
+                  :restart 'no
                   :logging t
                   :after '("dep1")
                   :requires '("req1")
@@ -3143,7 +3328,7 @@ Regression test: stderr pipe processes used to pollute the process list."
     (should (eq 'stage2 (supervisor-service-stage service)))
     (should (= 5 (supervisor-service-delay service)))
     (should (supervisor-service-enabled service))
-    (should-not (supervisor-service-restart service))
+    (should (eq 'no (supervisor-service-restart service)))
     (should (supervisor-service-logging service))
     (should (equal '("dep1") (supervisor-service-after service)))
     (should (equal '("req1") (supervisor-service-requires service)))
@@ -3188,7 +3373,7 @@ Regression test: stderr pipe processes used to pollute the process list."
                    :stage 'stage1
                    :delay 10
                    :enabled nil
-                   :restart t
+                   :restart 'always
                    :logging nil
                    :after '("dep")
                    :requires '("req")
@@ -3270,7 +3455,7 @@ Regression test: stderr pipe processes used to pollute the process list."
         (supervisor--restart-override (make-hash-table :test 'equal))
         (supervisor--logging (make-hash-table :test 'equal)))
     (puthash "a" 'enabled supervisor--enabled-override)
-    (puthash "b" 'disabled supervisor--restart-override)
+    (puthash "b" 'no supervisor--restart-override)
     (puthash "a" 'enabled supervisor--logging)
     (let ((alist (supervisor--overrides-to-alist)))
       (should (= 2 (length alist)))
@@ -3278,7 +3463,7 @@ Regression test: stderr pipe processes used to pollute the process list."
             (b-entry (cdr (assoc "b" alist))))
         (should (eq 'enabled (plist-get a-entry :enabled)))
         (should (eq 'enabled (plist-get a-entry :logging)))
-        (should (eq 'disabled (plist-get b-entry :restart)))))))
+        (should (eq 'no (plist-get b-entry :restart)))))))
 
 (ert-deftest supervisor-test-overrides-save-load-roundtrip ()
   "Overrides survive save and load roundtrip."
@@ -3292,7 +3477,7 @@ Regression test: stderr pipe processes used to pollute the process list."
         (progn
           ;; Set some overrides
           (puthash "test-entry" 'disabled supervisor--enabled-override)
-          (puthash "test-entry" 'enabled supervisor--restart-override)
+          (puthash "test-entry" 'always supervisor--restart-override)
           ;; Save
           (should (supervisor--save-overrides))
           ;; Clear memory
@@ -3302,7 +3487,7 @@ Regression test: stderr pipe processes used to pollute the process list."
           (should (supervisor--load-overrides))
           ;; Verify
           (should (eq 'disabled (gethash "test-entry" supervisor--enabled-override)))
-          (should (eq 'enabled (gethash "test-entry" supervisor--restart-override))))
+          (should (eq 'always (gethash "test-entry" supervisor--restart-override))))
       (delete-file temp-file))))
 
 (ert-deftest supervisor-test-overrides-corrupt-file-handled ()
@@ -3422,8 +3607,8 @@ Regression test: stderr pipe processes used to pollute the process list."
 
 (ert-deftest supervisor-test-dag-uses-requires-edges ()
   "DAG scheduler uses :requires edges for in-degree calculation."
-  (let* ((entries '(("a" "sleep 1" 0 t t t simple stage3 nil t 30 nil nil)
-                    ("b" "sleep 1" 0 t t t simple stage3 nil t 30 nil ("a"))))
+  (let* ((entries '(("a" "sleep 1" 0 t always t simple stage3 nil t 30 nil nil)
+                    ("b" "sleep 1" 0 t always t simple stage3 nil t 30 nil ("a"))))
          ;; Entry "b" has :requires "a" at index 12
          (supervisor--dag-in-degree (make-hash-table :test 'equal))
          (supervisor--dag-dependents (make-hash-table :test 'equal))
@@ -3460,7 +3645,7 @@ Regression test: stderr pipe processes used to pollute the process list."
           (clrhash supervisor--restart-override)
           (clrhash supervisor--logging)
           (puthash "stale-entry" 'disabled supervisor--enabled-override)
-          (puthash "stale-entry" 'disabled supervisor--restart-override)
+          (puthash "stale-entry" 'no supervisor--restart-override)
           (puthash "stale-entry" 'disabled supervisor--logging)
           (puthash "another-stale" 'enabled supervisor--enabled-override)
           ;; Load from file - should clear stale state and restore file state
@@ -5272,14 +5457,14 @@ at minute boundaries."
   (let ((supervisor--restart-override (make-hash-table :test 'equal))
         (supervisor-overrides-file nil))
     (supervisor--cli-dispatch '("restart-policy" "on" "test-id"))
-    (should (eq 'enabled (gethash "test-id" supervisor--restart-override)))))
+    (should (eq 'always (gethash "test-id" supervisor--restart-override)))))
 
 (ert-deftest supervisor-test-cli-restart-policy-off ()
   "Restart-policy off sets override."
   (let ((supervisor--restart-override (make-hash-table :test 'equal))
         (supervisor-overrides-file nil))
     (supervisor--cli-dispatch '("restart-policy" "off" "test-id"))
-    (should (eq 'disabled (gethash "test-id" supervisor--restart-override)))))
+    (should (eq 'no (gethash "test-id" supervisor--restart-override)))))
 
 (ert-deftest supervisor-test-cli-logging-on ()
   "Logging on sets override."
