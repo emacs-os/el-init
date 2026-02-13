@@ -715,7 +715,7 @@ With prefix argument, show status legend instead."
             (let ((entry (supervisor--get-entry-for-id id)))
               (if entry
                   (pcase-let ((`(,id ,_cmd ,delay ,enabled-p ,restart-policy ,logging-p
-                                     ,type ,stage ,after ,oneshot-wait ,oneshot-timeout ,_tags)
+                                     ,type ,stage ,after ,oneshot-blocking ,oneshot-timeout ,_tags)
                                entry))
                     (let ((eff-restart
                            (if (eq type 'oneshot) "n/a"
@@ -730,8 +730,8 @@ With prefix argument, show status legend instead."
                                delay
                                (or after "none")
                                (if (eq type 'oneshot)
-                                   (format " wait=%s timeout=%s"
-                                           (if oneshot-wait "yes" "no")
+                                   (format " blocking=%s timeout=%s"
+                                           (if oneshot-blocking "yes" "no")
                                            (or oneshot-timeout "none"))
                                  ""))))
                 (message "Entry not found: %s" id))))))))))

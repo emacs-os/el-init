@@ -128,8 +128,8 @@ Example:
   :type 'integer
   :group 'supervisor)
 
-(defcustom supervisor-oneshot-default-wait t
-  "Default wait behavior for oneshot processes.
+(defcustom supervisor-oneshot-default-blocking t
+  "Default blocking behavior for oneshot processes.
 When t, oneshots block stage completion (wait for exit).
 When nil, oneshots are async (fire-and-forget, don't block stage)."
   :type 'boolean
@@ -273,15 +273,15 @@ written to the supervisor log file."
         ((listp after) after)
         (t nil)))
 
-(defun supervisor--oneshot-wait-p (plist)
+(defun supervisor--oneshot-blocking-p (plist)
   "Return non-nil if oneshot should block stage completion.
-Check PLIST for :oneshot-wait, :async, and fall back to default."
+Check PLIST for `:oneshot-blocking', `:oneshot-async', and fall back to default."
   (cond
-   ((plist-member plist :oneshot-wait)
-    (plist-get plist :oneshot-wait))
-   ((plist-member plist :async)
-    (not (plist-get plist :async)))
-   (t supervisor-oneshot-default-wait)))
+   ((plist-member plist :oneshot-blocking)
+    (plist-get plist :oneshot-blocking))
+   ((plist-member plist :oneshot-async)
+    (not (plist-get plist :oneshot-async)))
+   (t supervisor-oneshot-default-blocking)))
 
 (defun supervisor--oneshot-timeout-value (plist)
   "Return timeout in seconds for a oneshot, or nil for infinite.
@@ -299,7 +299,7 @@ Check PLIST for :oneshot-timeout and fall back to default."
 
 (defconst supervisor--valid-keywords
   '(:id :type :stage :delay :after :requires :enabled :disabled
-    :restart :no-restart :logging :oneshot-wait :async :oneshot-timeout :tags)
+    :restart :no-restart :logging :oneshot-blocking :oneshot-async :oneshot-timeout :tags)
   "List of valid keywords for entry plists.")
 
 (defconst supervisor--valid-types '(simple oneshot)
@@ -319,7 +319,7 @@ HUP (1), INT (2), PIPE (13), TERM (15).")
 (defconst supervisor--simple-only-keywords '(:restart :no-restart)
   "Keywords valid only for :type simple.")
 
-(defconst supervisor--oneshot-only-keywords '(:oneshot-wait :async :oneshot-timeout)
+(defconst supervisor--oneshot-only-keywords '(:oneshot-blocking :oneshot-async :oneshot-timeout)
   "Keywords valid only for :type oneshot.")
 
 (defun supervisor--clean-exit-p (proc-status exit-code)
@@ -434,10 +434,10 @@ Return nil if valid, or a reason string if invalid."
       (when (and (plist-member plist :restart)
                  (plist-member plist :no-restart))
         (push ":restart and :no-restart are mutually exclusive" errors))
-      ;; Mutually exclusive: :oneshot-wait and :async
-      (when (and (plist-member plist :oneshot-wait)
-                 (plist-member plist :async))
-        (push ":oneshot-wait and :async are mutually exclusive" errors))
+      ;; Mutually exclusive: :oneshot-blocking and :oneshot-async
+      (when (and (plist-member plist :oneshot-blocking)
+                 (plist-member plist :oneshot-async))
+        (push ":oneshot-blocking and :oneshot-async are mutually exclusive" errors))
       ;; Type-specific keyword restrictions
       (when (eq type 'oneshot)
         (dolist (kw supervisor--simple-only-keywords)
@@ -1122,8 +1122,8 @@ Field documentation:
                    These PULL IN services and also imply ordering.
                    Cross-stage requires cause an error (must use after).
                    Default: nil
-  oneshot-wait   - For oneshots: block stage completion until exit (boolean)
-                   Default: value of `supervisor-oneshot-default-wait'
+  oneshot-blocking - For oneshots: block stage completion until exit (boolean)
+                   Default: value of `supervisor-oneshot-default-blocking'
   oneshot-timeout - For oneshots: timeout in seconds, or nil for infinite
                    Default: value of `supervisor-oneshot-timeout'
   tags           - List of symbols/strings for filtering
@@ -1138,7 +1138,7 @@ Field documentation:
   (logging t :type boolean :documentation "Log stdout/stderr to file")
   (after nil :type list :documentation "Ordering dependencies (same stage)")
   (requires nil :type list :documentation "Requirement dependencies")
-  (oneshot-wait nil :type boolean :documentation "Block stage for oneshot exit")
+  (oneshot-blocking nil :type boolean :documentation "Block stage for oneshot exit")
   (oneshot-timeout nil :type (or null number) :documentation "Oneshot timeout")
   (tags nil :type list :documentation "Filter tags"))
 
@@ -1154,7 +1154,7 @@ Field documentation:
     (logging . t)
     (after . nil)
     (requires . nil)
-    (oneshot-wait . :defer)  ; resolved at runtime from global default
+    (oneshot-blocking . :defer)  ; resolved at runtime from global default
     (oneshot-timeout . :defer)
     (tags . nil))
   "Alist of optional fields with their default values.
@@ -1166,7 +1166,7 @@ A value of :defer means the default is resolved at runtime.")
 ;; Use these instead of direct (nth N entry) indexing for maintainability.
 ;; The tuple format is:
 ;;   (id cmd delay enabled-p restart-policy logging-p type stage after
-;;    oneshot-wait oneshot-timeout tags requires)
+;;    oneshot-blocking oneshot-timeout tags requires)
 
 (defsubst supervisor-entry-id (entry)
   "Return the ID of parsed ENTRY."
@@ -1209,7 +1209,7 @@ Value is one of `always', `no', `on-success', or `on-failure'."
   "Return the ordering dependencies (after) of parsed ENTRY."
   (nth 8 entry))
 
-(defsubst supervisor-entry-oneshot-wait (entry)
+(defsubst supervisor-entry-oneshot-blocking (entry)
   "Return non-nil if oneshot ENTRY blocks stage completion."
   (nth 9 entry))
 
@@ -1343,7 +1343,7 @@ This normalizes short-form entries to their explicit form."
          (logging (supervisor-entry-logging-p parsed))
          (after (supervisor-entry-after parsed))
          (requires (supervisor-entry-requires parsed))
-         (oneshot-wait (supervisor-entry-oneshot-wait parsed))
+         (oneshot-blocking (supervisor-entry-oneshot-blocking parsed))
          (oneshot-timeout (supervisor-entry-oneshot-timeout parsed))
          (tags (supervisor-entry-tags parsed))
          (plist nil))
@@ -1355,8 +1355,8 @@ This normalizes short-form entries to their explicit form."
     (when after
       (setq plist (plist-put plist :after after)))
     (when (eq type 'oneshot)
-      (when (not (eq oneshot-wait supervisor-oneshot-default-wait))
-        (setq plist (plist-put plist :oneshot-wait oneshot-wait)))
+      (when (not (eq oneshot-blocking supervisor-oneshot-default-blocking))
+        (setq plist (plist-put plist :oneshot-blocking oneshot-blocking)))
       (when (not (eq oneshot-timeout supervisor-oneshot-timeout))
         (setq plist (plist-put plist :oneshot-timeout oneshot-timeout))))
     (when (not logging)
@@ -1728,7 +1728,7 @@ Returns sorted entries list."
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
 Return a list: (id cmd delay enabled-p restart-policy logging-p type
-stage after oneshot-wait oneshot-timeout tags requires).
+stage after oneshot-blocking oneshot-timeout tags requires).
 
 Indices (schema v1):
   0  id             - unique identifier string
@@ -1740,17 +1740,17 @@ Indices (schema v1):
   6  type           - `simple' or `oneshot'
   7  stage          - startup stage symbol
   8  after          - ordering dependencies (same stage, start order only)
-  9  oneshot-wait   - block stage for oneshot exit
-  10 oneshot-timeout - timeout for blocking oneshots
-  11 tags           - list of filter tags
-  12 requires       - requirement dependencies (pull-in + ordering)
+  9  oneshot-blocking - block stage for oneshot exit
+  10 oneshot-timeout  - timeout for blocking oneshots
+  11 tags             - list of filter tags
+  12 requires         - requirement dependencies (pull-in + ordering)
 
 ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
   (if (stringp entry)
       (let ((id (file-name-nondirectory (car (split-string-and-unquote entry)))))
         (list id entry 0 t 'always t 'simple 'stage3 nil
-              supervisor-oneshot-default-wait supervisor-oneshot-timeout nil nil))
+              supervisor-oneshot-default-blocking supervisor-oneshot-timeout nil nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
            (id (or (plist-get plist :id)
@@ -1792,8 +1792,8 @@ Use accessor functions instead of direct indexing for new code."
            (after (supervisor--normalize-after (plist-get plist :after)))
            ;; :requires - requirement dependencies (pull-in + ordering)
            (requires (supervisor--normalize-after (plist-get plist :requires)))
-           ;; Oneshot wait/timeout settings
-           (oneshot-wait (supervisor--oneshot-wait-p plist))
+           ;; Oneshot blocking/timeout settings
+           (oneshot-blocking (supervisor--oneshot-blocking-p plist))
            (oneshot-timeout (supervisor--oneshot-timeout-value plist))
            ;; Tags for filtering (list of symbols or strings)
            (tags-raw (plist-get plist :tags))
@@ -1801,7 +1801,7 @@ Use accessor functions instead of direct indexing for new code."
                        ((listp tags-raw) tags-raw)
                        (t (list tags-raw)))))
       (list id cmd delay enabled restart logging type stage after
-            oneshot-wait oneshot-timeout tags requires))))
+            oneshot-blocking oneshot-timeout tags requires))))
 
 ;;; Entry/Service Conversion Functions
 
@@ -1818,7 +1818,7 @@ Use accessor functions instead of direct indexing for new code."
    :logging (supervisor-entry-logging-p entry)
    :after (supervisor-entry-after entry)
    :requires (supervisor-entry-requires entry)
-   :oneshot-wait (supervisor-entry-oneshot-wait entry)
+   :oneshot-blocking (supervisor-entry-oneshot-blocking entry)
    :oneshot-timeout (supervisor-entry-oneshot-timeout entry)
    :tags (supervisor-entry-tags entry)))
 
@@ -1833,7 +1833,7 @@ Use accessor functions instead of direct indexing for new code."
         (supervisor-service-type service)
         (supervisor-service-stage service)
         (supervisor-service-after service)
-        (supervisor-service-oneshot-wait service)
+        (supervisor-service-oneshot-blocking service)
         (supervisor-service-oneshot-timeout service)
         (supervisor-service-tags service)
         (supervisor-service-requires service)))
@@ -2065,7 +2065,7 @@ Disabled entries are marked ready immediately per spec."
              (type (supervisor-entry-type entry))
              (after (supervisor-entry-after entry))
              (requires (supervisor-entry-requires entry))
-             (oneshot-wait (supervisor-entry-oneshot-wait entry))
+             (oneshot-blocking (supervisor-entry-oneshot-blocking entry))
              ;; Combine :after and :requires for dependency tracking
              (all-deps (cl-union after requires :test #'equal)))
         (puthash id entry supervisor--dag-entries)
@@ -2074,7 +2074,7 @@ Disabled entries are marked ready immediately per spec."
         (puthash id idx supervisor--dag-id-to-index)
         (cl-incf idx)
         ;; Track blocking oneshots (only if enabled)
-        (when (and enabled-p (eq type 'oneshot) oneshot-wait)
+        (when (and enabled-p (eq type 'oneshot) oneshot-blocking)
           (puthash id t supervisor--dag-blocking))
         ;; Set initial state via FSM transition
         (cond
@@ -2170,7 +2170,7 @@ No-op if DAG scheduler is not active (e.g., manual starts)."
 (defun supervisor--dag-start-entry-async (entry)
   "Start ENTRY asynchronously.
 Mark ready immediately for simple processes, on exit for oneshot."
-  (pcase-let ((`(,id ,cmd ,delay ,enabled-p ,restart-policy ,logging-p ,type ,_stage ,_after ,oneshot-wait ,oneshot-timeout ,_tags) entry))
+  (pcase-let ((`(,id ,cmd ,delay ,enabled-p ,restart-policy ,logging-p ,type ,_stage ,_after ,oneshot-blocking ,oneshot-timeout ,_tags) entry))
     ;; Check effective enabled state (config + runtime override)
     (let ((effective-enabled (supervisor--get-effective-enabled id enabled-p)))
       (cond
@@ -2188,11 +2188,11 @@ Mark ready immediately for simple processes, on exit for oneshot."
                  (run-at-time delay nil
                               (lambda ()
                                 (remhash id supervisor--dag-delay-timers)
-                                (supervisor--dag-do-start id cmd logging-p type restart-policy oneshot-wait oneshot-timeout)))
+                                (supervisor--dag-do-start id cmd logging-p type restart-policy oneshot-blocking oneshot-timeout)))
                  supervisor--dag-delay-timers))
        ;; Start immediately
        (t
-        (supervisor--dag-do-start id cmd logging-p type restart-policy oneshot-wait oneshot-timeout))))))
+        (supervisor--dag-do-start id cmd logging-p type restart-policy oneshot-blocking oneshot-timeout))))))
 
 (defun supervisor--dag-finish-spawn-attempt ()
   "Finish a spawn attempt by decrementing count and processing queue."
@@ -2232,7 +2232,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
     (supervisor--dag-mark-ready id)
     (supervisor--emit-event 'process-ready id nil (list :type type))))
 
-(defun supervisor--dag-do-start (id cmd logging-p type restart-policy _oneshot-wait oneshot-timeout)
+(defun supervisor--dag-do-start (id cmd logging-p type restart-policy _oneshot-blocking oneshot-timeout)
   "Start process ID with CMD, LOGGING-P, TYPE, RESTART-POLICY, ONESHOT-TIMEOUT."
   (puthash id t supervisor--dag-started)
   (puthash id (float-time) supervisor--start-times)

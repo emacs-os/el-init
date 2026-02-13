@@ -498,19 +498,19 @@ restart-timer cancellation on `no'."
 
 ;;; Oneshot wait/timeout tests
 
-(ert-deftest supervisor-test-oneshot-wait-p-default ()
-  "Default oneshot wait behavior."
-  (should (eq (supervisor--oneshot-wait-p '()) supervisor-oneshot-default-wait)))
+(ert-deftest supervisor-test-oneshot-blocking-p-default ()
+  "Default oneshot blocking behavior."
+  (should (eq (supervisor--oneshot-blocking-p '()) supervisor-oneshot-default-blocking)))
 
-(ert-deftest supervisor-test-oneshot-wait-p-explicit ()
-  "Explicit :oneshot-wait overrides default."
-  (should (eq (supervisor--oneshot-wait-p '(:oneshot-wait t)) t))
-  (should (eq (supervisor--oneshot-wait-p '(:oneshot-wait nil)) nil)))
+(ert-deftest supervisor-test-oneshot-blocking-p-explicit ()
+  "Explicit :oneshot-blocking overrides default."
+  (should (eq (supervisor--oneshot-blocking-p '(:oneshot-blocking t)) t))
+  (should (eq (supervisor--oneshot-blocking-p '(:oneshot-blocking nil)) nil)))
 
-(ert-deftest supervisor-test-oneshot-wait-p-async ()
-  "The :async flag is inverse of :oneshot-wait."
-  (should (eq (supervisor--oneshot-wait-p '(:async t)) nil))
-  (should (eq (supervisor--oneshot-wait-p '(:async nil)) t)))
+(ert-deftest supervisor-test-oneshot-blocking-p-oneshot-async ()
+  "The :oneshot-async flag is inverse of :oneshot-blocking."
+  (should (eq (supervisor--oneshot-blocking-p '(:oneshot-async t)) nil))
+  (should (eq (supervisor--oneshot-blocking-p '(:oneshot-async nil)) t)))
 
 (ert-deftest supervisor-test-oneshot-timeout-default ()
   "Default oneshot timeout."
@@ -543,6 +543,18 @@ restart-timer cancellation on `no'."
   (should (string-match "unknown keyword"
                         (supervisor--validate-entry
                          '("foo" :bogus t)))))
+
+(ert-deftest supervisor-test-validate-rejects-legacy-oneshot-wait ()
+  "Legacy :oneshot-wait keyword is rejected as unknown."
+  (should (string-match "unknown keyword.*:oneshot-wait"
+                        (supervisor--validate-entry
+                         '("foo" :type oneshot :oneshot-wait t)))))
+
+(ert-deftest supervisor-test-validate-rejects-legacy-async ()
+  "Legacy :async keyword is rejected as unknown."
+  (should (string-match "unknown keyword.*:async"
+                        (supervisor--validate-entry
+                         '("foo" :type oneshot :async t)))))
 
 (ert-deftest supervisor-test-validate-invalid-type ()
   "Invalid :type values are rejected."
@@ -597,12 +609,12 @@ restart-timer cancellation on `no'."
 
 (ert-deftest supervisor-test-validate-simple-rejects-oneshot-keywords ()
   "Simple type rejects oneshot-specific keywords."
-  (should (string-match ":oneshot-wait is invalid for :type simple"
+  (should (string-match ":oneshot-blocking is invalid for :type simple"
                         (supervisor--validate-entry
-                         '("foo" :type simple :oneshot-wait t))))
-  (should (string-match ":async is invalid for :type simple"
+                         '("foo" :type simple :oneshot-blocking t))))
+  (should (string-match ":oneshot-async is invalid for :type simple"
                         (supervisor--validate-entry
-                         '("foo" :type simple :async t))))
+                         '("foo" :type simple :oneshot-async t))))
   (should (string-match ":oneshot-timeout is invalid for :type simple"
                         (supervisor--validate-entry
                          '("foo" :type simple :oneshot-timeout 30)))))
@@ -624,11 +636,11 @@ restart-timer cancellation on `no'."
     ;; Should contain both errors separated by semicolon
     (should (> (length (split-string result ";")) 1))))
 
-(ert-deftest supervisor-test-validate-mutually-exclusive-oneshot-wait-async ()
-  ":oneshot-wait and :async are mutually exclusive."
+(ert-deftest supervisor-test-validate-mutually-exclusive-oneshot-blocking-async ()
+  ":oneshot-blocking and :oneshot-async are mutually exclusive."
   (should (string-match "mutually exclusive"
                         (supervisor--validate-entry
-                         '("foo" :type oneshot :oneshot-wait t :async t)))))
+                         '("foo" :type oneshot :oneshot-blocking t :oneshot-async t)))))
 
 (ert-deftest supervisor-test-validate-type-must-be-symbol ()
   ":type must be a symbol, not a string."
@@ -759,7 +771,7 @@ restart-timer cancellation on `no'."
         (supervisor--dag-timeout-timers nil)
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
-    ;; Entry: (id cmd delay enabled-p restart-policy logging-p type stage after oneshot-wait oneshot-timeout)
+    ;; Entry: (id cmd delay enabled-p restart-policy logging-p type stage after oneshot-blocking oneshot-timeout)
     (let ((entries '(("blocking" "cmd" 0 t always t oneshot stage3 nil t 30)
                      ("non-blocking" "cmd" 0 t always t oneshot stage3 nil nil 30)
                      ("simple" "cmd" 0 t always t simple stage3 nil t 30))))
@@ -827,7 +839,7 @@ restart-timer cancellation on `no'."
         (supervisor--entry-state (make-hash-table :test 'equal))
         (supervisor--ready-times (make-hash-table :test 'equal)))
     ;; "a" is disabled, "b" depends on "a"
-    ;;           (id   cmd   delay enabled-p restart-policy logging-p type   stage   after oneshot-wait timeout)
+    ;;           (id   cmd   delay enabled-p restart-policy logging-p type   stage   after oneshot-blocking timeout)
     (let ((entries '(("a" "cmd" 0 nil always t simple stage3 nil t 30)
                      ("b" "cmd" 0 t   always t simple stage3 ("a") t 30))))
       (supervisor--dag-init entries)
@@ -840,7 +852,7 @@ restart-timer cancellation on `no'."
       (should (= 0 (gethash "b" supervisor--dag-in-degree))))))
 
 (ert-deftest supervisor-test-async-oneshot-not-blocking ()
-  "Async oneshots (oneshot-wait nil) do not block stage completion."
+  "Async oneshots (oneshot-blocking nil) do not block stage completion."
   (let ((supervisor--dag-blocking nil)
         (supervisor--dag-in-degree nil)
         (supervisor--dag-dependents nil)
@@ -850,7 +862,7 @@ restart-timer cancellation on `no'."
         (supervisor--dag-timeout-timers nil)
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
-    ;; Entry with :async t means oneshot-wait = nil
+    ;; Entry with :oneshot-async t means oneshot-blocking = nil
     (let ((entries '(("async-oneshot" "cmd" 0 t always t oneshot stage3 nil nil 30))))
       (supervisor--dag-init entries)
       ;; Async oneshot should NOT be in blocking set
@@ -3396,7 +3408,7 @@ Regression test: stderr pipe processes used to pollute the process list."
                   :logging t
                   :after '("dep1")
                   :requires '("req1")
-                  :oneshot-wait nil
+                  :oneshot-blocking nil
                   :oneshot-timeout 60
                   :tags '(tag1 tag2))))
     (should (equal "test" (supervisor-service-id service)))
@@ -3409,7 +3421,7 @@ Regression test: stderr pipe processes used to pollute the process list."
     (should (supervisor-service-logging service))
     (should (equal '("dep1") (supervisor-service-after service)))
     (should (equal '("req1") (supervisor-service-requires service)))
-    (should-not (supervisor-service-oneshot-wait service))
+    (should-not (supervisor-service-oneshot-blocking service))
     (should (= 60 (supervisor-service-oneshot-timeout service)))
     (should (equal '(tag1 tag2) (supervisor-service-tags service)))))
 
@@ -3454,7 +3466,7 @@ Regression test: stderr pipe processes used to pollute the process list."
                    :logging nil
                    :after '("dep")
                    :requires '("req")
-                   :oneshot-wait t
+                   :oneshot-blocking t
                    :oneshot-timeout 120
                    :tags '(t1)))
          (entry (supervisor-service-to-entry service)))
@@ -3468,7 +3480,7 @@ Regression test: stderr pipe processes used to pollute the process list."
     (should-not (supervisor-entry-logging-p entry))
     (should (equal '("dep") (supervisor-entry-after entry)))
     (should (equal '("req") (supervisor-entry-requires entry)))
-    (should (supervisor-entry-oneshot-wait entry))
+    (should (supervisor-entry-oneshot-blocking entry))
     (should (= 120 (supervisor-entry-oneshot-timeout entry)))
     (should (equal '(t1) (supervisor-entry-tags entry)))))
 

@@ -47,7 +47,7 @@ Each unit is a single `.el' file with a plist expression."
 
 (defconst supervisor--unit-file-keywords
   '(:id :command :type :stage :delay :after :requires :enabled :disabled
-    :restart :no-restart :logging :oneshot-wait :async :oneshot-timeout :tags)
+    :restart :no-restart :logging :oneshot-blocking :oneshot-async :oneshot-timeout :tags)
   "Valid keywords in a unit-file plist.
 Includes `:command' which is unit-file specific.")
 
@@ -211,12 +211,15 @@ Invalid unit files are recorded in `supervisor--unit-file-invalid'."
           " :command \"\"  ; command to run\n"
           " ;; :type simple        ; simple (daemon) or oneshot (run-once)\n"
           " ;; :stage stage3       ; stage1-4, lower runs first\n"
-          " ;; :restart t          ; auto-restart on crash (simple only)\n"
+          " ;; :restart always     ; no, on-success, on-failure, always (simple only)\n"
           " ;; :enabled t          ; start on supervisor-start\n"
           " ;; :delay 0            ; seconds to wait before starting\n"
           " ;; :after (\"dep-id\")   ; start after these IDs (same stage)\n"
           " ;; :requires (\"id\")   ; pull-in + ordering dependency\n"
           " ;; :logging t          ; log output to file\n"
+          " ;; :oneshot-blocking t ; block stage until exit (oneshot only)\n"
+          " ;; :oneshot-async nil  ; inverse of :oneshot-blocking (oneshot only)\n"
+          " ;; :oneshot-timeout 30 ; timeout in seconds (oneshot only)\n"
           " ;; :tags (tag1 tag2)   ; tags for filtering\n"
           " )\n"))
 

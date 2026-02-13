@@ -99,7 +99,7 @@ CI failures that pass locally often involve Emacs version differences (e.g., `wh
 
 ### Entry Parsing (Schema v1)
 `supervisor--parse-entry` converts user config into a 13-element list:
-`(id cmd delay enabled-p restart-p logging-p type stage after oneshot-wait oneshot-timeout tags requires)`
+`(id cmd delay enabled-p restart-p logging-p type stage after oneshot-blocking oneshot-timeout tags requires)`
 
 Use accessor functions (`supervisor-entry-id`, `supervisor-entry-command`, etc.) instead of direct indexing.
 The `supervisor-service` struct provides a canonical schema v1 representation with conversion functions.
@@ -152,7 +152,7 @@ See PLAN-INIT-followups.md for the authoritative spec. Key requirements:
 - Entry options must be validated against a whitelist before starting
 - Invalid entries are skipped but surfaced in the dashboard with status `invalid` and a reason
 - Mutually exclusive options (`:restart`/`:no-restart`, `:enabled`/`:disabled`) must be detected
-- Type-specific options must be enforced (`:restart` invalid for oneshot, `:oneshot-wait` invalid for simple)
+- Type-specific options must be enforced (`:restart` invalid for oneshot, `:oneshot-blocking` invalid for simple)
 
 ### Async Scheduling
 - No polling loops—use sentinels and timers only

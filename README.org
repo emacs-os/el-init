@@ -168,8 +168,8 @@ Entry forms:
 | ~:restart~ | boolean | ~t~ | For ~simple~ only |
 | ~:no-restart~ | boolean | ~nil~ | Inverse form of ~:restart~ |
 | ~:logging~ | boolean | ~t~ | Per-process log capture |
-| ~:oneshot-wait~ | boolean | ~supervisor-oneshot-default-wait~ | For ~oneshot~ only |
-| ~:async~ | boolean | ~nil~ | Alias for non-blocking oneshot (~not :oneshot-wait~) |
+| ~:oneshot-blocking~ | boolean | ~supervisor-oneshot-default-blocking~ | For ~oneshot~ only |
+| ~:oneshot-async~ | boolean | ~nil~ | Inverse of ~:oneshot-blocking~ |
 | ~:oneshot-timeout~ | number or ~nil~ | ~supervisor-oneshot-timeout~ | For ~oneshot~ only |
 | ~:tags~ | symbol, string, or list | ~nil~ | Dashboard tag filtering |
 
@@ -185,9 +185,9 @@ Validation is performed by ~supervisor--validate-entry~ and plan building.
 - ~:oneshot-timeout~ must be number or ~nil~.
 - ~:after~ and ~:requires~ must be string or proper list of strings.
 - Mutually exclusive pairs are rejected: ~:enabled~ with ~:disabled~, ~:restart~
-  with ~:no-restart~, and ~:oneshot-wait~ with ~:async~.
+  with ~:no-restart~, and ~:oneshot-blocking~ with ~:oneshot-async~.
 - Type restrictions are enforced: ~oneshot~ rejects ~:restart~ and
-  ~:no-restart~; ~simple~ rejects ~:oneshot-wait~, ~:async~, and
+  ~:no-restart~; ~simple~ rejects ~:oneshot-blocking~, ~:oneshot-async~, and
   ~:oneshot-timeout~.
 
 Invalid entries are skipped at start and shown as ~invalid~ in dashboard
@@ -224,7 +224,7 @@ Valid entries are normalized to schema v1 tuple form:
 
 #+begin_src elisp
 (id cmd delay enabled-p restart-p logging-p type stage after
-    oneshot-wait oneshot-timeout tags requires)
+    oneshot-blocking oneshot-timeout tags requires)
 #+end_src
 
 Accessor functions (~supervisor-entry-id~, ~supervisor-entry-command~, etc.) are
@@ -284,7 +284,7 @@ Required keys:
 
 All other keys from ~supervisor-programs~ entry plists are supported (~:type~,
 ~:stage~, ~:delay~, ~:after~, ~:requires~, ~:enabled~, ~:disabled~, ~:restart~,
-~:no-restart~, ~:logging~, ~:oneshot-wait~, ~:async~, ~:oneshot-timeout~,
+~:no-restart~, ~:logging~, ~:oneshot-blocking~, ~:oneshot-async~, ~:oneshot-timeout~,
 ~:tags~).
 
 ** Unit File Best Practices (Data-Only Declarations)
@@ -1216,7 +1216,7 @@ All user options (defcustom) are listed below.
 | ~supervisor-max-restarts~ | ~3~ | Crash-loop threshold |
 | ~supervisor-restart-window~ | ~60~ | Crash-loop time window (seconds) |
 | ~supervisor-shutdown-timeout~ | ~3~ | Graceful shutdown timeout |
-| ~supervisor-oneshot-default-wait~ | ~t~ | Default oneshot blocking behavior |
+| ~supervisor-oneshot-default-blocking~ | ~t~ | Default oneshot blocking behavior |
 | ~supervisor-oneshot-timeout~ | ~30~ | Default oneshot timeout |
 | ~supervisor-stage-timeout~ | ~nil~ | Per-stage timeout (~nil~ means disabled) |
 | ~supervisor-max-concurrent-starts~ | ~nil~ | Max concurrent stage spawns |
@@ -1307,7 +1307,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 
 ** Topical Index
 
-- Async oneshots (~:async~, ~:oneshot-wait~): [[#service-definition-handbook-supervisor-programs][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Async oneshots (~:oneshot-async~, ~:oneshot-blocking~): [[#service-definition-handbook-supervisor-programs][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Cat unit file (~cat~, ~c~ in dashboard): [[#unit-files-modular-configuration][Unit Files]]
 - Blocking oneshot timeout (~:oneshot-timeout~, ~supervisor-oneshot-timeout~): [[#service-definition-handbook-supervisor-programs][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Command parsing (no implicit shell, use ~sh -c~ when needed): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
