@@ -57,6 +57,27 @@ to the temp dir, clears `supervisor--unit-file-invalid' and
          (progn ,@body)
        (delete-directory dir--temp t))))
 
+(defmacro supervisor-test-with-authority-tiers (n &rest body)
+  "Execute BODY with N authority tier directories.
+Bind `dir1' through `dirN' to temp directories, set
+`supervisor-unit-authority-path' to (dir1 ... dirN) (low to high
+precedence), clear caches, and clean up afterward."
+  (declare (indent 1) (debug (form body)))
+  (let ((dir-syms (cl-loop for i from 1 to n
+                            collect (intern (format "dir%d" i)))))
+    `(let* (,@(mapcar (lambda (sym)
+                        `(,sym (make-temp-file "tier-" t)))
+                      dir-syms)
+            (supervisor-unit-authority-path (list ,@dir-syms))
+            (supervisor-unit-directory ,(car (last dir-syms)))
+            (supervisor--programs-cache :not-yet-loaded)
+            (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+       (unwind-protect
+           (progn ,@body)
+         ,@(mapcar (lambda (sym)
+                     `(delete-directory ,sym t))
+                   dir-syms)))))
+
 ;;; Package structure tests
 
 (ert-deftest supervisor-test-feature-provided ()
@@ -3453,6 +3474,53 @@ Regression test: stderr pipe processes used to pollute the process list."
               (should (= 1 (length programs)))
               (should (= 1 publish-count)))))
       (delete-directory dir t))))
+
+(ert-deftest supervisor-test-three-tier-loader-precedence ()
+  "Loader returns highest-tier unit across a three-tier authority path."
+  (supervisor-test-with-authority-tiers 3
+    (with-temp-file (expand-file-name "svc.el" dir1)
+      (insert "(:id \"svc\" :command \"vendor-cmd\")"))
+    (with-temp-file (expand-file-name "svc.el" dir2)
+      (insert "(:id \"svc\" :command \"admin-cmd\")"))
+    (with-temp-file (expand-file-name "svc.el" dir3)
+      (insert "(:id \"svc\" :command \"user-cmd\")"))
+    (let ((programs (supervisor--effective-programs)))
+      (should (= 1 (length programs)))
+      (should (equal "user-cmd" (car (nth 0 programs)))))))
+
+(ert-deftest supervisor-test-authority-tiers-macro-cleanup ()
+  "Authority tiers macro creates and cleans up temp directories."
+  (let (saved-dirs)
+    (supervisor-test-with-authority-tiers 2
+      (setq saved-dirs (list dir1 dir2))
+      (should (file-directory-p dir1))
+      (should (file-directory-p dir2))
+      (should (= 2 (length supervisor-unit-authority-path))))
+    ;; Directories should be cleaned up after the macro
+    (should-not (file-directory-p (nth 0 saved-dirs)))
+    (should-not (file-directory-p (nth 1 saved-dirs)))))
+
+(ert-deftest supervisor-test-mixed-tier-disjoint-and-override ()
+  "Disjoint IDs coexist while shared IDs follow tier precedence."
+  (supervisor-test-with-authority-tiers 2
+    ;; dir1 (low): a and shared
+    (with-temp-file (expand-file-name "a.el" dir1)
+      (insert "(:id \"a\" :command \"low-a\")"))
+    (with-temp-file (expand-file-name "shared.el" dir1)
+      (insert "(:id \"shared\" :command \"low-shared\")"))
+    ;; dir2 (high): b and shared
+    (with-temp-file (expand-file-name "b.el" dir2)
+      (insert "(:id \"b\" :command \"high-b\")"))
+    (with-temp-file (expand-file-name "shared.el" dir2)
+      (insert "(:id \"shared\" :command \"high-shared\")"))
+    (let ((programs (supervisor--effective-programs)))
+      ;; 3 programs: a (low), b (high), shared (high wins)
+      (should (= 3 (length programs)))
+      (let ((cmds (mapcar #'car programs)))
+        (should (member "low-a" cmds))
+        (should (member "high-b" cmds))
+        (should (member "high-shared" cmds))
+        (should-not (member "low-shared" cmds))))))
 
 (ert-deftest supervisor-test-cli-verify-invalid-unit-file ()
   "CLI verify reports invalid unit files in count and output."
