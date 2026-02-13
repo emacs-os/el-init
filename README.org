@@ -140,7 +140,7 @@ pasystray        simple   stage4   yes      running    yes      yes   1442    -
 
 As your setup grows, consider [[#unit-files-modular-configuration][unit files]] as an alternative to the
 monolithic ~supervisor-programs~ list---each service gets its own ~.el~ file
-under ~~/.config/supervisor/units/~.
+in your authority roots (default ~~/.config/supervisor.el/~).
 
 * Service Definition (~supervisor-programs~)
 :PROPERTIES:
@@ -255,21 +255,32 @@ In addition to the monolithic ~supervisor-programs~ list, services can be define
 as individual unit files.  Each unit file is a single ~.el~ file containing one
 plist expression.
 
-** Enabling Unit Files
+** Authority Roots (Cascading Resolution)
+
+Unit files are loaded from a configurable list of authority roots, searched in
+order from lowest to highest precedence.  When the same unit ID exists in
+multiple roots, the highest-precedence root wins completely (no key-level
+merge).  Non-existent roots are silently skipped.
 
 #+begin_src emacs-lisp
-(setq supervisor-use-unit-files t)
+(setq supervisor-unit-authority-path
+      '("/usr/lib/supervisor.el/"    ; Tier 1: vendor (lowest precedence)
+        "/etc/supervisor.el/"        ; Tier 2: system admin
+        "~/.config/supervisor.el/")) ; Tier 3: user (highest precedence)
 #+end_src
 
-When enabled, unit files are loaded from ~supervisor-unit-directory~ and merged
-with ~supervisor-programs~.  Unit-file entries take precedence on ID collision.
+The default three-tier layout mirrors systemd's resolution order.  You can add,
+remove, or reorder roots to suit your environment.
+
+Unit files found in any active root are merged with ~supervisor-programs~ at
+startup.  Unit-file entries take precedence on ID collision with legacy entries.
 
 ** Unit File Format
 
 Each file contains a single plist:
 
 #+begin_src emacs-lisp
-;; ~/.config/supervisor/units/nm-applet.el
+;; ~/.config/supervisor.el/nm-applet.el
 (:id "nm-applet"
  :command "nm-applet"
  :type simple
@@ -328,19 +339,56 @@ Bad example (logic in declaration):
  :stage stage4)
 #+end_src
 
-** Unit Directory
+** Precedence and Merge Semantics
 
-Default: ~$XDG_CONFIG_HOME/supervisor/units/~ or ~~/.config/supervisor/units/~.
+Within each authority root, unit files (~*.el~) are scanned in alphabetical order.
+Roots are resolved in the order listed in ~supervisor-unit-authority-path~ (low to
+high precedence).  When the same unit ID appears in multiple roots, the
+highest-precedence root wins completely---no per-key merge is performed.
 
-Configure with ~supervisor-unit-directory~.
-
-** Merge Semantics
-
-- Unit files are scanned in alphabetical order.
-- Duplicate IDs within unit files: first file wins, later duplicates are skipped
-  with warning.
+- Same root, duplicate IDs: first file wins, later duplicates are skipped with
+  warning.
+- Cross-root, same ID: highest-precedence root wins, lower-precedence entries
+  are shadowed.
 - ID collision between unit file and ~supervisor-programs~: unit file wins, legacy
   entry is dropped with informational log.
+
+*** Override Example
+
+A vendor root provides a default service:
+
+#+begin_src emacs-lisp
+;; /usr/lib/supervisor.el/polkit.el  (Tier 1, vendor)
+(:id "polkit"
+ :command "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
+ :type simple
+ :stage stage2)
+#+end_src
+
+A user root overrides it with a different stage and logging:
+
+#+begin_src emacs-lisp
+;; ~/.config/supervisor.el/polkit.el  (Tier 3, user)
+(:id "polkit"
+ :command "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
+ :type simple
+ :stage stage3
+ :logging t)
+#+end_src
+
+The user definition wins entirely.  The vendor definition is shadowed.
+
+*** Invalid Authority Root Example
+
+If an authority root does not exist, it is silently skipped.  This means a
+misconfigured path does not cause an error---it simply contributes no units:
+
+#+begin_src emacs-lisp
+(setq supervisor-unit-authority-path
+      '("/nonexistent/root/"          ; Silently skipped (does not exist)
+        "/etc/supervisor.el/"         ; Active if exists
+        "~/.config/supervisor.el/"))  ; Active if exists
+#+end_src
 
 ** Validation
 
@@ -406,20 +454,28 @@ in canonical schema v1 form.  This normalizes all entries, drops any that are
 invalid or duplicated, and emits a clean ~supervisor-programs~ definition.
 Review the output to understand what each entry looks like in plist form.
 
-*** Step 2: Enable unit files
+*** Step 2: Configure authority roots (optional)
+
+The default authority path is usually sufficient:
 
 #+begin_src emacs-lisp
-(setq supervisor-use-unit-files t)
+;; Default: vendor → system → user (highest precedence)
+(setq supervisor-unit-authority-path
+      '("/usr/lib/supervisor.el/"
+        "/etc/supervisor.el/"
+        "~/.config/supervisor.el/"))
 #+end_src
+
+Only customize this if you need additional or different roots.
 
 *** Step 3: Create unit files
 
-For each service you want to extract, create a file in your unit directory
-(default ~~/.config/supervisor/units/~).  The filename should be ~ID.el~ by
-convention (e.g., ~nm-applet.el~).  Each file contains a single plist:
+For each service you want to extract, create a file in your highest-precedence
+authority root (default ~~/.config/supervisor.el/~).  The filename should be
+~ID.el~ (e.g., ~nm-applet.el~).  Each file contains a single plist:
 
 #+begin_src emacs-lisp
-;; ~/.config/supervisor/units/nm-applet.el
+;; ~/.config/supervisor.el/nm-applet.el
 (:id "nm-applet"
  :command "nm-applet"
  :type simple
@@ -1064,22 +1120,26 @@ IDs.
 ~cat~:
 
 - requires exactly one ID argument
-- outputs raw file content from ~supervisor-unit-directory~/ID.el
+- outputs raw file content from the authoritative unit file (resolved via
+  ~supervisor-unit-authority-path~)
 - error if file does not exist
 - JSON: ~{"path": "...", "content": "..."}~
 
 ~edit~:
 
 - requires exactly one ID argument
+- resolves path via authority roots; new files are created in the
+  highest-precedence active root
 - creates scaffold template if unit file does not exist
+- reports the authority root in human output and JSON
 - non-interactive: launches ~$VISUAL~ or ~$EDITOR~
-- JSON: ~{"path": "...", "created": true/false}~
+- JSON: ~{"path": "...", "root": "...", "created": true/false}~
 
 ~daemon-reload~:
 
 - no arguments
-- re-reads ~supervisor-programs~ and unit files (when ~supervisor-use-unit-files~
-  is non-nil), rebuilds the internal plan
+- re-reads ~supervisor-programs~ and unit files from all authority roots,
+  rebuilds the internal plan
 - does NOT start, stop, or restart anything; runtime state is untouched
 - after daemon-reload, the next ~start~ or ~reload~ operates on the refreshed
   plan
@@ -1276,8 +1336,8 @@ All user options (defcustom) are listed below.
 ** Unit-File Options
 
 | Variable | Default | Purpose |
-| ~supervisor-use-unit-files~ | ~nil~ | Enable unit-file loading and merge |
-| ~supervisor-unit-directory~ | ~(XDG_CONFIG_HOME or ~/.config)/supervisor/units/~ | Unit files directory |
+| ~supervisor-unit-authority-path~ | ~'("/usr/lib/supervisor.el/" "/etc/supervisor.el/" "~/.config/supervisor.el/")~ | Authority roots (low to high precedence) |
+| ~supervisor-unit-directory~ | ~(XDG_CONFIG_HOME or ~/.config)/supervisor/units/~ | Legacy unit directory (deprecated; use ~supervisor-unit-authority-path~) |
 
 ** Timer Options
 
