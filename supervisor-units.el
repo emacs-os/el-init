@@ -87,6 +87,108 @@ return the first root where ID.el exists, or nil if not found."
       (setq roots (cdr roots)))
     found))
 
+;;; Authority Candidate Structure
+
+(cl-defstruct (supervisor--authority-candidate (:constructor supervisor--make-candidate))
+  "A unit-file candidate discovered during authority resolution."
+  (id nil :documentation "Unit ID string.")
+  (plist nil :documentation "Parsed unit-file plist.")
+  (path nil :documentation "Absolute file path.")
+  (root nil :documentation "Authority root directory.")
+  (tier nil :documentation "Tier index (position in authority path, 0-based).")
+  (valid-p nil :documentation "Non-nil when the candidate passed validation.")
+  (reason nil :documentation "Validation failure reason, or nil if valid."))
+
+;;; Authority Root Scanning
+
+(defun supervisor--scan-authority-root (root tier)
+  "Scan ROOT at TIER index and return a list of candidates.
+Parse and validate each `*.el' file in ROOT.  Return a list of
+`supervisor--authority-candidate' structs in deterministic
+lexicographic order."
+  (let ((files (sort (directory-files root t "\\.el\\'" t) #'string<))
+        (candidates nil))
+    (dolist (path files)
+      (condition-case err
+          (let* ((line-and-plist (supervisor--load-unit-file path))
+                 (line (car line-and-plist))
+                 (plist (cdr line-and-plist))
+                 (reason (supervisor--validate-unit-file-plist
+                          plist path line))
+                 (id (or (plist-get plist :id)
+                         (file-name-sans-extension
+                          (file-name-nondirectory path)))))
+            (push (supervisor--make-candidate
+                   :id id :plist plist :path path
+                   :root root :tier tier
+                   :valid-p (not reason) :reason reason)
+                  candidates))
+        (error
+         (let ((id (file-name-sans-extension
+                    (file-name-nondirectory path))))
+           (push (supervisor--make-candidate
+                  :id id :plist nil :path path
+                  :root root :tier tier
+                  :valid-p nil
+                  :reason (error-message-string err))
+                 candidates)))))
+    (nreverse candidates)))
+
+;;; Authority Resolver
+
+(defun supervisor--resolve-authority ()
+  "Resolve unit-file authority across all active roots.
+Scan roots from low to high precedence.  For each ID, the
+highest-tier candidate wins completely.  Same-tier duplicate IDs
+use first-seen (lexicographic) with later duplicates marked
+invalid.  Invalid winners block lower-tier fallback.
+
+Return a plist with keys:
+  :winners   - hash table of ID to winning candidate
+  :invalid   - hash table of ID to reason string
+  :shadowed  - hash table of ID to list of shadowed candidates"
+  (let ((roots (supervisor--active-authority-roots))
+        (winners (make-hash-table :test 'equal))
+        (invalid (make-hash-table :test 'equal))
+        (shadowed (make-hash-table :test 'equal))
+        (tier 0))
+    (dolist (root roots)
+      (let ((candidates (supervisor--scan-authority-root root tier)))
+        (dolist (cand candidates)
+          (let* ((id (supervisor--authority-candidate-id cand))
+                 (existing (gethash id winners)))
+            (cond
+             ;; Same-tier duplicate: first-seen wins, mark duplicate invalid
+             ((and existing
+                   (= (supervisor--authority-candidate-tier existing)
+                      (supervisor--authority-candidate-tier cand)))
+              (supervisor--log
+               'warning "Duplicate ID '%s' in same tier %s, keeping %s"
+               id root (supervisor--authority-candidate-path existing))
+              (puthash id
+                       (format "%s: duplicate ID '%s' in same authority root"
+                               (supervisor--authority-candidate-path cand) id)
+                       invalid)
+              (push cand (gethash id shadowed)))
+             ;; Higher tier overrides lower: push old winner to shadowed
+             (existing
+              (push existing (gethash id shadowed))
+              (puthash id cand winners)
+              ;; Clear any invalid from lower tier for this ID since
+              ;; authority has moved up
+              (remhash id invalid))
+             ;; First occurrence of this ID
+             (t
+              (puthash id cand winners)))))
+        (cl-incf tier)))
+    ;; Post-pass: mark invalid winners in the invalid hash
+    (maphash (lambda (id cand)
+               (unless (supervisor--authority-candidate-valid-p cand)
+                 (puthash id (supervisor--authority-candidate-reason cand)
+                          invalid)))
+             winners)
+    (list :winners winners :invalid invalid :shadowed shadowed)))
+
 ;;; Valid unit-file keywords
 
 (defconst supervisor--unit-file-keywords

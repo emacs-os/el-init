@@ -2794,6 +2794,207 @@ Regression test: stderr pipe processes used to pollute the process list."
       (delete-directory dir1 t)
       (delete-directory dir2 t))))
 
+;;; Authority resolver tests (Phase 2)
+
+(ert-deftest supervisor-test-scan-authority-root-parses-files ()
+  "Scanning a root returns candidate structs with metadata."
+  (let ((dir (make-temp-file "tier-" t)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "svc.el" dir)
+            (insert "(:id \"svc\" :command \"echo\")"))
+          (let ((cands (supervisor--scan-authority-root dir 0)))
+            (should (= 1 (length cands)))
+            (let ((c (car cands)))
+              (should (supervisor--authority-candidate-p c))
+              (should (equal "svc" (supervisor--authority-candidate-id c)))
+              (should (equal dir (supervisor--authority-candidate-root c)))
+              (should (= 0 (supervisor--authority-candidate-tier c)))
+              (should (supervisor--authority-candidate-valid-p c))
+              (should-not (supervisor--authority-candidate-reason c)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-scan-authority-root-invalid-candidate ()
+  "Scanning produces invalid candidate for malformed unit file."
+  (let ((dir (make-temp-file "tier-" t)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "bad.el" dir)
+            (insert "(:id \"bad\")"))  ; missing :command
+          (let* ((cands (supervisor--scan-authority-root dir 0))
+                 (c (car cands)))
+            (should (= 1 (length cands)))
+            (should-not (supervisor--authority-candidate-valid-p c))
+            (should (supervisor--authority-candidate-reason c))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-scan-authority-root-lexicographic-order ()
+  "Candidates are returned in lexicographic file order."
+  (let ((dir (make-temp-file "tier-" t)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "b-svc.el" dir)
+            (insert "(:id \"b-svc\" :command \"echo b\")"))
+          (with-temp-file (expand-file-name "a-svc.el" dir)
+            (insert "(:id \"a-svc\" :command \"echo a\")"))
+          (let ((cands (supervisor--scan-authority-root dir 0)))
+            (should (= 2 (length cands)))
+            (should (equal "a-svc"
+                           (supervisor--authority-candidate-id (nth 0 cands))))
+            (should (equal "b-svc"
+                           (supervisor--authority-candidate-id (nth 1 cands))))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-resolve-authority-higher-tier-wins ()
+  "Higher-precedence tier wins for same ID."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (dir2 (make-temp-file "tier2-" t))
+         (supervisor-unit-authority-path (list dir1 dir2)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "svc.el" dir1)
+            (insert "(:id \"svc\" :command \"echo low\")"))
+          (with-temp-file (expand-file-name "svc.el" dir2)
+            (insert "(:id \"svc\" :command \"echo high\")"))
+          (let* ((result (supervisor--resolve-authority))
+                 (winners (plist-get result :winners))
+                 (shadowed (plist-get result :shadowed))
+                 (winner (gethash "svc" winners)))
+            ;; Higher tier wins
+            (should (= 1 (supervisor--authority-candidate-tier winner)))
+            (should (equal dir2 (supervisor--authority-candidate-root winner)))
+            ;; Lower tier is shadowed
+            (should (= 1 (length (gethash "svc" shadowed))))))
+      (delete-directory dir1 t)
+      (delete-directory dir2 t))))
+
+(ert-deftest supervisor-test-resolve-authority-invalid-blocks-fallback ()
+  "Invalid unit at highest tier blocks lower-tier valid unit."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (dir2 (make-temp-file "tier2-" t))
+         (supervisor-unit-authority-path (list dir1 dir2)))
+    (unwind-protect
+        (progn
+          ;; Valid in lower tier
+          (with-temp-file (expand-file-name "svc.el" dir1)
+            (insert "(:id \"svc\" :command \"echo good\")"))
+          ;; Invalid in higher tier (missing :command)
+          (with-temp-file (expand-file-name "svc.el" dir2)
+            (insert "(:id \"svc\")"))
+          (let* ((result (supervisor--resolve-authority))
+                 (winners (plist-get result :winners))
+                 (invalid (plist-get result :invalid))
+                 (winner (gethash "svc" winners)))
+            ;; Higher tier still wins even though invalid
+            (should (= 1 (supervisor--authority-candidate-tier winner)))
+            (should-not (supervisor--authority-candidate-valid-p winner))
+            ;; ID is in invalid hash
+            (should (gethash "svc" invalid))))
+      (delete-directory dir1 t)
+      (delete-directory dir2 t))))
+
+(ert-deftest supervisor-test-resolve-authority-same-tier-duplicate ()
+  "Same-tier duplicate: first-seen (lexicographic) wins."
+  (let* ((dir (make-temp-file "tier-" t))
+         (supervisor-unit-authority-path (list dir)))
+    (unwind-protect
+        (progn
+          ;; Two files with same :id, a-file.el sorts before z-file.el
+          (with-temp-file (expand-file-name "a-file.el" dir)
+            (insert "(:id \"dup\" :command \"echo first\")"))
+          (with-temp-file (expand-file-name "z-file.el" dir)
+            (insert "(:id \"dup\" :command \"echo second\")"))
+          (let* ((result (supervisor--resolve-authority))
+                 (winners (plist-get result :winners))
+                 (invalid (plist-get result :invalid))
+                 (winner (gethash "dup" winners)))
+            ;; First-seen (a-file.el) wins
+            (should (string-match "a-file\\.el"
+                                  (supervisor--authority-candidate-path winner)))
+            ;; Duplicate is in invalid hash
+            (should (string-match "duplicate"
+                                  (gethash "dup" invalid)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-resolve-authority-disjoint-ids ()
+  "Units with different IDs across tiers all appear as winners."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (dir2 (make-temp-file "tier2-" t))
+         (supervisor-unit-authority-path (list dir1 dir2)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "a.el" dir1)
+            (insert "(:id \"a\" :command \"echo a\")"))
+          (with-temp-file (expand-file-name "b.el" dir2)
+            (insert "(:id \"b\" :command \"echo b\")"))
+          (let* ((result (supervisor--resolve-authority))
+                 (winners (plist-get result :winners)))
+            (should (gethash "a" winners))
+            (should (gethash "b" winners))
+            (should (= 2 (hash-table-count winners)))))
+      (delete-directory dir1 t)
+      (delete-directory dir2 t))))
+
+(ert-deftest supervisor-test-resolve-authority-empty-roots ()
+  "Resolver with no active roots returns empty results."
+  (let ((supervisor-unit-authority-path nil))
+    (let* ((result (supervisor--resolve-authority))
+           (winners (plist-get result :winners)))
+      (should (= 0 (hash-table-count winners))))))
+
+(ert-deftest supervisor-test-resolve-authority-three-tiers ()
+  "Three-tier resolution: highest tier always wins."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (dir2 (make-temp-file "tier2-" t))
+         (dir3 (make-temp-file "tier3-" t))
+         (supervisor-unit-authority-path (list dir1 dir2 dir3)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "svc.el" dir1)
+            (insert "(:id \"svc\" :command \"echo t1\")"))
+          (with-temp-file (expand-file-name "svc.el" dir2)
+            (insert "(:id \"svc\" :command \"echo t2\")"))
+          (with-temp-file (expand-file-name "svc.el" dir3)
+            (insert "(:id \"svc\" :command \"echo t3\")"))
+          (let* ((result (supervisor--resolve-authority))
+                 (winners (plist-get result :winners))
+                 (shadowed (plist-get result :shadowed))
+                 (winner (gethash "svc" winners)))
+            ;; Tier 3 (index 2) wins
+            (should (= 2 (supervisor--authority-candidate-tier winner)))
+            ;; Two shadowed entries
+            (should (= 2 (length (gethash "svc" shadowed))))))
+      (delete-directory dir1 t)
+      (delete-directory dir2 t)
+      (delete-directory dir3 t))))
+
+(ert-deftest supervisor-test-resolve-authority-invalid-clears-lower-invalid ()
+  "Higher tier overriding clears lower-tier invalid entry for same ID."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (dir2 (make-temp-file "tier2-" t))
+         (supervisor-unit-authority-path (list dir1 dir2)))
+    (unwind-protect
+        (progn
+          ;; Invalid in lower tier - same-tier dup produces invalid entry
+          (with-temp-file (expand-file-name "a-svc.el" dir1)
+            (insert "(:id \"svc\" :command \"echo first\")"))
+          (with-temp-file (expand-file-name "z-svc.el" dir1)
+            (insert "(:id \"svc\" :command \"echo dup\")"))
+          ;; Valid in higher tier overrides everything
+          (with-temp-file (expand-file-name "svc.el" dir2)
+            (insert "(:id \"svc\" :command \"echo winner\")"))
+          (let* ((result (supervisor--resolve-authority))
+                 (winners (plist-get result :winners))
+                 (invalid (plist-get result :invalid))
+                 (winner (gethash "svc" winners)))
+            ;; Higher tier wins and is valid
+            (should (= 1 (supervisor--authority-candidate-tier winner)))
+            (should (supervisor--authority-candidate-valid-p winner))
+            ;; No invalid entry for this ID (cleared by higher tier)
+            (should-not (gethash "svc" invalid))))
+      (delete-directory dir1 t)
+      (delete-directory dir2 t))))
+
 (ert-deftest supervisor-test-unit-file-keywords-include-command ()
   "Unit-file valid keywords include :command."
   (should (memq :command supervisor--unit-file-keywords))
