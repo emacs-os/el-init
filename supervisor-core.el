@@ -53,6 +53,7 @@ See supervisor-timer.el for the full mode definition.")
 ;; Forward declarations for unit-file module
 (declare-function supervisor--load-programs "supervisor-units" ())
 (defvar supervisor-unit-directory)
+(defvar supervisor-unit-authority-path)
 
 ;; Forward declarations for optional features
 (declare-function file-notify-add-watch "filenotify" (file flags callback))

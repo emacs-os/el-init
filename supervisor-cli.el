@@ -1700,7 +1700,7 @@ Output literal raw content of a unit file."
    (t
     (let* ((id (car args))
            (path (supervisor--unit-file-path id)))
-      (if (file-exists-p path)
+      (if (and path (file-exists-p path))
           (let ((content (with-temp-buffer
                            (insert-file-contents path)
                            (buffer-string))))
@@ -1711,7 +1711,8 @@ Output literal raw content of a unit file."
                  'json)
               (supervisor--cli-success content 'human)))
         (supervisor--cli-error supervisor-cli-exit-failure
-                               (format "Unit file not found: %s" path)
+                               (format "Unit file not found: %s"
+                                       (or path id))
                                (if json-p 'json 'human)))))))
 
 (defun supervisor--cli-edit-launch-editor (editor path)
@@ -1739,47 +1740,53 @@ In non-interactive context, launch $VISUAL or $EDITOR."
                            (if json-p 'json 'human)))
    (t
     (let* ((id (car args))
-           (path (supervisor--unit-file-path id))
-           (created (not (file-exists-p path))))
-      ;; Ensure directory exists
-      (when created
-        (make-directory (file-name-directory path) t)
-        (write-region (supervisor--unit-file-scaffold id) nil path))
-      (if json-p
-          (supervisor--cli-success
-           (json-encode `((path . ,path)
-                          (created . ,(if created t :json-false))))
-           'json)
-        ;; Non-interactive: launch external editor
-        (let ((editor (or (getenv "VISUAL") (getenv "EDITOR"))))
-          (if editor
-              (let* ((preamble (concat (if created
-                                           (format "Created new unit file: %s\n"
-                                                   path)
-                                         "")
-                                       (format "Unit file: %s\n" path)))
-                     (exit-status (supervisor--cli-edit-launch-editor
-                                   editor path)))
-                (if (= 0 exit-status)
-                    (supervisor--cli-success
-                     (concat preamble
-                             "\nNext steps after editing:\n"
-                             "  supervisorctl daemon-reload"
-                             "    Reload unit definitions")
-                     'human)
-                  (supervisor--cli-error
-                   supervisor-cli-exit-failure
-                   (format "%sEditor exited with status %d"
-                           preamble exit-status)
-                   'human)))
-            (supervisor--cli-error
-             supervisor-cli-exit-failure
-             (format "%sNo $VISUAL or $EDITOR set.  Edit the file manually:\n  %s\n\nNext steps after editing:\n  supervisorctl daemon-reload    Reload unit definitions"
-                     (if created
-                         (format "Created new unit file: %s\n" path)
-                       "")
-                     path)
-             'human))))))))
+           (path (supervisor--unit-file-path id)))
+      (if (not path)
+          (supervisor--cli-error
+           supervisor-cli-exit-failure
+           "No active authority roots configured"
+           (if json-p 'json 'human))
+        (let ((created (not (file-exists-p path))))
+          ;; Ensure directory exists
+          (when created
+            (make-directory (file-name-directory path) t)
+            (write-region (supervisor--unit-file-scaffold id) nil path))
+          (if json-p
+              (supervisor--cli-success
+               (json-encode `((path . ,path)
+                              (created . ,(if created t :json-false))))
+               'json)
+            ;; Non-interactive: launch external editor
+            (let ((editor (or (getenv "VISUAL") (getenv "EDITOR"))))
+              (if editor
+                  (let* ((preamble
+                          (concat (if created
+                                      (format "Created new unit file: %s\n"
+                                              path)
+                                    "")
+                                  (format "Unit file: %s\n" path)))
+                         (exit-status (supervisor--cli-edit-launch-editor
+                                       editor path)))
+                    (if (= 0 exit-status)
+                        (supervisor--cli-success
+                         (concat preamble
+                                 "\nNext steps after editing:\n"
+                                 "  supervisorctl daemon-reload"
+                                 "    Reload unit definitions")
+                         'human)
+                      (supervisor--cli-error
+                       supervisor-cli-exit-failure
+                       (format "%sEditor exited with status %d"
+                               preamble exit-status)
+                       'human)))
+                (supervisor--cli-error
+                 supervisor-cli-exit-failure
+                 (format "%sNo $VISUAL or $EDITOR set.  Edit the file manually:\n  %s\n\nNext steps after editing:\n  supervisorctl daemon-reload    Reload unit definitions"
+                         (if created
+                             (format "Created new unit file: %s\n" path)
+                           "")
+                         path)
+                 'human))))))))))
 
 (defun supervisor--cli-dispatch (argv)
   "Dispatch CLI command from ARGV.

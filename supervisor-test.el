@@ -2708,10 +2708,91 @@ Regression test: stderr pipe processes used to pollute the process list."
 ;;; Unit-File Tests
 
 (ert-deftest supervisor-test-unit-file-path-resolution ()
-  "Unit file path resolves to directory/ID.el."
-  (let ((supervisor-unit-directory "/tmp/test-units"))
-    (should (equal "/tmp/test-units/nm-applet.el"
-                   (supervisor--unit-file-path "nm-applet")))))
+  "Unit file path returns nil when no authority roots exist."
+  (let ((supervisor-unit-authority-path nil))
+    (should-not (supervisor--unit-file-path "nm-applet"))))
+
+(ert-deftest supervisor-test-active-authority-roots-skips-missing ()
+  "Active roots filters out non-existent directories."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (dir2 "/nonexistent-supervisor-tier2")
+         (dir3 (make-temp-file "tier3-" t))
+         (supervisor-unit-authority-path (list dir1 dir2 dir3)))
+    (unwind-protect
+        (let ((active (supervisor--active-authority-roots)))
+          (should (equal (list dir1 dir3) active)))
+      (delete-directory dir1 t)
+      (delete-directory dir3 t))))
+
+(ert-deftest supervisor-test-active-authority-roots-preserves-order ()
+  "Active roots preserves configured order (low to high)."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (dir2 (make-temp-file "tier2-" t))
+         (dir3 (make-temp-file "tier3-" t))
+         (supervisor-unit-authority-path (list dir1 dir2 dir3)))
+    (unwind-protect
+        (let ((active (supervisor--active-authority-roots)))
+          (should (equal (list dir1 dir2 dir3) active)))
+      (delete-directory dir1 t)
+      (delete-directory dir2 t)
+      (delete-directory dir3 t))))
+
+(ert-deftest supervisor-test-authority-root-for-id-highest-wins ()
+  "Authority root returns highest-precedence root containing the ID."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (dir2 (make-temp-file "tier2-" t))
+         (supervisor-unit-authority-path (list dir1 dir2)))
+    (unwind-protect
+        (progn
+          ;; Place same ID in both tiers
+          (with-temp-file (expand-file-name "svc.el" dir1)
+            (insert "(:id \"svc\" :command \"echo low\")"))
+          (with-temp-file (expand-file-name "svc.el" dir2)
+            (insert "(:id \"svc\" :command \"echo high\")"))
+          ;; Highest-precedence (dir2) should win
+          (should (equal dir2 (supervisor--authority-root-for-id "svc"))))
+      (delete-directory dir1 t)
+      (delete-directory dir2 t))))
+
+(ert-deftest supervisor-test-authority-root-for-id-returns-nil-when-missing ()
+  "Authority root returns nil when ID does not exist in any root."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (supervisor-unit-authority-path (list dir1)))
+    (unwind-protect
+        (should-not (supervisor--authority-root-for-id "nonexistent"))
+      (delete-directory dir1 t))))
+
+(ert-deftest supervisor-test-unit-file-path-authority-aware ()
+  "Unit file path resolves through authority roots."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (dir2 (make-temp-file "tier2-" t))
+         (supervisor-unit-authority-path (list dir1 dir2)))
+    (unwind-protect
+        (progn
+          ;; svc exists only in tier 1 (lower precedence)
+          (with-temp-file (expand-file-name "svc.el" dir1)
+            (insert "(:id \"svc\" :command \"echo\")"))
+          (should (equal (expand-file-name "svc.el" dir1)
+                         (supervisor--unit-file-path "svc")))
+          ;; Add to tier 2 (higher precedence) - should switch
+          (with-temp-file (expand-file-name "svc.el" dir2)
+            (insert "(:id \"svc\" :command \"echo\")"))
+          (should (equal (expand-file-name "svc.el" dir2)
+                         (supervisor--unit-file-path "svc"))))
+      (delete-directory dir1 t)
+      (delete-directory dir2 t))))
+
+(ert-deftest supervisor-test-unit-file-path-new-unit-targets-highest ()
+  "New unit file path targets highest-precedence active root."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (dir2 (make-temp-file "tier2-" t))
+         (supervisor-unit-authority-path (list dir1 dir2)))
+    (unwind-protect
+        ;; Non-existent ID should target highest root (dir2)
+        (should (equal (expand-file-name "new-svc.el" dir2)
+                       (supervisor--unit-file-path "new-svc")))
+      (delete-directory dir1 t)
+      (delete-directory dir2 t))))
 
 (ert-deftest supervisor-test-unit-file-keywords-include-command ()
   "Unit-file valid keywords include :command."
@@ -3054,6 +3135,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-cli-cat-existing-unit-file ()
   "CLI cat outputs raw content of existing unit file."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir))
     (unwind-protect
         (progn
@@ -3069,7 +3151,8 @@ Regression test: stderr pipe processes used to pollute the process list."
 
 (ert-deftest supervisor-test-cli-cat-missing-unit-file ()
   "CLI cat returns error for missing unit file."
-  (let ((supervisor-unit-directory "/tmp/nonexistent-supervisor-units-dir"))
+  (let ((supervisor-unit-authority-path '("/tmp/nonexistent-supervisor-units-dir"))
+        (supervisor-unit-directory "/tmp/nonexistent-supervisor-units-dir"))
     (let ((result (supervisor--cli-dispatch '("cat" "nope"))))
       (should (supervisor-cli-result-p result))
       (should (= supervisor-cli-exit-failure
@@ -3094,6 +3177,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-cli-cat-json-format ()
   "CLI cat --json outputs path and content fields."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir))
     (unwind-protect
         (progn
@@ -3114,6 +3198,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-cli-edit-creates-scaffold ()
   "CLI edit creates scaffold template for missing unit file."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir))
     (unwind-protect
         ;; Use JSON mode to test scaffold creation without editor launch
@@ -3134,6 +3219,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-cli-edit-existing-file ()
   "CLI edit on existing file does not overwrite it."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir))
     (unwind-protect
         (progn
@@ -3153,6 +3239,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-cli-edit-json-format ()
   "CLI edit --json outputs path and created flag."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir))
     (unwind-protect
         (let ((result (supervisor--cli-dispatch '("edit" "new" "--json"))))
@@ -3230,6 +3317,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-cli-edit-launches-editor ()
   "CLI edit launches $VISUAL/$EDITOR via `call-process'."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
          (launch-args nil))
     (unwind-protect
@@ -3251,6 +3339,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-cli-edit-editor-failure ()
   "CLI edit reports failure when editor exits non-zero."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir))
     (unwind-protect
         (cl-letf (((symbol-function 'supervisor--cli-edit-launch-editor)
@@ -3268,6 +3357,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-cli-edit-no-editor-error ()
   "CLI edit returns error when no $VISUAL or $EDITOR is set."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir))
     (unwind-protect
         (let* ((process-environment
@@ -3286,6 +3376,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-dashboard-edit-enables-edit-mode ()
   "Dashboard edit activates `supervisor-edit-mode' with return-on-q."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
          (path (expand-file-name "test-svc.el" dir)))
     (unwind-protect
@@ -3340,6 +3431,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-dashboard-edit-save-hook-fires ()
   "Dashboard edit save-hook wiring fires validator on save."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
          (path (expand-file-name "hook-svc.el" dir))
          (validated nil))

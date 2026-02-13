@@ -34,14 +34,58 @@
 (declare-function supervisor--log "supervisor-core" (level format-string &rest args))
 ;;; Customization
 
+(defcustom supervisor-unit-authority-path
+  (list "/usr/lib/supervisor.el/"
+        "/etc/supervisor.el/"
+        (expand-file-name "supervisor.el/"
+                          (or (getenv "XDG_CONFIG_HOME")
+                              (expand-file-name "~/.config"))))
+  "Ordered list of authority roots for unit-file resolution.
+Roots are listed from lowest to highest precedence.  When a unit
+ID exists in multiple roots, the highest-precedence root wins
+completely (no key-level merge).  Non-existent roots are silently
+skipped.
+
+Each entry is a directory path.  The canonical directory basename
+is `supervisor.el/'.  Unit files are `*.el' files within each root.
+
+Default tiers (low to high):
+  Tier 1: /usr/lib/supervisor.el/   (vendor units)
+  Tier 2: /etc/supervisor.el/       (system admin units)
+  Tier 3: ~/.config/supervisor.el/  (user units)"
+  :type '(repeat directory)
+  :group 'supervisor)
+
 (defcustom supervisor-unit-directory
   (expand-file-name "supervisor/units/"
                     (or (getenv "XDG_CONFIG_HOME")
                         (expand-file-name "~/.config")))
   "Directory containing unit files.
-Each unit is a single `.el' file with a plist expression."
+Each unit is a single `.el' file with a plist expression.
+Deprecated: use `supervisor-unit-authority-path' instead."
   :type 'directory
   :group 'supervisor)
+
+;;; Authority Root Resolution
+
+(defun supervisor--active-authority-roots ()
+  "Return the list of active authority roots.
+Filter `supervisor-unit-authority-path' to only existing directories,
+preserving the configured order (low to high precedence)."
+  (cl-remove-if-not #'file-directory-p supervisor-unit-authority-path))
+
+(defun supervisor--authority-root-for-id (id)
+  "Return the highest-precedence authority root containing a unit for ID.
+Scan `supervisor-unit-authority-path' in reverse (high to low) and
+return the first root where ID.el exists, or nil if not found."
+  (let ((roots (reverse (supervisor--active-authority-roots)))
+        (found nil))
+    (while (and roots (not found))
+      (let ((path (expand-file-name (concat id ".el") (car roots))))
+        (when (file-exists-p path)
+          (setq found (car roots))))
+      (setq roots (cdr roots)))
+    found))
 
 ;;; Valid unit-file keywords
 
@@ -54,9 +98,18 @@ Includes `:command' which is unit-file specific.")
 ;;; Unit-File Path Resolution
 
 (defun supervisor--unit-file-path (id)
-  "Return the path to the unit file for ID.
-Resolves to `supervisor-unit-directory'/ID.el."
-  (expand-file-name (concat id ".el") supervisor-unit-directory))
+  "Return the authoritative path to the unit file for ID.
+Search authority roots from highest to lowest precedence and return
+the first existing match.  If no existing file is found, return a
+path in the highest-precedence active root (for creation).  When no
+active roots exist, return nil."
+  (let ((root (supervisor--authority-root-for-id id)))
+    (if root
+        (expand-file-name (concat id ".el") root)
+      ;; No existing file; target the highest-precedence active root
+      (let ((active (supervisor--active-authority-roots)))
+        (when active
+          (expand-file-name (concat id ".el") (car (last active))))))))
 
 ;;; Invalid unit-file tracking
 

@@ -1040,9 +1040,13 @@ Opens the unit file with `view-mode' so `q' returns to the dashboard."
     (when (supervisor--timer-row-p id)
       (user-error "No unit file for timer row"))
     (let ((path (supervisor--unit-file-path id)))
-      (if (file-exists-p path)
-          (view-file path)
-        (user-error "Unit file not found: %s" path)))))
+      (cond
+       ((not path)
+        (user-error "No active authority roots configured"))
+       ((file-exists-p path)
+        (view-file path))
+       (t
+        (user-error "Unit file not found: %s" path))))))
 
 (defvar supervisor-edit-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1103,17 +1107,19 @@ Press `q' or \\[supervisor-edit-finish] to return to the dashboard."
       (user-error "Cannot edit separator row"))
     (when (supervisor--timer-row-p id)
       (user-error "Cannot edit timer row"))
-    (let* ((path (supervisor--unit-file-path id))
-           (created (not (file-exists-p path))))
-      ;; Create scaffold if file doesn't exist
-      (when created
-        (make-directory (file-name-directory path) t)
-        (write-region (supervisor--unit-file-scaffold id) nil path))
-      ;; Open the file and activate edit mode
-      (find-file path)
-      (supervisor-edit-mode 1)
-      (when created
-        (message "Created new unit file: %s" path)))))
+    (let ((path (supervisor--unit-file-path id)))
+      (unless path
+        (user-error "No active authority roots configured"))
+      (let ((created (not (file-exists-p path))))
+        ;; Create scaffold if file doesn't exist
+        (when created
+          (make-directory (file-name-directory path) t)
+          (write-region (supervisor--unit-file-scaffold id) nil path))
+        ;; Open the file and activate edit mode
+        (find-file path)
+        (supervisor-edit-mode 1)
+        (when created
+          (message "Created new unit file: %s" path))))))
 
 (defun supervisor--return-to-dashboard ()
   "Return to the *supervisor* dashboard buffer if it exists.
