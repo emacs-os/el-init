@@ -213,13 +213,28 @@ active roots exist, return nil."
         (when active
           (expand-file-name (concat id ".el") (car (last active))))))))
 
+;;; Authority Snapshot
+
+(defvar supervisor--authority-snapshot nil
+  "Last published authority resolution result.
+A plist with keys `:winners', `:invalid', and `:shadowed' as
+returned by `supervisor--resolve-authority'.  Set atomically by
+`supervisor--publish-authority-snapshot'.  Runtime consumers must
+read from this snapshot for a consistent view.")
+
+(defun supervisor--publish-authority-snapshot ()
+  "Resolve authority and publish the snapshot atomically.
+Compute the full resolution, then store the result in
+`supervisor--authority-snapshot' in a single assignment."
+  (setq supervisor--authority-snapshot (supervisor--resolve-authority)))
+
 ;;; Invalid unit-file tracking
 
 (defvar supervisor--unit-file-invalid (make-hash-table :test 'equal)
   "Hash table mapping unit-file ID (or filename) to reason string.
-Populated during `supervisor--load-all-unit-files' for entries that
-fail loading or validation.  Merged into the plan's invalid hash
-so they are visible in the dashboard and CLI.")
+Populated from the authority snapshot during
+`supervisor--load-all-unit-files'.  Merged into the plan's invalid
+hash so entries appear in the dashboard and CLI.")
 
 ;;; Unit-File Loading
 
@@ -300,63 +315,39 @@ The `:command' key is consumed and becomes the car of the entry."
     (cons cmd rest)))
 
 (defun supervisor--load-all-unit-files ()
-  "Scan `supervisor-unit-directory' and load all unit files.
-Returns a list of plists in deterministic alphabetical order.
-Invalid unit files are recorded in `supervisor--unit-file-invalid'
-with file:line context so they appear in the dashboard and CLI.
-Missing directory returns nil with a log message."
+  "Resolve authority across all roots and return winning valid plists.
+Publish an atomic authority snapshot, populate
+`supervisor--unit-file-invalid' from the snapshot's invalid hash,
+and return a list of valid winning plists in deterministic order.
+Returns nil when no active roots exist."
+  (supervisor--publish-authority-snapshot)
   (clrhash supervisor--unit-file-invalid)
-  (let ((dir supervisor-unit-directory))
-    (cond
-     ((not (file-directory-p dir))
-      (supervisor--log 'info "Unit directory does not exist: %s" dir)
-      nil)
-     (t
-      (let ((files (sort (directory-files dir t "\\.el\\'" t) #'string<))
-            (results nil))
-        (dolist (path files)
-          (condition-case err
-              (let* ((line-and-plist (supervisor--load-unit-file path))
-                     (line (car line-and-plist))
-                     (plist (cdr line-and-plist))
-                     (reason (supervisor--validate-unit-file-plist
-                              plist path line)))
-                (if reason
-                    (let ((id (or (plist-get plist :id)
-                                  (file-name-sans-extension
-                                   (file-name-nondirectory path)))))
-                      (supervisor--log 'warning "INVALID unit file %s - %s"
-                                       (file-name-nondirectory path) reason)
-                      (puthash id reason supervisor--unit-file-invalid))
-                  (push plist results)))
-            (error
-             (let ((id (file-name-sans-extension
-                        (file-name-nondirectory path))))
-               (supervisor--log 'warning "Failed to load unit file %s: %s"
-                                (file-name-nondirectory path)
-                                (error-message-string err))
-               (puthash id (error-message-string err)
-                        supervisor--unit-file-invalid)))))
-        (nreverse results))))))
+  (let* ((snapshot supervisor--authority-snapshot)
+         (winners (plist-get snapshot :winners))
+         (invalid (plist-get snapshot :invalid))
+         (results nil))
+    ;; Populate invalid hash for dashboard/CLI
+    (maphash (lambda (id reason)
+               (supervisor--log 'warning "INVALID unit %s - %s" id reason)
+               (puthash id reason supervisor--unit-file-invalid))
+             invalid)
+    ;; Collect valid winning plists in deterministic ID order
+    (maphash (lambda (id cand)
+               (when (supervisor--authority-candidate-valid-p cand)
+                 (push (cons id cand) results)))
+             winners)
+    (setq results (sort results (lambda (a b) (string< (car a) (car b)))))
+    (mapcar (lambda (pair)
+              (supervisor--authority-candidate-plist (cdr pair)))
+            results)))
 
 (defun supervisor--load-programs ()
   "Return the program list for plan building from unit files.
-Loads unit files from `supervisor-unit-directory' and converts them
-to program entry format.  Duplicate IDs are skipped with a warning.
-Invalid unit files are recorded in `supervisor--unit-file-invalid'."
-  (let ((unit-plists (supervisor--load-all-unit-files))
-        (unit-entries nil)
-        (unit-ids (make-hash-table :test 'equal)))
-    ;; Convert valid plists to program entries
-    (dolist (plist unit-plists)
-      (let* ((id (plist-get plist :id))
-             (entry (supervisor--unit-file-to-program-entry plist)))
-        (if (gethash id unit-ids)
-            (supervisor--log 'warning
-                             "Duplicate unit-file ID '%s', skipping" id)
-          (puthash id t unit-ids)
-          (push entry unit-entries))))
-    (nreverse unit-entries)))
+Resolve authority across all roots, convert winning valid plists
+to program entry format, and return them.  Deduplication and
+invalid tracking are handled by the authority resolver."
+  (let ((unit-plists (supervisor--load-all-unit-files)))
+    (mapcar #'supervisor--unit-file-to-program-entry unit-plists)))
 
 ;;; Unit-File Template
 

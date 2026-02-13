@@ -43,11 +43,12 @@ Each entry in PROGRAMS is either a string (bare command) or
 
 (defmacro supervisor-test-with-unit-files (programs &rest body)
   "Execute BODY with PROGRAMS written as unit files in a temp directory.
-Binds `supervisor-unit-directory' to the temp dir, clears
-`supervisor--unit-file-invalid', and cleans up the temp directory
-afterward."
+Binds `supervisor-unit-authority-path' and `supervisor-unit-directory'
+to the temp dir, clears `supervisor--unit-file-invalid', and cleans
+up afterward."
   (declare (indent 1) (debug (form body)))
   `(let* ((dir--temp (make-temp-file "units-" t))
+          (supervisor-unit-authority-path (list dir--temp))
           (supervisor-unit-directory dir--temp)
           (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
      (supervisor-test--write-unit-files dir--temp ,programs)
@@ -687,6 +688,7 @@ restart-timer cancellation on `no'."
 (ert-deftest supervisor-test-verify-handles-malformed-entry ()
   "supervisor-verify handles malformed unit files gracefully."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal))
          (supervisor--invalid (make-hash-table :test 'equal)))
@@ -1375,6 +1377,7 @@ Only auto-started (not manually-started) disabled units are stopped."
   "Health summary deduplicates entries with same ID.
 Unit-file loader already deduplicates, so only one entry is loaded."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal))
          (supervisor--invalid (make-hash-table :test 'equal))
@@ -1633,6 +1636,7 @@ Note: Does not call supervisor-start directly to avoid process spawning."
   "Plan building emits warnings for duplicate IDs.
 Regression test for warning parity with legacy startup path."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal))
          (messages nil))
@@ -3120,14 +3124,17 @@ Regression test: stderr pipe processes used to pollute the process list."
 
 (ert-deftest supervisor-test-load-all-unit-files-missing-dir ()
   "Loading from nonexistent directory returns nil."
-  (let ((supervisor-unit-directory "/tmp/nonexistent-supervisor-units-dir"))
+  (let ((supervisor-unit-authority-path
+         '("/tmp/nonexistent-supervisor-units-dir"))
+        (supervisor-unit-directory "/tmp/nonexistent-supervisor-units-dir"))
     (should-not (supervisor--load-all-unit-files))))
 
 (ert-deftest supervisor-test-load-all-unit-files-alphabetical ()
   "Unit files are loaded in alphabetical order as plists."
   (let ((dir (make-temp-file "units-" t)))
     (unwind-protect
-        (let ((supervisor-unit-directory dir))
+        (let ((supervisor-unit-authority-path (list dir))
+              (supervisor-unit-directory dir))
           (with-temp-file (expand-file-name "bravo.el" dir)
             (insert "(:id \"bravo\" :command \"bravo-cmd\")"))
           (with-temp-file (expand-file-name "alpha.el" dir)
@@ -3143,7 +3150,8 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Invalid unit files are recorded in supervisor--unit-file-invalid."
   (let ((dir (make-temp-file "units-" t)))
     (unwind-protect
-        (let ((supervisor-unit-directory dir))
+        (let ((supervisor-unit-authority-path (list dir))
+              (supervisor-unit-directory dir))
           ;; Valid file
           (with-temp-file (expand-file-name "good.el" dir)
             (insert "(:id \"good\" :command \"echo ok\")"))
@@ -3166,7 +3174,8 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Unit files that fail to parse are recorded in invalid hash with path:line."
   (let ((dir (make-temp-file "units-" t)))
     (unwind-protect
-        (let ((supervisor-unit-directory dir))
+        (let ((supervisor-unit-authority-path (list dir))
+              (supervisor-unit-directory dir))
           (with-temp-file (expand-file-name "broken.el" dir)
             (insert "not a plist at all"))
           (let ((results (supervisor--load-all-unit-files)))
@@ -3180,6 +3189,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-unit-file-invalid-merged-into-plan ()
   "Invalid unit files appear in supervisor--invalid after plan build."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
@@ -3199,6 +3209,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-load-programs-empty-directory ()
   "With no unit files present, returns empty list."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir))
     (unwind-protect
         (should (null (supervisor--effective-programs)))
@@ -3207,6 +3218,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-load-programs-unit-file-merge ()
   "Unit file entries are loaded from disk via effective-programs."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir))
     (unwind-protect
         (progn
@@ -3222,6 +3234,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-load-programs-unit-file-adds-new ()
   "Multiple unit files are loaded and returned."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir))
     (unwind-protect
         (progn
@@ -3239,6 +3252,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-cli-verify-invalid-unit-file ()
   "CLI verify reports invalid unit files in count and output."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir))
     (unwind-protect
         (progn
@@ -3257,6 +3271,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-cli-list-units-shows-invalid-unit-file ()
   "CLI list-units includes invalid unit files in output."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--entry-state (make-hash-table :test 'equal)))
@@ -3273,6 +3288,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-cli-status-invalid-unit-file ()
   "CLI status ID recognizes invalid unit files, not just plan-level invalids."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--entry-state (make-hash-table :test 'equal)))
@@ -3294,6 +3310,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-dry-run-shows-invalid-unit-files ()
   "Dry-run summary includes invalid unit files in count and listing."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
@@ -3921,6 +3938,7 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-migrate-all-entries-skips-duplicates ()
   "Migration sees only one entry when unit-file loader deduplicates."
   (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
     ;; Two unit files with the same :id but different filenames
