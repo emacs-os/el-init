@@ -357,6 +357,16 @@ Returns a member of `supervisor--valid-restart-policies'."
 Returns non-nil for any policy other than `no' or nil."
   (and policy (not (eq policy 'no))))
 
+(defun supervisor--cycle-restart-policy (current)
+  "Return the next restart policy after CURRENT in the cycle.
+Cycles through `no' -> `on-success' -> `on-failure' -> `always' -> `no'."
+  (pcase current
+    ('no 'on-success)
+    ('on-success 'on-failure)
+    ('on-failure 'always)
+    ('always 'no)
+    (_ 'no)))
+
 (defun supervisor--validate-entry (entry)
   "Validate ENTRY configuration.
 Return nil if valid, or a reason string if invalid."

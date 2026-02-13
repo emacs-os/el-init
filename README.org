@@ -509,7 +509,22 @@ Processes are created via ~make-process~.
 ** Restart and Crash Loop Policy (~simple~)
 
 Restart behavior is controlled by effective restart policy
-(config + runtime override).
+(config + runtime override).  The four restart policies are:
+
+| Policy | Behavior |
+|--------+----------|
+| ~no~ | Never auto-restart |
+| ~on-success~ | Restart only on clean exit (exit 0 or clean signal) |
+| ~on-failure~ | Restart only on non-clean exit |
+| ~always~ | Restart regardless of exit type |
+
+Clean exit means exit code 0, or a signal in ~SIGHUP~, ~SIGINT~,
+~SIGPIPE~, ~SIGTERM~.
+
+Set the policy at runtime with ~r~ in the dashboard (cycles through all
+four) or via CLI: ~supervisorctl restart-policy always myservice~.
+
+Crash-loop protection:
 
 - Delay: ~supervisor-restart-delay~
 - Window: ~supervisor-restart-window~ seconds
@@ -825,7 +840,7 @@ Timer reason column shows either:
 | ~R~ | Restart selected service (stop + start) |
 | ~k~ | Kill selected service (send signal, restart policy unchanged) |
 | ~K~ | Kill selected service (force, no confirmation) |
-| ~r~ | Toggle restart override |
+| ~r~ | Cycle restart policy (no/on-success/on-failure/always) |
 | ~l~ | Toggle logging override |
 | ~L~ | Open selected service log file |
 | ~c~ | View unit file (read-only) |
@@ -958,7 +973,7 @@ Systemctl-compatible commands:
 Supervisor-specific commands:
 
 - ~validate~
-- ~restart-policy (on|off) [--] ID...~
+- ~restart-policy (no|on-success|on-failure|always) [--] ID...~
 - ~logging (on|off) [--] ID...~
 - ~blame~
 - ~logs [--tail N] [--] ID~
@@ -1264,7 +1279,7 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-help~ | Open dashboard help |
 | ~M-x supervisor-dashboard-toggle-auto-refresh~ | Toggle auto-refresh |
 | ~M-x supervisor-dashboard-quit~ | Quit dashboard |
-| ~M-x supervisor-dashboard-toggle-restart~ | Toggle restart override |
+| ~M-x supervisor-dashboard-toggle-restart~ | Cycle restart policy (no/on-success/on-failure/always) |
 | ~M-x supervisor-dashboard-toggle-enabled~ | Toggle enabled override |
 | ~M-x supervisor-dashboard-toggle-mask~ | Toggle mask (always disabled) |
 | ~M-x supervisor-dashboard-start~ | Start selected service |

@@ -284,15 +284,14 @@ Includes both plan-level and unit-file-level invalid entries."
         (logging (alist-get 'logging info))
         (pid (alist-get 'pid info))
         (reason (alist-get 'reason info)))
-    (format "%-16s %-8s %-8s %-8s %-10s %-8s %-5s %-7s %s\n"
+    (format "%-16s %-8s %-8s %-8s %-10s %-11s %-5s %-7s %s\n"
             (truncate-string-to-width (or id "-") 16)
             (or (symbol-name type) "-")
             (if stage (symbol-name stage) "-")
             (supervisor--cli-format-bool enabled)
             (or status "-")
             (if (eq type 'oneshot) "n/a"
-              (supervisor--cli-format-bool
-               (supervisor--restart-policy-to-bool restart)))
+              (if restart (symbol-name restart) "-"))
             (supervisor--cli-format-bool logging)
             (if pid (number-to-string pid) "-")
             (or reason "-"))))
@@ -301,16 +300,16 @@ Includes both plan-level and unit-file-level invalid entries."
   "Format invalid entry INFO as status table row."
   (let ((id (alist-get 'id info))
         (reason (alist-get 'reason info)))
-    (format "%-16s %-8s %-8s %-8s %-10s %-8s %-5s %-7s %s\n"
+    (format "%-16s %-8s %-8s %-8s %-10s %-11s %-5s %-7s %s\n"
             (truncate-string-to-width (or id "-") 16)
             "-" "-" "-" "invalid" "-" "-" "-"
             (or reason "-"))))
 
 (defun supervisor--cli-status-human (entries invalid)
   "Format ENTRIES and INVALID as human-readable status table."
-  (let ((header (format "%-16s %-8s %-8s %-8s %-10s %-8s %-5s %-7s %s\n"
+  (let ((header (format "%-16s %-8s %-8s %-8s %-10s %-11s %-5s %-7s %s\n"
                         "ID" "TYPE" "STAGE" "ENABLED" "STATUS" "RESTART" "LOG" "PID" "REASON"))
-        (sep (make-string 100 ?-)))
+        (sep (make-string 103 ?-)))
     (concat header sep "\n"
             (mapconcat #'supervisor--cli-format-status-line entries "")
             (when invalid
@@ -346,8 +345,7 @@ Includes both plan-level and unit-file-level invalid entries."
              (if (not (eq enabled enabled-cfg)) " (override)" ""))
      (when (not (eq type 'oneshot))
        (format "Restart: %s%s\n"
-               (supervisor--cli-format-bool
-                (supervisor--restart-policy-to-bool restart))
+               (if restart (symbol-name restart) "-")
                (if (not (eq restart restart-cfg)) " (override)" "")))
      (format "Logging: %s%s\n"
              (supervisor--cli-format-bool logging)
@@ -378,9 +376,8 @@ Includes both plan-level and unit-file-level invalid entries."
     (stage . ,(symbol-name (alist-get 'stage info)))
     (enabled . ,(if (alist-get 'enabled info) t :json-false))
     (status . ,(alist-get 'status info))
-    (restart . ,(if (supervisor--restart-policy-to-bool
-                     (alist-get 'restart info))
-                    t :json-false))
+    (restart . ,(let ((r (alist-get 'restart info)))
+                   (if r (symbol-name r) "n/a")))
     (logging . ,(if (alist-get 'logging info) t :json-false))
     (pid . ,(alist-get 'pid info))
     (reason . ,(alist-get 'reason info))
@@ -1136,7 +1133,8 @@ exit 4 if no such unit.  Uses systemctl-compatible exit codes."
              (format "%s\n" status)))))))))
 
 (defun supervisor--cli-cmd-restart-policy (args json-p)
-  "Handle `restart-policy (on|off) [--] ID...' with ARGS.  JSON-P for JSON.
+  "Handle `restart-policy POLICY [--] ID...' with ARGS.  JSON-P for JSON.
+POLICY is one of: no, on-success, on-failure, always.
 Use -- before IDs that start with a hyphen."
   (let ((unknown (supervisor--cli-has-unknown-flags args)))
     (if unknown
@@ -1147,25 +1145,26 @@ Use -- before IDs that start with a hyphen."
         (cond
          ((< (length args) 2)
           (supervisor--cli-error supervisor-cli-exit-invalid-args
-                                 "restart-policy requires (on|off) and at least one ID"
+                                 "restart-policy requires (no|on-success|on-failure|always) and at least one ID"
                                  (if json-p 'json 'human)))
          (t
-          (let* ((policy (car args))
+          (let* ((policy-str (car args))
                  (ids (cdr args))
-                 (value (cond ((equal policy "on") 'always)
-                              ((equal policy "off") 'no)
-                              (t nil))))
-            (if (null value)
-                (supervisor--cli-error supervisor-cli-exit-invalid-args
-                                       "restart-policy requires 'on' or 'off'"
-                                       (if json-p 'json 'human))
+                 (value (intern policy-str)))
+            (if (not (memq value supervisor--valid-restart-policies))
+                (supervisor--cli-error
+                 supervisor-cli-exit-invalid-args
+                 (format "Invalid restart policy: %s (must be no, on-success, on-failure, or always)"
+                         policy-str)
+                 (if json-p 'json 'human))
               (dolist (id ids)
                 (puthash id value supervisor--restart-override))
               (supervisor--save-overrides)
               (supervisor--cli-success
                (if json-p
-                   (json-encode `((restart_policy . ,policy) (ids . ,ids)))
-                 (format "Restart policy %s: %s\n" policy (mapconcat #'identity ids ", ")))
+                   (json-encode `((restart_policy . ,policy-str) (ids . ,ids)))
+                 (format "Restart policy %s: %s\n"
+                         policy-str (mapconcat #'identity ids ", ")))
                (if json-p 'json 'human))))))))))
 
 (defun supervisor--cli-cmd-logging (args json-p)
@@ -1766,7 +1765,7 @@ Returns a `supervisor-cli-result' struct."
                    "  list-timers                Show timer units\n\n"
                    "Supervisor-specific commands:\n"
                    "  validate                   Validate config\n"
-                   "  restart-policy (on|off) ID...  Set restart policy\n"
+                   "  restart-policy POLICY ID...    Set restart policy (no|on-success|on-failure|always)\n"
                    "  logging (on|off) ID...     Set logging policy\n"
                    "  blame                      Show startup timing\n"
                    "  logs [--tail N] [--] ID    View unit log file\n"

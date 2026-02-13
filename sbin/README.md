@@ -48,7 +48,7 @@ Runtime overrides (dashboard parity):
 
 - `supervisorctl enable [ID...]`
 - `supervisorctl disable [ID...]`
-- `supervisorctl restart-policy (on|off) [ID...]`
+- `supervisorctl restart-policy (no|on-success|on-failure|always) [ID...]`
 - `supervisorctl logging (on|off) [ID...]`
 
 Low-level control:
@@ -69,11 +69,11 @@ Low-level control:
 `status` / `list` example:
 
 ```
-ID            TYPE     STAGE    ENABLED  STATUS   RESTART  LOG   PID   REASON
-nm-applet     simple   session  yes      running  yes      yes   1234  -
-blueman       simple   session  yes      stopped  yes      yes   -     waiting on deps
-oneshot-xrdb  oneshot  early    yes      done     n/a      yes   -     -
-invalid#0     -        -        -        invalid  -        -     -     :type must be a symbol
+ID            TYPE     STAGE    ENABLED  STATUS   RESTART     LOG   PID   REASON
+nm-applet     simple   session  yes      running  always      yes   1234  -
+blueman       simple   session  yes      stopped  on-failure  yes   -     waiting on deps
+oneshot-xrdb  oneshot  early    yes      done     n/a         yes   -     -
+invalid#0     -        -        -        invalid  -           -     -     :type must be a symbol
 ```
 
 `describe ID` example:
@@ -83,7 +83,7 @@ ID: nm-applet
 Type: simple
 Stage: session
 Enabled: yes
-Restart: yes (override: no)
+Restart: always (override)
 Logging: yes
 Delay: 0
 After: none
@@ -128,7 +128,7 @@ Example `status --json`:
       "stage": "stage3",
       "enabled": true,
       "status": "running",
-      "restart": true,
+      "restart": "always",
       "logging": true,
       "pid": 1234,
       "reason": null,

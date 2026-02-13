@@ -237,7 +237,7 @@ This is called on first use to avoid loading transient at package load time."
          ["Toggles"
           ("e" "Enabled" supervisor-dashboard-toggle-enabled)
           ("m" "Mask" supervisor-dashboard-toggle-mask)
-          ("r" "Restart" supervisor-dashboard-toggle-restart)
+          ("r" "Restart policy" supervisor-dashboard-toggle-restart)
           ("l" "Logging" supervisor-dashboard-toggle-logging)]
          ["Views"
           ("c" "Cat unit" supervisor-dashboard-cat)
@@ -292,7 +292,7 @@ Requires the `transient' package to be installed."
                                ("Stage" 8 t)
                                ("Enabled" 7 t)
                                ("Status" 8 t)
-                               ("Restart" 7 t)
+                               ("Restart" 10 t)
                                ("Log" 3 t)
                                ("PID" 7 t)
                                ("Reason" 30 t)])
@@ -378,8 +378,7 @@ If SNAPSHOT is provided, read runtime state from it."
                                       restart-policy))))
          (restart-str (if (eq type 'oneshot)
                           "-"
-                        (if (supervisor--restart-policy-to-bool effective-restart)
-                            "yes" "no")))
+                        (symbol-name effective-restart)))
          (log-override (if snapshot
                            (gethash id (supervisor-snapshot-logging-override snapshot))
                          (gethash id supervisor--logging)))
@@ -718,19 +717,23 @@ With prefix argument, show status legend instead."
                   (pcase-let ((`(,id ,_cmd ,delay ,enabled-p ,restart-policy ,logging-p
                                      ,type ,stage ,after ,oneshot-wait ,oneshot-timeout ,_tags)
                                entry))
-                    (message "%s: type=%s stage=%s enabled=%s restart=%s log=%s delay=%s after=%s%s"
-                             id type stage
-                             (if enabled-p "yes" "no")
-                             (if (eq type 'oneshot) "n/a"
-                               (if (supervisor--restart-policy-to-bool restart-policy) "yes" "no"))
-                             (if logging-p "yes" "no")
-                             delay
-                             (or after "none")
-                             (if (eq type 'oneshot)
-                                 (format " wait=%s timeout=%s"
-                                         (if oneshot-wait "yes" "no")
-                                         (or oneshot-timeout "none"))
-                               "")))
+                    (let ((eff-restart
+                           (if (eq type 'oneshot) "n/a"
+                             (symbol-name
+                              (supervisor--get-effective-restart
+                               id restart-policy)))))
+                      (message "%s: type=%s stage=%s enabled=%s restart=%s log=%s delay=%s after=%s%s"
+                               id type stage
+                               (if enabled-p "yes" "no")
+                               eff-restart
+                               (if logging-p "yes" "no")
+                               delay
+                               (or after "none")
+                               (if (eq type 'oneshot)
+                                   (format " wait=%s timeout=%s"
+                                           (if oneshot-wait "yes" "no")
+                                           (or oneshot-timeout "none"))
+                                 ""))))
                 (message "Entry not found: %s" id))))))))))
 
 (defun supervisor-dashboard-help ()
@@ -750,7 +753,7 @@ With prefix argument, show status legend instead."
     (princ "  R     Restart process (stop + start)\n")
     (princ "  k     Kill process (send signal, restart policy unchanged)\n")
     (princ "  K     Kill process (force, no confirmation)\n")
-    (princ "  r     Toggle auto-restart for entry\n")
+    (princ "  r     Cycle restart policy (no/on-success/on-failure/always)\n")
     (princ "  l     Toggle logging for entry\n")
     (princ "  L     View log file for entry\n")
     (princ "  c     View unit file (read-only)\n")
@@ -783,7 +786,7 @@ With prefix argument, show status legend instead."
     (princ "  Stage     Startup stage (stage1-4, lower runs first)\n")
     (princ "  Enabled   Whether process will start (yes/no)\n")
     (princ "  Status    Current state (see above)\n")
-    (princ "  Restart   Auto-restart on crash (simple only)\n")
+    (princ "  Restart   Restart policy: no, on-success, on-failure, always (simple only)\n")
     (princ "  Log       Whether output is logged to file\n")
     (princ "  PID       Process ID or exit code (exit:N)\n")
     (princ "  Reason    Why process is in current state\n")))
@@ -825,9 +828,9 @@ With prefix argument, show status legend instead."
   (quit-window))
 
 (defun supervisor-dashboard-toggle-restart ()
-  "Toggle auto-restart for process at point (no-op for oneshot).
-Toggles between `always' and `no'.  When the result matches the
-config default, the override is cleared."
+  "Cycle restart policy for process at point (no-op for oneshot).
+Cycles through `no' -> `on-success' -> `on-failure' -> `always'.
+When the result matches the config default, the override is cleared."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
     (when (supervisor--separator-row-p id)
@@ -839,8 +842,7 @@ config default, the override is cleared."
           ;; Oneshot processes don't have restart semantics
           (unless (eq type 'oneshot)
             (let* ((effective (supervisor--get-effective-restart id restart-policy))
-                   (new-policy (if (supervisor--restart-policy-to-bool effective)
-                                   'no 'always)))
+                   (new-policy (supervisor--cycle-restart-policy effective)))
               ;; If new state matches config, clear override; otherwise set override
               (if (eq new-policy restart-policy)
                   (remhash id supervisor--restart-override)
@@ -852,7 +854,8 @@ config default, the override is cleared."
                 (when-let* ((timer (gethash id supervisor--restart-timers)))
                   (when (timerp timer)
                     (cancel-timer timer))
-                  (remhash id supervisor--restart-timers))))
+                  (remhash id supervisor--restart-timers)))
+              (message "Restart policy for %s: %s" id new-policy))
             (supervisor--refresh-dashboard)))))))
 
 (defun supervisor-dashboard-toggle-enabled ()

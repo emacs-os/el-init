@@ -344,8 +344,85 @@ core symbols exist without dashboard/cli-specific dependencies."
   (should (supervisor--restart-policy-to-bool 'on-failure))
   (should (supervisor--restart-policy-to-bool 'on-success)))
 
-(ert-deftest supervisor-test-oneshot-json-restart-false ()
-  "Oneshot entries emit restart false in JSON, not true."
+(ert-deftest supervisor-test-cycle-restart-policy ()
+  "Cycle restart policy follows no -> on-success -> on-failure -> always -> no."
+  (should (eq 'on-success (supervisor--cycle-restart-policy 'no)))
+  (should (eq 'on-failure (supervisor--cycle-restart-policy 'on-success)))
+  (should (eq 'always (supervisor--cycle-restart-policy 'on-failure)))
+  (should (eq 'no (supervisor--cycle-restart-policy 'always)))
+  ;; Unknown values default to no
+  (should (eq 'no (supervisor--cycle-restart-policy 'bogus))))
+
+(ert-deftest supervisor-test-dashboard-restart-cycle-interactive ()
+  "Dashboard toggle-restart cycles all four policies end-to-end.
+Exercises the interactive function with a real tabulated-list buffer,
+verifying cycle progression, override-clear on return to config, and
+restart-timer cancellation on `no'."
+  (supervisor-test-with-unit-files
+      '(("sleep 999" :id "svc" :type simple :restart always))
+    (let ((supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--restart-timers (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--start-times (make-hash-table :test 'equal))
+          (supervisor--ready-times (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil)
+          (fake-timer (run-at-time 9999 nil #'ignore)))
+      (unwind-protect
+          (let ((buf (get-buffer-create "*supervisor*")))
+            (unwind-protect
+                (with-current-buffer buf
+                  (supervisor-dashboard-mode)
+                  ;; Pre-seed a restart timer for cancellation test
+                  (puthash "svc" fake-timer supervisor--restart-timers)
+                  ;; Helper: move point to the "svc" row
+                  (cl-flet ((goto-svc ()
+                              (goto-char (point-min))
+                              (while (and (not (eobp))
+                                          (not (equal "svc" (tabulated-list-get-id))))
+                                (forward-line 1))))
+                    ;; Initial refresh to populate entries from unit file
+                    (supervisor--refresh-dashboard)
+                    ;; Cycle 1: config=always -> no (override set, timer cancelled)
+                    (goto-svc)
+                    (supervisor-dashboard-toggle-restart)
+                    (should (eq 'no (gethash "svc" supervisor--restart-override)))
+                    (should-not (gethash "svc" supervisor--restart-timers))
+                    ;; Cycle 2: no -> on-success
+                    (goto-svc)
+                    (supervisor-dashboard-toggle-restart)
+                    (should (eq 'on-success (gethash "svc" supervisor--restart-override)))
+                    ;; Cycle 3: on-success -> on-failure
+                    (goto-svc)
+                    (supervisor-dashboard-toggle-restart)
+                    (should (eq 'on-failure (gethash "svc" supervisor--restart-override)))
+                    ;; Cycle 4: on-failure -> always (matches config, override cleared)
+                    (goto-svc)
+                    (supervisor-dashboard-toggle-restart)
+                    (should-not (gethash "svc" supervisor--restart-override))))
+              (kill-buffer buf)))
+        (when (timerp fake-timer) (cancel-timer fake-timer))))))
+
+(ert-deftest supervisor-test-cli-restart-policy-rejects-legacy-on-off ()
+  "Restart-policy rejects legacy on/off values."
+  (let ((supervisor--restart-override (make-hash-table :test 'equal)))
+    (let ((result (supervisor--cli-dispatch '("restart-policy" "on" "test-id"))))
+      (should (= supervisor-cli-exit-invalid-args
+                 (supervisor-cli-result-exitcode result))))
+    (let ((result (supervisor--cli-dispatch '("restart-policy" "off" "test-id"))))
+      (should (= supervisor-cli-exit-invalid-args
+                 (supervisor-cli-result-exitcode result))))))
+
+(ert-deftest supervisor-test-oneshot-json-restart-na ()
+  "Oneshot entries emit restart \"n/a\" in JSON."
   (let* ((supervisor-programs '(("true" :type oneshot :stage stage3)))
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--restart-override (make-hash-table :test 'equal))
@@ -365,8 +442,8 @@ core symbols exist without dashboard/cli-specific dependencies."
            (entries (car result))
            (info (car entries))
            (json-obj (supervisor--cli-entry-to-json-obj info)))
-      ;; restart field must be :json-false for oneshot, not t
-      (should (eq :json-false (alist-get 'restart json-obj))))))
+      ;; restart field must be "n/a" for oneshot (not a policy symbol)
+      (should (equal "n/a" (alist-get 'restart json-obj))))))
 
 (ert-deftest supervisor-test-dashboard-restart-uses-snapshot ()
   "Dashboard restart resolution uses snapshot, not global state."
@@ -5452,19 +5529,41 @@ at minute boundaries."
   (should (eq #'supervisor-dashboard-toggle-mask
               (lookup-key supervisor-dashboard-mode-map "m"))))
 
-(ert-deftest supervisor-test-cli-restart-policy-on ()
-  "Restart-policy on sets override."
+(ert-deftest supervisor-test-cli-restart-policy-always ()
+  "Restart-policy always sets override."
   (let ((supervisor--restart-override (make-hash-table :test 'equal))
         (supervisor-overrides-file nil))
-    (supervisor--cli-dispatch '("restart-policy" "on" "test-id"))
+    (supervisor--cli-dispatch '("restart-policy" "always" "test-id"))
     (should (eq 'always (gethash "test-id" supervisor--restart-override)))))
 
-(ert-deftest supervisor-test-cli-restart-policy-off ()
-  "Restart-policy off sets override."
+(ert-deftest supervisor-test-cli-restart-policy-no ()
+  "Restart-policy no sets override."
   (let ((supervisor--restart-override (make-hash-table :test 'equal))
         (supervisor-overrides-file nil))
-    (supervisor--cli-dispatch '("restart-policy" "off" "test-id"))
+    (supervisor--cli-dispatch '("restart-policy" "no" "test-id"))
     (should (eq 'no (gethash "test-id" supervisor--restart-override)))))
+
+(ert-deftest supervisor-test-cli-restart-policy-on-failure ()
+  "Restart-policy on-failure sets override."
+  (let ((supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))
+    (supervisor--cli-dispatch '("restart-policy" "on-failure" "test-id"))
+    (should (eq 'on-failure (gethash "test-id" supervisor--restart-override)))))
+
+(ert-deftest supervisor-test-cli-restart-policy-on-success ()
+  "Restart-policy on-success sets override."
+  (let ((supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil))
+    (supervisor--cli-dispatch '("restart-policy" "on-success" "test-id"))
+    (should (eq 'on-success (gethash "test-id" supervisor--restart-override)))))
+
+(ert-deftest supervisor-test-cli-restart-policy-invalid ()
+  "Restart-policy with invalid value returns error."
+  (let ((supervisor--restart-override (make-hash-table :test 'equal))
+        (result (supervisor--cli-dispatch '("restart-policy" "bogus" "test-id"))))
+    (should (supervisor-cli-result-p result))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))))
 
 (ert-deftest supervisor-test-cli-logging-on ()
   "Logging on sets override."
