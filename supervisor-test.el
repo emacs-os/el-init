@@ -2770,7 +2770,8 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Authority root returns highest-precedence root containing the ID."
   (let* ((dir1 (make-temp-file "tier1-" t))
          (dir2 (make-temp-file "tier2-" t))
-         (supervisor-unit-authority-path (list dir1 dir2)))
+         (supervisor-unit-authority-path (list dir1 dir2))
+         (supervisor--authority-snapshot nil))
     (unwind-protect
         (progn
           ;; Place same ID in both tiers
@@ -2786,7 +2787,8 @@ Regression test: stderr pipe processes used to pollute the process list."
 (ert-deftest supervisor-test-authority-root-for-id-returns-nil-when-missing ()
   "Authority root returns nil when ID does not exist in any root."
   (let* ((dir1 (make-temp-file "tier1-" t))
-         (supervisor-unit-authority-path (list dir1)))
+         (supervisor-unit-authority-path (list dir1))
+         (supervisor--authority-snapshot nil))
     (unwind-protect
         (should-not (supervisor--authority-root-for-id "nonexistent"))
       (delete-directory dir1 t))))
@@ -2795,7 +2797,8 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Unit file path resolves through authority roots."
   (let* ((dir1 (make-temp-file "tier1-" t))
          (dir2 (make-temp-file "tier2-" t))
-         (supervisor-unit-authority-path (list dir1 dir2)))
+         (supervisor-unit-authority-path (list dir1 dir2))
+         (supervisor--authority-snapshot nil))
     (unwind-protect
         (progn
           ;; svc exists only in tier 1 (lower precedence)
@@ -2815,13 +2818,36 @@ Regression test: stderr pipe processes used to pollute the process list."
   "New unit file path targets highest-precedence active root."
   (let* ((dir1 (make-temp-file "tier1-" t))
          (dir2 (make-temp-file "tier2-" t))
-         (supervisor-unit-authority-path (list dir1 dir2)))
+         (supervisor-unit-authority-path (list dir1 dir2))
+         (supervisor--authority-snapshot nil))
     (unwind-protect
         ;; Non-existent ID should target highest root (dir2)
         (should (equal (expand-file-name "new-svc.el" dir2)
                        (supervisor--unit-file-path "new-svc")))
       (delete-directory dir1 t)
       (delete-directory dir2 t))))
+
+(ert-deftest supervisor-test-snapshot-resolves-mismatched-filename ()
+  "Snapshot-based resolution finds units whose filename differs from :id."
+  (let* ((dir (make-temp-file "tier-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor--authority-snapshot nil)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          ;; File foo.el contains :id "bar"
+          (with-temp-file (expand-file-name "foo.el" dir)
+            (insert "(:id \"bar\" :command \"echo\")"))
+          ;; Without snapshot, filesystem scan for "bar" fails (no bar.el)
+          (should-not (supervisor--authority-root-for-id "bar"))
+          ;; Publish snapshot — resolver reads :id from plist
+          (supervisor--publish-authority-snapshot)
+          ;; Now snapshot-based lookup finds the correct root and path
+          (should (equal dir (supervisor--authority-root-for-id "bar")))
+          (should (equal (expand-file-name "foo.el" dir)
+                         (supervisor--unit-file-path "bar"))))
+      (delete-directory dir t))))
 
 ;;; Authority resolver tests (Phase 2)
 
@@ -3751,18 +3777,23 @@ Regression test: stderr pipe processes used to pollute the process list."
       (delete-directory dir t))))
 
 (ert-deftest supervisor-test-cli-edit-json-includes-authority-root ()
-  "CLI edit --json output includes authority root for existing files."
+  "CLI edit --json output includes authority root and tier."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir))
+         (supervisor-unit-directory dir)
+         (supervisor--authority-snapshot nil)
+         (supervisor--programs-cache :not-yet-loaded))
     (unwind-protect
         (progn
           (with-temp-file (expand-file-name "svc.el" dir)
             (insert "(:id \"svc\" :command \"echo\")"))
+          ;; Publish snapshot so tier lookup works
+          (supervisor--publish-authority-snapshot)
           (let* ((result (supervisor--cli-dispatch '("edit" "svc" "--json")))
                  (parsed (json-read-from-string
                           (supervisor-cli-result-output result))))
             (should (equal dir (cdr (assoc 'root parsed))))
+            (should (equal 0 (cdr (assoc 'tier parsed))))
             (should (eq :json-false (cdr (assoc 'created parsed))))))
       (delete-directory dir t))))
 

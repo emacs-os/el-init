@@ -48,6 +48,7 @@
 (declare-function supervisor--unit-file-scaffold "supervisor-units" (id))
 (declare-function supervisor--validate-unit-file-buffer "supervisor-units" ())
 (declare-function supervisor--authority-root-for-id "supervisor-units" (id))
+(declare-function supervisor--authority-tier-for-id "supervisor-units" (id))
 
 ;; Forward declarations for timer state variables (defined in supervisor-timer.el)
 (defvar supervisor--timer-state)
@@ -1140,7 +1141,9 @@ Press `q' or \\[supervisor-edit-finish] to return to the dashboard."
     (let* ((path (supervisor--unit-file-path id))
            (root (or (when (fboundp 'supervisor--authority-root-for-id)
                        (supervisor--authority-root-for-id id))
-                     (when path (file-name-directory path)))))
+                     (when path (file-name-directory path))))
+           (tier (when (fboundp 'supervisor--authority-tier-for-id)
+                   (supervisor--authority-tier-for-id id))))
       (unless path
         (user-error "No active authority roots configured"))
       (let ((created (not (file-exists-p path))))
@@ -1151,9 +1154,10 @@ Press `q' or \\[supervisor-edit-finish] to return to the dashboard."
         ;; Open the file and activate edit mode
         (find-file path)
         (supervisor-edit-mode 1)
-        (message "%s %s in %s"
+        (message "%s %s in %s (tier %s)"
                  (if created "Created" "Editing")
-                 id (or root "unknown root"))))))
+                 id (or root "unknown root")
+                 (or tier "?"))))))
 
 (defun supervisor--return-to-dashboard ()
   "Return to the *supervisor* dashboard buffer if it exists.

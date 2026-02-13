@@ -43,6 +43,7 @@
 (declare-function supervisor--unit-file-path "supervisor-units" (id))
 (declare-function supervisor--unit-file-scaffold "supervisor-units" (id))
 (declare-function supervisor--authority-root-for-id "supervisor-units" (id))
+(declare-function supervisor--authority-tier-for-id "supervisor-units" (id))
 
 ;; Forward declarations for timer state variables (defined in supervisor-timer.el)
 (defvar supervisor--invalid-timers)
@@ -1749,7 +1750,9 @@ In non-interactive context, launch $VISUAL or $EDITOR."
            (path (supervisor--unit-file-path id))
            (root (or (when (fboundp 'supervisor--authority-root-for-id)
                        (supervisor--authority-root-for-id id))
-                     (when path (file-name-directory path)))))
+                     (when path (file-name-directory path))))
+           (tier (when (fboundp 'supervisor--authority-tier-for-id)
+                   (supervisor--authority-tier-for-id id))))
       (if (not path)
           (supervisor--cli-error
            supervisor-cli-exit-failure
@@ -1764,39 +1767,41 @@ In non-interactive context, launch $VISUAL or $EDITOR."
               (supervisor--cli-success
                (json-encode `((path . ,path)
                               (root . ,root)
+                              (tier . ,tier)
                               (created . ,(if created t :json-false))))
                'json)
             ;; Non-interactive: launch external editor
-            (let ((editor (or (getenv "VISUAL") (getenv "EDITOR"))))
+            (let* ((preamble
+                    (concat (if created
+                                (format "Created new unit file: %s\n"
+                                        path)
+                              "")
+                            (format "Unit file: %s\n" path)
+                            (when root
+                              (format "Authority root: %s (tier %s)\n"
+                                      root (or tier "?")))
+                            ""))
+                   (editor (or (getenv "VISUAL") (getenv "EDITOR"))))
+              ;; Print preamble before launching editor
+              (princ preamble)
               (if editor
-                  (let* ((preamble
-                          (concat (if created
-                                      (format "Created new unit file: %s\n"
-                                              path)
-                                    "")
-                                  (format "Unit file: %s\n" path)
-                                  (when root
-                                    (format "Authority root: %s\n" root))))
-                         (exit-status (supervisor--cli-edit-launch-editor
-                                       editor path)))
+                  (let ((exit-status
+                         (supervisor--cli-edit-launch-editor
+                          editor path)))
                     (if (= 0 exit-status)
                         (supervisor--cli-success
-                         (concat preamble
-                                 "\nNext steps after editing:\n"
+                         (concat "\nNext steps after editing:\n"
                                  "  supervisorctl daemon-reload"
                                  "    Reload unit definitions")
                          'human)
                       (supervisor--cli-error
                        supervisor-cli-exit-failure
-                       (format "%sEditor exited with status %d"
-                               preamble exit-status)
+                       (format "Editor exited with status %d"
+                               exit-status)
                        'human)))
                 (supervisor--cli-error
                  supervisor-cli-exit-failure
-                 (format "%sNo $VISUAL or $EDITOR set.  Edit the file manually:\n  %s\n\nNext steps after editing:\n  supervisorctl daemon-reload    Reload unit definitions"
-                         (if created
-                             (format "Created new unit file: %s\n" path)
-                           "")
+                 (format "No $VISUAL or $EDITOR set.  Edit the file manually:\n  %s\n\nNext steps after editing:\n  supervisorctl daemon-reload    Reload unit definitions"
                          path)
                  'human))))))))))
 
