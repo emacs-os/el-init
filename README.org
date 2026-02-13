@@ -542,6 +542,46 @@ For oneshot completion tracking (~supervisor--oneshot-completed~):
 
 This is used by status/reporting and timer retry eligibility.
 
+** Comparison with systemd Oneshot Semantics
+
+Supervisor oneshot services are modeled after systemd's ~Type=oneshot~
+services, but the mapping is not one-to-one.
+
+| Supervisor | systemd | Notes |
+|------------+---------+-------|
+| ~:type oneshot~ | ~Type=oneshot~ | Run-to-completion services |
+| ~:oneshot-blocking t~ | ~Type=oneshot~ (inherent) | Blocking is inherent to ~Type=oneshot~; ordering deps wait for exit |
+| ~:oneshot-async t~ | No direct equivalent | Process runs without blocking stage advancement |
+| ~:oneshot-timeout 30~ | ~TimeoutStartSec=30~ | Kill the process if it hasn't exited in time |
+| No restart for oneshot | ~Restart=~ partially valid | systemd allows ~Restart=on-failure~ etc. for oneshot; supervisor forbids all restart for oneshot |
+
+Key differences:
+
+- *Blocking is the default.*  Supervisor oneshots block their stage by
+  default (~supervisor-oneshot-default-blocking~ is ~t~).  In systemd,
+  blocking is inherent to ~Type=oneshot~: ordered dependencies wait
+  for the oneshot process to exit before starting.
+  ~RemainAfterExit=~ controls whether the unit stays in "active" state
+  after exit, not whether it blocks ordering.
+- *Restart policy.*  Supervisor forbids all restart policies for
+  oneshot services.  systemd permits ~Restart=on-failure~,
+  ~on-abnormal~, ~on-abort~, and ~on-watchdog~ for ~Type=oneshot~
+  (restarting on non-clean exit), but disallows ~always~ and
+  ~on-success~.
+- *Timeout default.*  Supervisor defaults to ~supervisor-oneshot-timeout~
+  (30 seconds).  systemd disables the startup timeout for oneshot by
+  default (~TimeoutStartSec=infinity~), relying on the administrator
+  to set explicit limits.
+- *No RemainAfterExit.*  Supervisor has no equivalent of
+  ~RemainAfterExit=yes~ (keeping a unit in "active" state after the
+  process exits).  Oneshot completion is tracked in
+  ~supervisor--oneshot-completed~ with exit codes, but the service
+  status shows ~done~ rather than ~active (exited)~.
+- *Stage model vs dependency model.*  systemd uses target units and
+  ordering dependencies to sequence oneshots.  Supervisor uses a fixed
+  four-stage model (~stage1~ through ~stage4~) with ~:after~ and
+  ~:requires~ for intra-stage ordering.
+
 ** Stop Semantics
 
 ~supervisor-stop~ (async graceful):
@@ -1338,6 +1378,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Systemd oneshot comparison (~:oneshot-blocking~, ~:oneshot-timeout~ mapping): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Timer catch-up window (~supervisor-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#customization-reference][Customization Reference]]
 - Timer disabled/gated behavior (~supervisor-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#command-reference][Command Reference]]
 - Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]

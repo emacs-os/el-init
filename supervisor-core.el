@@ -873,7 +873,7 @@ This reloads overrides even if they were already loaded."
   "Hash table tracking oneshot completion.  Value is exit code.")
 
 (defvar supervisor--oneshot-callbacks (make-hash-table :test 'equal)
-  "Hash table of ID -> (callback . timeout-timer) for oneshot wait.
+  "Hash table of ID -> (callback . timeout-timer) for oneshot blocking.
 Used for event-driven oneshot completion notification.")
 
 (defvar supervisor--shutdown-callback nil
