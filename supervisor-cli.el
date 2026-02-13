@@ -42,6 +42,7 @@
 ;; Forward declarations for unit-file module (optional)
 (declare-function supervisor--unit-file-path "supervisor-units" (id))
 (declare-function supervisor--unit-file-scaffold "supervisor-units" (id))
+(declare-function supervisor--authority-root-for-id "supervisor-units" (id))
 
 ;; Forward declarations for timer state variables (defined in supervisor-timer.el)
 (defvar supervisor--invalid-timers)
@@ -236,7 +237,9 @@ Returns alist with all fields needed for status display."
       (start-time . ,start-time)
       (ready-time . ,ready-time)
       (duration . ,(when (and start-time ready-time)
-                     (- ready-time start-time))))))
+                     (- ready-time start-time)))
+      (unit-file . ,(when (fboundp 'supervisor--unit-file-path)
+                      (supervisor--unit-file-path id))))))
 
 (defun supervisor--cli-all-entries-info (&optional snapshot)
   "Build info alists for all valid entries, using optional SNAPSHOT.
@@ -356,7 +359,9 @@ Includes both plan-level and unit-file-level invalid entries."
      (when pid (format "PID: %d\n" pid))
      (when start-time (format "Start time: %.3f\n" start-time))
      (when ready-time (format "Ready time: %.3f\n" ready-time))
-     (when duration (format "Duration: %.3fs\n" duration)))))
+     (when duration (format "Duration: %.3fs\n" duration))
+     (let ((uf (alist-get 'unit-file info)))
+       (when uf (format "Unit file: %s\n" uf))))))
 
 (defun supervisor--cli-describe-invalid-human (info)
   "Format invalid entry INFO as human-readable detail view."
@@ -386,7 +391,8 @@ Includes both plan-level and unit-file-level invalid entries."
     (requires . ,(or (alist-get 'requires info) []))
     (start_time . ,(alist-get 'start-time info))
     (ready_time . ,(alist-get 'ready-time info))
-    (duration . ,(alist-get 'duration info))))
+    (duration . ,(alist-get 'duration info))
+    (unit_file . ,(alist-get 'unit-file info))))
 
 (defun supervisor--cli-invalid-to-json-obj (info)
   "Convert invalid entry INFO to JSON-compatible alist."
@@ -1740,7 +1746,10 @@ In non-interactive context, launch $VISUAL or $EDITOR."
                            (if json-p 'json 'human)))
    (t
     (let* ((id (car args))
-           (path (supervisor--unit-file-path id)))
+           (path (supervisor--unit-file-path id))
+           (root (or (when (fboundp 'supervisor--authority-root-for-id)
+                       (supervisor--authority-root-for-id id))
+                     (when path (file-name-directory path)))))
       (if (not path)
           (supervisor--cli-error
            supervisor-cli-exit-failure
@@ -1754,6 +1763,7 @@ In non-interactive context, launch $VISUAL or $EDITOR."
           (if json-p
               (supervisor--cli-success
                (json-encode `((path . ,path)
+                              (root . ,root)
                               (created . ,(if created t :json-false))))
                'json)
             ;; Non-interactive: launch external editor
@@ -1764,7 +1774,9 @@ In non-interactive context, launch $VISUAL or $EDITOR."
                                       (format "Created new unit file: %s\n"
                                               path)
                                     "")
-                                  (format "Unit file: %s\n" path)))
+                                  (format "Unit file: %s\n" path)
+                                  (when root
+                                    (format "Authority root: %s\n" root))))
                          (exit-status (supervisor--cli-edit-launch-editor
                                        editor path)))
                     (if (= 0 exit-status)

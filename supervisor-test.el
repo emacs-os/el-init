@@ -3677,8 +3677,49 @@ Regression test: stderr pipe processes used to pollute the process list."
           (let ((parsed (json-read-from-string
                          (supervisor-cli-result-output result))))
             (should (assoc 'path parsed))
-            (should (eq t (cdr (assoc 'created parsed))))))
+            (should (eq t (cdr (assoc 'created parsed))))
+            ;; Root should be reported even for new units
+            (should (stringp (cdr (assoc 'root parsed))))))
       (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-edit-json-includes-authority-root ()
+  "CLI edit --json output includes authority root for existing files."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "svc.el" dir)
+            (insert "(:id \"svc\" :command \"echo\")"))
+          (let* ((result (supervisor--cli-dispatch '("edit" "svc" "--json")))
+                 (parsed (json-read-from-string
+                          (supervisor-cli-result-output result))))
+            (should (equal dir (cdr (assoc 'root parsed))))
+            (should (eq :json-false (cdr (assoc 'created parsed))))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-status-shows-unit-file-path ()
+  "CLI status shows unit-file path in detailed output."
+  (supervisor-test-with-unit-files
+      '(("echo ok" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("status" "svc"))))
+      (should (string-match "Unit file:" (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-status-json-includes-unit-file ()
+  "CLI status --json output includes unit_file field."
+  (supervisor-test-with-unit-files
+      '(("echo ok" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("status" "svc" "--json")))
+           (parsed (json-read-from-string
+                    (supervisor-cli-result-output result)))
+           (entries (cdr (assoc 'entries parsed)))
+           (first-entry (aref entries 0)))
+      (should (assoc 'unit_file first-entry))
+      (should (stringp (cdr (assoc 'unit_file first-entry)))))))
 
 (ert-deftest supervisor-test-cli-edit-no-args ()
   "CLI edit requires an ID argument."
