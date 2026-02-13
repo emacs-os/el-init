@@ -510,20 +510,23 @@ ENTRIES is a list of (id vector stage) tuples."
         (push (list (car entry) (cadr entry)) result)))
     (nreverse result)))
 
-(defun supervisor--get-entries (&optional snapshot)
+(defun supervisor--get-entries (&optional snapshot programs)
   "Generate entries for the dashboard (deduplicates on the fly).
 Respects `supervisor--dashboard-stage-filter' and tag filter when set.
 When `supervisor-dashboard-group-by-stage' is non-nil and no stage filter
 is active, entries are grouped by stage with separator rows.
-If SNAPSHOT is provided, read runtime state from it."
+If SNAPSHOT is provided, read runtime state from it.
+If PROGRAMS is provided, use it instead of calling
+`supervisor--effective-programs'."
   (let* ((snapshot (or snapshot (supervisor--build-snapshot)))
+         (programs (or programs (supervisor--effective-programs)))
          (entries nil)
          (seen (make-hash-table :test 'equal))
          (stage-filter supervisor--dashboard-stage-filter)
          (tag-filter supervisor--dashboard-tag-filter)
          (invalid-hash (supervisor-snapshot-invalid snapshot))
          (idx 0))
-    (dolist (entry (supervisor--effective-programs))
+    (dolist (entry programs)
       (let* ((raw-id (supervisor--extract-id entry idx))
              (invalid-reason (gethash raw-id invalid-hash)))
         (cl-incf idx)
@@ -548,6 +551,20 @@ If SNAPSHOT is provided, read runtime state from it."
                              id type stage enabled-p restart-policy logging-p snapshot)
                             stage)
                       entries)))))))
+    ;; Include invalid authority units not already seen via programs
+    (when (and (boundp 'supervisor--unit-file-invalid)
+               (not stage-filter))
+      (maphash (lambda (id reason)
+                 (unless (gethash id seen)
+                   (puthash id t seen)
+                   (push (list id
+                               (vector id "-" "-" "-"
+                                       (supervisor--propertize-status "invalid")
+                                       "-" "-" "-"
+                                       reason)
+                               nil)
+                         entries)))
+               (symbol-value 'supervisor--unit-file-invalid)))
     (setq entries (nreverse entries))
     (let ((final-entries
            (if (and supervisor-dashboard-group-by-stage (null stage-filter))
@@ -565,10 +582,13 @@ If SNAPSHOT is provided, read runtime state from it."
                       (supervisor--get-timer-entries))))
       final-entries)))
 
-(defun supervisor--health-summary (&optional snapshot)
+(defun supervisor--health-summary (&optional snapshot programs)
   "Return compact health summary string.
-If SNAPSHOT is provided, read state from it; otherwise read from globals."
+If SNAPSHOT is provided, read state from it; otherwise read from globals.
+If PROGRAMS is provided, use it instead of calling
+`supervisor--effective-programs'."
   (let ((running 0) (done 0) (failed 0) (invalid 0) (pending 0)
+        (programs (or programs (supervisor--effective-programs)))
         (seen (make-hash-table :test 'equal))
         (invalid-hash (if snapshot
                           (supervisor-snapshot-invalid snapshot)
@@ -581,7 +601,7 @@ If SNAPSHOT is provided, read state from it; otherwise read from globals."
                           (supervisor-snapshot-oneshot-exit snapshot)
                         supervisor--oneshot-completed))
         (idx 0))
-    (dolist (entry (supervisor--effective-programs))
+    (dolist (entry programs)
       (let ((raw-id (supervisor--extract-id entry idx)))
         (cl-incf idx)
         ;; Skip duplicates to match runtime behavior
@@ -608,6 +628,13 @@ If SNAPSHOT is provided, read state from it; otherwise read from globals."
                    ((and oneshot-p oneshot-exit) (cl-incf done))
                    (oneshot-p (cl-incf pending))
                    (t (cl-incf pending))))))))))
+    ;; Count invalid authority units not already seen via programs
+    (when (boundp 'supervisor--unit-file-invalid)
+      (maphash (lambda (id _reason)
+                 (unless (gethash id seen)
+                   (puthash id t seen)
+                   (cl-incf invalid)))
+               (symbol-value 'supervisor--unit-file-invalid)))
     (concat (propertize (format "%d" running) 'face 'supervisor-status-running)
             " run | "
             (propertize (format "%d" done) 'face 'supervisor-status-done)
@@ -627,16 +654,18 @@ If SNAPSHOT is provided, read state from it; otherwise read from globals."
 
 (defun supervisor--refresh-dashboard ()
   "Refresh the dashboard buffer if it exists.
-Builds a single snapshot and uses it for both entries and health summary,
-ensuring consistency within a single refresh cycle."
+Loads programs once and builds a single runtime snapshot, passing both
+to entries and health summary for consistency within a single refresh."
   (when-let* ((buf (get-buffer "*supervisor*")))
     (with-current-buffer buf
-      (let* ((snapshot (supervisor--build-snapshot))
+      (let* ((programs (supervisor--effective-programs))
+             (snapshot (supervisor--build-snapshot))
              (pos (point)))
-        (setq tabulated-list-entries (supervisor--get-entries snapshot))
+        (setq tabulated-list-entries
+              (supervisor--get-entries snapshot programs))
         (tabulated-list-print t)
         (setq header-line-format
-              (concat (supervisor--health-summary snapshot)
+              (concat (supervisor--health-summary snapshot programs)
                       (when supervisor-dashboard-show-header-hints
                         (concat "  " supervisor--help-text))))
         (goto-char (min pos (point-max)))))))

@@ -44,12 +44,13 @@ Each entry in PROGRAMS is either a string (bare command) or
 (defmacro supervisor-test-with-unit-files (programs &rest body)
   "Execute BODY with PROGRAMS written as unit files in a temp directory.
 Binds `supervisor-unit-authority-path' and `supervisor-unit-directory'
-to the temp dir, clears `supervisor--unit-file-invalid', and cleans
-up afterward."
+to the temp dir, clears `supervisor--unit-file-invalid' and
+`supervisor--programs-cache', and cleans up afterward."
   (declare (indent 1) (debug (form body)))
   `(let* ((dir--temp (make-temp-file "units-" t))
           (supervisor-unit-authority-path (list dir--temp))
           (supervisor-unit-directory dir--temp)
+          (supervisor--programs-cache :not-yet-loaded)
           (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
      (supervisor-test--write-unit-files dir--temp ,programs)
      (unwind-protect
@@ -690,6 +691,7 @@ restart-timer cancellation on `no'."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal))
          (supervisor--invalid (make-hash-table :test 'equal)))
     (unwind-protect
@@ -1379,6 +1381,7 @@ Unit-file loader already deduplicates, so only one entry is loaded."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal))
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor--processes (make-hash-table :test 'equal))
@@ -1638,6 +1641,7 @@ Regression test for warning parity with legacy startup path."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal))
          (messages nil))
     (with-temp-file (expand-file-name "dup1.el" dir)
@@ -3191,6 +3195,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
          (supervisor--computed-deps (make-hash-table :test 'equal)))
@@ -3210,7 +3215,8 @@ Regression test: stderr pipe processes used to pollute the process list."
   "With no unit files present, returns empty list."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded))
     (unwind-protect
         (should (null (supervisor--effective-programs)))
       (delete-directory dir t))))
@@ -3219,7 +3225,8 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Unit file entries are loaded from disk via effective-programs."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded))
     (unwind-protect
         (progn
           (with-temp-file (expand-file-name "svc.el" dir)
@@ -3235,7 +3242,8 @@ Regression test: stderr pipe processes used to pollute the process list."
   "Multiple unit files are loaded and returned."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded))
     (unwind-protect
         (progn
           (with-temp-file (expand-file-name "alpha.el" dir)
@@ -3249,11 +3257,209 @@ Regression test: stderr pipe processes used to pollute the process list."
             (should (equal "beta-cmd" (car (nth 1 programs))))))
       (delete-directory dir t))))
 
+(ert-deftest supervisor-test-loader-cross-tier-precedence ()
+  "Loader returns higher-tier unit when same ID exists in multiple roots."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (dir2 (make-temp-file "tier2-" t))
+         (supervisor-unit-authority-path (list dir1 dir2))
+         (supervisor-unit-directory dir2)
+         (supervisor--programs-cache :not-yet-loaded))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "svc.el" dir1)
+            (insert "(:id \"svc\" :command \"low-cmd\" :type simple)"))
+          (with-temp-file (expand-file-name "svc.el" dir2)
+            (insert "(:id \"svc\" :command \"high-cmd\" :type simple)"))
+          ;; effective-programs should return the higher-tier version
+          (let ((programs (supervisor--effective-programs)))
+            (should (= 1 (length programs)))
+            (should (equal "high-cmd" (car (nth 0 programs))))))
+      (delete-directory dir1 t)
+      (delete-directory dir2 t))))
+
+(ert-deftest supervisor-test-loader-invalid-blocks-lower-tier ()
+  "Loader blocks lower-tier valid unit when higher tier is invalid."
+  (let* ((dir1 (make-temp-file "tier1-" t))
+         (dir2 (make-temp-file "tier2-" t))
+         (supervisor-unit-authority-path (list dir1 dir2))
+         (supervisor-unit-directory dir2)
+         (supervisor--programs-cache :not-yet-loaded))
+    (unwind-protect
+        (progn
+          ;; Valid in lower tier
+          (with-temp-file (expand-file-name "svc.el" dir1)
+            (insert "(:id \"svc\" :command \"good-cmd\")"))
+          ;; Invalid in higher tier (missing :command)
+          (with-temp-file (expand-file-name "svc.el" dir2)
+            (insert "(:id \"svc\")"))
+          (let ((programs (supervisor--effective-programs)))
+            ;; No valid programs - higher tier blocks
+            (should (= 0 (length programs)))
+            ;; Invalid hash should record it
+            (should (gethash "svc" supervisor--unit-file-invalid))))
+      (delete-directory dir1 t)
+      (delete-directory dir2 t))))
+
+(ert-deftest supervisor-test-loader-snapshot-consistency ()
+  "Authority snapshot is consistent with loader output."
+  (let* ((dir (make-temp-file "tier-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "a.el" dir)
+            (insert "(:id \"a\" :command \"echo a\")"))
+          (with-temp-file (expand-file-name "b.el" dir)
+            (insert "(:id \"b\" :command \"echo b\")"))
+          (let ((programs (supervisor--effective-programs)))
+            (should (= 2 (length programs)))
+            ;; Snapshot should exist and match
+            (should supervisor--authority-snapshot)
+            (let ((winners (plist-get supervisor--authority-snapshot :winners)))
+              (should (= 2 (hash-table-count winners)))
+              (should (gethash "a" winners))
+              (should (gethash "b" winners)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-dashboard-shows-invalid-authority-units ()
+  "Dashboard entries include invalid units from authority resolution."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          ;; Valid unit
+          (with-temp-file (expand-file-name "good.el" dir)
+            (insert "(:id \"good\" :command \"echo ok\")"))
+          ;; Invalid unit (missing :command)
+          (with-temp-file (expand-file-name "bad.el" dir)
+            (insert "(:id \"bad\")"))
+          (let* ((programs (supervisor--effective-programs))
+                 (snapshot (supervisor--build-snapshot))
+                 (entries (supervisor--get-entries snapshot programs)))
+            ;; Should have entries for both good and bad
+            (should (cl-some (lambda (e) (equal "good" (car e))) entries))
+            (should (cl-some (lambda (e) (equal "bad" (car e))) entries))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-health-summary-counts-invalid-authority ()
+  "Health summary counts invalid authority units."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "bad.el" dir)
+            (insert "(:id \"bad\")"))
+          (let* ((programs (supervisor--effective-programs))
+                 (snapshot (supervisor--build-snapshot))
+                 (summary (supervisor--health-summary snapshot programs)))
+            ;; Summary should show 1 invalid
+            (should (string-match "1 inv" summary))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-dashboard-single-snapshot-refresh ()
+  "Dashboard refresh uses single authority snapshot (no re-publish)."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (publish-count 0))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "svc.el" dir)
+            (insert "(:id \"svc\" :command \"echo\")"))
+          ;; Count publish calls during effective-programs
+          (cl-letf (((symbol-function 'supervisor--resolve-authority)
+                     (let ((orig (symbol-function
+                                  'supervisor--resolve-authority)))
+                       (lambda ()
+                         (cl-incf publish-count)
+                         (funcall orig)))))
+            (let ((programs (supervisor--effective-programs)))
+              ;; One publish for loading programs
+              (should (= 1 publish-count))
+              ;; Passing programs to get-entries and health-summary
+              ;; should NOT trigger additional publishes
+              (let ((snapshot (supervisor--build-snapshot)))
+                (supervisor--get-entries snapshot programs)
+                (supervisor--health-summary snapshot programs)
+                (should (= 1 publish-count))))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-programs-cache-isolates-disk-changes ()
+  "Programs cache prevents disk changes from leaking without daemon-reload."
+  (let* ((dir (make-temp-file "cache-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--authority-snapshot nil)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          ;; Create one unit and load
+          (with-temp-file (expand-file-name "a.el" dir)
+            (insert "(:id \"a\" :command \"echo a\")"))
+          (let ((programs (supervisor--effective-programs)))
+            (should (= 1 (length programs))))
+          ;; Add a second unit on disk WITHOUT refreshing
+          (with-temp-file (expand-file-name "b.el" dir)
+            (insert "(:id \"b\" :command \"echo b\")"))
+          ;; Cache should still return only 1 program
+          (let ((programs (supervisor--effective-programs)))
+            (should (= 1 (length programs))))
+          ;; Explicit refresh (simulates daemon-reload) picks up the new unit
+          (supervisor--refresh-programs)
+          (let ((programs (supervisor--effective-programs)))
+            (should (= 2 (length programs)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-start-path-publishes-authority-snapshot ()
+  "The `supervisor-start' path refreshes the programs cache from disk."
+  (let* ((dir (make-temp-file "start-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--authority-snapshot nil)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
+         (publish-count 0))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "svc.el" dir)
+            (insert "(:id \"svc\" :command \"echo ok\")"))
+          ;; Count authority resolutions during refresh-programs
+          (cl-letf (((symbol-function 'supervisor--resolve-authority)
+                     (let ((orig (symbol-function
+                                  'supervisor--resolve-authority)))
+                       (lambda ()
+                         (cl-incf publish-count)
+                         (funcall orig)))))
+            ;; Simulate what supervisor-start does: refresh then read
+            (supervisor--refresh-programs)
+            (should (= 1 publish-count))
+            ;; Subsequent reads use cache (no extra publish)
+            (let ((programs (supervisor--effective-programs)))
+              (should (= 1 (length programs)))
+              (should (= 1 publish-count)))))
+      (delete-directory dir t))))
+
 (ert-deftest supervisor-test-cli-verify-invalid-unit-file ()
   "CLI verify reports invalid unit files in count and output."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded))
     (unwind-protect
         (progn
           (with-temp-file (expand-file-name "bad.el" dir)
@@ -3273,6 +3479,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--entry-state (make-hash-table :test 'equal)))
     (unwind-protect
@@ -3290,6 +3497,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--entry-state (make-hash-table :test 'equal)))
     (unwind-protect
@@ -3312,6 +3520,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
          (supervisor--computed-deps (make-hash-table :test 'equal)))
@@ -3940,6 +4149,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
     ;; Two unit files with the same :id but different filenames
     (with-temp-file (expand-file-name "test-a.el" dir)

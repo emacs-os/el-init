@@ -222,6 +222,15 @@ returned by `supervisor--resolve-authority'.  Set atomically by
 `supervisor--publish-authority-snapshot'.  Runtime consumers must
 read from this snapshot for a consistent view.")
 
+(defvar supervisor--programs-cache :not-yet-loaded
+  "Cached program list from last authority resolution.
+Set by `supervisor--load-programs' when it publishes and reads the
+authority snapshot.  The keyword `:not-yet-loaded' indicates no cache
+exists yet; an empty list nil means zero programs were found.
+Runtime consumers access this via `supervisor--effective-programs'
+in supervisor-core.  Explicitly refreshed by `supervisor-start'
+and `supervisor-daemon-reload'.")
+
 (defun supervisor--publish-authority-snapshot ()
   "Resolve authority and publish the snapshot atomically.
 Compute the full resolution, then store the result in
@@ -314,13 +323,11 @@ The `:command' key is consumed and becomes the car of the entry."
         (setq keys (cddr keys))))
     (cons cmd rest)))
 
-(defun supervisor--load-all-unit-files ()
-  "Resolve authority across all roots and return winning valid plists.
-Publish an atomic authority snapshot, populate
-`supervisor--unit-file-invalid' from the snapshot's invalid hash,
-and return a list of valid winning plists in deterministic order.
-Returns nil when no active roots exist."
-  (supervisor--publish-authority-snapshot)
+(defun supervisor--read-authority-snapshot ()
+  "Read winning valid plists from the current authority snapshot.
+Populate `supervisor--unit-file-invalid' from the snapshot's invalid
+hash and return a list of valid winning plists in deterministic ID
+order.  Must be called after `supervisor--publish-authority-snapshot'."
   (clrhash supervisor--unit-file-invalid)
   (let* ((snapshot supervisor--authority-snapshot)
          (winners (plist-get snapshot :winners))
@@ -341,13 +348,26 @@ Returns nil when no active roots exist."
               (supervisor--authority-candidate-plist (cdr pair)))
             results)))
 
+(defun supervisor--load-all-unit-files ()
+  "Publish authority snapshot and return winning valid plists.
+Convenience wrapper that publishes then reads.  For callers that
+need to separate publication from reading, use
+`supervisor--publish-authority-snapshot' and
+`supervisor--read-authority-snapshot' directly."
+  (supervisor--publish-authority-snapshot)
+  (supervisor--read-authority-snapshot))
+
 (defun supervisor--load-programs ()
-  "Return the program list for plan building from unit files.
-Resolve authority across all roots, convert winning valid plists
-to program entry format, and return them.  Deduplication and
-invalid tracking are handled by the authority resolver."
-  (let ((unit-plists (supervisor--load-all-unit-files)))
-    (mapcar #'supervisor--unit-file-to-program-entry unit-plists)))
+  "Reload programs from disk and update the cache.
+Publish the authority snapshot, read valid winners, convert to
+program entries, and store the result in `supervisor--programs-cache'.
+This is the explicit refresh point called by `supervisor-start' and
+`supervisor-daemon-reload'.  Consumers that just need the current
+program list should use `supervisor--effective-programs' instead."
+  (supervisor--publish-authority-snapshot)
+  (let ((unit-plists (supervisor--read-authority-snapshot)))
+    (setq supervisor--programs-cache
+          (mapcar #'supervisor--unit-file-to-program-entry unit-plists))))
 
 ;;; Unit-File Template
 
