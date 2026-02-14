@@ -11412,5 +11412,45 @@ No warning is emitted when there are simply no child processes."
     (should (stringp result))
     (should (string-match-p ":environment contains duplicate key" result))))
 
+;;; V9: Exec and exit-status hardening tests
+
+(ert-deftest supervisor-test-validate-exec-stop-empty-string ()
+  "Empty :exec-stop string is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :exec-stop ""))))
+    (should (stringp result))
+    (should (string-match-p ":exec-stop must not contain empty commands" result))))
+
+(ert-deftest supervisor-test-validate-exec-stop-list-with-empty ()
+  "List :exec-stop containing empty string is rejected."
+  (let ((result (supervisor--validate-entry
+                 '("cmd" :exec-stop ("valid" "  ")))))
+    (should (stringp result))
+    (should (string-match-p ":exec-stop must not contain empty commands" result))))
+
+(ert-deftest supervisor-test-validate-exec-reload-empty-string ()
+  "Empty :exec-reload string is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :exec-reload ""))))
+    (should (stringp result))
+    (should (string-match-p ":exec-reload must not contain empty commands" result))))
+
+(ert-deftest supervisor-test-validate-success-exit-status-negative ()
+  "Negative :success-exit-status code is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :success-exit-status (-1)))))
+    (should (stringp result))
+    (should (string-match-p ":success-exit-status code .* is outside valid range"
+                            result))))
+
+(ert-deftest supervisor-test-validate-success-exit-status-over-255 ()
+  "Exit code over 255 in :success-exit-status is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :success-exit-status (256)))))
+    (should (stringp result))
+    (should (string-match-p ":success-exit-status code .* is outside valid range"
+                            result))))
+
+(ert-deftest supervisor-test-validate-success-exit-status-valid-boundaries ()
+  "Exit codes 0 and 255 in :success-exit-status are accepted."
+  (should-not (supervisor--validate-entry
+               '("cmd" :success-exit-status (0 255)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
