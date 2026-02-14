@@ -10059,7 +10059,7 @@ could incorrectly preserve a non-running disabled unit."
 ;; Dashboard describe-entry integration test
 
 (ert-deftest supervisor-test-dashboard-describe-shows-metadata ()
-  "Dashboard describe-entry includes desc= and docs= in message."
+  "Dashboard describe-entry includes description and docs in detail view."
   (let* ((entry (supervisor--parse-entry
                  '("cmd" :id "svc" :description "Dashboard desc"
                    :documentation ("man:svc(1)"))))
@@ -10073,18 +10073,30 @@ could incorrectly preserve a non-running disabled unit."
          (supervisor--manually-stopped (make-hash-table :test 'equal))
          (supervisor--manually-started (make-hash-table :test 'equal))
          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--remain-active (make-hash-table :test 'equal))
+         (supervisor--last-exit-info (make-hash-table :test 'equal))
+         (supervisor--start-times (make-hash-table :test 'equal))
+         (supervisor--ready-times (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
          (supervisor--logging-override (make-hash-table :test 'equal))
-         (msg nil))
-    ;; Mock get-entry-for-id to return our entry
-    (cl-letf (((symbol-function 'tabulated-list-get-id)
-               (lambda () "svc"))
-              ((symbol-function 'supervisor--get-entry-for-id)
-               (lambda (_id) entry))
-              ((symbol-function 'message)
-               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
-      (supervisor-dashboard-describe-entry)
-      (should (string-match-p "desc=Dashboard desc" msg))
-      (should (string-match-p "docs=man:svc(1)" msg)))))
+         (output nil))
+    ;; describe-entry-detail uses with-help-window; read the buffer
+    (cl-letf (((symbol-function 'supervisor--unit-file-path)
+               (lambda (_id) nil))
+              ((symbol-function 'supervisor--telemetry-log-tail)
+               (lambda (_id &optional _lines) nil)))
+      (supervisor--describe-entry-detail "svc" entry)
+      (let ((info-buf (get-buffer "*supervisor-info*")))
+        (unwind-protect
+            (progn
+              (should info-buf)
+              (setq output (with-current-buffer info-buf
+                             (buffer-string)))
+              (should (string-match-p "Dashboard desc" output))
+              (should (string-match-p "man:svc(1)" output)))
+          (when info-buf (kill-buffer info-buf)))))))
 
 ;;;; Phase N3: Ordering and Soft Dependencies Tests
 
@@ -11713,6 +11725,222 @@ No warning is emitted when there are simply no child processes."
   (should (commandp 'supervisor-dashboard-unmask))
   (should (commandp 'supervisor-dashboard-set-restart-policy))
   (should (commandp 'supervisor-dashboard-set-logging)))
+
+;;;; Telemetry Data Model Tests
+
+(ert-deftest supervisor-test-last-exit-info-populated ()
+  "Process sentinel populates `supervisor--last-exit-info'."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--remain-active (make-hash-table :test 'equal))
+         (supervisor--last-exit-info (make-hash-table :test 'equal))
+         (supervisor--start-times (make-hash-table :test 'equal))
+         (supervisor--ready-times (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--shutting-down nil)
+         (proc (start-process "test-exit" nil "true")))
+    (puthash "test-exit" proc supervisor--processes)
+    (set-process-sentinel proc
+                          (supervisor--make-process-sentinel
+                           "test-exit" "true" nil 'simple 'no))
+    ;; Wait for process to exit
+    (while (process-live-p proc)
+      (accept-process-output nil 0.01))
+    (accept-process-output nil 0.05)
+    ;; Verify exit info was recorded
+    (let ((info (gethash "test-exit" supervisor--last-exit-info)))
+      (should info)
+      (should (eq 'exited (plist-get info :status)))
+      (should (= 0 (plist-get info :code)))
+      (should (numberp (plist-get info :timestamp))))))
+
+(ert-deftest supervisor-test-telemetry-uptime-running ()
+  "Uptime returns seconds for running process."
+  (let ((supervisor--start-times (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (proc (start-process "uptime-test" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "uptime-test" (float-time) supervisor--start-times)
+          (puthash "uptime-test" proc supervisor--processes)
+          (let ((uptime (supervisor--telemetry-uptime "uptime-test")))
+            (should uptime)
+            (should (>= uptime 0))))
+      (delete-process proc))))
+
+(ert-deftest supervisor-test-telemetry-uptime-nil-when-not-running ()
+  "Uptime returns nil when process is not running."
+  (let ((supervisor--start-times (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal)))
+    (puthash "dead-svc" (float-time) supervisor--start-times)
+    (should-not (supervisor--telemetry-uptime "dead-svc"))))
+
+(ert-deftest supervisor-test-telemetry-restart-count ()
+  "Restart count reflects recent restarts in window."
+  (let ((supervisor--restart-times (make-hash-table :test 'equal))
+        (supervisor-restart-window 300))
+    ;; No restarts
+    (should (= 0 (supervisor--telemetry-restart-count "svc")))
+    ;; Two recent restarts
+    (puthash "svc" (list (float-time) (- (float-time) 10))
+             supervisor--restart-times)
+    (should (= 2 (supervisor--telemetry-restart-count "svc")))
+    ;; Old restart outside window
+    (puthash "svc" (list (- (float-time) 999))
+             supervisor--restart-times)
+    (should (= 0 (supervisor--telemetry-restart-count "svc")))))
+
+(ert-deftest supervisor-test-telemetry-last-exit-format ()
+  "Last exit returns formatted string."
+  (let ((supervisor--last-exit-info (make-hash-table :test 'equal)))
+    ;; No exit
+    (should-not (supervisor--telemetry-last-exit "svc"))
+    ;; Clean exit
+    (puthash "svc" (list :status 'exited :code 0 :timestamp (float-time))
+             supervisor--last-exit-info)
+    (should (string= "exited successfully"
+                      (supervisor--telemetry-last-exit "svc")))
+    ;; Non-zero exit
+    (puthash "svc" (list :status 'exited :code 1 :timestamp (float-time))
+             supervisor--last-exit-info)
+    (should (string= "exited with code 1"
+                      (supervisor--telemetry-last-exit "svc")))
+    ;; Signal
+    (puthash "svc" (list :status 'signal :code 15 :timestamp (float-time))
+             supervisor--last-exit-info)
+    (should (string= "killed by signal 15"
+                      (supervisor--telemetry-last-exit "svc")))))
+
+(ert-deftest supervisor-test-telemetry-process-metrics-nil-graceful ()
+  "Process metrics returns nil gracefully for non-existent PID."
+  (should-not (supervisor--telemetry-process-metrics 999999999)))
+
+(ert-deftest supervisor-test-telemetry-log-tail-missing ()
+  "Log tail returns nil for non-existent log file."
+  (let ((supervisor-log-directory "/tmp/nonexistent-sv-logs"))
+    (should-not (supervisor--telemetry-log-tail "svc"))))
+
+(ert-deftest supervisor-test-snapshot-includes-last-exit-info ()
+  "Snapshot struct includes `last-exit-info' field."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--restart-override (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--remain-active (make-hash-table :test 'equal))
+        (supervisor--last-exit-info (make-hash-table :test 'equal)))
+    ;; Put exit info in the hash
+    (puthash "svc" (list :status 'exited :code 42 :timestamp 1000.0)
+             supervisor--last-exit-info)
+    (let ((snapshot (supervisor--build-snapshot)))
+      ;; Verify the snapshot captured it
+      (should (supervisor-snapshot-last-exit-info snapshot))
+      (let ((info (gethash "svc" (supervisor-snapshot-last-exit-info snapshot))))
+        (should info)
+        (should (eq 'exited (plist-get info :status)))
+        (should (= 42 (plist-get info :code)))))))
+
+(ert-deftest supervisor-test-format-duration ()
+  "Duration formatting produces human-readable strings."
+  (should (string= "5s" (supervisor--describe-format-duration 5)))
+  (should (string= "2m30s" (supervisor--describe-format-duration 150)))
+  (should (string= "1h30m" (supervisor--describe-format-duration 5400)))
+  (should (string= "2d3h" (supervisor--describe-format-duration 183600))))
+
+(ert-deftest supervisor-test-cli-format-duration ()
+  "CLI duration formatting produces human-readable strings."
+  (should (string= "5s" (supervisor--cli-format-duration 5)))
+  (should (string= "2m30s" (supervisor--cli-format-duration 150)))
+  (should (string= "1h30m" (supervisor--cli-format-duration 5400)))
+  (should (string= "2d3h" (supervisor--cli-format-duration 183600))))
+
+(ert-deftest supervisor-test-set-logging-saves-overrides ()
+  "Dashboard set-logging calls `supervisor--save-overrides'."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--remain-active (make-hash-table :test 'equal))
+         (supervisor--last-exit-info (make-hash-table :test 'equal))
+         (supervisor--start-times (make-hash-table :test 'equal))
+         (supervisor--ready-times (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--logging-override (make-hash-table :test 'equal))
+         (saved nil)
+         (entry (supervisor--parse-entry
+                 '("cmd" :id "svc" :type simple :logging))))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+              ((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'supervisor--save-overrides)
+               (lambda () (setq saved t)))
+              ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
+              ((symbol-function 'completing-read)
+               (lambda (_prompt _coll &rest _) "off")))
+      (supervisor-dashboard-set-logging)
+      (should saved))))
+
+(ert-deftest supervisor-test-cli-entry-info-telemetry-fields ()
+  "CLI entry-info includes telemetry fields."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--remain-active (make-hash-table :test 'equal))
+         (supervisor--last-exit-info (make-hash-table :test 'equal))
+         (supervisor--start-times (make-hash-table :test 'equal))
+         (supervisor--ready-times (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (entry (supervisor--parse-entry
+                 '("cmd" :id "svc" :type simple :restart always))))
+    ;; Add some exit info
+    (puthash "svc" (list :status 'exited :code 1 :timestamp (float-time))
+             supervisor--last-exit-info)
+    (puthash "svc" (list (float-time)) supervisor--restart-times)
+    (let ((info (supervisor--cli-entry-info entry)))
+      (should (assq 'uptime info))
+      (should (assq 'restart-count info))
+      (should (assq 'last-exit info))
+      (should (assq 'next-restart-eta info))
+      (should (assq 'metrics info))
+      ;; Verify last-exit was populated
+      (let ((exit-info (alist-get 'last-exit info)))
+        (should exit-info)
+        (should (eq 'exited (plist-get exit-info :status))))
+      ;; Verify restart count
+      (should (= 1 (alist-get 'restart-count info))))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

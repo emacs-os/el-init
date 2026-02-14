@@ -755,6 +755,15 @@ to entries and health summary for consistency within a single refresh."
   "Status: running=active process | active=oneshot remain-after-exit | done=oneshot completed ok | failed=crashed/exit>0 | dead=crash-loop | pending=not yet started | stopped=terminated | invalid=config error"
   "Legend explaining status column values.")
 
+(defun supervisor--describe-format-duration (seconds)
+  "Format SECONDS as a human-readable duration string."
+  (let ((s (round seconds)))
+    (cond
+     ((< s 60) (format "%ds" s))
+     ((< s 3600) (format "%dm%ds" (/ s 60) (% s 60)))
+     ((< s 86400) (format "%dh%dm" (/ s 3600) (% (/ s 60) 60)))
+     (t (format "%dd%dh" (/ s 86400) (% (/ s 3600) 24))))))
+
 (defun supervisor-dashboard-describe-entry ()
   "Show detailed information about entry at point.
 With prefix argument, show status legend instead."
@@ -770,81 +779,128 @@ With prefix argument, show status legend instead."
        (t
         (let ((invalid-reason (gethash id supervisor--invalid)))
           (if invalid-reason
-              ;; Invalid entry - show the reason
               (message "INVALID: %s" invalid-reason)
-            ;; Valid entry - show resolved config
             (let ((entry (supervisor--get-entry-for-id id)))
-              (if entry
-                  (let* ((type (supervisor-entry-type entry))
-                         (stage (supervisor-entry-stage entry))
-                         (enabled-p (supervisor-entry-enabled-p entry))
-                         (restart-policy (supervisor-entry-restart-policy entry))
-                         (logging-p (supervisor-entry-logging-p entry))
-                         (delay (supervisor-entry-delay entry))
-                         (after (supervisor-entry-after entry))
-                         (oneshot-blocking (supervisor-entry-oneshot-blocking entry))
-                         (oneshot-timeout (supervisor-entry-oneshot-timeout entry))
-                         (working-directory (supervisor-entry-working-directory entry))
-                         (environment (supervisor-entry-environment entry))
-                         (environment-file (supervisor-entry-environment-file entry))
-                         (exec-stop (supervisor-entry-exec-stop entry))
-                         (exec-reload (supervisor-entry-exec-reload entry))
-                         (restart-sec (supervisor-entry-restart-sec entry))
-                         (description (supervisor-entry-description entry))
-                         (documentation (supervisor-entry-documentation entry))
-                         (eff-restart
-                          (if (eq type 'oneshot) "n/a"
-                            (symbol-name
-                             (supervisor--get-effective-restart
-                              id restart-policy))))
-                         (extra
-                          (concat
-                           (if (eq type 'oneshot)
-                               (format " blocking=%s timeout=%s"
-                                       (if oneshot-blocking "yes" "no")
-                                       (or oneshot-timeout "none"))
-                             "")
-                           (if working-directory
-                               (format " cwd=%s" working-directory)
-                             "")
-                           (if environment
-                               (format " env=%s"
-                                       (mapconcat
-                                        (lambda (pair)
-                                          (format "%s=%s" (car pair) (cdr pair)))
-                                        environment ","))
-                             "")
-                           (if environment-file
-                               (format " env-file=%s"
-                                       (mapconcat #'identity environment-file ","))
-                             "")
-                           (if exec-stop
-                               (format " exec-stop=%s"
-                                       (mapconcat #'identity exec-stop ";"))
-                             "")
-                           (if exec-reload
-                               (format " exec-reload=%s"
-                                       (mapconcat #'identity exec-reload ";"))
-                             "")
-                           (if restart-sec
-                               (format " restart-sec=%s" restart-sec)
-                             "")
-                           (if description
-                               (format " desc=%s" description)
-                             "")
-                           (if documentation
-                               (format " docs=%s"
-                                       (mapconcat #'identity documentation ","))
-                             ""))))
-                    (message "%s: type=%s stage=%s enabled=%s restart=%s log=%s delay=%s after=%s%s"
-                             id type stage
-                             (if enabled-p "yes" "no")
-                             eff-restart
-                             (if logging-p "yes" "no")
-                             delay
-                             (or after "none")
-                             extra))
-                (message "Entry not found: %s" id))))))))))
+              (if (not entry)
+                  (message "Entry not found: %s" id)
+                (supervisor--describe-entry-detail id entry))))))))))
+
+(defun supervisor--describe-entry-detail (id entry)
+  "Show detailed telemetry for ID with parsed ENTRY in a help window."
+  (let* ((type (supervisor-entry-type entry))
+         (stage (supervisor-entry-stage entry))
+         (enabled-p (supervisor-entry-enabled-p entry))
+         (restart-policy (supervisor-entry-restart-policy entry))
+         (logging-p (supervisor-entry-logging-p entry))
+         (delay (supervisor-entry-delay entry))
+         (after (supervisor-entry-after entry))
+         (requires (supervisor-entry-requires entry))
+         (description (supervisor-entry-description entry))
+         (documentation (supervisor-entry-documentation entry))
+         (status-result (supervisor--compute-entry-status id type))
+         (status (car status-result))
+         (reason (supervisor--compute-entry-reason id type))
+         (proc (gethash id supervisor--processes))
+         (pid (when (and proc (process-live-p proc)) (process-id proc)))
+         (eff-enabled (supervisor--get-effective-enabled id enabled-p))
+         (eff-restart (unless (eq type 'oneshot)
+                        (supervisor--get-effective-restart id restart-policy)))
+         (eff-logging (supervisor--get-effective-logging id logging-p))
+         (uptime (supervisor--telemetry-uptime id))
+         (restart-count (supervisor--telemetry-restart-count id))
+         (last-exit (supervisor--telemetry-last-exit id))
+         (last-exit-info (supervisor--telemetry-last-exit-info id))
+         (next-eta (supervisor--telemetry-next-restart-eta id))
+         (metrics (when pid (supervisor--telemetry-process-metrics pid)))
+         (unit-file (when (fboundp 'supervisor--unit-file-path)
+                      (supervisor--unit-file-path id)))
+         (log-tail (supervisor--telemetry-log-tail id 5)))
+    (with-help-window "*supervisor-info*"
+      ;; Header
+      (princ (format "%s - %s\n" id (or description (symbol-name type))))
+      (princ (make-string (+ (length id) 3
+                             (length (or description (symbol-name type))))
+                          ?-))
+      (princ "\n\n")
+      ;; Status block
+      (princ (format "   Status: %s%s\n" status
+                     (if reason (format " (%s)" reason) "")))
+      (when pid
+        (princ (format "      PID: %d\n" pid)))
+      (when uptime
+        (princ (format "   Uptime: %s\n"
+                       (supervisor--describe-format-duration uptime))))
+      (princ "\n")
+      ;; Config block
+      (princ (format "     Type: %s\n" type))
+      (princ (format "    Stage: %s\n" stage))
+      (princ (format "  Enabled: %s%s\n"
+                     (if eff-enabled "yes" "no")
+                     (if (not (eq eff-enabled enabled-p)) " (override)" "")))
+      (when eff-restart
+        (princ (format "  Restart: %s%s\n"
+                       eff-restart
+                       (if (not (eq eff-restart
+                                    (supervisor--normalize-restart-policy
+                                     restart-policy)))
+                           " (override)" ""))))
+      (princ (format "  Logging: %s%s\n"
+                     (if eff-logging "yes" "no")
+                     (if (not (eq eff-logging logging-p)) " (override)" "")))
+      (princ (format "    Delay: %s\n" delay))
+      (princ (format "    After: %s\n"
+                     (if after (mapconcat #'identity after ", ") "none")))
+      (when requires
+        (princ (format " Requires: %s\n"
+                       (mapconcat #'identity requires ", "))))
+      ;; Oneshot-specific
+      (when (eq type 'oneshot)
+        (princ (format " Blocking: %s\n"
+                       (if (supervisor-entry-oneshot-blocking entry)
+                           "yes" "no")))
+        (let ((timeout (supervisor-entry-oneshot-timeout entry)))
+          (when timeout
+            (princ (format "  Timeout: %ss\n" timeout)))))
+      ;; Runtime telemetry
+      (when (or last-exit (> restart-count 0) next-eta metrics)
+        (princ "\n")
+        (when last-exit
+          (let ((ts (when last-exit-info
+                      (plist-get last-exit-info :timestamp))))
+            (princ (format "Last exit: %s%s\n" last-exit
+                           (if ts (format " (%.1fs ago)"
+                                          (- (float-time) ts))
+                             "")))))
+        (when (> restart-count 0)
+          (princ (format " Restarts: %d (in window)\n" restart-count)))
+        (when next-eta
+          (let ((remaining (- next-eta (float-time))))
+            (when (> remaining 0)
+              (princ (format "Next restart: in %.1fs\n" remaining)))))
+        (when metrics
+          (let ((parts nil))
+            (when-let* ((rss (plist-get metrics :rss)))
+              (push (format "RSS=%dKB" rss) parts))
+            (when-let* ((pcpu (plist-get metrics :pcpu)))
+              (push (format "CPU=%.1f%%" pcpu) parts))
+            (when-let* ((pmem (plist-get metrics :pmem)))
+              (push (format "MEM=%.1f%%" pmem) parts))
+            (when parts
+              (princ (format "  Metrics: %s\n"
+                             (mapconcat #'identity
+                                        (nreverse parts) " ")))))))
+      ;; Unit file and docs
+      (when (or unit-file documentation)
+        (princ "\n")
+        (when unit-file
+          (princ (format "Unit file: %s\n" unit-file)))
+        (when documentation
+          (princ (format "     Docs: %s\n"
+                         (mapconcat #'identity documentation ", ")))))
+      ;; Log tail
+      (when log-tail
+        (princ "\nRecent log:\n")
+        (princ log-tail)))))
 
 (defun supervisor-dashboard-help ()
   "Show full help for supervisor dashboard."
@@ -1183,6 +1239,7 @@ Prompt with `completing-read' to choose on or off explicitly."
         (if (eq new-state config-logging)
             (remhash id supervisor--logging)
           (puthash id (if new-state 'enabled 'disabled) supervisor--logging))
+        (supervisor--save-overrides)
         (message "Logging for %s: %s" id choice)
         (supervisor--refresh-dashboard)))))
 

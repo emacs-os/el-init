@@ -997,6 +997,12 @@ Used by reconcile to preserve disabled units that were explicitly started.
 Per the systemctl model, `start' on a disabled unit runs it this session
 without changing enabled state, and reconcile should not stop it.")
 
+(defvar supervisor--last-exit-info (make-hash-table :test 'equal)
+  "Hash table mapping entry IDs to last exit information.
+Each value is a plist (:status STATUS :code CODE :timestamp TIME)
+where STATUS is `exited', `signal', or `unknown', CODE is the exit
+code or signal number, and TIME is the `float-time' of exit.")
+
 ;;; Persistent Overrides (Schema v1)
 
 (defcustom supervisor-overrides-file
@@ -1916,6 +1922,7 @@ status queries, and reconciliation without direct global access."
   manually-started ; hash: id -> t if manually started (for reconcile)
   manually-stopped ; hash: id -> t if manually stopped
   remain-active    ; hash: id -> t if oneshot latched active (remain-after-exit)
+  last-exit-info   ; hash: id -> plist (:status :code :timestamp)
   timestamp)       ; float-time when snapshot was taken
 
 (defun supervisor--build-snapshot ()
@@ -1944,6 +1951,7 @@ completion status, and overrides.  Safe to call at any time."
      :manually-started (copy-hash-table supervisor--manually-started)
      :manually-stopped (copy-hash-table supervisor--manually-stopped)
      :remain-active (copy-hash-table supervisor--remain-active)
+     :last-exit-info (copy-hash-table supervisor--last-exit-info)
      :timestamp (float-time))))
 
 (defun supervisor--build-plan (programs)
@@ -2527,6 +2535,88 @@ EXIT-CODE is from `process-exit-status' (signal number or exit code)."
                "exited successfully"
              (format "exited with code %d" exit-code)))
     (_ "terminated")))
+
+;;; Telemetry Accessors
+
+(defun supervisor--telemetry-uptime (id)
+  "Return uptime in seconds for ID, or nil if not running.
+Computes elapsed time since the entry was started."
+  (when-let* ((start (gethash id supervisor--start-times))
+              (proc (gethash id supervisor--processes)))
+    (when (process-live-p proc)
+      (- (float-time) start))))
+
+(defun supervisor--telemetry-restart-count (id)
+  "Return number of recent restarts for ID within the restart window.
+Returns 0 if no restarts have occurred."
+  (let* ((now (float-time))
+         (times (gethash id supervisor--restart-times))
+         (recent (cl-remove-if
+                  (lambda (ts) (> (- now ts) supervisor-restart-window))
+                  times)))
+    (length recent)))
+
+(defun supervisor--telemetry-last-exit (id)
+  "Return formatted last exit string for ID, or nil if never exited."
+  (when-let* ((info (gethash id supervisor--last-exit-info)))
+    (let ((status (plist-get info :status))
+          (code (plist-get info :code)))
+      (pcase status
+        ('signal (format "killed by signal %d" code))
+        ('exited (if (= code 0)
+                     "exited successfully"
+                   (format "exited with code %d" code)))
+        (_ "terminated")))))
+
+(defun supervisor--telemetry-last-exit-info (id &optional snapshot)
+  "Return raw last exit info plist for ID, or nil if never exited.
+If SNAPSHOT is provided, read from it; otherwise read from globals."
+  (gethash id (if snapshot
+                  (or (supervisor-snapshot-last-exit-info snapshot)
+                      (make-hash-table :test 'equal))
+                supervisor--last-exit-info)))
+
+(defun supervisor--telemetry-next-restart-eta (id)
+  "Return `float-time' of next scheduled restart for ID, or nil.
+Returns the time when the pending restart timer will fire."
+  (when-let* ((timer (gethash id supervisor--restart-timers)))
+    (when (timerp timer)
+      (let ((secs (timer--time timer)))
+        (when secs
+          (float-time secs))))))
+
+(defun supervisor--telemetry-process-metrics (pid)
+  "Return best-effort process metrics for PID, or nil.
+Returns a plist with available keys: :rss (KB), :pcpu (percent),
+:pmem (percent), :etime (seconds).  Gracefully returns nil if
+process attributes are unavailable."
+  (condition-case nil
+      (when-let* ((attrs (process-attributes pid)))
+        (let ((result nil))
+          (when-let* ((rss (alist-get 'rss attrs)))
+            (setq result (plist-put result :rss rss)))
+          (when-let* ((pcpu (alist-get 'pcpu attrs)))
+            (setq result (plist-put result :pcpu pcpu)))
+          (when-let* ((pmem (alist-get 'pmem attrs)))
+            (setq result (plist-put result :pmem pmem)))
+          (when-let* ((etime (alist-get 'etime attrs)))
+            (setq result (plist-put result :etime etime)))
+          result))
+    (error nil)))
+
+(defun supervisor--telemetry-log-tail (id &optional lines)
+  "Return last LINES lines from the log file for ID.
+LINES defaults to 5.  Returns nil if no log file exists."
+  (let ((log-file (supervisor--log-file id))
+        (n (or lines 5)))
+    (when (file-exists-p log-file)
+      (condition-case nil
+          (with-temp-buffer
+            (insert-file-contents log-file)
+            (goto-char (point-max))
+            (forward-line (- n))
+            (buffer-substring-no-properties (point) (point-max)))
+        (error nil)))))
 
 ;;; Staging and Dependency Resolution
 
@@ -3160,6 +3250,10 @@ and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts."
                             ('exit 'exited)
                             (_ 'unknown))))
         (remhash name supervisor--processes)
+        ;; Record last exit info for telemetry
+        (puthash name (list :status exit-status :code exit-code
+                            :timestamp (float-time))
+                 supervisor--last-exit-info)
         ;; Emit process exit event
         (supervisor--emit-event 'process-exit name nil
                                 (list :status exit-status :code exit-code))
@@ -3849,6 +3943,7 @@ Ready semantics (when dependents are unblocked):
   (clrhash supervisor--logging)
   (clrhash supervisor--restart-times)
   (clrhash supervisor--restart-timers)
+  (clrhash supervisor--last-exit-info)
   (clrhash supervisor--oneshot-completed)
   (clrhash supervisor--remain-active)
   (clrhash supervisor--start-times)

@@ -219,7 +219,15 @@ Returns alist with all fields needed for status display."
                            (process-id proc)))))
          ;; Get timing info
          (start-time (gethash id supervisor--start-times))
-         (ready-time (gethash id supervisor--ready-times)))
+         (ready-time (gethash id supervisor--ready-times))
+         ;; Telemetry
+         (actual-pid (or pid pid-global))
+         (uptime (supervisor--telemetry-uptime id))
+         (restart-count (supervisor--telemetry-restart-count id))
+         (last-exit (supervisor--telemetry-last-exit-info id snapshot))
+         (next-eta (supervisor--telemetry-next-restart-eta id))
+         (metrics (when actual-pid
+                    (supervisor--telemetry-process-metrics actual-pid))))
     `((id . ,id)
       (type . ,type)
       (stage . ,stage)
@@ -234,11 +242,16 @@ Returns alist with all fields needed for status display."
       (requires . ,requires)
       (status . ,status)
       (reason . ,reason)
-      (pid . ,(or pid pid-global))
+      (pid . ,actual-pid)
       (start-time . ,start-time)
       (ready-time . ,ready-time)
       (duration . ,(when (and start-time ready-time)
                      (- ready-time start-time)))
+      (uptime . ,uptime)
+      (restart-count . ,restart-count)
+      (last-exit . ,last-exit)
+      (next-restart-eta . ,next-eta)
+      (metrics . ,metrics)
       (unit-file . ,(when (fboundp 'supervisor--unit-file-path)
                       (supervisor--unit-file-path id)))
       (working-directory . ,(supervisor-entry-working-directory entry))
@@ -284,6 +297,15 @@ Includes both plan-level and unit-file-level invalid entries."
 (defun supervisor--cli-format-bool (val)
   "Format boolean VAL as yes/no string."
   (if val "yes" "no"))
+
+(defun supervisor--cli-format-duration (seconds)
+  "Format SECONDS as a human-readable duration string."
+  (let ((s (round seconds)))
+    (cond
+     ((< s 60) (format "%ds" s))
+     ((< s 3600) (format "%dm%ds" (/ s 60) (% s 60)))
+     ((< s 86400) (format "%dh%dm" (/ s 3600) (% (/ s 60) 60)))
+     (t (format "%dd%dh" (/ s 86400) (% (/ s 3600) 24))))))
 
 (defun supervisor--cli-format-status-line (info)
   "Format single entry INFO alist as status table row."
@@ -393,6 +415,40 @@ Includes both plan-level and unit-file-level invalid entries."
      (when start-time (format "Start time: %.3f\n" start-time))
      (when ready-time (format "Ready time: %.3f\n" ready-time))
      (when duration (format "Duration: %.3fs\n" duration))
+     (let ((uptime (alist-get 'uptime info)))
+       (when uptime (format "Uptime: %s\n"
+                            (supervisor--cli-format-duration uptime))))
+     (let ((rc (alist-get 'restart-count info)))
+       (when (and rc (> rc 0))
+         (format "Restarts: %d (in window)\n" rc)))
+     (let ((exit-info (alist-get 'last-exit info)))
+       (when exit-info
+         (let ((status (plist-get exit-info :status))
+               (code (plist-get exit-info :code))
+               (ts (plist-get exit-info :timestamp)))
+           (format "Last exit: %s (code %d, %s)\n"
+                   status code
+                   (if ts
+                       (format "%.1fs ago"
+                               (- (float-time) ts))
+                     "unknown time")))))
+     (let ((eta (alist-get 'next-restart-eta info)))
+       (when eta
+         (let ((remaining (- eta (float-time))))
+           (when (> remaining 0)
+             (format "Next restart: in %.1fs\n" remaining)))))
+     (let ((metrics (alist-get 'metrics info)))
+       (when metrics
+         (format "Metrics: %s\n"
+                 (mapconcat
+                  (lambda (pair)
+                    (format "%s=%s" (car pair) (cdr pair)))
+                  (cl-loop for (k v) on metrics by #'cddr
+                           collect (cons (substring (symbol-name k) 1)
+                                         (if (floatp v)
+                                             (format "%.1f" v)
+                                           (format "%s" v))))
+                  " "))))
      (let ((uf (alist-get 'unit-file info)))
        (when uf (format "Unit file: %s\n" uf)))
      (let ((docs (alist-get 'documentation info)))
@@ -442,6 +498,22 @@ Includes both plan-level and unit-file-level invalid entries."
     (exec_stop . ,(or (alist-get 'exec-stop info) []))
     (exec_reload . ,(or (alist-get 'exec-reload info) []))
     (restart_sec . ,(alist-get 'restart-sec info))
+    (uptime . ,(alist-get 'uptime info))
+    (restart_count . ,(or (alist-get 'restart-count info) 0))
+    (last_exit . ,(let ((exit-info (alist-get 'last-exit info)))
+                    (if exit-info
+                        `((status . ,(plist-get exit-info :status))
+                          (code . ,(plist-get exit-info :code))
+                          (timestamp . ,(plist-get exit-info :timestamp)))
+                      nil)))
+    (next_restart_eta . ,(alist-get 'next-restart-eta info))
+    (metrics . ,(let ((m (alist-get 'metrics info)))
+                  (if m
+                      (cl-loop for (k v) on m by #'cddr
+                               collect (cons (intern
+                                              (substring (symbol-name k) 1))
+                                             v))
+                    nil)))
     (description . ,(alist-get 'description info))
     (documentation . ,(or (alist-get 'documentation info) []))))
 

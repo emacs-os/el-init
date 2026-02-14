@@ -62,6 +62,7 @@ provides detailed reference material:
 - [[#events-and-hooks][Events and Hooks]] - programmatic integration
 - [[#customization-reference][Customization Reference]] - all variables and faces
 - [[#command-reference][Command Reference]] - every interactive command
+- [[#service-management-comparison][Systems Comparison]] - supervisor vs systemd vs runit
 - [[#unplanned-systemd-directives][Unplanned Directives]] - systemd features not implemented
 
 * Quick Start
@@ -680,7 +681,7 @@ Effective environment build order:
 ** Reload Semantics (~:exec-reload~)
 
 When a running ~simple~ unit has ~:exec-reload~ commands, reloading it
-(~supervisorctl reload ID~, dashboard ~u~) runs the reload commands
+(~supervisorctl reload ID~, dashboard ~l u~) runs the reload commands
 sequentially without stopping or restarting the process.  Each command
 has a per-command timeout of ~supervisor-shutdown-timeout~ seconds.
 
@@ -756,7 +757,7 @@ Key differences:
 
 ** Stop Semantics
 
-Per-unit stop (~supervisorctl stop ID~, dashboard ~x~):
+Per-unit stop (~supervisorctl stop ID~, dashboard ~l t~):
 
 1. If the unit has ~:exec-stop~ commands, they run sequentially with the unit's
    effective working directory and environment.  Each command has a per-command
@@ -1628,6 +1629,10 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Stage model comparison (supervisor vs systemd targets vs runit stages): [[#service-management-comparison][Service Management Systems Comparison]]
+- Systemd command mapping (supervisorctl vs systemctl vs sv): [[#service-management-comparison][Service Management Systems Comparison]]
+- Systemd example conversions (unit file to supervisor config): [[#service-management-comparison][Service Management Systems Comparison]]
+- Systemd feature support matrix: [[#service-management-comparison][Service Management Systems Comparison]]
 - Systemd oneshot comparison (~:oneshot-blocking~, ~:oneshot-timeout~ mapping): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Timer catch-up window (~supervisor-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#customization-reference][Customization Reference]]
 - Timer disabled/gated behavior (~supervisor-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#command-reference][Command Reference]]
@@ -1652,6 +1657,234 @@ Practical guidance:
 - Prefer local socket transport.
 - Use ~--server-file~ only when you intentionally operate server-file/TCP mode.
 - Keep server auth/socket directories private (owner-only permissions).
+
+* Service Management Systems Comparison
+:PROPERTIES:
+:CUSTOM_ID: service-management-comparison
+:END:
+
+This section provides explicit comparison between supervisor's design and
+other service management systems, covering architectural decisions,
+terminology mapping, and feature coverage.
+
+** Stage Model vs Targets vs runlevels
+
+Service management systems use different models for grouping and ordering
+service startup.
+
+| Concept | supervisor | systemd | runit |
+|---------+------------+---------+-------|
+| Grouping | 4 fixed stages (~stage1~--~stage4~) | Targets (arbitrary DAG nodes) | 3 stages (~1~--~3~) |
+| Ordering within group | ~:after~, ~:requires~ (intra-stage) | ~After=~, ~Requires=~ (global) | Alphabetical within ~/etc/sv/~ |
+| Cross-group ordering | Stages run sequentially | ~After=~ across targets | Stages run sequentially |
+| Adding new groups | Not supported (4 stages fixed) | Create new ~.target~ unit | Not supported (3 stages fixed) |
+| Conditional membership | ~:stage~ keyword on unit | ~WantedBy=~, ~RequiredBy=~ | Symlink presence |
+| Default parallelism | Concurrent within stage | Concurrent globally | Sequential per stage |
+
+*** Supervisor Stage Model
+
+Supervisor uses a fixed four-stage pipeline: ~stage1~ through ~stage4~.
+Stages execute sequentially: all entries in ~stage1~ must complete (spawn
+for simple, exit for blocking oneshot) before ~stage2~ begins.  Within each
+stage, entries run concurrently, subject to ~:after~ and ~:requires~
+ordering edges.
+
+This model is simple and predictable.  The fixed number of stages means
+startup ordering is easy to reason about at a glance: lower stage number
+runs first, and dependencies within a stage are explicit.  The trade-off
+is less flexibility than a full DAG model: you cannot create arbitrary
+grouping points or conditional activation paths.
+
+*** systemd Target Model
+
+systemd uses target units as synchronization points in a directed acyclic
+graph.  Any unit can declare ~WantedBy=~ or ~RequiredBy=~ a target, and
+targets themselves can depend on other targets.  This provides maximum
+flexibility but requires understanding the full dependency graph to predict
+startup order.
+
+*** runit Stage Model
+
+runit uses three stages: stage 1 (one-time init), stage 2 (service
+supervision), and stage 3 (shutdown).  Stage 1 runs a single script
+(~/etc/runit/1~) to completion.  Stage 2 starts ~runsvdir~ which
+supervises all services in ~/etc/sv/~ concurrently.  Stage 3 runs a
+shutdown script.  Within stage 2, all services start simultaneously with
+no ordering mechanism beyond filesystem-level hacks.
+
+*** Recommendation
+
+The four-stage model is appropriate for supervisor's use case: a userland
+process manager within Emacs.  The fixed stages provide sufficient
+sequencing (setup, system, services, applets) without the complexity of a
+full target graph.  The ~:after~ and ~:requires~ edges within stages
+handle fine-grained ordering where needed.
+
+** Command Mapping: supervisor vs systemd vs runit
+
+| Operation | supervisor CLI | systemd | runit |
+|-----------+----------------+---------+-------|
+| Start | ~supervisorctl start ID~ | ~systemctl start ID~ | ~sv start ID~ |
+| Stop | ~supervisorctl stop ID~ | ~systemctl stop ID~ | ~sv stop ID~ |
+| Restart | ~supervisorctl restart ID~ | ~systemctl restart ID~ | ~sv restart ID~ |
+| Kill | ~supervisorctl kill ID~ | ~systemctl kill ID~ | ~sv kill ID~ |
+| Enable | ~supervisorctl enable ID~ | ~systemctl enable ID~ | ~ln -s /etc/sv/ID /var/service/~ |
+| Disable | ~supervisorctl disable ID~ | ~systemctl disable ID~ | ~rm /var/service/ID~ |
+| Mask | ~supervisorctl mask ID~ | ~systemctl mask ID~ | (no equivalent) |
+| Reload config | ~supervisorctl reload ID~ | ~systemctl reload ID~ | ~sv hup ID~ |
+| Reload all | ~supervisorctl daemon-reload~ | ~systemctl daemon-reload~ | (automatic via ~runsvdir~) |
+| Status | ~supervisorctl status ID~ | ~systemctl status ID~ | ~sv status ID~ |
+| List all | ~supervisorctl status~ | ~systemctl list-units~ | ~sv status /var/service/*~ |
+| Reset failed | ~supervisorctl reset-failed ID~ | ~systemctl reset-failed ID~ | (no equivalent) |
+| Set policy | ~supervisorctl restart-policy ID always~ | (edit unit file) | (no equivalent) |
+| Set logging | ~supervisorctl logging ID on~ | (edit unit file) | Logging is automatic |
+
+** Feature Support Matrix
+
+| Feature | supervisor | systemd | Notes |
+|---------+------------+---------+-------|
+| Process supervision | Supported | Supported | Core functionality |
+| Restart on crash | Supported | Supported | ~:restart~ / ~Restart=~ |
+| Restart policies | Supported | Supported | ~always~, ~on-success~, ~on-failure~, ~no~ |
+| Restart backoff | Supported | Supported | ~:restart-sec~ / ~RestartSec=~ |
+| Oneshot services | Supported | Supported | ~:type oneshot~ / ~Type=oneshot~ |
+| Dependency ordering | Supported | Supported | ~:after~ / ~After=~ |
+| Soft dependencies | Supported | Supported | ~:wants~ / ~Wants=~ |
+| Hard dependencies | Supported | Supported | ~:requires~ / ~Requires=~ |
+| Environment vars | Supported | Supported | ~:environment~ / ~Environment=~ |
+| Environment files | Supported | Supported | ~:environment-file~ / ~EnvironmentFile=~ |
+| Working directory | Supported | Supported | ~:working-directory~ / ~WorkingDirectory=~ |
+| Custom stop command | Supported | Supported | ~:exec-stop~ / ~ExecStop=~ |
+| Custom reload | Supported | Supported | ~:exec-reload~ / ~ExecReload=~ |
+| Kill signal | Supported | Supported | ~:kill-signal~ / ~KillSignal=~ |
+| Kill mode | Partial | Supported | ~process~, ~mixed~ only (no ~control-group~) |
+| Remain after exit | Supported | Supported | ~:remain-after-exit~ / ~RemainAfterExit=~ |
+| Success exit status | Supported | Supported | ~:success-exit-status~ / ~SuccessExitStatus=~ |
+| Runtime overrides | Supported | Partial | Persistent enable/disable/mask/restart-policy/logging |
+| Unit file config | Supported | Supported | ~.el~ files / ~.service~ files |
+| Timer services | Supported | Supported | Experimental timer subsystem |
+| Process metrics | Supported | Supported | Best-effort RSS/CPU via ~process-attributes~ |
+| Log management | Partial | Supported | File-based, per-service; no journal integration |
+| Socket activation | Not planned | Supported | Outside scope of userland supervisor |
+| Cgroup isolation | Not planned | Supported | Requires PID 1 / kernel integration |
+| D-Bus activation | Not planned | Supported | Requires D-Bus integration |
+| Notification protocol | Not planned | Supported | ~Type=notify~ requires socket protocol |
+
+** Example Conversions: systemd to supervisor
+
+*** Example 1: Simple Daemon
+
+systemd unit:
+
+#+begin_example
+[Unit]
+Description=My Background Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/my-daemon --config /etc/my-daemon.conf
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=/var/lib/my-daemon
+
+[Install]
+WantedBy=multi-user.target
+#+end_example
+
+supervisor unit file (~my-daemon.el~):
+
+#+begin_src emacs-lisp
+(:id "my-daemon"
+ :description "My Background Service"
+ :type simple
+ :stage stage3
+ :restart on-failure
+ :restart-sec 5
+ :working-directory "/var/lib/my-daemon")
+;; Command: /usr/bin/my-daemon --config /etc/my-daemon.conf
+#+end_src
+
+Or inline in config:
+
+#+begin_src emacs-lisp
+(setq supervisor-programs
+      '(("/usr/bin/my-daemon --config /etc/my-daemon.conf"
+         :id "my-daemon"
+         :description "My Background Service"
+         :type simple
+         :stage stage3
+         :restart on-failure
+         :restart-sec 5
+         :working-directory "/var/lib/my-daemon")))
+#+end_src
+
+*** Example 2: Oneshot Setup Script
+
+systemd unit:
+
+#+begin_example
+[Unit]
+Description=Create runtime directories
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/mkdir -p /run/myapp
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+#+end_example
+
+supervisor unit file (~setup-dirs.el~):
+
+#+begin_src emacs-lisp
+(:id "setup-dirs"
+ :description "Create runtime directories"
+ :type oneshot
+ :stage stage1
+ :remain-after-exit t)
+;; Command: /usr/bin/mkdir -p /run/myapp
+#+end_src
+
+*** Example 3: Service with Dependencies
+
+systemd unit:
+
+#+begin_example
+[Unit]
+Description=Web Application
+After=database.service
+Requires=database.service
+Environment=NODE_ENV=production
+Environment=PORT=3000
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/webapp/server.js
+Restart=always
+ExecStop=/usr/bin/kill -TERM $MAINPID
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
+#+end_example
+
+supervisor unit file (~webapp.el~):
+
+#+begin_src emacs-lisp
+(:id "webapp"
+ :description "Web Application"
+ :type simple
+ :stage stage3
+ :after ("database")
+ :requires ("database")
+ :environment (("NODE_ENV" . "production") ("PORT" . "3000"))
+ :restart always
+ :exec-stop ("/usr/bin/kill -TERM $MAINPID")
+ :kill-signal SIGTERM)
+;; Command: /usr/bin/node /opt/webapp/server.js
+#+end_src
 
 * Unplanned systemd Directives
 :PROPERTIES:
