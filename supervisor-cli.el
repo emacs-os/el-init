@@ -1056,7 +1056,7 @@ Use -- before IDs that start with a hyphen."
 
 (defun supervisor--cli-cmd-is-active (args json-p)
   "Handle `is-active ID' command with ARGS.  JSON-P enables JSON output.
-Exit 0 if the unit is active (running), exit 3 if not active,
+Exit 0 if the unit is active (running or latched), exit 3 if not active,
 exit 4 if no such unit.  Uses systemctl-compatible exit code semantics."
   (cond
    ((null args)
@@ -1085,7 +1085,8 @@ exit 4 if no such unit.  Uses systemctl-compatible exit code semantics."
                               (status . "inactive")))
              (format "inactive\n")))
         (let* ((status (alist-get 'status info))
-               (active (equal status "running"))
+               (active (or (equal status "running")
+                           (equal status "active")))
                (exitcode (if active
                              supervisor-cli-exit-success
                            supervisor-cli-exit-not-active)))

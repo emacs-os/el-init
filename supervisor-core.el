@@ -1031,6 +1031,11 @@ This reloads overrides even if they were already loaded."
 (defvar supervisor--oneshot-completed (make-hash-table :test 'equal)
   "Hash table tracking oneshot completion.  Value is exit code.")
 
+(defvar supervisor--remain-active (make-hash-table :test 'equal)
+  "Hash table tracking oneshot units in active latch state.
+Non-nil value means the unit has `:remain-after-exit' t and exited
+successfully, so its status is `active' until explicitly stopped.")
+
 (defvar supervisor--oneshot-callbacks (make-hash-table :test 'equal)
   "Hash table of ID -> (callback . timeout-timer) for oneshot blocking.
 Used for event-driven oneshot completion notification.")
@@ -1553,6 +1558,15 @@ Return a cons cell (STATUS . PID)."
                                      supervisor--oneshot-completed)))
          (oneshot-done (not (null oneshot-exit)))
          (oneshot-failed (and oneshot-done (/= oneshot-exit 0)))
+         (remain-active-p (gethash id (if snapshot
+                                           (or (supervisor-snapshot-remain-active snapshot)
+                                               (make-hash-table :test 'equal))
+                                         supervisor--remain-active)))
+         (manually-stopped-p
+          (gethash id (if snapshot
+                          (or (supervisor-snapshot-manually-stopped snapshot)
+                              (make-hash-table :test 'equal))
+                        supervisor--manually-stopped)))
          (pid (cond (alive (number-to-string pid-num))
                     ((and oneshot-p oneshot-done) (format "exit:%d" oneshot-exit))
                     (t "-")))
@@ -1560,7 +1574,9 @@ Return a cons cell (STATUS . PID)."
                        (alive "running")
                        (failed "dead")
                        ((and oneshot-p oneshot-failed) "failed")
+                       ((and oneshot-p remain-active-p) "active")
                        ((and oneshot-p oneshot-done) "done")
+                       ((and oneshot-p manually-stopped-p) "stopped")
                        (oneshot-p "pending")
                        (t "stopped"))))
     (cons status pid)))
@@ -1743,6 +1759,8 @@ status queries, and reconciliation without direct global access."
   logging-override ; hash: id -> 'enabled, 'disabled, or nil
   mask-override    ; hash: id -> 'masked or nil
   manually-started ; hash: id -> t if manually started (for reconcile)
+  manually-stopped ; hash: id -> t if manually stopped
+  remain-active    ; hash: id -> t if oneshot latched active (remain-after-exit)
   timestamp)       ; float-time when snapshot was taken
 
 (defun supervisor--build-snapshot ()
@@ -1769,6 +1787,8 @@ completion status, and overrides.  Safe to call at any time."
      :logging-override (copy-hash-table supervisor--logging)
      :mask-override (copy-hash-table supervisor--mask-override)
      :manually-started (copy-hash-table supervisor--manually-started)
+     :manually-stopped (copy-hash-table supervisor--manually-stopped)
+     :remain-active (copy-hash-table supervisor--remain-active)
      :timestamp (float-time))))
 
 (defun supervisor--build-plan (programs)
@@ -2886,18 +2906,27 @@ disabled.  Runtime overrides take effect on next start."
 PROC-STATUS is the process status symbol, EXIT-CODE is the exit code.
 Logs completion, invokes callbacks, and notifies DAG scheduler.
 For signal deaths, stores negated signal number (e.g., -9 for SIGKILL)
-to distinguish from normal exits with positive exit codes."
+to distinguish from normal exits with positive exit codes.
+When `:remain-after-exit' is t and exit is successful, sets the active
+latch so the unit reports status `active' until explicitly stopped."
   (let ((stored-code (if (eq proc-status 'signal)
                          (- exit-code)  ; Negate signal number
                        exit-code)))
     (puthash name stored-code supervisor--oneshot-completed))
+  ;; Set remain-after-exit active latch on successful exit
+  (when (and (eq proc-status 'exit) (= exit-code 0))
+    (when-let* ((entry (supervisor--get-entry-for-id name)))
+      (when (supervisor-entry-remain-after-exit entry)
+        (puthash name t supervisor--remain-active)
+        (supervisor--log 'info "oneshot %s active (remain-after-exit)" name))))
   (if (eq proc-status 'signal)
       (supervisor--log 'warning "oneshot %s %s"
                        name (supervisor--format-exit-status proc-status exit-code))
     (if (> exit-code 0)
         (supervisor--log 'warning "oneshot %s %s"
                          name (supervisor--format-exit-status proc-status exit-code))
-      (supervisor--log 'info "oneshot %s completed" name)))
+      (unless (gethash name supervisor--remain-active)
+        (supervisor--log 'info "oneshot %s completed" name))))
   ;; Invoke any registered wait callback (event-driven)
   (when-let* ((cb-entry (gethash name supervisor--oneshot-callbacks)))
     (remhash name supervisor--oneshot-callbacks)
@@ -3362,6 +3391,9 @@ are blocked.  Manually started disabled units are tracked in
    ((and (gethash id supervisor--processes)
          (process-live-p (gethash id supervisor--processes)))
     (list :status 'skipped :reason "already running"))
+   ;; Active remain-after-exit unit (no-op)
+   ((gethash id supervisor--remain-active)
+    (list :status 'skipped :reason "already active"))
    ;; Check if entry exists and can be started
    (t
     (let ((entry (supervisor--get-entry-for-id id)))
@@ -3389,6 +3421,7 @@ are blocked.  Manually started disabled units are tracked in
             (remhash id supervisor--failed)
             (remhash id supervisor--restart-times)
             (remhash id supervisor--oneshot-completed)
+            (remhash id supervisor--remain-active)
             ;; Clear manually-stopped so restart works again
             (remhash id supervisor--manually-stopped)
             (let ((proc (supervisor--start-process
@@ -3479,6 +3512,14 @@ seconds, SIGKILL is sent.  For units with `:kill-mode' `mixed',
 SIGKILL is also sent to discovered descendants at escalation time."
   (let ((proc (gethash id supervisor--processes)))
     (cond
+     ;; Active remain-after-exit unit: process exited but latched active
+     ((and (not (and proc (process-live-p proc)))
+           (gethash id supervisor--remain-active))
+      (remhash id supervisor--remain-active)
+      (remhash id supervisor--oneshot-completed)
+      (puthash id t supervisor--manually-stopped)
+      (remhash id supervisor--manually-started)
+      (list :status 'stopped :reason nil))
      ((not proc)
       (list :status 'skipped :reason "not running"))
      ((not (process-live-p proc))
@@ -3640,6 +3681,7 @@ Ready semantics (when dependents are unblocked):
   (clrhash supervisor--restart-times)
   (clrhash supervisor--restart-timers)
   (clrhash supervisor--oneshot-completed)
+  (clrhash supervisor--remain-active)
   (clrhash supervisor--start-times)
   (clrhash supervisor--ready-times)
   (clrhash supervisor--cycle-fallback-ids)
@@ -4164,6 +4206,7 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
             (remhash id supervisor--failed)
             (remhash id supervisor--restart-times)
             (remhash id supervisor--oneshot-completed)
+            (remhash id supervisor--remain-active)
             (list :id id :action "updated"))))))))))
 
 ;;;###autoload

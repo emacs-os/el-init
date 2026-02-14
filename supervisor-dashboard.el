@@ -311,6 +311,7 @@ Requires the `transient' package to be installed."
   "Return the face for STATUS string."
   (pcase status
     ("running" 'supervisor-status-running)
+    ("active" 'supervisor-status-running)
     ("done" 'supervisor-status-done)
     ("failed" 'supervisor-status-failed)
     ("dead" 'supervisor-status-dead)
@@ -589,7 +590,7 @@ If PROGRAMS is provided, use it instead of calling
 If SNAPSHOT is provided, read state from it; otherwise read from globals.
 If PROGRAMS is provided, use it instead of calling
 `supervisor--effective-programs'."
-  (let ((running 0) (done 0) (failed 0) (invalid 0) (pending 0)
+  (let ((running 0) (active 0) (done 0) (failed 0) (invalid 0) (pending 0)
         (programs (or programs (supervisor--effective-programs)))
         (seen (make-hash-table :test 'equal))
         (invalid-hash (if snapshot
@@ -602,6 +603,10 @@ If PROGRAMS is provided, use it instead of calling
         (oneshot-hash (if snapshot
                           (supervisor-snapshot-oneshot-exit snapshot)
                         supervisor--oneshot-completed))
+        (remain-hash (if snapshot
+                         (or (supervisor-snapshot-remain-active snapshot)
+                             (make-hash-table :test 'equal))
+                       supervisor--remain-active))
         (idx 0))
     (dolist (entry programs)
       (let ((raw-id (supervisor--extract-id entry idx)))
@@ -627,6 +632,7 @@ If PROGRAMS is provided, use it instead of calling
                    (alive (cl-incf running))
                    (is-failed (cl-incf failed))
                    ((and oneshot-p oneshot-exit (/= oneshot-exit 0)) (cl-incf failed))
+                   ((and oneshot-p (gethash id remain-hash)) (cl-incf active))
                    ((and oneshot-p oneshot-exit) (cl-incf done))
                    (oneshot-p (cl-incf pending))
                    (t (cl-incf pending))))))))))
@@ -639,6 +645,9 @@ If PROGRAMS is provided, use it instead of calling
                (symbol-value 'supervisor--unit-file-invalid)))
     (concat (propertize (format "%d" running) 'face 'supervisor-status-running)
             " run | "
+            (when (> active 0)
+              (concat (propertize (format "%d" active) 'face 'supervisor-status-running)
+                      " act | "))
             (propertize (format "%d" done) 'face 'supervisor-status-done)
             " done | "
             (propertize (format "%d" pending) 'face 'supervisor-status-pending)
@@ -724,7 +733,7 @@ to entries and health summary for consistency within a single refresh."
     (supervisor--refresh-dashboard)))
 
 (defvar supervisor--status-legend
-  "Status: running=active process | done=oneshot completed ok | failed=crashed/exit>0 | dead=crash-loop | pending=not yet started | stopped=terminated | invalid=config error"
+  "Status: running=active process | active=oneshot remain-after-exit | done=oneshot completed ok | failed=crashed/exit>0 | dead=crash-loop | pending=not yet started | stopped=terminated | invalid=config error"
   "Legend explaining status column values.")
 
 (defun supervisor-dashboard-describe-entry ()
@@ -842,11 +851,12 @@ With prefix argument, show status legend instead."
     (princ "STATUS VALUES\n")
     (princ "-------------\n")
     (princ "  running   Process is alive and running\n")
+    (princ "  active    Oneshot with remain-after-exit (exited successfully)\n")
     (princ "  done      Oneshot completed successfully (exit 0)\n")
     (princ "  failed    Process crashed or oneshot exited non-zero\n")
     (princ "  dead      Process crash-looped (exceeded restart limit)\n")
     (princ "  pending   Not yet started (waiting for stage/deps)\n")
-    (princ "  stopped   Simple process terminated (not crash-loop)\n")
+    (princ "  stopped   Process terminated or active oneshot explicitly stopped\n")
     (princ "  masked    Entry is masked (always disabled)\n")
     (princ "  invalid   Config entry has errors\n\n")
     (princ "COLUMN MEANINGS\n")
@@ -972,7 +982,8 @@ Cycles: unmasked -> masked -> unmasked.  Persists immediately."
 (defun supervisor-dashboard-stop ()
   "Stop process at point with confirmation.
 Gracefully stops the process and suppresses auto-restart.
-Rejects separator rows, timer rows, and oneshot entries.
+Rejects separator rows, timer rows, and non-active oneshot entries.
+Oneshot entries with `:remain-after-exit' in active state can be stopped.
 Use `s' to start the process again later."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
@@ -981,7 +992,8 @@ Use `s' to start the process again later."
     (when (supervisor--timer-row-p id)
       (user-error "Cannot stop timer '%s'" id))
     (let ((entry (supervisor--get-entry-for-id id)))
-      (when (and entry (eq (supervisor-entry-type entry) 'oneshot))
+      (when (and entry (eq (supervisor-entry-type entry) 'oneshot)
+                 (not (gethash id supervisor--remain-active)))
         (user-error "Cannot stop oneshot entry '%s'" id)))
     (when (yes-or-no-p (format "Stop process '%s'? " id))
       (let ((result (supervisor--manual-stop id)))
@@ -992,8 +1004,9 @@ Use `s' to start the process again later."
 (defun supervisor-dashboard-restart ()
   "Restart process at point with confirmation.
 Stops the process gracefully, then starts it again.
-Only for `simple' entries that are currently running.
-Rejects separator rows, timer rows, and oneshot entries."
+For `simple' entries that are currently running, or `oneshot'
+entries with `:remain-after-exit' in active state.
+Rejects separator rows, timer rows, and non-active oneshot entries."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
     (when (supervisor--separator-row-p id)
@@ -1001,12 +1014,14 @@ Rejects separator rows, timer rows, and oneshot entries."
     (when (supervisor--timer-row-p id)
       (user-error "Cannot restart timer '%s'" id))
     (let ((entry (supervisor--get-entry-for-id id)))
-      (when (and entry (eq (supervisor-entry-type entry) 'oneshot))
+      (when (and entry (eq (supervisor-entry-type entry) 'oneshot)
+                 (not (gethash id supervisor--remain-active)))
         (user-error "Cannot restart oneshot entry '%s'" id)))
-    ;; Pre-validate running state before prompting
-    (let ((proc (gethash id supervisor--processes)))
-      (unless (and proc (process-live-p proc))
-        (user-error "Entry '%s' is not running" id)))
+    ;; Pre-validate: must be running or active (remain-after-exit latch)
+    (unless (or (gethash id supervisor--remain-active)
+                (let ((proc (gethash id supervisor--processes)))
+                  (and proc (process-live-p proc))))
+      (user-error "Entry '%s' is not running" id))
     (when (yes-or-no-p (format "Restart process '%s'? " id))
       (let ((stop-result (supervisor--manual-stop id)))
         (pcase (plist-get stop-result :status)
