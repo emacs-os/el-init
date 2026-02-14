@@ -8423,6 +8423,64 @@ could incorrectly preserve a non-running disabled unit."
                   '(:id "svc" :delay 1 :id "other" :delay 2))
                  '(:id :delay))))
 
+(ert-deftest supervisor-test-validate-duplicate-key-description ()
+  "Duplicate :description key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :description "a" :description "b"))))
+    (should reason)
+    (should (string-match-p "duplicate key :description" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-documentation ()
+  "Duplicate :documentation key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :documentation "a" :documentation "b"))))
+    (should reason)
+    (should (string-match-p "duplicate key :documentation" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-before ()
+  "Duplicate :before key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :before "a" :before "b"))))
+    (should reason)
+    (should (string-match-p "duplicate key :before" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-wants ()
+  "Duplicate :wants key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :wants "a" :wants "b"))))
+    (should reason)
+    (should (string-match-p "duplicate key :wants" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-kill-signal ()
+  "Duplicate :kill-signal key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :kill-signal SIGTERM :kill-signal SIGHUP))))
+    (should reason)
+    (should (string-match-p "duplicate key :kill-signal" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-kill-mode ()
+  "Duplicate :kill-mode key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :kill-mode process :kill-mode mixed))))
+    (should reason)
+    (should (string-match-p "duplicate key :kill-mode" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-remain-after-exit ()
+  "Duplicate :remain-after-exit key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :type oneshot
+                   :remain-after-exit t :remain-after-exit nil))))
+    (should reason)
+    (should (string-match-p "duplicate key :remain-after-exit" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-success-exit-status ()
+  "Duplicate :success-exit-status key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :success-exit-status 42
+                   :success-exit-status 43))))
+    (should reason)
+    (should (string-match-p "duplicate key :success-exit-status" reason))))
+
 (ert-deftest supervisor-test-validate-working-directory-invalid ()
   "Non-string :working-directory is rejected."
   (let ((reason (supervisor--validate-entry
