@@ -1072,7 +1072,9 @@ Used for event-driven oneshot completion notification.")
   "List of completed stage symbols.")
 
 (defvar supervisor--cycle-fallback-ids (make-hash-table :test 'equal)
-  "Hash table of entry IDs that had :after cleared due to cycle fallback.")
+  "Hash table of entry IDs with deps cleared due to cycle fallback.
+When a cycle is detected, :after, :requires, and :wants edges are
+all cleared for the affected entries.")
 
 (defvar supervisor--computed-deps (make-hash-table :test 'equal)
   "Hash table of ID -> validated :after list (same-stage, existing deps only).")
@@ -1832,13 +1834,35 @@ The plan includes:
           (when-let* ((stage-entries (gethash stage-int by-stage-hash)))
             (setq stage-entries (nreverse stage-entries))
             (let* ((stage-ids (mapcar #'car stage-entries))
-                   ;; Validate :after references (ordering only, same-stage)
+                   ;; Pre-pass: build :before inversion map
+                   ;; For each entry A with :before ("B"), record that B
+                   ;; gets an implicit :after A edge.
+                   (before-map (make-hash-table :test 'equal))
+                   (_ (dolist (entry stage-entries)
+                        (let ((src-id (supervisor-entry-id entry))
+                              (before (supervisor-entry-before entry)))
+                          (dolist (target before)
+                            (cond
+                             ((not (member target stage-ids))
+                              (if (member target all-ids)
+                                  (supervisor--log 'warning
+                                    ":before '%s' for %s is in different stage, ignoring"
+                                    target src-id)
+                                (supervisor--log 'warning
+                                  ":before '%s' for %s does not exist, ignoring"
+                                  target src-id)))
+                             (t
+                              (puthash target
+                                       (cons src-id (gethash target before-map))
+                                       before-map)))))))
+                   ;; Validate :after, :requires, :wants references
                    (validated-entries
                     (mapcar
                      (lambda (entry)
                        (let* ((id (supervisor-entry-id entry))
                               (after (supervisor-entry-after entry))
                               (requires (supervisor-entry-requires entry))
+                              (wants (supervisor-entry-wants entry))
                               ;; Validate :after - warn on cross-stage/missing
                               (valid-after
                                (cl-remove-if-not
@@ -1855,6 +1879,11 @@ The plan includes:
                                     nil)
                                    (t t)))
                                 after))
+                              ;; Merge inverted :before edges into valid-after
+                              (before-edges (gethash id before-map))
+                              (valid-after
+                               (supervisor--deduplicate-stable
+                                (append valid-after before-edges)))
                               ;; Validate :requires - error on cross-stage, warn on missing
                               (valid-requires
                                (cl-remove-if-not
@@ -1876,11 +1905,29 @@ The plan includes:
                                       dep id)
                                     nil)
                                    (t t)))
-                                requires)))
+                                requires))
+                              ;; Validate :wants - silently drop missing/cross-stage
+                              (valid-wants
+                               (cl-remove-if-not
+                                (lambda (dep)
+                                  (cond
+                                   ((not (member dep stage-ids))
+                                    (when (member dep all-ids)
+                                      (supervisor--log 'warning
+                                        ":wants '%s' for %s is in different stage, ignoring"
+                                        dep id))
+                                    nil)
+                                   (t t)))
+                                wants)))
                          (puthash id valid-after deps)
                          (puthash id valid-requires requires-deps)
-                         ;; Combined deps for topo sort (union of after + requires)
-                         (puthash id (cl-union valid-after valid-requires :test #'equal)
+                         ;; Combined deps for topo sort
+                         ;; (union of after + requires + wants)
+                         (puthash id (supervisor--deduplicate-stable
+                                      (append
+                                       (cl-union valid-after valid-requires
+                                                 :test #'equal)
+                                       valid-wants))
                                   combined-deps)
                          ;; Return entry with validated deps
                          (let ((new-entry entry))
@@ -1994,14 +2041,16 @@ Returns sorted entries list."
           (let ((id (supervisor-entry-id entry)))
             (puthash id t cycle-fallback-ids)
             (puthash id nil deps)))
-        ;; Return entries with :after and :requires stripped
+        ;; Return entries with :after, :requires, and :wants stripped
         ;; (full 27-element entries from parse-entry)
         (mapcar (lambda (entry)
                   (append (cl-subseq entry 0 8)
                           (list nil)                ; clear :after (index 8)
                           (cl-subseq entry 9 12)
                           (list nil)                ; clear :requires (index 12)
-                          (cl-subseq entry 13 27))) ; preserve new fields
+                          (cl-subseq entry 13 22)
+                          (list nil)                ; clear :wants (index 22)
+                          (cl-subseq entry 23 27))) ; preserve remaining
                 entries)))))
 
 ;;; Helpers
@@ -2388,12 +2437,15 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
         (puthash id nil dependents)
         (cl-incf idx)))
     ;; Build graph and record computed deps (validated, same-stage only)
-    ;; Combine :after and :requires for dependency tracking
+    ;; Combine :after, :requires, and :wants for dependency tracking
     (dolist (entry entries)
       (let* ((id (supervisor-entry-id entry))
              (after (supervisor-entry-after entry))
              (requires (supervisor-entry-requires entry))
-             (all-deps (cl-union after requires :test #'equal))
+             (wants (supervisor-entry-wants entry))
+             (all-deps (supervisor--deduplicate-stable
+                        (append (cl-union after requires :test #'equal)
+                                wants)))
              (valid-deps nil))
         (dolist (dep all-deps)
           (when (gethash dep id-to-entry)  ; only count valid deps
@@ -2433,13 +2485,22 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
           (let ((id (supervisor-entry-id entry)))
             (puthash id t supervisor--cycle-fallback-ids)
             (puthash id nil supervisor--computed-deps)))
-        ;; Return entries with :after and :requires stripped to break the cycle
-        ;; Handle 19-element (current), 13-element, and 11-element entries
+        ;; Return entries with :after, :requires, and :wants stripped
+        ;; Handle 27-element (current), 13-element, and 11-element entries
         (mapcar (lambda (entry)
                   (let ((len (length entry)))
                     (cond
-                     ;; Full 19-element entry: clear :after (8) and :requires (12),
-                     ;; preserve fields 13-18
+                     ;; Full 27-element entry: clear :after (8), :requires (12),
+                     ;; and :wants (22)
+                     ((>= len 23)
+                      (append (cl-subseq entry 0 8)
+                              (list nil)                ; clear :after
+                              (cl-subseq entry 9 12)
+                              (list nil)                ; clear :requires
+                              (cl-subseq entry 13 22)
+                              (list nil)                ; clear :wants
+                              (cl-subseq entry 23)))    ; preserve remaining
+                     ;; 13+ element entry: clear :after (8) and :requires (12)
                      ((>= len 13)
                       (append (cl-subseq entry 0 8)
                               (list nil)                ; clear :after
@@ -2498,16 +2559,28 @@ Disabled entries are marked ready immediately per spec."
   (let ((disabled-ids nil)
         (idx 0))
     ;; Build lookup tables
+    ;; First pass: register all entries so we can filter :wants
+    (dolist (entry entries)
+      (puthash (supervisor-entry-id entry) entry supervisor--dag-entries))
+    ;; Second pass: build dep graph
     (dolist (entry entries)
       (let* ((id (supervisor-entry-id entry))
              (enabled-p (supervisor-entry-enabled-p entry))
              (type (supervisor-entry-type entry))
              (after (supervisor-entry-after entry))
              (requires (supervisor-entry-requires entry))
+             ;; Filter :wants to existing, non-masked stage entries (soft dep)
+             (wants (cl-remove-if-not
+                     (lambda (dep)
+                       (and (gethash dep supervisor--dag-entries)
+                            (not (eq 'masked
+                                     (gethash dep supervisor--mask-override)))))
+                     (supervisor-entry-wants entry)))
              (oneshot-blocking (supervisor-entry-oneshot-blocking entry))
-             ;; Combine :after and :requires for dependency tracking
-             (all-deps (cl-union after requires :test #'equal)))
-        (puthash id entry supervisor--dag-entries)
+             ;; Combine :after, :requires, and :wants for dependency tracking
+             (all-deps (supervisor--deduplicate-stable
+                        (append (cl-union after requires :test #'equal)
+                                wants))))
         (puthash id (length all-deps) supervisor--dag-in-degree)
         (puthash id nil supervisor--dag-dependents)
         (puthash id idx supervisor--dag-id-to-index)
@@ -2524,16 +2597,23 @@ Disabled entries are marked ready immediately per spec."
           (supervisor--transition-state id 'waiting-on-deps))
          (t
           (supervisor--transition-state id 'stage-not-started)))))
-    ;; Build dependents graph from combined :after + :requires
+    ;; Build dependents graph from combined :after + :requires + :wants
     (dolist (entry entries)
       (let* ((id (supervisor-entry-id entry))
              (after (supervisor-entry-after entry))
              (requires (supervisor-entry-requires entry))
-             (all-deps (cl-union after requires :test #'equal)))
+             (wants (cl-remove-if-not
+                     (lambda (dep)
+                       (and (gethash dep supervisor--dag-entries)
+                            (not (eq 'masked
+                                     (gethash dep supervisor--mask-override)))))
+                     (supervisor-entry-wants entry)))
+             (all-deps (supervisor--deduplicate-stable
+                        (append (cl-union after requires :test #'equal)
+                                wants))))
         (dolist (dep all-deps)
-          (when (gethash dep supervisor--dag-entries)
-            (puthash dep (cons id (gethash dep supervisor--dag-dependents))
-                     supervisor--dag-dependents)))))
+          (puthash dep (cons id (gethash dep supervisor--dag-dependents))
+                   supervisor--dag-dependents))))
     ;; Mark disabled entries as ready immediately (spec requirement)
     ;; This decrements in-degree of their dependents
     (dolist (id disabled-ids)

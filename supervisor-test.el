@@ -9854,5 +9854,269 @@ could incorrectly preserve a non-running disabled unit."
       (should (string-match-p "desc=Dashboard desc" msg))
       (should (string-match-p "docs=man:svc(1)" msg)))))
 
+;;;; Phase N3: Ordering and Soft Dependencies Tests
+
+;; :before inversion parity with :after
+
+(ert-deftest supervisor-test-before-inversion-basic ()
+  "A :before B produces same ordering as B :after A."
+  (let* ((supervisor--authority-snapshot nil)
+         ;; A should start before B
+         (programs-before '(("cmd-a" :id "a" :stage stage3 :before ("b"))
+                            ("cmd-b" :id "b" :stage stage3)))
+         (programs-after '(("cmd-a" :id "a" :stage stage3)
+                           ("cmd-b" :id "b" :stage stage3 :after ("a"))))
+         (plan-before (supervisor--build-plan programs-before))
+         (plan-after (supervisor--build-plan programs-after))
+         (ids-before (mapcar #'supervisor-entry-id
+                             (supervisor-plan-entries plan-before)))
+         (ids-after (mapcar #'supervisor-entry-id
+                            (supervisor-plan-entries plan-after))))
+    (should (equal ids-before ids-after))))
+
+(ert-deftest supervisor-test-before-inversion-multiple ()
+  "A :before (B C) creates edges for both."
+  (let* ((supervisor--authority-snapshot nil)
+         (programs '(("cmd-a" :id "a" :stage stage3 :before ("b" "c"))
+                     ("cmd-b" :id "b" :stage stage3)
+                     ("cmd-c" :id "c" :stage stage3)))
+         (plan (supervisor--build-plan programs))
+         (by-stage (supervisor-plan-by-stage plan))
+         (stage3-entries (cdr (assq 2 by-stage)))
+         (ids (mapcar #'supervisor-entry-id stage3-entries)))
+    ;; a must come before b and c
+    (should (< (cl-position "a" ids :test #'equal)
+               (cl-position "b" ids :test #'equal)))
+    (should (< (cl-position "a" ids :test #'equal)
+               (cl-position "c" ids :test #'equal)))))
+
+(ert-deftest supervisor-test-before-cross-stage-ignored ()
+  "Cross-stage :before is warned and ignored."
+  (let* ((supervisor--authority-snapshot nil)
+         (logged nil)
+         (programs '(("cmd-a" :id "a" :stage stage1 :before ("b"))
+                     ("cmd-b" :id "b" :stage stage3))))
+    (cl-letf (((symbol-function 'supervisor--log)
+               (lambda (_level fmt &rest args)
+                 (push (apply #'format fmt args) logged))))
+      (supervisor--build-plan programs)
+      ;; Should have logged a warning
+      (should (cl-some (lambda (msg)
+                         (string-match-p ":before.*different stage" msg))
+                       logged)))))
+
+(ert-deftest supervisor-test-before-missing-target-ignored ()
+  "Missing :before target is warned and ignored."
+  (let* ((supervisor--authority-snapshot nil)
+         (logged nil)
+         (programs '(("cmd-a" :id "a" :stage stage3 :before ("nonexistent")))))
+    (cl-letf (((symbol-function 'supervisor--log)
+               (lambda (_level fmt &rest args)
+                 (push (apply #'format fmt args) logged))))
+      (supervisor--build-plan programs)
+      ;; Should have logged a warning about nonexistent
+      (should (cl-some (lambda (msg)
+                         (string-match-p ":before.*does not exist" msg))
+                       logged)))))
+
+(ert-deftest supervisor-test-before-combined-with-after ()
+  "Both :before and :after edges combine correctly."
+  (let* ((supervisor--authority-snapshot nil)
+         ;; a :before c, b :after a → order: a, b, c
+         (programs '(("cmd-a" :id "a" :stage stage3 :before ("c"))
+                     ("cmd-b" :id "b" :stage stage3 :after ("a"))
+                     ("cmd-c" :id "c" :stage stage3)))
+         (plan (supervisor--build-plan programs))
+         (by-stage (supervisor-plan-by-stage plan))
+         (stage3-entries (cdr (assq 2 by-stage)))
+         (ids (mapcar #'supervisor-entry-id stage3-entries)))
+    (should (< (cl-position "a" ids :test #'equal)
+               (cl-position "b" ids :test #'equal)))
+    (should (< (cl-position "a" ids :test #'equal)
+               (cl-position "c" ids :test #'equal)))))
+
+;; :before and :after cycle behavior
+
+(ert-deftest supervisor-test-before-after-cycle-fallback ()
+  "Cycle involving :before falls back correctly."
+  (let* ((supervisor--authority-snapshot nil)
+         ;; a :before b, b :before a → cycle
+         (programs '(("cmd-a" :id "a" :stage stage3 :before ("b"))
+                     ("cmd-b" :id "b" :stage stage3 :before ("a"))))
+         (plan (supervisor--build-plan programs)))
+    ;; Both should be in cycle-fallback
+    (should (gethash "a" (supervisor-plan-cycle-fallback-ids plan)))
+    (should (gethash "b" (supervisor-plan-cycle-fallback-ids plan)))))
+
+;; :wants soft dependency tests
+
+(ert-deftest supervisor-test-wants-ordering ()
+  "Wants creates ordering preference when target exists."
+  (let* ((supervisor--authority-snapshot nil)
+         (programs '(("cmd-a" :id "a" :stage stage3)
+                     ("cmd-b" :id "b" :stage stage3 :wants ("a"))))
+         (plan (supervisor--build-plan programs))
+         (by-stage (supervisor-plan-by-stage plan))
+         (stage3-entries (cdr (assq 2 by-stage)))
+         (ids (mapcar #'supervisor-entry-id stage3-entries)))
+    ;; a should come before b
+    (should (< (cl-position "a" ids :test #'equal)
+               (cl-position "b" ids :test #'equal)))))
+
+(ert-deftest supervisor-test-wants-missing-silently-dropped ()
+  "Missing :wants target is silently dropped (no warning)."
+  (let* ((supervisor--authority-snapshot nil)
+         (logged nil)
+         (programs '(("cmd-a" :id "a" :stage stage3 :wants ("nonexistent")))))
+    (cl-letf (((symbol-function 'supervisor--log)
+               (lambda (_level fmt &rest args)
+                 (push (apply #'format fmt args) logged))))
+      (let ((plan (supervisor--build-plan programs)))
+        ;; Entry should still be valid
+        (should (= 1 (length (supervisor-plan-entries plan))))
+        ;; No warning about the missing wanted unit
+        (should-not (cl-some (lambda (msg)
+                               (string-match-p "nonexistent" msg))
+                             logged))))))
+
+(ert-deftest supervisor-test-wants-cross-stage-warned ()
+  "Cross-stage :wants is warned and ignored."
+  (let* ((supervisor--authority-snapshot nil)
+         (logged nil)
+         (programs '(("cmd-a" :id "a" :stage stage1)
+                     ("cmd-b" :id "b" :stage stage3 :wants ("a")))))
+    (cl-letf (((symbol-function 'supervisor--log)
+               (lambda (_level fmt &rest args)
+                 (push (apply #'format fmt args) logged))))
+      (supervisor--build-plan programs)
+      (should (cl-some (lambda (msg)
+                         (string-match-p ":wants.*different stage" msg))
+                       logged)))))
+
+(ert-deftest supervisor-test-wants-disabled-not-blocking ()
+  "Disabled :wants target does not block the wanting unit."
+  (let* ((supervisor--authority-snapshot nil)
+         (programs '(("cmd-a" :id "a" :stage stage3 :disabled t)
+                     ("cmd-b" :id "b" :stage stage3 :wants ("a"))))
+         (plan (supervisor--build-plan programs))
+         (by-stage (supervisor-plan-by-stage plan))
+         (stage3-entries (cdr (assq 2 by-stage))))
+    ;; Both entries should be in the plan
+    (should (= 2 (length stage3-entries)))))
+
+(ert-deftest supervisor-test-wants-participates-in-cycle-detection ()
+  "Wants edges participate in cycle detection."
+  (let* ((supervisor--authority-snapshot nil)
+         ;; a :wants b, b :wants a → cycle
+         (programs '(("cmd-a" :id "a" :stage stage3 :wants ("b"))
+                     ("cmd-b" :id "b" :stage stage3 :wants ("a"))))
+         (plan (supervisor--build-plan programs)))
+    ;; Both should be in cycle-fallback
+    (should (gethash "a" (supervisor-plan-cycle-fallback-ids plan)))
+    (should (gethash "b" (supervisor-plan-cycle-fallback-ids plan)))))
+
+(ert-deftest supervisor-test-wants-combined-with-after ()
+  "Wants and after edges combine for ordering."
+  (let* ((supervisor--authority-snapshot nil)
+         ;; c wants a, c :after b → order: a before c, b before c
+         (programs '(("cmd-a" :id "a" :stage stage3)
+                     ("cmd-b" :id "b" :stage stage3)
+                     ("cmd-c" :id "c" :stage stage3 :wants ("a") :after ("b"))))
+         (plan (supervisor--build-plan programs))
+         (by-stage (supervisor-plan-by-stage plan))
+         (stage3-entries (cdr (assq 2 by-stage)))
+         (ids (mapcar #'supervisor-entry-id stage3-entries)))
+    (should (< (cl-position "a" ids :test #'equal)
+               (cl-position "c" ids :test #'equal)))
+    (should (< (cl-position "b" ids :test #'equal)
+               (cl-position "c" ids :test #'equal)))))
+
+;; DAG init with :wants
+
+(ert-deftest supervisor-test-dag-init-includes-wants ()
+  "DAG init includes valid wants in dependency graph."
+  (let* ((entries (list (supervisor--parse-entry '("cmd-a" :id "a"))
+                        (supervisor--parse-entry '("cmd-b" :id "b" :wants ("a")))))
+         (supervisor--entry-state (make-hash-table :test 'equal)))
+    (supervisor--dag-init entries)
+    ;; b should depend on a (in-degree 1)
+    (should (= 1 (gethash "b" supervisor--dag-in-degree)))
+    ;; a should have b as dependent
+    (should (member "b" (gethash "a" supervisor--dag-dependents)))))
+
+(ert-deftest supervisor-test-dag-init-missing-wants-ignored ()
+  "DAG init ignores wants for entries not in the stage."
+  (let* ((entries (list (supervisor--parse-entry
+                         '("cmd-b" :id "b" :wants ("nonexistent")))))
+         (supervisor--entry-state (make-hash-table :test 'equal)))
+    (supervisor--dag-init entries)
+    ;; b should have in-degree 0 (missing wants ignored)
+    (should (= 0 (gethash "b" supervisor--dag-in-degree)))))
+
+(ert-deftest supervisor-test-dag-init-masked-wants-ignored ()
+  "DAG init ignores wants for masked entries."
+  (let* ((entries (list (supervisor--parse-entry '("cmd-a" :id "a"))
+                        (supervisor--parse-entry '("cmd-b" :id "b" :wants ("a")))))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal)))
+    ;; Mask entry a
+    (puthash "a" 'masked supervisor--mask-override)
+    (supervisor--dag-init entries)
+    ;; b should have in-degree 0 (masked wants ignored)
+    (should (= 0 (gethash "b" supervisor--dag-in-degree)))))
+
+(ert-deftest supervisor-test-wants-cycle-fallback-clears-wants ()
+  "Cycle fallback clears :wants edges so runtime DAG has zero in-degree."
+  (let* ((supervisor--authority-snapshot nil)
+         (programs '(("cmd-a" :id "a" :stage stage3 :wants ("b"))
+                     ("cmd-b" :id "b" :stage stage3 :wants ("a"))))
+         (plan (supervisor--build-plan programs))
+         (by-stage (supervisor-plan-by-stage plan))
+         (stage3-entries (cdr (assq 2 by-stage))))
+    ;; Cycle fallback should have cleared :wants
+    (dolist (entry stage3-entries)
+      (should (null (supervisor-entry-wants entry))))
+    ;; DAG init should produce zero in-degree for both
+    (let ((supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal)))
+      (supervisor--dag-init stage3-entries)
+      (should (= 0 (gethash "a" supervisor--dag-in-degree)))
+      (should (= 0 (gethash "b" supervisor--dag-in-degree))))))
+
+(ert-deftest supervisor-test-stable-topo-cycle-clears-wants ()
+  "Stable topo sort cycle fallback clears :wants."
+  (let ((supervisor--computed-deps (make-hash-table :test 'equal))
+        (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
+    ;; 27-element entries with :wants cycle
+    (let* ((entries (list (list "a" "cmd" 0 t 'always t 'simple 'stage3 nil
+                                t 30 nil nil nil nil nil nil nil nil
+                                nil nil nil '("b") nil nil nil nil)
+                          (list "b" "cmd" 0 t 'always t 'simple 'stage3 nil
+                                t 30 nil nil nil nil nil nil nil nil
+                                nil nil nil '("a") nil nil nil nil)))
+           (sorted (supervisor--stable-topo-sort entries)))
+      ;; :wants should be cleared
+      (dolist (entry sorted)
+        (should (null (supervisor-entry-wants entry)))))))
+
+(ert-deftest supervisor-test-wants-failed-spawn-not-blocking ()
+  "A wanted unit that fails to start does not block the wanting unit.
+Spawn failure calls `supervisor--dag-mark-ready', which decrements
+in-degree of dependents including :wants edges."
+  (let* ((entries (list (supervisor--parse-entry '("cmd-a" :id "a"))
+                        (supervisor--parse-entry '("cmd-b" :id "b" :wants ("a")))))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--dag-active-starts 0)
+         (supervisor--dag-pending-starts nil)
+         (supervisor--dag-stage-callback nil))
+    (supervisor--dag-init entries)
+    ;; b depends on a (in-degree 1)
+    (should (= 1 (gethash "b" supervisor--dag-in-degree)))
+    ;; Simulate a failing to start
+    (supervisor--dag-handle-spawn-failure "a")
+    ;; b should now be unblocked (in-degree 0)
+    (should (= 0 (gethash "b" supervisor--dag-in-degree)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
