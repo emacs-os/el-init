@@ -1629,6 +1629,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Mutator inventory and classification (explicit verb / unit-definition): [[#service-management-comparison][Service Management Systems Comparison]]
 - Stage model comparison (supervisor vs systemd targets vs runit stages): [[#service-management-comparison][Service Management Systems Comparison]]
 - Systemd command mapping (supervisorctl vs systemctl vs sv): [[#service-management-comparison][Service Management Systems Comparison]]
 - Systemd example conversions (unit file to supervisor config): [[#service-management-comparison][Service Management Systems Comparison]]
@@ -1885,6 +1886,113 @@ supervisor unit file (~webapp.el~):
  :kill-signal SIGTERM)
 ;; Command: /usr/bin/node /opt/webapp/server.js
 #+end_src
+
+** Mutator Inventory and Classification
+
+Every state-mutating entry point across all modules, classified by
+semantic category.  Classification key:
+
+- *Explicit verb*: performs exactly one named operation on a named target.
+- *Unit-definition mutation*: re-reads or modifies the on-disk unit
+  definition; state changes are a side-effect of the new definition.
+
+No toggle/cycle mutators remain.  Legacy toggle commands
+(~toggle-restart~, ~toggle-enabled~, ~toggle-mask~, ~toggle-logging~)
+were removed in favour of explicit verb replacements.
+
+*** Core Engine (~supervisor-core.el~)
+
+Public entry points that change runtime state:
+
+| Function | Category | State mutated |
+|----------+----------+---------------|
+| ~supervisor-start~ | Explicit verb | Clears all runtime state, loads overrides, builds plan, starts staged scheduler |
+| ~supervisor-stop~ | Explicit verb | Sends graceful stop to all processes (async) |
+| ~supervisor-stop-now~ | Explicit verb | Sends hard stop to all processes (sync, for ~kill-emacs-hook~) |
+| ~supervisor-daemon-reload~ | Unit-definition mutation | Re-reads unit files, refreshes invalid hash |
+
+Private helpers called by CLI and dashboard (not direct entry points):
+
+| Function | Category | State mutated |
+|----------+----------+---------------|
+| ~supervisor--manual-start~ | Explicit verb | Clears failed/stopped flags, spawns process, records ~manually-started~ |
+| ~supervisor--manual-stop~ | Explicit verb | Stops process, records ~manually-stopped~, clears ~remain-active~ latch |
+| ~supervisor--manual-kill~ | Explicit verb | Sends signal to process, restart policy unchanged |
+| ~supervisor--reset-failed~ | Explicit verb | Clears ~failed~, ~oneshot-completed~, ~restart-times~ for target |
+| ~supervisor--reload-unit~ | Unit-definition mutation | Re-reads unit file, stops/starts if running, clears stale state |
+| ~supervisor--save-overrides~ | Explicit verb | Writes override hash tables to ~supervisor-overrides-file~ |
+| ~supervisor--load-overrides~ | Explicit verb | Reads override hash tables from ~supervisor-overrides-file~ |
+| ~supervisor--clear-all-overrides~ | Explicit verb | Clears all override hash tables and deletes file |
+| ~supervisor--check-crash-loop~ | Implicit (sentinel) | Records restart timestamp; marks ~failed~ if threshold exceeded |
+| ~supervisor--make-process-sentinel~ | Implicit (sentinel) | On exit: removes from ~processes~, records ~last-exit-info~, handles oneshot completion, schedules restart |
+| ~supervisor--start-process~ | Implicit (scheduler) | Inserts into ~processes~, clears ~manually-stopped~, records ~start-times~ |
+| ~supervisor--handle-oneshot-exit~ | Implicit (sentinel) | Records ~oneshot-completed~ exit code, sets ~remain-active~ latch |
+| ~supervisor--transition-state~ | Implicit (scheduler) | Updates ~entry-state~ FSM |
+| ~supervisor--reconcile~ | Implicit (daemon-reload) | Diffs running vs desired state, stops/starts as needed |
+
+*** CLI (~supervisor-cli.el~)
+
+All CLI subcommand handlers.  Each dispatches to a core helper.
+
+| Subcommand | Function | Category | Core call | Persists |
+|------------+----------+----------+-----------+----------|
+| ~start~ | ~supervisor--cli-cmd-start~ | Explicit verb | ~supervisor--manual-start~ | No |
+| ~stop~ | ~supervisor--cli-cmd-stop~ | Explicit verb | ~supervisor--manual-stop~ / ~supervisor-stop~ | No |
+| ~restart~ | ~supervisor--cli-cmd-restart~ | Explicit verb | ~supervisor--manual-stop~ + ~supervisor--manual-start~ | No |
+| ~kill~ | ~supervisor--cli-cmd-kill~ | Explicit verb | ~supervisor--manual-kill~ | No |
+| ~enable~ | ~supervisor--cli-cmd-enable~ | Explicit verb | puthash ~enabled-override~ + ~save-overrides~ | Yes |
+| ~disable~ | ~supervisor--cli-cmd-disable~ | Explicit verb | puthash ~enabled-override~ + ~save-overrides~ | Yes |
+| ~mask~ | ~supervisor--cli-cmd-mask~ | Explicit verb | puthash ~mask-override~ + ~save-overrides~ | Yes |
+| ~unmask~ | ~supervisor--cli-cmd-unmask~ | Explicit verb | remhash ~mask-override~ + ~save-overrides~ | Yes |
+| ~restart-policy~ | ~supervisor--cli-cmd-restart-policy~ | Explicit verb | puthash ~restart-override~ + ~save-overrides~ | Yes |
+| ~logging~ | ~supervisor--cli-cmd-logging~ | Explicit verb | puthash ~logging~ + ~save-overrides~ | Yes |
+| ~reset-failed~ | ~supervisor--cli-cmd-reset-failed~ | Explicit verb | ~supervisor--reset-failed~ | No |
+| ~reload~ | ~supervisor--cli-cmd-reload~ | Unit-definition mutation | ~supervisor--reload-unit~ | No |
+| ~daemon-reload~ | ~supervisor--cli-cmd-daemon-reload~ | Unit-definition mutation | ~supervisor-daemon-reload~ | No |
+
+*** Dashboard (~supervisor-dashboard.el~)
+
+All interactive dashboard commands that change state.
+
+| Command | Category | Core call | Persists |
+|---------+----------+-----------+----------|
+| ~supervisor-dashboard-start~ | Explicit verb | ~supervisor--manual-start~ | No |
+| ~supervisor-dashboard-stop~ | Explicit verb | ~supervisor--manual-stop~ | No |
+| ~supervisor-dashboard-restart~ | Explicit verb | ~supervisor--manual-stop~ + ~supervisor--manual-start~ | No |
+| ~supervisor-dashboard-kill~ | Explicit verb | ~supervisor--manual-kill~ | No |
+| ~supervisor-dashboard-kill-force~ | Explicit verb | ~supervisor--manual-kill~ (no confirm) | No |
+| ~supervisor-dashboard-reset-failed~ | Explicit verb | ~supervisor--reset-failed~ | No |
+| ~supervisor-dashboard-enable~ | Explicit verb | puthash/remhash ~enabled-override~ + ~save-overrides~ | Yes |
+| ~supervisor-dashboard-disable~ | Explicit verb | puthash/remhash ~enabled-override~ + ~save-overrides~ | Yes |
+| ~supervisor-dashboard-mask~ | Explicit verb | puthash ~mask-override~ + ~save-overrides~ | Yes |
+| ~supervisor-dashboard-unmask~ | Explicit verb | remhash ~mask-override~ + ~save-overrides~ | Yes |
+| ~supervisor-dashboard-set-restart-policy~ | Explicit verb | puthash/remhash ~restart-override~ + ~save-overrides~ | Yes |
+| ~supervisor-dashboard-set-logging~ | Explicit verb | puthash/remhash ~logging~ + ~save-overrides~ | Yes |
+| ~supervisor-dashboard-reload-unit~ | Unit-definition mutation | ~supervisor--reload-unit~ | No |
+| ~supervisor-dashboard-daemon-reload~ | Unit-definition mutation | ~supervisor-daemon-reload~ | No |
+
+*** CLI / Dashboard Parity
+
+Every CLI mutator has a dashboard counterpart with identical semantics.
+
+| Operation | CLI | Dashboard | Same core path |
+|-----------+-----+-----------+----------------|
+| Start | ~start ID~ | ~l s~ | ~supervisor--manual-start~ |
+| Stop | ~stop ID~ | ~l t~ | ~supervisor--manual-stop~ |
+| Restart | ~restart ID~ | ~l r~ | stop + start |
+| Kill | ~kill ID~ | ~l k~ | ~supervisor--manual-kill~ |
+| Reset failed | ~reset-failed ID~ | ~l f~ | ~supervisor--reset-failed~ |
+| Enable | ~enable ID~ | ~p e~ | puthash ~enabled-override~ |
+| Disable | ~disable ID~ | ~p d~ | puthash ~enabled-override~ |
+| Mask | ~mask ID~ | ~p m~ | puthash ~mask-override~ |
+| Unmask | ~unmask ID~ | ~p u~ | remhash ~mask-override~ |
+| Restart policy | ~restart-policy ID POLICY~ | ~p r~ | puthash ~restart-override~ |
+| Logging | ~logging ID on\vert{}off~ | ~p l~ | puthash ~logging~ |
+| Reload unit | ~reload ID~ | ~l u~ | ~supervisor--reload-unit~ |
+| Daemon reload | ~daemon-reload~ | ~X~ (transient) | ~supervisor-daemon-reload~ |
+
+All policy mutations (enable/disable/mask/unmask/restart-policy/logging)
+call ~supervisor--save-overrides~ in both CLI and dashboard paths.
 
 * Unplanned systemd Directives
 :PROPERTIES:
