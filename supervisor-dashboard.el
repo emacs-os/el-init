@@ -1039,20 +1039,18 @@ If the entry is not running, this is equivalent to start."
     (when (supervisor--timer-row-p id)
       (user-error "Cannot restart timer '%s'" id))
     (when (yes-or-no-p (format "Restart process '%s'? " id))
-      (let ((stop-result (supervisor--manual-stop id)))
-        (pcase (plist-get stop-result :status)
-          ('stopped
-           (let ((start-result (supervisor--manual-start id)))
-             (pcase (plist-get start-result :status)
-               ('started (supervisor--refresh-dashboard))
-               ('skipped
-                (message "Stopped %s but cannot start: %s"
-                         id (plist-get start-result :reason)))
-               ('error
-                (message "Stopped %s but failed to start: %s"
-                         id (plist-get start-result :reason))))))
+      ;; Stop first (ignore result — entry may not be running)
+      (supervisor--manual-stop id)
+      ;; Then start unconditionally, matching CLI restart semantics
+      (let ((start-result (supervisor--manual-start id)))
+        (pcase (plist-get start-result :status)
+          ('started (supervisor--refresh-dashboard))
           ('skipped
-           (message "Entry %s is %s" id (plist-get stop-result :reason))))))))
+           (message "Cannot start %s: %s"
+                    id (plist-get start-result :reason)))
+          ('error
+           (message "Failed to start %s: %s"
+                    id (plist-get start-result :reason))))))))
 
 (defun supervisor-dashboard-kill (&optional force)
   "Kill process at point with confirmation.

@@ -2754,13 +2754,15 @@ Regression test: stderr pipe processes used to pollute the process list."
                         :type 'user-error))))))
 
 (ert-deftest supervisor-test-restart-accepts-oneshot ()
-  "Restart accepts oneshot entries (parity with CLI)."
+  "Restart starts oneshot entries (parity with CLI).
+Stop returns skipped for completed oneshot; restart must still
+proceed to call start unconditionally."
   (supervisor-test-with-unit-files
       '(("true" :id "my-oneshot" :type oneshot))
     (let* ((supervisor--processes (make-hash-table :test 'equal))
            (supervisor--entry-state (make-hash-table :test 'equal))
            (supervisor--invalid (make-hash-table :test 'equal))
-           (stopped nil))
+           (started nil))
       (with-temp-buffer
         (supervisor-dashboard-mode)
         (let ((tabulated-list-entries
@@ -2771,13 +2773,14 @@ Regression test: stderr pipe processes used to pollute the process list."
           (goto-char (point-min))
           (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t))
                     ((symbol-function 'supervisor--manual-stop)
-                     (lambda (id) (setq stopped id)
-                       '(:status stopped)))
+                     (lambda (_id)
+                       '(:status skipped :reason "not running")))
                     ((symbol-function 'supervisor--manual-start)
-                     (lambda (_id) '(:status started)))
+                     (lambda (id) (setq started id)
+                       '(:status started)))
                     ((symbol-function 'supervisor--refresh-dashboard) #'ignore))
             (supervisor-dashboard-restart)
-            (should (equal "my-oneshot" stopped))))))))
+            (should (equal "my-oneshot" started))))))))
 
 (ert-deftest supervisor-test-stop-rejects-timer-row ()
   "Stop rejects timer rows."
@@ -2806,13 +2809,15 @@ Regression test: stderr pipe processes used to pollute the process list."
                     :type 'user-error))))
 
 (ert-deftest supervisor-test-restart-accepts-not-running ()
-  "Restart accepts non-running entries (parity with CLI)."
+  "Restart starts non-running entries (parity with CLI).
+Stop returns skipped for non-running entries; restart must still
+proceed to call start unconditionally."
   (supervisor-test-with-unit-files
       '(("sleep 60" :id "my-svc" :type simple))
     (let* ((supervisor--processes (make-hash-table :test 'equal))
            (supervisor--entry-state (make-hash-table :test 'equal))
            (supervisor--invalid (make-hash-table :test 'equal))
-           (stopped nil))
+           (started nil))
       (with-temp-buffer
         (supervisor-dashboard-mode)
         (let ((tabulated-list-entries
@@ -2823,13 +2828,14 @@ Regression test: stderr pipe processes used to pollute the process list."
           (goto-char (point-min))
           (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t))
                     ((symbol-function 'supervisor--manual-stop)
-                     (lambda (id) (setq stopped id)
-                       '(:status stopped)))
+                     (lambda (_id)
+                       '(:status skipped :reason "not running")))
                     ((symbol-function 'supervisor--manual-start)
-                     (lambda (_id) '(:status started)))
+                     (lambda (id) (setq started id)
+                       '(:status started)))
                     ((symbol-function 'supervisor--refresh-dashboard) #'ignore))
             (supervisor-dashboard-restart)
-            (should (equal "my-svc" stopped))))))))
+            (should (equal "my-svc" started))))))))
 
 ;;; Unit-File Tests
 
