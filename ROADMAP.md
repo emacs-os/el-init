@@ -1,1 +1,0 @@
-ARE_WE_SHEPHERD_YET.md
