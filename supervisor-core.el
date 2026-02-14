@@ -2597,6 +2597,7 @@ Reads from the cached program list via `supervisor--effective-programs'."
          (t
           (puthash id t seen)
           (push parsed result)))))
+    (supervisor--merge-unit-file-invalid)
     (nreverse result)))
 
 (defun supervisor--stable-topo-sort (entries)

@@ -1726,7 +1726,9 @@ Note: Does not call supervisor-start directly to avoid process spawning."
           (supervisor--completed-stages nil)
           (supervisor--shutting-down t))  ; Prevent actual process starts
       ;; Build plan and populate globals (same as supervisor-start)
-      (let ((plan (supervisor--build-plan (supervisor--effective-programs))))
+      (let* ((progs (supervisor--effective-programs))
+             (plan (supervisor--build-plan progs)))
+        (supervisor--merge-unit-file-invalid)
         (maphash (lambda (k v) (puthash k v supervisor--invalid))
                  (supervisor-plan-invalid plan))
         (maphash (lambda (k v) (puthash k v supervisor--cycle-fallback-ids))
@@ -4400,8 +4402,9 @@ conflicting ID, proving precedence derives from list position."
         ("invalid-cmd" :id "invalid" :type "bad"))
     (let ((result (supervisor--migrate-all-entries)))
       (should (= 1 (length (plist-get result :migrated))))
-      (should (= 1 (length (plist-get result :skipped))))
-      (should (assoc "invalid" (plist-get result :skipped))))))
+      ;; Invalid entry is caught at unit-file validation (delegation)
+      ;; and tracked in supervisor--unit-file-invalid
+      (should (gethash "invalid" supervisor--unit-file-invalid)))))
 
 (ert-deftest supervisor-test-migrate-all-entries-skips-duplicates ()
   "Migration sees only one entry when unit-file loader deduplicates."
@@ -11451,6 +11454,40 @@ No warning is emitted when there are simply no child processes."
   "Exit codes 0 and 255 in :success-exit-status are accepted."
   (should-not (supervisor--validate-entry
                '("cmd" :success-exit-status (0 255)))))
+
+;;; V10: Unit-file delegation to entry validation tests
+
+(ert-deftest supervisor-test-validate-unit-file-delegates-boolean ()
+  "Unit-file validation delegates strict boolean check to entry validator."
+  (let ((result (supervisor--validate-unit-file-plist
+                 '(:id "svc" :command "cmd" :enabled "yes")
+                 "/tmp/test.unit" 1)))
+    (should (stringp result))
+    (should (string-match-p ":enabled must be t or nil" result))))
+
+(ert-deftest supervisor-test-validate-unit-file-delegates-type-gate ()
+  "Unit-file validation delegates type-specific restriction check."
+  (let ((result (supervisor--validate-unit-file-plist
+                 '(:id "svc" :command "cmd" :type oneshot :restart always)
+                 "/tmp/test.unit" 1)))
+    (should (stringp result))
+    (should (string-match-p ":restart is invalid for :type oneshot" result))))
+
+(ert-deftest supervisor-test-validate-unit-file-delegates-self-dependency ()
+  "Unit-file validation delegates self-dependency check."
+  (let ((result (supervisor--validate-unit-file-plist
+                 '(:id "svc" :command "cmd" :after "svc")
+                 "/tmp/test.unit" 1)))
+    (should (stringp result))
+    (should (string-match-p ":after must not reference the entry's own ID" result))))
+
+(ert-deftest supervisor-test-validate-unit-file-delegates-empty-command ()
+  "Unit-file validation delegates empty exec-stop check."
+  (let ((result (supervisor--validate-unit-file-plist
+                 '(:id "svc" :command "cmd" :exec-stop "")
+                 "/tmp/test.unit" 1)))
+    (should (stringp result))
+    (should (string-match-p ":exec-stop must not contain empty commands" result))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

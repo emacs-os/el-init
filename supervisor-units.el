@@ -33,6 +33,7 @@
 ;; Forward declarations for supervisor-core functions
 (declare-function supervisor--log "supervisor-core" (level format-string &rest args))
 (declare-function supervisor--plist-duplicate-keys "supervisor-core" (plist))
+(declare-function supervisor--validate-entry "supervisor-core" (entry))
 ;;; Customization
 
 (defcustom supervisor-unit-authority-path
@@ -346,7 +347,11 @@ Return nil if valid, or a reason string with file:line context if invalid."
             (setq bad (format "%s:%d: unknown keyword %s"
                               path line key))))
         (setq keys (cddr keys)))
-      bad))))
+      (or bad
+          ;; Delegate semantic validation to entry validator
+          (let ((entry (supervisor--unit-file-to-program-entry plist)))
+            (when-let* ((reason (supervisor--validate-entry entry)))
+              (format "%s:%d: %s" path line reason))))))))
 
 (defun supervisor--unit-file-to-program-entry (plist)
   "Convert unit-file PLIST to program entry format.
