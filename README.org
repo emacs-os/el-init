@@ -62,6 +62,7 @@ provides detailed reference material:
 - [[#events-and-hooks][Events and Hooks]] - programmatic integration
 - [[#customization-reference][Customization Reference]] - all variables and faces
 - [[#command-reference][Command Reference]] - every interactive command
+- [[#unplanned-systemd-directives][Unplanned Directives]] - systemd features not implemented
 
 * Quick Start
 :PROPERTIES:
@@ -165,6 +166,14 @@ Each unit file is a single plist expression with ~:id~ and ~:command~ required.
 | ~:exec-stop~ | string or list of strings | ~nil~ | Custom stop command(s), ~simple~ only |
 | ~:exec-reload~ | string or list of strings | ~nil~ | Custom reload command(s), ~simple~ only |
 | ~:restart-sec~ | non-negative number | ~nil~ | Per-unit restart delay, ~simple~ only |
+| ~:description~ | string | ~nil~ | Human-readable description, metadata only |
+| ~:documentation~ | string or list of strings | ~nil~ | Documentation URIs/paths, metadata only |
+| ~:before~ | string or list of strings | ~nil~ | Inverse ordering (same stage), see below |
+| ~:wants~ | string or list of strings | ~nil~ | Soft dependency (same stage), see below |
+| ~:kill-signal~ | symbol | ~SIGTERM~ | Graceful stop signal for this unit |
+| ~:kill-mode~ | symbol | ~process~ | ~process~ or ~mixed~, see Stop Semantics |
+| ~:remain-after-exit~ | boolean | ~nil~ | ~oneshot~ only: latch active on success |
+| ~:success-exit-status~ | int, signal, or list | ~nil~ | ~simple~ only: extra clean exit criteria |
 
 ** Validation Rules
 
@@ -188,6 +197,14 @@ Validation is performed by ~supervisor--validate-entry~ and plan building.
 - ~:environment-file~, ~:exec-stop~, and ~:exec-reload~ must be string or proper
   list of strings.
 - ~:restart-sec~ must be a non-negative number.
+- ~:description~ must be a string.
+- ~:documentation~ must be a string or proper list of strings.
+- ~:before~ and ~:wants~ must be a string or proper list of strings.
+- ~:kill-signal~ must be a recognized signal name (e.g., ~SIGTERM~, ~SIGINT~).
+- ~:kill-mode~ must be symbol ~process~ or ~mixed~.
+- ~:remain-after-exit~ must be boolean; rejected for ~simple~ type.
+- ~:success-exit-status~ items must be integers or recognized signal names;
+  rejected for ~oneshot~ type.
 - Duplicate plist keys are rejected.
 
 Invalid entries are skipped at start and shown as ~invalid~ in dashboard
@@ -203,20 +220,31 @@ Duplicate IDs are deterministic:
 - First valid occurrence wins.
 - Later duplicates are skipped with warning.
 
-** Dependency Semantics: ~:after~ vs ~:requires~
+** Dependency Semantics: ~:after~, ~:requires~, ~:before~, ~:wants~
 
 - ~:after~: ordering only.
 - ~:requires~: pull-in + ordering.
+- ~:before~: inverse ordering (~A :before B~ is equivalent to ~B :after A~).
+- ~:wants~: soft dependency with ordering preference.
 
 Planner rules:
 
-- Both are constrained to same-stage dependencies.
-- Cross-stage ~:after~ is ignored with warning.
+- All four are constrained to same-stage dependencies.
+- Cross-stage ~:after~ and ~:before~ are ignored with warning.
 - Cross-stage ~:requires~ is an error (entry invalid).
-- Missing dependencies are ignored with warning.
+- Cross-stage ~:wants~ is ignored with warning.
+- Missing ~:after~, ~:before~, and ~:wants~ targets are silently dropped.
+- Missing ~:requires~ targets are ignored with warning.
 - Topological sort uses stable list order as tie-break.
 - Cycle fallback clears dependency edges for affected stage and falls back to
-  deterministic list order.
+  deterministic list order.  ~:before~ and ~:wants~ edges participate in cycle
+  detection.
+
+~:wants~ soft dependency semantics:
+
+- A wanted unit that is missing, disabled, masked, or fails to start does not
+  block the wanting unit.
+- ~:wants~ does not force-start disabled units.
 
 ** Internal Normalized Shape
 
@@ -224,7 +252,11 @@ Valid entries are normalized to schema v1 tuple form:
 
 #+begin_src elisp
 (id cmd delay enabled-p restart-p logging-p type stage after
-    oneshot-blocking oneshot-timeout tags requires)
+    oneshot-blocking oneshot-timeout tags requires
+    working-directory environment environment-file
+    exec-stop exec-reload restart-sec
+    description documentation before wants
+    kill-signal kill-mode remain-after-exit success-exit-status)
 #+end_src
 
 Accessor functions (~supervisor-entry-id~, ~supervisor-entry-command~, etc.) are
@@ -296,7 +328,9 @@ All other keys are optional (~:type~, ~:stage~, ~:delay~, ~:after~, ~:requires~,
 ~:enabled~, ~:disabled~, ~:restart~, ~:no-restart~, ~:logging~,
 ~:oneshot-blocking~, ~:oneshot-async~, ~:oneshot-timeout~, ~:tags~,
 ~:working-directory~, ~:environment~, ~:environment-file~, ~:exec-stop~,
-~:exec-reload~, ~:restart-sec~).
+~:exec-reload~, ~:restart-sec~, ~:description~, ~:documentation~, ~:before~,
+~:wants~, ~:kill-signal~, ~:kill-mode~, ~:remain-after-exit~,
+~:success-exit-status~).
 
 ** Unit File Best Practices (Data-Only Declarations)
 
@@ -564,7 +598,10 @@ Restart behavior is controlled by effective restart policy
 | ~always~ | Restart regardless of exit type |
 
 Clean exit means exit code 0, or a signal in ~SIGHUP~, ~SIGINT~,
-~SIGPIPE~, ~SIGTERM~.
+~SIGPIPE~, ~SIGTERM~.  The ~:success-exit-status~ keyword extends this
+set with additional numeric exit codes and/or signal names per unit.
+For example, ~:success-exit-status (42 SIGUSR1)~ treats exit code 42
+and ~SIGUSR1~ as clean exits for restart-policy evaluation.
 
 Set the policy at runtime with ~r~ in the dashboard (cycles through all
 four) or via CLI: ~supervisorctl restart-policy always myservice~.
@@ -661,6 +698,14 @@ services, but the mapping is not one-to-one.
 | ~:exec-stop~ | ~ExecStop=~ | Custom stop commands (~simple~ only) |
 | ~:exec-reload~ | ~ExecReload=~ | Custom reload commands (~simple~ only) |
 | ~:restart-sec~ | ~RestartSec=~ | Per-unit restart delay (~simple~ only) |
+| ~:description~ | ~Description=~ | Human-readable description |
+| ~:documentation~ | ~Documentation=~ | Documentation URIs/paths |
+| ~:before~ | ~Before=~ | Inverse ordering dependency |
+| ~:wants~ | ~Wants=~ | Soft dependency |
+| ~:kill-signal~ | ~KillSignal=~ | Graceful stop signal |
+| ~:kill-mode~ | ~KillMode=~ | ~process~ or ~mixed~ (no ~control-group~ or ~none~) |
+| ~:remain-after-exit~ | ~RemainAfterExit=~ | Latch active status on success (~oneshot~ only) |
+| ~:success-exit-status~ | ~SuccessExitStatus=~ | Extra clean exit criteria (~simple~ only) |
 
 Key differences:
 
@@ -679,11 +724,12 @@ Key differences:
   (30 seconds).  systemd disables the startup timeout for oneshot by
   default (~TimeoutStartSec=infinity~), relying on the administrator
   to set explicit limits.
-- *No RemainAfterExit.*  Supervisor has no equivalent of
-  ~RemainAfterExit=yes~ (keeping a unit in "active" state after the
-  process exits).  Oneshot completion is tracked in
-  ~supervisor--oneshot-completed~ with exit codes, but the service
-  status shows ~done~ rather than ~active (exited)~.
+- *RemainAfterExit.*  Supervisor supports ~:remain-after-exit t~ for
+  oneshot units.  If the process exits with code 0, the unit status
+  latches to ~active~ until explicitly stopped.  Non-zero exit still
+  results in ~failed~ status.  ~stop~ on an active latched unit
+  transitions it to ~stopped~.  ~start~ on an active unit is a no-op.
+  ~restart~ re-runs the oneshot.
 - *Stage model vs dependency model.*  systemd uses target units and
   ordering dependencies to sequence oneshots.  Supervisor uses a fixed
   four-stage model (~stage1~ through ~stage4~) with ~:after~ and
@@ -697,13 +743,17 @@ Per-unit stop (~supervisorctl stop ID~, dashboard ~x~):
    effective working directory and environment.  Each command has a per-command
    timeout of ~supervisor-shutdown-timeout~ seconds.
 2. After stop commands complete (or fail), the process is terminated via signal.
+   The signal used is the unit's ~:kill-signal~ (default ~SIGTERM~).
 3. Stop commands failing does not abort the shutdown path.
 
 ~supervisor-stop~ (async graceful):
 
 1. Runs ~:exec-stop~ command chains for applicable simple units.
-2. Sends ~SIGTERM~ to remaining live processes.
+2. Sends each unit's ~:kill-signal~ (default ~SIGTERM~) to remaining live
+   processes.
 3. After ~supervisor-shutdown-timeout~, sends ~SIGKILL~ to survivors.
+   For units with ~:kill-mode mixed~, ~SIGKILL~ is also sent to discovered
+   descendant processes of the main process.
 
 ~supervisor-stop-now~ (sync hard stop):
 
@@ -711,6 +761,23 @@ Per-unit stop (~supervisorctl stop ID~, dashboard ~x~):
 - waits up to ~0.5s~ for process death
 - does not run ~:exec-stop~ commands
 - intended for ~kill-emacs-hook~
+
+~:kill-signal~:
+
+- Overrides the default graceful stop signal (~SIGTERM~) for this unit.
+- Accepts signal name symbols (e.g., ~SIGQUIT~, ~SIGUSR1~).
+- Short forms like ~QUIT~ are normalized to ~SIGQUIT~.
+- Applies to stop, restart, and shutdown paths.
+
+~:kill-mode~:
+
+- ~process~ (default): signal only the main supervised process.
+- ~mixed~: send the graceful ~:kill-signal~ to the main process first; on
+  timeout, send ~SIGKILL~ to both the main process and its discovered
+  descendants.
+- Descendant discovery uses ~list-system-processes~ and ~process-attributes~
+  (PID-tree traversal).  If OS/process metadata is unavailable, a warning is
+  logged and behavior falls back to ~process~ mode.
 
 * Runtime Overrides and Reconciliation
 :PROPERTIES:
@@ -946,6 +1013,7 @@ Dashboard buffer: ~*supervisor*~, major mode ~supervisor-dashboard-mode~
 ** Service Status Values
 
 - ~running~
+- ~active~ (oneshot with ~:remain-after-exit~ exited successfully)
 - ~done~
 - ~failed~
 - ~dead~
@@ -954,6 +1022,8 @@ Dashboard buffer: ~*supervisor*~, major mode ~supervisor-dashboard-mode~
 - ~masked~
 - ~invalid~
 
+~active~ means a ~:remain-after-exit~ oneshot exited with code 0 and is
+latched active until explicitly stopped.
 ~masked~ means the entry has been explicitly masked and is always disabled.
 ~invalid~ means configuration/validation failure, not a runtime FSM state.
 
@@ -1117,7 +1187,7 @@ Systemctl-compatible commands:
 - ~mask [--] ID...~ (always disabled, overrides enable)
 - ~unmask [--] ID...~
 - ~kill [--signal SIG] [--] ID~
-- ~is-active ID~ (exit 0 if running, 3 if not active, 4 if unknown)
+- ~is-active ID~ (exit 0 if running or latched active, 3 if not, 4 if unknown)
 - ~is-enabled ID~ (exit 0 if enabled, 1 if disabled/masked, 4 if unknown)
 - ~is-failed ID~ (exit 0 if failed/dead, 1 if not failed, 4 if unknown)
 - ~daemon-reload~ (reload unit definitions from disk)
@@ -1226,7 +1296,8 @@ IDs.
 - require exactly one ID argument
 - use strict systemctl-compatible exit codes (not boolean 0/1)
 - human output prints the status/state string followed by newline
-- ~is-active~: exit 0 if running, exit 3 if not active, exit 4 if no such unit
+- ~is-active~: exit 0 if running or latched active, exit 3 if not active,
+  exit 4 if no such unit
 - ~is-enabled~: exit 0 if enabled, exit 1 if disabled or masked, exit 4 if no
   such unit; output distinguishes "enabled", "disabled", and "masked" states
 - ~is-failed~: exit 0 if status is "dead" or "failed", exit 1 if not failed,
@@ -1529,6 +1600,36 @@ Practical guidance:
 - Prefer local socket transport.
 - Use ~--server-file~ only when you intentionally operate server-file/TCP mode.
 - Keep server auth/socket directories private (owner-only permissions).
+
+* Unplanned systemd Directives
+:PROPERTIES:
+:CUSTOM_ID: unplanned-systemd-directives
+:END:
+
+The following systemd directives are not implemented and have no planned
+implementation.  They are listed here explicitly for auditability.
+
+| Category | Directives |
+|----------+------------|
+| Default dependencies | ~DefaultDependencies~ |
+| Boot/target/install graph | ~WantedBy~, ~RequiredBy~, ~Also~, ~Alias~, target units |
+| Cgroup hardening | ~ProtectSystem~, ~ProtectHome~, ~NoNewPrivileges~, ~PrivateTmp~, ~PrivateNetwork~, ~PrivateDevices~, namespace knobs |
+| Resource limits | ~MemoryMax~, ~CPUQuota~, ~TasksMax~, ~LimitNOFILE~, ~LimitCORE~ |
+| OOM and failure policy | ~OOMPolicy~, ~FailureAction~, ~SuccessAction~, ~StartLimitBurst~, ~StartLimitIntervalSec~ |
+| Watchdog | ~WatchdogSec~, ~WatchdogSignal~ |
+| Credentials and security | ~LoadCredential~, ~SetCredential~, ~DynamicUser~, ~User~, ~Group~ |
+| Notification | ~Type=notify~, ~NotifyAccess~ |
+| Socket activation | ~Type=socket~, socket units |
+| D-Bus activation | ~Type=dbus~, ~BusName~ |
+| Paths and mounts | Path units, mount units, automount units |
+| Timers | systemd timer units (supervisor has its own timer subsystem) |
+| Slices and scopes | Slice units, scope units |
+| Conditions | ~ConditionPathExists~, ~AssertPathExists~, etc. |
+
+Rationale: these are primarily PID 1 / system-manager concerns (cgroups,
+namespaces, boot targets) or require integration with system services (D-Bus,
+socket activation) that are outside the scope of a userland Emacs process
+supervisor.
 
 * Development
 :PROPERTIES:
