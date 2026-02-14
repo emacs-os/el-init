@@ -1199,7 +1199,7 @@ restart-timer cancellation on `no'."
       (puthash "new-entry" 'disabled supervisor--enabled-override)
       ;; Mock supervisor--start-process to track what gets started
       (cl-letf (((symbol-function 'supervisor--start-process)
-                 (lambda (id _cmd _log _type _restart)
+                 (lambda (id _cmd _log _type _restart &rest _args)
                    (push id started-ids)))
                 ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
                 ((symbol-function 'executable-find) (lambda (_) t)))
@@ -7593,7 +7593,7 @@ Reload bypasses `supervisor--manual-start' and calls
                            (delete-process p)))
                        (list :status 'stopped :reason nil)))
                     ((symbol-function 'supervisor--start-process)
-                     (lambda (id _cmd _logging _type _restart &optional _is-restart)
+                     (lambda (id _cmd _logging _type _restart &rest _args)
                        (setq start-called id)
                        t)))
             (let ((result (supervisor--reload-unit "svc1")))
@@ -7869,7 +7869,7 @@ running and reload's contract is config hot-swap."
                            (delete-process p)))
                        (list :status 'stopped :reason nil)))
                     ((symbol-function 'supervisor--start-process)
-                     (lambda (id _cmd _logging _type _restart &optional _is-restart)
+                     (lambda (id _cmd _logging _type _restart &rest _args)
                        (setq start-process-called id)
                        t)))
             (let ((result (supervisor--reload-unit "svc1")))
@@ -7957,7 +7957,7 @@ changing the enabled override."
            (supervisor--logging (make-hash-table :test 'equal))
            (started nil))
       (cl-letf (((symbol-function 'supervisor--start-process)
-                 (lambda (id _cmd _logging _type _restart &optional _is-restart)
+                 (lambda (id _cmd _logging _type _restart &rest _args)
                    (setq started id)
                    t)))
         (let ((result (supervisor--manual-start "svc1")))
@@ -7991,7 +7991,7 @@ change the override — it just runs the unit this session."
       ;; Disable via override
       (puthash "svc1" 'disabled supervisor--enabled-override)
       (cl-letf (((symbol-function 'supervisor--start-process)
-                 (lambda (_id _cmd _logging _type _restart &optional _is-restart) t)))
+                 (lambda (_id _cmd _logging _type _restart &rest _args) t)))
         (let ((result (supervisor--manual-start "svc1")))
           (should (eq 'started (plist-get result :status)))
           ;; Override should still be 'disabled (unchanged)
@@ -8129,7 +8129,7 @@ After manual stop, reconcile is free to treat it normally."
            (supervisor--computed-deps (make-hash-table :test 'equal))
            (supervisor--logging (make-hash-table :test 'equal)))
       (cl-letf (((symbol-function 'supervisor--start-process)
-                 (lambda (_id _cmd _logging _type _restart &optional _is-restart) t)))
+                 (lambda (_id _cmd _logging _type _restart &rest _args) t)))
         (let ((result (supervisor--cli-dispatch '("start" "--" "svc1"))))
           (should (= supervisor-cli-exit-success
                      (supervisor-cli-result-exitcode result)))
@@ -8221,12 +8221,590 @@ could incorrectly preserve a non-running disabled unit."
            (supervisor--computed-deps (make-hash-table :test 'equal))
            (supervisor--logging (make-hash-table :test 'equal)))
       (cl-letf (((symbol-function 'supervisor--start-process)
-                 (lambda (_id _cmd _logging _type _restart &optional _is-restart)
+                 (lambda (_id _cmd _logging _type _restart &rest _args)
                    nil)))  ; Simulate spawn failure
         (let ((result (supervisor--manual-start "svc1")))
           (should (eq 'error (plist-get result :status)))
           ;; Flag must NOT be set on failure
           (should-not (gethash "svc1" supervisor--manually-started)))))))
+
+;;;; Phase P1: New keyword parsing, validation, and normalization
+
+(ert-deftest supervisor-test-parse-entry-new-fields-defaults ()
+  "Parsed entry has nil defaults for six new fields."
+  (let ((entry (supervisor--parse-entry "echo hello")))
+    (should (= (length entry) 19))
+    (should-not (supervisor-entry-working-directory entry))
+    (should-not (supervisor-entry-environment entry))
+    (should-not (supervisor-entry-environment-file entry))
+    (should-not (supervisor-entry-exec-stop entry))
+    (should-not (supervisor-entry-exec-reload entry))
+    (should-not (supervisor-entry-restart-sec entry))))
+
+(ert-deftest supervisor-test-parse-entry-working-directory ()
+  "Parsed entry extracts :working-directory."
+  (let ((entry (supervisor--parse-entry
+                '("echo hi" :id "svc" :working-directory "/tmp"))))
+    (should (equal (supervisor-entry-working-directory entry) "/tmp"))))
+
+(ert-deftest supervisor-test-parse-entry-environment ()
+  "Parsed entry extracts :environment alist."
+  (let ((entry (supervisor--parse-entry
+                '("echo hi" :id "svc"
+                  :environment (("FOO" . "bar") ("BAZ" . "qux"))))))
+    (should (equal (supervisor-entry-environment entry)
+                   '(("FOO" . "bar") ("BAZ" . "qux"))))))
+
+(ert-deftest supervisor-test-parse-entry-environment-file-string ()
+  "Parsed entry normalizes :environment-file string to list."
+  (let ((entry (supervisor--parse-entry
+                '("echo hi" :id "svc" :environment-file "/etc/env"))))
+    (should (equal (supervisor-entry-environment-file entry)
+                   '("/etc/env")))))
+
+(ert-deftest supervisor-test-parse-entry-environment-file-list ()
+  "Parsed entry preserves :environment-file list."
+  (let ((entry (supervisor--parse-entry
+                '("echo hi" :id "svc"
+                  :environment-file ("/etc/env" "-/etc/env.local")))))
+    (should (equal (supervisor-entry-environment-file entry)
+                   '("/etc/env" "-/etc/env.local")))))
+
+(ert-deftest supervisor-test-parse-entry-exec-stop-string ()
+  "Parsed entry normalizes :exec-stop string to list."
+  (let ((entry (supervisor--parse-entry
+                '("my-daemon" :id "svc" :exec-stop "kill-cmd"))))
+    (should (equal (supervisor-entry-exec-stop entry) '("kill-cmd")))))
+
+(ert-deftest supervisor-test-parse-entry-exec-stop-list ()
+  "Parsed entry preserves :exec-stop list."
+  (let ((entry (supervisor--parse-entry
+                '("my-daemon" :id "svc"
+                  :exec-stop ("stop-phase1" "stop-phase2")))))
+    (should (equal (supervisor-entry-exec-stop entry)
+                   '("stop-phase1" "stop-phase2")))))
+
+(ert-deftest supervisor-test-parse-entry-exec-reload-string ()
+  "Parsed entry normalizes :exec-reload string to list."
+  (let ((entry (supervisor--parse-entry
+                '("my-daemon" :id "svc" :exec-reload "reload-cmd"))))
+    (should (equal (supervisor-entry-exec-reload entry)
+                   '("reload-cmd")))))
+
+(ert-deftest supervisor-test-parse-entry-restart-sec ()
+  "Parsed entry extracts :restart-sec."
+  (let ((entry (supervisor--parse-entry
+                '("my-daemon" :id "svc" :restart-sec 5))))
+    (should (equal (supervisor-entry-restart-sec entry) 5))))
+
+(ert-deftest supervisor-test-parse-entry-restart-sec-zero ()
+  "Parsed entry accepts :restart-sec 0."
+  (let ((entry (supervisor--parse-entry
+                '("my-daemon" :id "svc" :restart-sec 0))))
+    (should (equal (supervisor-entry-restart-sec entry) 0))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-entry ()
+  "Duplicate plist keys are rejected in entry validation."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :delay 1 :delay 2))))
+    (should reason)
+    (should (string-match-p "duplicate key :delay" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-unit-file ()
+  "Duplicate plist keys are rejected in unit-file validation."
+  (let ((reason (supervisor--validate-unit-file-plist
+                 '(:id "svc" :command "cmd" :delay 1 :delay 2)
+                 "/test.el" 1)))
+    (should reason)
+    (should (string-match-p "duplicate key :delay" reason))))
+
+(ert-deftest supervisor-test-plist-duplicate-keys-none ()
+  "No duplicates returns nil."
+  (should-not (supervisor--plist-duplicate-keys
+               '(:id "svc" :command "cmd" :delay 1))))
+
+(ert-deftest supervisor-test-plist-duplicate-keys-found ()
+  "Duplicate keys are detected."
+  (should (equal (supervisor--plist-duplicate-keys
+                  '(:id "svc" :delay 1 :id "other" :delay 2))
+                 '(:id :delay))))
+
+(ert-deftest supervisor-test-validate-working-directory-invalid ()
+  "Non-string :working-directory is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :working-directory 123))))
+    (should reason)
+    (should (string-match-p ":working-directory must be a string" reason))))
+
+(ert-deftest supervisor-test-validate-environment-invalid ()
+  "Non-alist :environment is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :environment "FOO=bar"))))
+    (should reason)
+    (should (string-match-p ":environment must be an alist" reason))))
+
+(ert-deftest supervisor-test-validate-environment-bad-pair ()
+  "Environment alist with non-string values is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc"
+                   :environment (("FOO" . 123))))))
+    (should reason)
+    (should (string-match-p ":environment must be an alist" reason))))
+
+(ert-deftest supervisor-test-validate-environment-file-invalid ()
+  "Non-string :environment-file is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :environment-file 123))))
+    (should reason)
+    (should (string-match-p ":environment-file must be" reason))))
+
+(ert-deftest supervisor-test-validate-exec-stop-invalid ()
+  "Non-string :exec-stop is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :exec-stop 123))))
+    (should reason)
+    (should (string-match-p ":exec-stop must be" reason))))
+
+(ert-deftest supervisor-test-validate-exec-reload-invalid ()
+  "Non-string :exec-reload is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :exec-reload 123))))
+    (should reason)
+    (should (string-match-p ":exec-reload must be" reason))))
+
+(ert-deftest supervisor-test-validate-restart-sec-invalid ()
+  "Non-numeric :restart-sec is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :restart-sec "fast"))))
+    (should reason)
+    (should (string-match-p ":restart-sec must be" reason))))
+
+(ert-deftest supervisor-test-validate-restart-sec-negative ()
+  "Negative :restart-sec is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :restart-sec -1))))
+    (should reason)
+    (should (string-match-p ":restart-sec must be" reason))))
+
+(ert-deftest supervisor-test-validate-exec-stop-oneshot-rejected ()
+  "The :exec-stop keyword is rejected for oneshot type."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :type oneshot
+                   :exec-stop "stop-cmd"))))
+    (should reason)
+    (should (string-match-p ":exec-stop is invalid for :type oneshot" reason))))
+
+(ert-deftest supervisor-test-validate-exec-reload-oneshot-rejected ()
+  "The :exec-reload keyword is rejected for oneshot type."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :type oneshot
+                   :exec-reload "reload-cmd"))))
+    (should reason)
+    (should (string-match-p ":exec-reload is invalid for :type oneshot" reason))))
+
+(ert-deftest supervisor-test-validate-restart-sec-oneshot-rejected ()
+  "The :restart-sec keyword is rejected for oneshot type."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :type oneshot
+                   :restart-sec 5))))
+    (should reason)
+    (should (string-match-p ":restart-sec is invalid for :type oneshot" reason))))
+
+(ert-deftest supervisor-test-validate-new-keywords-accepted ()
+  "All six new keywords are accepted for simple type."
+  (should-not (supervisor--validate-entry
+               '("cmd" :id "svc"
+                 :working-directory "/tmp"
+                 :environment (("FOO" . "bar"))
+                 :environment-file "/etc/env"
+                 :exec-stop "stop"
+                 :exec-reload "reload"
+                 :restart-sec 5))))
+
+(ert-deftest supervisor-test-validate-env-dir-accepted-oneshot ()
+  "Working-directory, environment, environment-file accepted for oneshot."
+  (should-not (supervisor--validate-entry
+               '("cmd" :id "svc" :type oneshot
+                 :working-directory "/tmp"
+                 :environment (("FOO" . "bar"))
+                 :environment-file "/etc/env"))))
+
+(ert-deftest supervisor-test-entry-to-service-new-fields ()
+  "Entry-to-service conversion carries all six new fields."
+  (let* ((entry (supervisor--parse-entry
+                 '("my-daemon" :id "svc"
+                   :working-directory "/opt"
+                   :environment (("K" . "V"))
+                   :environment-file ("/etc/env")
+                   :exec-stop ("stop1" "stop2")
+                   :exec-reload "reload1"
+                   :restart-sec 3)))
+         (svc (supervisor-entry-to-service entry)))
+    (should (equal (supervisor-service-working-directory svc) "/opt"))
+    (should (equal (supervisor-service-environment svc) '(("K" . "V"))))
+    (should (equal (supervisor-service-environment-file svc) '("/etc/env")))
+    (should (equal (supervisor-service-exec-stop svc) '("stop1" "stop2")))
+    (should (equal (supervisor-service-exec-reload svc) '("reload1")))
+    (should (equal (supervisor-service-restart-sec svc) 3))))
+
+(ert-deftest supervisor-test-service-to-entry-new-fields ()
+  "Service-to-entry conversion preserves all six new fields."
+  (let* ((svc (supervisor-service--create
+               :id "svc" :command "cmd"
+               :working-directory "/opt"
+               :environment '(("K" . "V"))
+               :environment-file '("/etc/env")
+               :exec-stop '("stop1")
+               :exec-reload '("reload1")
+               :restart-sec 3))
+         (entry (supervisor-service-to-entry svc)))
+    (should (= (length entry) 19))
+    (should (equal (supervisor-entry-working-directory entry) "/opt"))
+    (should (equal (supervisor-entry-environment entry) '(("K" . "V"))))
+    (should (equal (supervisor-entry-environment-file entry) '("/etc/env")))
+    (should (equal (supervisor-entry-exec-stop entry) '("stop1")))
+    (should (equal (supervisor-entry-exec-reload entry) '("reload1")))
+    (should (equal (supervisor-entry-restart-sec entry) 3))))
+
+(ert-deftest supervisor-test-normalize-string-or-list ()
+  "String-or-list normalization works correctly."
+  (should-not (supervisor--normalize-string-or-list nil))
+  (should (equal (supervisor--normalize-string-or-list "foo") '("foo")))
+  (should (equal (supervisor--normalize-string-or-list '("a" "b")) '("a" "b")))
+  (should-not (supervisor--normalize-string-or-list 123)))
+
+(ert-deftest supervisor-test-build-plan-preserves-new-fields ()
+  "Build-plan :requires normalization preserves fields 13-18."
+  (let* ((supervisor--authority-snapshot nil)
+         (programs '(("svc-a" :id "svc-a" :stage stage3
+                      :working-directory "/opt"
+                      :environment (("K" . "V"))
+                      :exec-stop "stop-cmd")
+                     ("svc-b" :id "svc-b" :stage stage3
+                      :requires "svc-a"
+                      :restart-sec 5
+                      :exec-reload "reload-cmd")))
+         (plan (supervisor--build-plan programs))
+         (entries (supervisor-plan-entries plan)))
+    ;; Both entries must be 19 fields
+    (dolist (entry entries)
+      (should (= (length entry) 19)))
+    ;; svc-a new fields preserved
+    (let ((a (cl-find "svc-a" entries :key #'car :test #'equal)))
+      (should (equal (supervisor-entry-working-directory a) "/opt"))
+      (should (equal (supervisor-entry-environment a) '(("K" . "V"))))
+      (should (equal (supervisor-entry-exec-stop a) '("stop-cmd"))))
+    ;; svc-b new fields preserved (has :requires which triggers rewrite)
+    (let ((b (cl-find "svc-b" entries :key #'car :test #'equal)))
+      (should (equal (supervisor-entry-restart-sec b) 5))
+      (should (equal (supervisor-entry-exec-reload b) '("reload-cmd"))))))
+
+(ert-deftest supervisor-test-stable-topo-cycle-preserves-new-fields ()
+  "Cycle fallback in stable-topo-sort preserves fields 13-18."
+  (let ((supervisor--computed-deps (make-hash-table :test 'equal))
+        (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
+    ;; 19-element entries with cycle: a -> b -> a
+    (let* ((entries (list (list "a" "cmd" 0 t 'always t 'simple 'stage3 '("b")
+                                t 30 nil nil "/opt" '(("K" . "V")) nil
+                                '("stop") nil 3)
+                          (list "b" "cmd" 0 t 'always t 'simple 'stage3 '("a")
+                                t 30 nil nil nil nil '("/env") nil
+                                '("reload") nil)))
+           (sorted (supervisor--stable-topo-sort entries)))
+      ;; All entries must remain 19 fields
+      (dolist (entry sorted)
+        (should (= (length entry) 19)))
+      ;; :after (8) and :requires (12) cleared
+      (dolist (entry sorted)
+        (should (null (nth 8 entry)))
+        (should (null (nth 12 entry))))
+      ;; New fields preserved
+      (let ((a (cl-find "a" sorted :key #'car :test #'equal)))
+        (should (equal (supervisor-entry-working-directory a) "/opt"))
+        (should (equal (supervisor-entry-environment a) '(("K" . "V"))))
+        (should (equal (supervisor-entry-exec-stop a) '("stop")))
+        (should (equal (supervisor-entry-restart-sec a) 3)))
+      (let ((b (cl-find "b" sorted :key #'car :test #'equal)))
+        (should (equal (supervisor-entry-environment-file b) '("/env")))
+        (should (equal (supervisor-entry-exec-reload b) '("reload")))))))
+
+(ert-deftest supervisor-test-build-plan-topo-cycle-preserves-new-fields ()
+  "Cycle fallback in build-plan-topo-sort preserves fields 13-18."
+  ;; 19-element entries with cycle: a -> b -> a
+  (let* ((deps (make-hash-table :test 'equal))
+         (order-index (make-hash-table :test 'equal))
+         (cycle-fallback-ids (make-hash-table :test 'equal))
+         (entries (list (list "a" "cmd" 0 t 'always t 'simple 'stage3 '("b")
+                              t 30 nil nil "/tmp" nil nil '("s1") '("r1") 2)
+                        (list "b" "cmd" 0 t 'always t 'simple 'stage3 '("a")
+                              t 30 nil nil nil '(("X" . "Y")) '("/e") nil nil 0))))
+    (puthash "a" '("b") deps)
+    (puthash "b" '("a") deps)
+    (puthash "a" 0 order-index)
+    (puthash "b" 1 order-index)
+    (let ((sorted (supervisor--build-plan-topo-sort
+                   entries deps order-index cycle-fallback-ids)))
+      ;; All entries must remain 19 fields
+      (dolist (entry sorted)
+        (should (= (length entry) 19)))
+      ;; New fields preserved
+      (let ((a (cl-find "a" sorted :key #'car :test #'equal)))
+        (should (equal (supervisor-entry-working-directory a) "/tmp"))
+        (should (equal (supervisor-entry-exec-stop a) '("s1")))
+        (should (equal (supervisor-entry-exec-reload a) '("r1")))
+        (should (equal (supervisor-entry-restart-sec a) 2)))
+      (let ((b (cl-find "b" sorted :key #'car :test #'equal)))
+        (should (equal (supervisor-entry-environment b) '(("X" . "Y"))))
+        (should (equal (supervisor-entry-environment-file b) '("/e")))
+        (should (equal (supervisor-entry-restart-sec b) 0))))))
+
+;;;; Phase P2: Runtime foundation tests (cwd/env/restart-sec)
+
+(ert-deftest supervisor-test-parse-env-file ()
+  "Parse a well-formed environment file."
+  (let ((tmpfile (make-temp-file "env-test")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "# comment\n")
+            (insert "; another comment\n")
+            (insert "\n")
+            (insert "FOO=bar\n")
+            (insert "BAZ=qux value\n")
+            (insert "export EXPORTED=yes\n")
+            (insert "bad line no equals\n")
+            (insert "EMPTY=\n"))
+          (let ((result (supervisor--parse-env-file tmpfile)))
+            (should (equal result '(("FOO" . "bar")
+                                    ("BAZ" . "qux value")
+                                    ("EXPORTED" . "yes")
+                                    ("EMPTY" . ""))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-parse-env-file-key-validation ()
+  "Env file rejects keys that don't match [A-Za-z_][A-Za-z0-9_]*."
+  (let ((tmpfile (make-temp-file "env-test")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "VALID_KEY=ok\n")
+            (insert "123BAD=no\n")
+            (insert "_ok=yes\n"))
+          (let ((result (supervisor--parse-env-file tmpfile)))
+            (should (= (length result) 2))
+            (should (equal (car result) '("VALID_KEY" . "ok")))
+            (should (equal (cadr result) '("_ok" . "yes")))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-parse-env-file-invalid-lines-logged ()
+  "Invalid env-file lines are logged as warnings."
+  (let ((tmpfile (make-temp-file "env-test"))
+        (logged-warnings nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "GOOD=ok\n")
+            (insert "bad line no equals\n")
+            (insert "123BAD=no\n"))
+          (cl-letf (((symbol-function 'supervisor--log)
+                     (lambda (level fmt &rest args)
+                       (when (eq level 'warning)
+                         (push (apply #'format fmt args) logged-warnings)))))
+            (let ((result (supervisor--parse-env-file tmpfile)))
+              (should (= (length result) 1))
+              (should (equal (car result) '("GOOD" . "ok")))
+              ;; Two invalid lines should produce two warnings
+              (should (= (length logged-warnings) 2))
+              (should (cl-some (lambda (w) (string-match-p "bad line no equals" w))
+                               logged-warnings))
+              (should (cl-some (lambda (w) (string-match-p "123BAD=no" w))
+                               logged-warnings)))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-resolve-env-file-path ()
+  "Resolve env-file path with and without optional - prefix."
+  (let ((result (supervisor--resolve-env-file-path "/etc/env" "/units/")))
+    (should-not (car result))
+    (should (equal (cdr result) "/etc/env")))
+  (let ((result (supervisor--resolve-env-file-path "-/etc/env.local" "/units/")))
+    (should (car result))
+    (should (equal (cdr result) "/etc/env.local")))
+  ;; Relative path resolved against unit dir
+  (let ((result (supervisor--resolve-env-file-path "local.env" "/opt/units/")))
+    (should-not (car result))
+    (should (equal (cdr result) "/opt/units/local.env")))
+  ;; Optional relative
+  (let ((result (supervisor--resolve-env-file-path "-local.env" "/opt/units/")))
+    (should (car result))
+    (should (equal (cdr result) "/opt/units/local.env"))))
+
+(ert-deftest supervisor-test-build-process-environment ()
+  "Build effective process-environment from env-files and alist."
+  (let* ((tmpfile (make-temp-file "env-test"))
+         (process-environment '("INHERITED=yes" "OVERRIDE=old")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "FILE_VAR=from-file\n")
+            (insert "OVERRIDE=from-file\n"))
+          (let ((result (supervisor--build-process-environment
+                         (list tmpfile)
+                         '(("ALIST_VAR" . "from-alist")
+                           ("OVERRIDE" . "from-alist"))
+                         "/tmp/")))
+            ;; Alist wins over file (applied later)
+            (should (member "OVERRIDE=from-alist" result))
+            (should (member "FILE_VAR=from-file" result))
+            (should (member "ALIST_VAR=from-alist" result))
+            (should (member "INHERITED=yes" result))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-build-process-environment-optional-missing ()
+  "Optional missing env-file (leading -) is silently skipped."
+  (let ((process-environment '("KEEP=yes")))
+    (let ((result (supervisor--build-process-environment
+                   '("-/nonexistent/file.env")
+                   nil "/tmp/")))
+      ;; Should not error, inherited env preserved
+      (should (member "KEEP=yes" result)))))
+
+(ert-deftest supervisor-test-build-process-environment-required-missing ()
+  "Required missing env-file (no leading -) signals an error."
+  (let ((process-environment '("KEEP=yes")))
+    (should-error (supervisor--build-process-environment
+                   '("/nonexistent/required.env")
+                   nil "/tmp/"))))
+
+(ert-deftest supervisor-test-environment-alist-later-wins ()
+  "In :environment alist, later assignment for the same key wins."
+  (let ((process-environment '()))
+    (let ((result (supervisor--build-process-environment
+                   nil
+                   '(("KEY" . "first") ("OTHER" . "x") ("KEY" . "second"))
+                   "/tmp/")))
+      ;; "KEY=second" must appear later in the list than "KEY=first"
+      ;; so getenv-style lookup (which scans from head) finds "second"
+      (should (member "KEY=second" result))
+      ;; "first" is still present but shadowed
+      (should (member "KEY=first" result))
+      (should (< (cl-position "KEY=second" result :test #'equal)
+                 (cl-position "KEY=first" result :test #'equal))))))
+
+(ert-deftest supervisor-test-environment-file-ordering ()
+  "Multiple env-files are applied in list order; later file overrides earlier."
+  (let ((file1 (make-temp-file "env1-"))
+        (file2 (make-temp-file "env2-")))
+    (unwind-protect
+        (progn
+          (with-temp-file file1
+            (insert "SHARED=from-file1\n")
+            (insert "ONLY1=yes\n"))
+          (with-temp-file file2
+            (insert "SHARED=from-file2\n")
+            (insert "ONLY2=yes\n"))
+          (let* ((process-environment '())
+                 (result (supervisor--build-process-environment
+                          (list file1 file2) nil "/tmp/")))
+            ;; file2 applied after file1, so SHARED=from-file2 is later (wins)
+            (should (member "SHARED=from-file2" result))
+            (should (member "SHARED=from-file1" result))
+            (should (< (cl-position "SHARED=from-file2" result :test #'equal)
+                       (cl-position "SHARED=from-file1" result :test #'equal)))
+            ;; Both unique keys present
+            (should (member "ONLY1=yes" result))
+            (should (member "ONLY2=yes" result))))
+      (delete-file file1)
+      (delete-file file2))))
+
+(ert-deftest supervisor-test-resolve-working-directory-absolute ()
+  "Resolve absolute working directory."
+  (should (equal (supervisor--resolve-working-directory "/tmp" "/opt/") "/tmp")))
+
+(ert-deftest supervisor-test-resolve-working-directory-home ()
+  "Resolve ~ in working directory."
+  (let ((result (supervisor--resolve-working-directory "~" "/opt/")))
+    (should (equal result (expand-file-name "~")))))
+
+(ert-deftest supervisor-test-resolve-working-directory-relative ()
+  "Resolve relative working directory against unit-file directory."
+  (let ((tmp-dir (make-temp-file "wdir-" t)))
+    (unwind-protect
+        (let ((sub (expand-file-name "subdir" tmp-dir)))
+          (make-directory sub)
+          (should (equal (supervisor--resolve-working-directory
+                          "subdir" (file-name-as-directory tmp-dir))
+                         sub)))
+      (delete-directory tmp-dir t))))
+
+(ert-deftest supervisor-test-resolve-working-directory-nonexistent ()
+  "Non-existent working directory signals error."
+  (should-error (supervisor--resolve-working-directory
+                 "/nonexistent/dir/xyz" "/tmp/")))
+
+(ert-deftest supervisor-test-restart-sec-overrides-global ()
+  "Per-unit :restart-sec overrides `supervisor-restart-delay' in schedule-restart."
+  (let* ((supervisor-restart-delay 10)
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (scheduled-delay nil))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (delay _repeat &rest _args)
+                 (setq scheduled-delay delay)
+                 'mock-timer))
+              ((symbol-function 'supervisor--log) #'ignore)
+              ((symbol-function 'supervisor--format-exit-status)
+               (lambda (&rest _) "exited")))
+      ;; With restart-sec = 3, should use 3 not 10
+      (supervisor--schedule-restart "svc" "cmd" t 'simple 'always
+                                    'exit 1 nil nil nil 3)
+      (should (= scheduled-delay 3)))))
+
+(ert-deftest supervisor-test-restart-sec-nil-uses-global ()
+  "Nil :restart-sec falls back to global `supervisor-restart-delay'."
+  (let* ((supervisor-restart-delay 7)
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (scheduled-delay nil))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (delay _repeat &rest _args)
+                 (setq scheduled-delay delay)
+                 'mock-timer))
+              ((symbol-function 'supervisor--log) #'ignore)
+              ((symbol-function 'supervisor--format-exit-status)
+               (lambda (&rest _) "exited")))
+      ;; With restart-sec = nil, should use global 7
+      (supervisor--schedule-restart "svc" "cmd" t 'simple 'always
+                                    'exit 1 nil nil nil nil)
+      (should (= scheduled-delay 7)))))
+
+(ert-deftest supervisor-test-restart-sec-zero-immediate ()
+  "Restart-sec 0 means immediate retry."
+  (let* ((supervisor-restart-delay 10)
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (scheduled-delay nil))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (delay _repeat &rest _args)
+                 (setq scheduled-delay delay)
+                 'mock-timer))
+              ((symbol-function 'supervisor--log) #'ignore)
+              ((symbol-function 'supervisor--format-exit-status)
+               (lambda (&rest _) "exited")))
+      (supervisor--schedule-restart "svc" "cmd" t 'simple 'always
+                                    'exit 1 nil nil nil 0)
+      (should (= scheduled-delay 0)))))
+
+(ert-deftest supervisor-test-unit-file-directory-for-id ()
+  "Return directory of authoritative unit file."
+  (let ((supervisor--authority-snapshot nil)
+        (tmp-dir (make-temp-file "units-" t)))
+    (unwind-protect
+        (let ((supervisor-unit-authority-path (list tmp-dir)))
+          (with-temp-file (expand-file-name "svc.el" tmp-dir)
+            (insert "(:id \"svc\" :command \"echo hi\")"))
+          ;; Force snapshot refresh
+          (setq supervisor--authority-snapshot nil)
+          (let ((dir (supervisor--unit-file-directory-for-id "svc")))
+            (should (equal (file-name-as-directory dir)
+                           (file-name-as-directory tmp-dir)))))
+      (delete-directory tmp-dir t))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

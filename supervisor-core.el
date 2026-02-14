@@ -55,6 +55,7 @@ See supervisor-timer.el for the full mode definition.")
 (declare-function supervisor--publish-authority-snapshot "supervisor-units" ())
 (declare-function supervisor--read-authority-snapshot "supervisor-units" ())
 (declare-function supervisor--active-authority-roots "supervisor-units" ())
+(declare-function supervisor--unit-file-path "supervisor-units" (id))
 (defvar supervisor-unit-directory)
 (defvar supervisor-unit-authority-path)
 
@@ -319,11 +320,28 @@ Check PLIST for :oneshot-timeout and fall back to default."
           val))
     supervisor-oneshot-timeout))
 
+(defun supervisor--plist-duplicate-keys (plist)
+  "Return a list of duplicate keyword keys in PLIST, or nil.
+Scan PLIST and collect any key that appears more than once."
+  (let ((seen nil)
+        (dupes nil))
+    (let ((keys plist))
+      (while keys
+        (let ((key (car keys)))
+          (if (memq key seen)
+              (unless (memq key dupes)
+                (push key dupes))
+            (push key seen)))
+        (setq keys (cddr keys))))
+    (nreverse dupes)))
+
 ;;; Entry Validation
 
 (defconst supervisor--valid-keywords
   '(:id :type :stage :delay :after :requires :enabled :disabled
-    :restart :no-restart :logging :oneshot-blocking :oneshot-async :oneshot-timeout :tags)
+    :restart :no-restart :logging :oneshot-blocking :oneshot-async :oneshot-timeout :tags
+    :working-directory :environment :environment-file
+    :exec-stop :exec-reload :restart-sec)
   "List of valid keywords for entry plists.")
 
 (defconst supervisor--valid-types '(simple oneshot)
@@ -340,7 +358,8 @@ Check PLIST for :oneshot-timeout and fall back to default."
   "Signal numbers considered clean exits.
 HUP (1), INT (2), PIPE (13), TERM (15).")
 
-(defconst supervisor--simple-only-keywords '(:restart :no-restart)
+(defconst supervisor--simple-only-keywords
+  '(:restart :no-restart :exec-stop :exec-reload :restart-sec)
   "Keywords valid only for :type simple.")
 
 (defconst supervisor--oneshot-only-keywords '(:oneshot-blocking :oneshot-async :oneshot-timeout)
@@ -404,6 +423,10 @@ Return nil if valid, or a reason string if invalid."
     (let* ((plist (cdr entry))
            (type (or (plist-get plist :type) 'simple))
            (errors nil))
+      ;; Check for duplicate keys
+      (let ((dupes (supervisor--plist-duplicate-keys plist)))
+        (dolist (key dupes)
+          (push (format "duplicate key %s" key) errors)))
       ;; Check for unknown keywords
       (let ((keys plist))
         (while keys
@@ -471,6 +494,52 @@ Return nil if valid, or a reason string if invalid."
         (dolist (kw supervisor--oneshot-only-keywords)
           (when (plist-member plist kw)
             (push (format "%s is invalid for :type simple" kw) errors))))
+      ;; Check :working-directory is a string
+      (when (plist-member plist :working-directory)
+        (let ((val (plist-get plist :working-directory)))
+          (unless (or (null val) (stringp val))
+            (push ":working-directory must be a string or nil" errors))))
+      ;; Check :environment is an alist of (string . string) pairs
+      (when (plist-member plist :environment)
+        (let ((val (plist-get plist :environment)))
+          (unless (or (null val)
+                      (and (proper-list-p val)
+                           (cl-every (lambda (pair)
+                                       (and (consp pair)
+                                            (stringp (car pair))
+                                            (stringp (cdr pair))))
+                                     val)))
+            (push ":environment must be an alist of (KEY . VALUE) string pairs" errors))))
+      ;; Check :environment-file is string, list of strings, or nil
+      (when (plist-member plist :environment-file)
+        (let ((val (plist-get plist :environment-file)))
+          (unless (or (null val)
+                      (stringp val)
+                      (and (proper-list-p val)
+                           (cl-every #'stringp val)))
+            (push ":environment-file must be a string, list of strings, or nil" errors))))
+      ;; Check :exec-stop is string, list of strings, or nil
+      (when (plist-member plist :exec-stop)
+        (let ((val (plist-get plist :exec-stop)))
+          (unless (or (null val)
+                      (stringp val)
+                      (and (proper-list-p val)
+                           (cl-every #'stringp val)))
+            (push ":exec-stop must be a string, list of strings, or nil" errors))))
+      ;; Check :exec-reload is string, list of strings, or nil
+      (when (plist-member plist :exec-reload)
+        (let ((val (plist-get plist :exec-reload)))
+          (unless (or (null val)
+                      (stringp val)
+                      (and (proper-list-p val)
+                           (cl-every #'stringp val)))
+            (push ":exec-reload must be a string, list of strings, or nil" errors))))
+      ;; Check :restart-sec is a non-negative number or nil
+      (when (plist-member plist :restart-sec)
+        (let ((val (plist-get plist :restart-sec)))
+          (unless (or (null val)
+                      (and (numberp val) (>= val 0)))
+            (push ":restart-sec must be a non-negative number or nil" errors))))
       ;; Check :after value type (string or list of strings)
       ;; Use proper-list-p to handle dotted lists safely (Bug 3 fix)
       (when (plist-member plist :after)
@@ -1151,7 +1220,19 @@ Field documentation:
   oneshot-timeout - For oneshots: timeout in seconds, or nil for infinite
                    Default: value of `supervisor-oneshot-timeout'
   tags           - List of symbols/strings for filtering
-                   Default: nil"
+                   Default: nil
+  working-directory - Working directory for the process (absolute path or nil)
+                   Default: nil
+  environment    - Ordered alist of (KEY . VALUE) string pairs, or nil
+                   Default: nil
+  environment-file - Ordered list of env-file paths, or nil
+                   Default: nil
+  exec-stop      - Ordered list of stop command strings, simple only, or nil
+                   Default: nil
+  exec-reload    - Ordered list of reload command strings, simple only, or nil
+                   Default: nil
+  restart-sec    - Per-unit restart delay in seconds, simple only, or nil
+                   Default: nil (uses global `supervisor-restart-delay')"
   (id nil :type string :documentation "Unique identifier (required)")
   (command nil :type string :documentation "Shell command to execute (required)")
   (type 'simple :type symbol :documentation "Process type: simple or oneshot")
@@ -1164,7 +1245,13 @@ Field documentation:
   (requires nil :type list :documentation "Requirement dependencies")
   (oneshot-blocking nil :type boolean :documentation "Block stage for oneshot exit")
   (oneshot-timeout nil :type (or null number) :documentation "Oneshot timeout")
-  (tags nil :type list :documentation "Filter tags"))
+  (tags nil :type list :documentation "Filter tags")
+  (working-directory nil :type (or null string) :documentation "Process working directory")
+  (environment nil :type list :documentation "Environment alist ((KEY . VALUE) ...)")
+  (environment-file nil :type list :documentation "Environment file paths")
+  (exec-stop nil :type list :documentation "Stop command list (simple only)")
+  (exec-reload nil :type list :documentation "Reload command list (simple only)")
+  (restart-sec nil :type (or null number) :documentation "Per-unit restart delay"))
 
 (defconst supervisor-service-required-fields '(id command)
   "List of required fields in a service record.")
@@ -1180,7 +1267,13 @@ Field documentation:
     (requires . nil)
     (oneshot-blocking . :defer)  ; resolved at runtime from global default
     (oneshot-timeout . :defer)
-    (tags . nil))
+    (tags . nil)
+    (working-directory . nil)
+    (environment . nil)
+    (environment-file . nil)
+    (exec-stop . nil)
+    (exec-reload . nil)
+    (restart-sec . nil))
   "Alist of optional fields with their default values.
 A value of :defer means the default is resolved at runtime.")
 
@@ -1190,7 +1283,9 @@ A value of :defer means the default is resolved at runtime.")
 ;; Use these instead of direct (nth N entry) indexing for maintainability.
 ;; The tuple format is:
 ;;   (id cmd delay enabled-p restart-policy logging-p type stage after
-;;    oneshot-blocking oneshot-timeout tags requires)
+;;    oneshot-blocking oneshot-timeout tags requires
+;;    working-directory environment environment-file
+;;    exec-stop exec-reload restart-sec)
 
 (defsubst supervisor-entry-id (entry)
   "Return the ID of parsed ENTRY."
@@ -1248,6 +1343,30 @@ Value is one of `always', `no', `on-success', or `on-failure'."
 (defsubst supervisor-entry-requires (entry)
   "Return the requirement dependencies of parsed ENTRY."
   (nth 12 entry))
+
+(defsubst supervisor-entry-working-directory (entry)
+  "Return the working directory of parsed ENTRY, or nil."
+  (nth 13 entry))
+
+(defsubst supervisor-entry-environment (entry)
+  "Return the environment alist of parsed ENTRY, or nil."
+  (nth 14 entry))
+
+(defsubst supervisor-entry-environment-file (entry)
+  "Return the environment file list of parsed ENTRY, or nil."
+  (nth 15 entry))
+
+(defsubst supervisor-entry-exec-stop (entry)
+  "Return the stop command list of parsed ENTRY, or nil."
+  (nth 16 entry))
+
+(defsubst supervisor-entry-exec-reload (entry)
+  "Return the reload command list of parsed ENTRY, or nil."
+  (nth 17 entry))
+
+(defsubst supervisor-entry-restart-sec (entry)
+  "Return the per-unit restart delay of parsed ENTRY, or nil."
+  (nth 18 entry))
 
 ;; Forward declarations for timer state variables (defined in supervisor-timer.el)
 ;; These are only accessed when timer module is loaded.
@@ -1639,7 +1758,8 @@ The plan includes:
                            (unless (equal requires valid-requires)
                              (setq new-entry
                                    (append (cl-subseq new-entry 0 12)
-                                           (list valid-requires))))
+                                           (list valid-requires)
+                                           (cl-subseq new-entry 13))))
                            new-entry)))
                      stage-entries))
                    ;; Filter out entries that were marked invalid during :requires validation
@@ -1741,42 +1861,62 @@ Returns sorted entries list."
             (puthash id t cycle-fallback-ids)
             (puthash id nil deps)))
         ;; Return entries with :after and :requires stripped
-        ;; (full 13-element entries from parse-entry)
+        ;; (full 19-element entries from parse-entry)
         (mapcar (lambda (entry)
                   (append (cl-subseq entry 0 8)
                           (list nil)                ; clear :after (index 8)
                           (cl-subseq entry 9 12)
-                          (list nil)))              ; clear :requires (index 12)
+                          (list nil)                ; clear :requires (index 12)
+                          (cl-subseq entry 13 19))) ; preserve new fields
                 entries)))))
 
 ;;; Helpers
 
+(defun supervisor--normalize-string-or-list (val)
+  "Normalize VAL to a list of strings.
+If VAL is a string, return a one-element list.
+If VAL is a proper list of strings, return as-is.
+If VAL is nil, return nil."
+  (cond ((null val) nil)
+        ((stringp val) (list val))
+        ((and (proper-list-p val) (cl-every #'stringp val)) val)
+        (t nil)))
+
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
-Return a list: (id cmd delay enabled-p restart-policy logging-p type
-stage after oneshot-blocking oneshot-timeout tags requires).
+Return a 19-element list: (id cmd delay enabled-p restart-policy
+logging-p type stage after oneshot-blocking oneshot-timeout tags
+requires working-directory environment environment-file exec-stop
+exec-reload restart-sec).
 
 Indices (schema v1):
-  0  id             - unique identifier string
-  1  cmd            - shell command string
-  2  delay          - seconds to wait before starting
-  3  enabled-p      - whether to start this service
-  4  restart-policy - restart policy symbol (always, no, on-success, on-failure)
-  5  logging-p      - whether to log stdout/stderr
-  6  type           - `simple' or `oneshot'
-  7  stage          - startup stage symbol
-  8  after          - ordering dependencies (same stage, start order only)
-  9  oneshot-blocking - block stage for oneshot exit
-  10 oneshot-timeout  - timeout for blocking oneshots
-  11 tags             - list of filter tags
-  12 requires         - requirement dependencies (pull-in + ordering)
+  0  id                - unique identifier string
+  1  cmd               - shell command string
+  2  delay             - seconds to wait before starting
+  3  enabled-p         - whether to start this service
+  4  restart-policy    - restart policy symbol
+  5  logging-p         - whether to log stdout/stderr
+  6  type              - `simple' or `oneshot'
+  7  stage             - startup stage symbol
+  8  after             - ordering dependencies (same stage)
+  9  oneshot-blocking  - block stage for oneshot exit
+  10 oneshot-timeout   - timeout for blocking oneshots
+  11 tags              - list of filter tags
+  12 requires          - requirement dependencies
+  13 working-directory - process working directory or nil
+  14 environment       - environment alist or nil
+  15 environment-file  - list of env-file paths or nil
+  16 exec-stop         - list of stop commands or nil
+  17 exec-reload       - list of reload commands or nil
+  18 restart-sec       - per-unit restart delay or nil
 
 ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
   (if (stringp entry)
       (let ((id (file-name-nondirectory (car (split-string-and-unquote entry)))))
         (list id entry 0 t 'always t 'simple 'stage3 nil
-              supervisor-oneshot-default-blocking supervisor-oneshot-timeout nil nil))
+              supervisor-oneshot-default-blocking supervisor-oneshot-timeout nil nil
+              nil nil nil nil nil nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
            (id (or (plist-get plist :id)
@@ -1825,9 +1965,24 @@ Use accessor functions instead of direct indexing for new code."
            (tags-raw (plist-get plist :tags))
            (tags (cond ((null tags-raw) nil)
                        ((listp tags-raw) tags-raw)
-                       (t (list tags-raw)))))
+                       (t (list tags-raw))))
+           ;; New P2 fields (indices 13-18)
+           (working-directory (plist-get plist :working-directory))
+           (environment (plist-get plist :environment))
+           (environment-file
+            (supervisor--normalize-string-or-list
+             (plist-get plist :environment-file)))
+           (exec-stop
+            (supervisor--normalize-string-or-list
+             (plist-get plist :exec-stop)))
+           (exec-reload
+            (supervisor--normalize-string-or-list
+             (plist-get plist :exec-reload)))
+           (restart-sec (plist-get plist :restart-sec)))
       (list id cmd delay enabled restart logging type stage after
-            oneshot-blocking oneshot-timeout tags requires))))
+            oneshot-blocking oneshot-timeout tags requires
+            working-directory environment environment-file
+            exec-stop exec-reload restart-sec))))
 
 ;;; Entry/Service Conversion Functions
 
@@ -1846,7 +2001,13 @@ Use accessor functions instead of direct indexing for new code."
    :requires (supervisor-entry-requires entry)
    :oneshot-blocking (supervisor-entry-oneshot-blocking entry)
    :oneshot-timeout (supervisor-entry-oneshot-timeout entry)
-   :tags (supervisor-entry-tags entry)))
+   :tags (supervisor-entry-tags entry)
+   :working-directory (supervisor-entry-working-directory entry)
+   :environment (supervisor-entry-environment entry)
+   :environment-file (supervisor-entry-environment-file entry)
+   :exec-stop (supervisor-entry-exec-stop entry)
+   :exec-reload (supervisor-entry-exec-reload entry)
+   :restart-sec (supervisor-entry-restart-sec entry)))
 
 (defun supervisor-service-to-entry (service)
   "Convert SERVICE struct to a parsed entry tuple."
@@ -1862,7 +2023,13 @@ Use accessor functions instead of direct indexing for new code."
         (supervisor-service-oneshot-blocking service)
         (supervisor-service-oneshot-timeout service)
         (supervisor-service-tags service)
-        (supervisor-service-requires service)))
+        (supervisor-service-requires service)
+        (supervisor-service-working-directory service)
+        (supervisor-service-environment service)
+        (supervisor-service-environment-file service)
+        (supervisor-service-exec-stop service)
+        (supervisor-service-exec-reload service)
+        (supervisor-service-restart-sec service)))
 
 (defun supervisor--check-crash-loop (id)
   "Check if ID is crash-looping.  Return t if should NOT restart."
@@ -2023,16 +2190,18 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
             (puthash id t supervisor--cycle-fallback-ids)
             (puthash id nil supervisor--computed-deps)))
         ;; Return entries with :after and :requires stripped to break the cycle
-        ;; Handle both 11-element (legacy) and 13-element (schema v1) entries
+        ;; Handle 19-element (current), 13-element, and 11-element entries
         (mapcar (lambda (entry)
                   (let ((len (length entry)))
                     (cond
-                     ;; Full 13-element entry: clear both :after (8) and :requires (12)
+                     ;; Full 19-element entry: clear :after (8) and :requires (12),
+                     ;; preserve fields 13-18
                      ((>= len 13)
                       (append (cl-subseq entry 0 8)
                               (list nil)                ; clear :after
                               (cl-subseq entry 9 12)
-                              (list nil)))              ; clear :requires
+                              (list nil)                ; clear :requires
+                              (cl-subseq entry 13)))    ; preserve new fields
                      ;; 11-element legacy entry: just clear :after (8)
                      ((>= len 11)
                       (append (cl-subseq entry 0 8)
@@ -2196,7 +2365,21 @@ No-op if DAG scheduler is not active (e.g., manual starts)."
 (defun supervisor--dag-start-entry-async (entry)
   "Start ENTRY asynchronously.
 Mark ready immediately for simple processes, on exit for oneshot."
-  (pcase-let ((`(,id ,cmd ,delay ,enabled-p ,restart-policy ,logging-p ,type ,_stage ,_after ,oneshot-blocking ,oneshot-timeout ,_tags) entry))
+  (let ((id (supervisor-entry-id entry))
+        (cmd (supervisor-entry-command entry))
+        (delay (supervisor-entry-delay entry))
+        (enabled-p (supervisor-entry-enabled-p entry))
+        (restart-policy (supervisor-entry-restart-policy entry))
+        (logging-p (supervisor-entry-logging-p entry))
+        (type (supervisor-entry-type entry))
+        (oneshot-blocking (supervisor-entry-oneshot-blocking entry))
+        (oneshot-timeout (supervisor-entry-oneshot-timeout entry))
+        (working-directory (supervisor-entry-working-directory entry))
+        (environment (supervisor-entry-environment entry))
+        (environment-file (supervisor-entry-environment-file entry))
+        (restart-sec (supervisor-entry-restart-sec entry))
+        (unit-file-directory (supervisor--unit-file-directory-for-id
+                              (supervisor-entry-id entry))))
     ;; Check effective enabled state (config + runtime override)
     (let ((effective-enabled (supervisor--get-effective-enabled id enabled-p)))
       (cond
@@ -2214,11 +2397,21 @@ Mark ready immediately for simple processes, on exit for oneshot."
                  (run-at-time delay nil
                               (lambda ()
                                 (remhash id supervisor--dag-delay-timers)
-                                (supervisor--dag-do-start id cmd logging-p type restart-policy oneshot-blocking oneshot-timeout)))
+                                (supervisor--dag-do-start
+                                 id cmd logging-p type restart-policy
+                                 oneshot-blocking oneshot-timeout
+                                 working-directory environment
+                                 environment-file restart-sec
+                                 unit-file-directory)))
                  supervisor--dag-delay-timers))
        ;; Start immediately
        (t
-        (supervisor--dag-do-start id cmd logging-p type restart-policy oneshot-blocking oneshot-timeout))))))
+        (supervisor--dag-do-start
+         id cmd logging-p type restart-policy
+         oneshot-blocking oneshot-timeout
+         working-directory environment
+         environment-file restart-sec
+         unit-file-directory))))))
 
 (defun supervisor--dag-finish-spawn-attempt ()
   "Finish a spawn attempt by decrementing count and processing queue."
@@ -2258,8 +2451,15 @@ Mark ready immediately for simple processes, on exit for oneshot."
     (supervisor--dag-mark-ready id)
     (supervisor--emit-event 'process-ready id nil (list :type type))))
 
-(defun supervisor--dag-do-start (id cmd logging-p type restart-policy _oneshot-blocking oneshot-timeout)
-  "Start process ID with CMD, LOGGING-P, TYPE, RESTART-POLICY, ONESHOT-TIMEOUT."
+(defun supervisor--dag-do-start (id cmd logging-p type restart-policy
+                                    _oneshot-blocking oneshot-timeout
+                                    &optional working-directory environment
+                                    environment-file restart-sec
+                                    unit-file-directory)
+  "Start process ID with CMD, LOGGING-P, TYPE, RESTART-POLICY, ONESHOT-TIMEOUT.
+Optional WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE,
+RESTART-SEC, and UNIT-FILE-DIRECTORY are passed through to
+`supervisor--start-process'."
   (puthash id t supervisor--dag-started)
   (puthash id (float-time) supervisor--start-times)
   (cl-incf supervisor--dag-active-starts)
@@ -2268,7 +2468,11 @@ Mark ready immediately for simple processes, on exit for oneshot."
         (progn
           (supervisor--log 'warning "executable not found for %s: %s" id (car args))
           (supervisor--dag-handle-spawn-failure id))
-      (let ((proc (supervisor--start-process id cmd logging-p type restart-policy)))
+      (let ((proc (supervisor--start-process
+                   id cmd logging-p type restart-policy nil
+                   working-directory environment
+                   environment-file restart-sec
+                   unit-file-directory)))
         (if (not proc)
             (supervisor--dag-handle-spawn-failure id)
           (supervisor--dag-handle-spawn-success id type oneshot-timeout))))))
@@ -2397,20 +2601,36 @@ Decrement remaining count and signal completion when all done."
       (setq supervisor--shutdown-complete-flag t)
       (when cb (funcall cb)))))
 
-(defun supervisor--schedule-restart (id cmd default-logging type config-restart proc-status exit-code)
+(defun supervisor--schedule-restart (id cmd default-logging type config-restart
+                                        proc-status exit-code
+                                        &optional working-directory environment
+                                        environment-file restart-sec
+                                        unit-file-directory)
   "Schedule restart of process ID after crash.
 CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are original process params.
-PROC-STATUS and EXIT-CODE describe the exit for logging."
+PROC-STATUS and EXIT-CODE describe the exit for logging.
+WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, RESTART-SEC,
+and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts."
   (supervisor--log 'info "%s %s, restarting..."
                    id (supervisor--format-exit-status proc-status exit-code))
-  (puthash id
-           (run-at-time supervisor-restart-delay nil
-                        #'supervisor--start-process id cmd default-logging type config-restart t)
-           supervisor--restart-timers))
+  (let ((delay (or restart-sec supervisor-restart-delay)))
+    (puthash id
+             (run-at-time delay nil
+                          #'supervisor--start-process
+                          id cmd default-logging type config-restart t
+                          working-directory environment
+                          environment-file restart-sec
+                          unit-file-directory)
+             supervisor--restart-timers)))
 
-(defun supervisor--make-process-sentinel (id cmd default-logging type config-restart)
+(defun supervisor--make-process-sentinel (id cmd default-logging type config-restart
+                                             &optional working-directory environment
+                                             environment-file restart-sec
+                                             unit-file-directory)
   "Create a process sentinel for ID with captured parameters.
-CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart."
+CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart.
+WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, RESTART-SEC,
+and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts."
   (lambda (p _event)
     (unless (process-live-p p)
       (let* ((name (process-name p))
@@ -2442,14 +2662,111 @@ CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart."
                     (gethash name supervisor--failed)
                     (supervisor--check-crash-loop name))
           (supervisor--schedule-restart id cmd default-logging type config-restart
-                                        proc-status exit-code))))))
+                                        proc-status exit-code
+                                        working-directory environment
+                                        environment-file restart-sec
+                                        unit-file-directory))))))
 
-(defun supervisor--start-process (id cmd default-logging type config-restart &optional is-restart)
+;;; Process Environment and Working Directory Helpers
+
+(defun supervisor--parse-env-file (path)
+  "Parse environment file at PATH and return an alist of (KEY . VALUE) pairs.
+Ignore blank lines and comment lines (starting with `#' or `;').
+Accept optional `export ' prefix.  Parse first `=' as separator.
+Key must match [A-Za-z_][A-Za-z0-9_]*.  Lines that do not match
+are logged as warnings."
+  (let ((result nil)
+        (line-num 0))
+    (with-temp-buffer
+      (insert-file-contents path)
+      (goto-char (point-min))
+      (while (not (eobp))
+        (cl-incf line-num)
+        (let ((line (string-trim (buffer-substring-no-properties
+                                  (line-beginning-position)
+                                  (line-end-position)))))
+          ;; Skip blank lines and comments
+          (unless (or (string-empty-p line)
+                      (string-prefix-p "#" line)
+                      (string-prefix-p ";" line))
+            ;; Strip optional "export " prefix
+            (when (string-prefix-p "export " line)
+              (setq line (substring line 7)))
+            ;; Parse KEY=VALUE
+            (if (string-match "\\`\\([A-Za-z_][A-Za-z0-9_]*\\)=\\(.*\\)\\'" line)
+                (push (cons (match-string 1 line)
+                            (string-trim (match-string 2 line)))
+                      result)
+              (supervisor--log 'warning "%s:%d: invalid env line: %s"
+                               path line-num line))))
+        (forward-line 1)))
+    (nreverse result)))
+
+(defun supervisor--resolve-env-file-path (path unit-file-directory)
+  "Resolve environment file PATH relative to UNIT-FILE-DIRECTORY.
+Strip leading `-' prefix (optional missing marker) and return
+a cons (OPTIONAL-P . RESOLVED-PATH)."
+  (let ((optional (string-prefix-p "-" path)))
+    (when optional
+      (setq path (substring path 1)))
+    (let ((resolved (expand-file-name path unit-file-directory)))
+      (cons optional resolved))))
+
+(defun supervisor--build-process-environment (env-files env-alist unit-file-directory)
+  "Build effective `process-environment' for a unit.
+Start from current `process-environment', apply ENV-FILES in order,
+then apply ENV-ALIST pairs in order.  Later assignments for the
+same key override earlier ones.  UNIT-FILE-DIRECTORY is used for
+relative path resolution in env-files."
+  (let ((env (copy-sequence process-environment)))
+    ;; Apply env-files in order
+    (dolist (path env-files)
+      (let* ((resolved (supervisor--resolve-env-file-path path unit-file-directory))
+             (optional (car resolved))
+             (file (cdr resolved)))
+        (if (file-readable-p file)
+            (dolist (pair (supervisor--parse-env-file file))
+              (setq env (cons (format "%s=%s" (car pair) (cdr pair))
+                              env)))
+          (unless optional
+            (error "Required environment file not found: %s" file)))))
+    ;; Apply env-alist in order (later wins for same key)
+    (dolist (pair env-alist)
+      (setq env (cons (format "%s=%s" (car pair) (cdr pair))
+                      env)))
+    env))
+
+(defun supervisor--resolve-working-directory (dir unit-file-directory)
+  "Resolve working directory DIR for a unit.
+Expand `~' paths.  Resolve relative paths against UNIT-FILE-DIRECTORY.
+Return the resolved absolute path, or signal an error if the directory
+does not exist."
+  (let ((resolved (expand-file-name dir unit-file-directory)))
+    (unless (file-directory-p resolved)
+      (error "Working directory does not exist: %s" resolved))
+    resolved))
+
+(defun supervisor--unit-file-directory-for-id (id)
+  "Return the directory of the authoritative unit file for ID.
+Return nil if no unit file is found or if `supervisor-units' is not loaded."
+  (when (fboundp 'supervisor--unit-file-path)
+    (when-let* ((path (supervisor--unit-file-path id)))
+      (file-name-directory path))))
+
+(defun supervisor--start-process (id cmd default-logging type config-restart
+                                     &optional is-restart
+                                     working-directory environment
+                                     environment-file restart-sec
+                                     unit-file-directory)
   "Start CMD with identifier ID.
 DEFAULT-LOGGING is the config value; runtime override is checked at restart.
 TYPE is `simple' (long-running) or `oneshot' (run once).
 CONFIG-RESTART is the restart policy symbol.
-IS-RESTART is t when called from a crash-triggered restart timer."
+IS-RESTART is t when called from a crash-triggered restart timer.
+WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, and RESTART-SEC
+are per-unit overrides from the unit file.
+UNIT-FILE-DIRECTORY is the directory of the authoritative unit file,
+captured at plan time for deterministic relative-path resolution."
   ;; Clear any pending restart timer for this ID first
   (when-let* ((timer (gethash id supervisor--restart-timers)))
     (when (timerp timer)
@@ -2467,25 +2784,47 @@ IS-RESTART is t when called from a crash-triggered restart timer."
               (and is-restart (eq (gethash id supervisor--enabled-override) 'disabled))
               (and (gethash id supervisor--processes)
                    (process-live-p (gethash id supervisor--processes))))
-    (let* ((args (split-string-and-unquote cmd))
-           (logging (supervisor--get-effective-logging id default-logging))
-           (log-file (when logging
-                       (supervisor--ensure-log-directory)
-                       (supervisor--log-file id)))
-           (proc (make-process
-                  :name id
-                  :command args
-                  :connection-type 'pipe
-                  ;; Merge stderr into stdout - both captured by filter
-                  :stderr nil
-                  :filter (when logging
-                            (lambda (_proc output)
-                              (write-region output nil log-file t 'silent)))
-                  :sentinel (supervisor--make-process-sentinel
-                             id cmd default-logging type config-restart))))
-      (set-process-query-on-exit-flag proc nil)
-      (puthash id proc supervisor--processes)
-      proc)))
+    (let* ((default-directory
+            (if working-directory
+                (condition-case err
+                    (supervisor--resolve-working-directory
+                     working-directory unit-file-directory)
+                  (error
+                   (supervisor--log 'warning "%s: %s" id (error-message-string err))
+                   nil))
+              default-directory))
+           (process-environment
+            (if (or environment-file environment)
+                (condition-case err
+                    (supervisor--build-process-environment
+                     environment-file environment unit-file-directory)
+                  (error
+                   (supervisor--log 'warning "%s: %s" id (error-message-string err))
+                   nil))
+              process-environment)))
+      (when (and default-directory process-environment)
+        (let* ((args (split-string-and-unquote cmd))
+               (logging (supervisor--get-effective-logging id default-logging))
+               (log-file (when logging
+                           (supervisor--ensure-log-directory)
+                           (supervisor--log-file id)))
+               (proc (make-process
+                      :name id
+                      :command args
+                      :connection-type 'pipe
+                      ;; Merge stderr into stdout - both captured by filter
+                      :stderr nil
+                      :filter (when logging
+                                (lambda (_proc output)
+                                  (write-region output nil log-file t 'silent)))
+                      :sentinel (supervisor--make-process-sentinel
+                                 id cmd default-logging type config-restart
+                                 working-directory environment
+                                 environment-file restart-sec
+                                 unit-file-directory))))
+          (set-process-query-on-exit-flag proc nil)
+          (puthash id proc supervisor--processes)
+          proc)))))
 
 (defun supervisor--wait-for-oneshot (id &optional timeout callback)
   "Wait for oneshot ID to complete asynchronously (event-driven).
@@ -2515,7 +2854,19 @@ Uses sentinel-driven notification instead of polling."
 (defun supervisor--start-entry-async (entry callback)
   "Start ENTRY asynchronously for dashboard manual start.
 CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
-  (pcase-let ((`(,id ,cmd ,_delay ,enabled-p ,restart-policy ,logging-p ,type ,_stage ,_after ,_owait ,otimeout ,_tags) entry))
+  (let ((id (supervisor-entry-id entry))
+        (cmd (supervisor-entry-command entry))
+        (enabled-p (supervisor-entry-enabled-p entry))
+        (restart-policy (supervisor-entry-restart-policy entry))
+        (logging-p (supervisor-entry-logging-p entry))
+        (type (supervisor-entry-type entry))
+        (otimeout (supervisor-entry-oneshot-timeout entry))
+        (working-directory (supervisor-entry-working-directory entry))
+        (environment (supervisor-entry-environment entry))
+        (environment-file (supervisor-entry-environment-file entry))
+        (restart-sec (supervisor-entry-restart-sec entry))
+        (unit-file-directory (supervisor--unit-file-directory-for-id
+                              (supervisor-entry-id entry))))
     (if (not (supervisor--get-effective-enabled id enabled-p))
         (progn
           (supervisor--log 'info "%s disabled (config or override), skipping" id)
@@ -2527,7 +2878,11 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
               (supervisor--emit-event 'process-failed id nil nil)
               (when callback (funcall callback nil)))
           ;; Start the process
-          (let ((proc (supervisor--start-process id cmd logging-p type restart-policy)))
+          (let ((proc (supervisor--start-process
+                       id cmd logging-p type restart-policy nil
+                       working-directory environment
+                       environment-file restart-sec
+                       unit-file-directory)))
             (if (not proc)
                 (progn
                   (supervisor--emit-event 'process-failed id nil nil)
@@ -2576,7 +2931,15 @@ are blocked.  Manually started disabled units are tracked in
     (let ((entry (supervisor--get-entry-for-id id)))
       (if (not entry)
           (list :status 'error :reason "not found")
-        (pcase-let ((`(,_id ,cmd ,_delay ,_enabled-p ,restart-policy ,logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
+        (let ((cmd (supervisor-entry-command entry))
+              (restart-policy (supervisor-entry-restart-policy entry))
+              (logging-p (supervisor-entry-logging-p entry))
+              (type (supervisor-entry-type entry))
+              (working-directory (supervisor-entry-working-directory entry))
+              (environment (supervisor-entry-environment entry))
+              (environment-file (supervisor-entry-environment-file entry))
+              (restart-sec (supervisor-entry-restart-sec entry))
+              (unit-file-directory (supervisor--unit-file-directory-for-id id)))
           (cond
            ;; Masked (highest precedence - only mask blocks manual start)
            ((eq (gethash id supervisor--mask-override) 'masked)
@@ -2592,7 +2955,11 @@ are blocked.  Manually started disabled units are tracked in
             (remhash id supervisor--oneshot-completed)
             ;; Clear manually-stopped so restart works again
             (remhash id supervisor--manually-stopped)
-            (let ((proc (supervisor--start-process id cmd logging-p type restart-policy)))
+            (let ((proc (supervisor--start-process
+                         id cmd logging-p type restart-policy nil
+                         working-directory environment
+                         environment-file restart-sec
+                         unit-file-directory)))
               (if proc
                   (progn
                     ;; Track manual start only on success so reconcile
@@ -3051,9 +3418,16 @@ Returns a plist with :stopped and :started counts."
                (cl-incf stopped))))
           ('start
            (when-let* ((entry (cl-find id plan-entries :key #'car :test #'equal)))
-             (pcase-let ((`(,_id ,cmd ,_delay ,enabled-p ,restart-policy ,logging-p
-                                 ,type ,_stage ,_after ,_owait ,_otimeout ,_tags)
-                          entry))
+             (let ((cmd (supervisor-entry-command entry))
+                   (enabled-p (supervisor-entry-enabled-p entry))
+                   (restart-policy (supervisor-entry-restart-policy entry))
+                   (logging-p (supervisor-entry-logging-p entry))
+                   (type (supervisor-entry-type entry))
+                   (working-directory (supervisor-entry-working-directory entry))
+                   (environment (supervisor-entry-environment entry))
+                   (environment-file (supervisor-entry-environment-file entry))
+                   (restart-sec (supervisor-entry-restart-sec entry))
+                   (unit-file-directory (supervisor--unit-file-directory-for-id id)))
                (when (supervisor--get-effective-enabled id enabled-p)
                  (let ((args (split-string-and-unquote cmd)))
                    (if (not (executable-find (car args)))
@@ -3062,7 +3436,11 @@ Returns a plist with :stopped and :started counts."
                                           id (car args))
                          (supervisor--emit-event 'process-failed id nil nil))
                      (supervisor--log 'info "reconcile: starting %s entry %s" reason id)
-                     (let ((proc (supervisor--start-process id cmd logging-p type restart-policy)))
+                     (let ((proc (supervisor--start-process
+                                  id cmd logging-p type restart-policy nil
+                                  working-directory environment
+                                  environment-file restart-sec
+                                  unit-file-directory)))
                        (if proc
                            (progn
                              (supervisor--emit-event 'process-started id nil (list :type type))
@@ -3160,7 +3538,7 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
         (remhash id supervisor--invalid)
         (let* ((proc (gethash id supervisor--processes))
                (running (and proc (process-live-p proc)))
-               (type (nth 6 entry)))
+               (type (supervisor-entry-type entry)))
           (cond
            ;; Running simple: stop + start with new definition.
            ;; Bypass supervisor--manual-start to avoid disabled-policy
@@ -3171,14 +3549,22 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
             (remhash id supervisor--failed)
             (remhash id supervisor--restart-times)
             (remhash id supervisor--manually-stopped)
-            (let* ((cmd (nth 1 entry))
-                   (logging-p (nth 5 entry))
-                   (restart-policy (nth 4 entry))
+            (let* ((cmd (supervisor-entry-command entry))
+                   (logging-p (supervisor-entry-logging-p entry))
+                   (restart-policy (supervisor-entry-restart-policy entry))
+                   (working-directory (supervisor-entry-working-directory entry))
+                   (environment (supervisor-entry-environment entry))
+                   (environment-file (supervisor-entry-environment-file entry))
+                   (restart-sec (supervisor-entry-restart-sec entry))
+                   (unit-file-directory (supervisor--unit-file-directory-for-id id))
                    (exe (car (split-string-and-unquote cmd))))
               (if (not (executable-find exe))
                   (list :id id :action "error: executable not found")
                 (let ((new-proc (supervisor--start-process
-                                 id cmd logging-p type restart-policy)))
+                                 id cmd logging-p type restart-policy nil
+                                 working-directory environment
+                                 environment-file restart-sec
+                                 unit-file-directory)))
                   (if new-proc
                       (list :id id :action "reloaded")
                     (list :id id

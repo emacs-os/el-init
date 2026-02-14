@@ -238,7 +238,8 @@ Acceptance:
 1. Duplicate key rejection for each new key.
 2. `:environment` duplicate variable resolution (later wins).
 3. `:environment-file` ordering and `-path` optional missing behavior.
-4. Invalid env-file line handling (bad key, missing `=`) produces clear errors.
+4. Invalid env-file line handling (bad key, missing `=`) produces logged warnings
+   with file:line context (non-fatal; valid lines are still applied).
 5. Relative and home path resolution for `:working-directory`.
 6. `:restart-sec` precedence over global delay.
 7. `:exec-stop` chain + fallback signal path.

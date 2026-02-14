@@ -32,6 +32,7 @@
 
 ;; Forward declarations for supervisor-core functions
 (declare-function supervisor--log "supervisor-core" (level format-string &rest args))
+(declare-function supervisor--plist-duplicate-keys "supervisor-core" (plist))
 ;;; Customization
 
 (defcustom supervisor-unit-authority-path
@@ -201,7 +202,9 @@ Return a plist with keys:
 
 (defconst supervisor--unit-file-keywords
   '(:id :command :type :stage :delay :after :requires :enabled :disabled
-    :restart :no-restart :logging :oneshot-blocking :oneshot-async :oneshot-timeout :tags)
+    :restart :no-restart :logging :oneshot-blocking :oneshot-async :oneshot-timeout :tags
+    :working-directory :environment :environment-file
+    :exec-stop :exec-reload :restart-sec)
   "Valid keywords in a unit-file plist.
 Includes `:command' which is unit-file specific.")
 
@@ -303,6 +306,11 @@ or signals an error with file:line context."
   "Validate unit-file PLIST loaded from PATH at LINE.
 Return nil if valid, or a reason string with file:line context if invalid."
   (cond
+   ;; Check for duplicate keys first
+   ((let ((dupes (supervisor--plist-duplicate-keys plist)))
+      (when dupes
+        (format "%s:%d: duplicate key %s"
+                path line (car dupes)))))
    ((not (plist-get plist :id))
     (format "%s:%d: missing :id" path line))
    ((not (stringp (plist-get plist :id)))
