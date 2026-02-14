@@ -188,34 +188,72 @@ nil means show all entries, otherwise a tag symbol or string.")
 (defvar supervisor-dashboard-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
-    (define-key map "e" #'supervisor-dashboard-toggle-enabled)
-    (define-key map "m" #'supervisor-dashboard-toggle-mask)
+    ;; Navigation / filter
     (define-key map "f" #'supervisor-dashboard-cycle-filter)
-    (define-key map "t" #'supervisor-dashboard-cycle-tag-filter)
-    (define-key map "r" #'supervisor-dashboard-toggle-restart)
-    (define-key map "x" #'supervisor-dashboard-stop)
-    (define-key map "k" #'supervisor-dashboard-kill)
-    (define-key map "K" #'supervisor-dashboard-kill-force)
-    (define-key map "s" #'supervisor-dashboard-start)
-    (define-key map "R" #'supervisor-dashboard-restart)
-    (define-key map "l" #'supervisor-dashboard-toggle-logging)
-    (define-key map "L" #'supervisor-dashboard-view-log)
-    (define-key map "p" #'proced)
-    (define-key map "P" #'supervisor-dashboard-toggle-proced-auto-update)
+    (define-key map "F" #'supervisor-dashboard-cycle-tag-filter)
+    ;; Refresh
     (define-key map "g" #'supervisor-dashboard-refresh)
     (define-key map "G" #'supervisor-dashboard-toggle-auto-refresh)
+    ;; System (proced)
+    (define-key map "t" #'proced)
+    (define-key map "T" #'supervisor-dashboard-toggle-proced-auto-update)
+    ;; Nested action groups
+    (define-key map "l" #'supervisor-dashboard-lifecycle)
+    (define-key map "p" #'supervisor-dashboard-policy)
+    (define-key map "i" #'supervisor-dashboard-inspect)
+    ;; Help / quit
     (define-key map "h" #'supervisor-dashboard-help)
-    (define-key map "i" #'supervisor-dashboard-describe-entry)
-    (define-key map "d" #'supervisor-dashboard-show-deps)
-    (define-key map "D" #'supervisor-dashboard-show-graph)
-    (define-key map "c" #'supervisor-dashboard-cat)
-    (define-key map "E" #'supervisor-dashboard-edit)
-    (define-key map "B" #'supervisor-dashboard-blame)
-    (define-key map "F" #'supervisor-dashboard-reset-failed)
     (define-key map "?" #'supervisor-dashboard-menu-open)
     (define-key map "q" #'supervisor-dashboard-quit)
     map)
   "Keymap for `supervisor-dashboard-mode'.")
+
+;;; Submenu Dispatchers
+
+(defun supervisor-dashboard-lifecycle ()
+  "Open lifecycle action submenu.
+Lifecycle actions control the runtime state of individual entries."
+  (interactive)
+  (pcase (read-char
+          "Lifecycle: [s]tart [t]stop [r]estart [k]ill [u]reload [f]reset-failed ")
+    (?s (call-interactively #'supervisor-dashboard-start))
+    (?t (call-interactively #'supervisor-dashboard-stop))
+    (?r (call-interactively #'supervisor-dashboard-restart))
+    (?k (call-interactively #'supervisor-dashboard-kill))
+    (?u (call-interactively #'supervisor-dashboard-reload-unit))
+    (?f (call-interactively #'supervisor-dashboard-reset-failed))
+    (_ (message "Lifecycle: cancelled"))))
+
+(defun supervisor-dashboard-policy ()
+  "Open policy submenu.
+Policy actions modify persistent configuration overrides."
+  (interactive)
+  (pcase (read-char
+          "Policy: [e]nable [d]isable [m]ask [u]nmask [r]estart-policy [l]ogging ")
+    (?e (call-interactively #'supervisor-dashboard-enable))
+    (?d (call-interactively #'supervisor-dashboard-disable))
+    (?m (call-interactively #'supervisor-dashboard-mask))
+    (?u (call-interactively #'supervisor-dashboard-unmask))
+    (?r (call-interactively #'supervisor-dashboard-set-restart-policy))
+    (?l (call-interactively #'supervisor-dashboard-set-logging))
+    (_ (message "Policy: cancelled"))))
+
+(defun supervisor-dashboard-inspect ()
+  "Open inspect submenu.
+Inspect actions are read-only presentation workflows."
+  (interactive)
+  (pcase (read-char
+          "Inspect: [i]nfo [d]eps [g]raph [b]lame [l]og [c]at [e]dit ")
+    (?i (call-interactively #'supervisor-dashboard-describe-entry))
+    (?d (call-interactively #'supervisor-dashboard-show-deps))
+    (?g (call-interactively #'supervisor-dashboard-show-graph))
+    (?b (call-interactively #'supervisor-dashboard-blame))
+    (?l (call-interactively #'supervisor-dashboard-view-log))
+    (?c (call-interactively #'supervisor-dashboard-cat))
+    (?e (call-interactively #'supervisor-dashboard-edit))
+    (_ (message "Inspect: cancelled"))))
+
+;;; Transient Menu
 
 (defvar supervisor--dashboard-menu-defined nil
   "Non-nil if the transient menu has been defined.")
@@ -231,38 +269,20 @@ This is called on first use to avoid loading transient at package load time."
         [:description
          (lambda ()
            (supervisor--health-summary (supervisor--build-snapshot)))
-         ["Entry Actions"
-          ("s" "Start" supervisor-dashboard-start)
-          ("x" "Stop" supervisor-dashboard-stop)
-          ("R" "Restart" supervisor-dashboard-restart)
-          ("k" "Kill" supervisor-dashboard-kill)
-          ("K" "Kill (force)" supervisor-dashboard-kill-force)
-          ("F" "Reset failed" supervisor-dashboard-reset-failed)]
-         ["Toggles"
-          ("e" "Enabled" supervisor-dashboard-toggle-enabled)
-          ("m" "Mask" supervisor-dashboard-toggle-mask)
-          ("r" "Restart policy" supervisor-dashboard-toggle-restart)
-          ("l" "Logging" supervisor-dashboard-toggle-logging)]
-         ["Views"
-          ("c" "Cat unit" supervisor-dashboard-cat)
-          ("E" "Edit unit" supervisor-dashboard-edit)
-          ("L" "View log" supervisor-dashboard-view-log)
-          ("d" "Dependencies" supervisor-dashboard-show-deps)
-          ("D" "Dep graph" supervisor-dashboard-show-graph)
-          ("B" "Blame" supervisor-dashboard-blame)]]
-        [["Filter"
-          ("f" "Cycle stage" supervisor-dashboard-cycle-filter)
-          ("t" "Cycle tag" supervisor-dashboard-cycle-tag-filter)]
-         ["Refresh"
+         ["Actions"
+          ("l" "Lifecycle..." supervisor-dashboard-lifecycle)
+          ("p" "Policy..." supervisor-dashboard-policy)
+          ("i" "Inspect..." supervisor-dashboard-inspect)]
+         ["Navigation"
+          ("f" "Stage filter" supervisor-dashboard-cycle-filter)
+          ("F" "Tag filter" supervisor-dashboard-cycle-tag-filter)
           ("g" "Refresh" supervisor-dashboard-refresh)
           ("G" "Auto-refresh" supervisor-dashboard-toggle-auto-refresh)]
          ["System"
-          ("p" "Proced" proced)
-          ("P" "Proced auto" supervisor-dashboard-toggle-proced-auto-update)
-          ("u" "Reload unit" supervisor-dashboard-reload-unit)
+          ("t" "Proced" proced)
+          ("T" "Proced auto" supervisor-dashboard-toggle-proced-auto-update)
           ("X" "Daemon-reload" supervisor-dashboard-daemon-reload)]
          ["Help"
-          ("i" "Entry info" supervisor-dashboard-describe-entry)
           ("h" "Full help" supervisor-dashboard-help)
           ("q" "Quit" supervisor-dashboard-quit)]]))
     (setq supervisor--dashboard-menu-defined t)))
@@ -658,9 +678,8 @@ If PROGRAMS is provided, use it instead of calling
             " inv")))
 
 (defvar supervisor--help-text
-  (concat "[e]nable [m]ask [f]ilter [t]ag [s]tart [x]stop [R]estart [k]ill [K]force "
-          "[r]estart-toggle [l]og [L]view [c]at [E]dit [p]roced [P]auto "
-          "[d]eps [D]graph [B]lame [g]refresh [G]live [?]menu [i]nfo [h]elp [q]uit")
+  (concat "[f]ilter [g]refresh [G]live [t]proced [T]auto "
+          "[l]ifecycle [p]olicy [i]nspect [?]menu [h]elp [q]uit")
   "Key hints displayed in dashboard header.")
 
 (defun supervisor--refresh-dashboard ()
@@ -833,34 +852,45 @@ With prefix argument, show status legend instead."
   (with-help-window "*Supervisor Help*"
     (princ "Supervisor Dashboard Help\n")
     (princ "=========================\n\n")
-    (princ "KEYBINDINGS\n")
-    (princ "-----------\n")
-    (princ "  e     Toggle enabled/disabled for entry\n")
-    (princ "  m     Toggle mask (masked entries are always disabled)\n")
+    (princ "TOP-LEVEL KEYS\n")
+    (princ "--------------\n")
     (princ "  f     Cycle stage filter (all -> stage1 -> stage2 -> ...)\n")
-    (princ "  t     Cycle tag filter\n")
-    (princ "  s     Start process (if stopped)\n")
-    (princ "  x     Stop process (graceful, suppresses restart)\n")
-    (princ "  R     Restart process (stop + start)\n")
-    (princ "  k     Kill process (send signal, restart policy unchanged)\n")
-    (princ "  K     Kill process (force, no confirmation)\n")
-    (princ "  F     Reset failed state for entry\n")
-    (princ "  r     Cycle restart policy (no/on-success/on-failure/always)\n")
-    (princ "  l     Toggle logging for entry\n")
-    (princ "  L     View log file for entry\n")
-    (princ "  c     View unit file (read-only)\n")
-    (princ "  E     Edit unit file (create scaffold if missing)\n")
-    (princ "  p     Open proced (system process list)\n")
-    (princ "  P     Toggle proced auto-update mode\n")
+    (princ "  F     Cycle tag filter\n")
     (princ "  g     Refresh dashboard\n")
     (princ "  G     Toggle auto-refresh (live monitoring)\n")
+    (princ "  t     Open proced (system process list)\n")
+    (princ "  T     Toggle proced auto-update mode\n")
+    (princ "  l     Lifecycle submenu\n")
+    (princ "  p     Policy submenu\n")
+    (princ "  i     Inspect submenu\n")
     (princ "  ?     Open action menu (transient)\n")
-    (princ "  i     Show entry details (C-u i for status legend)\n")
     (princ "  h     Show this help\n")
-    (princ "  d     Show dependencies for entry\n")
-    (princ "  D     Show dependency graph\n")
-    (princ "  B     Blame: show why entry is in current state\n")
     (princ "  q     Quit dashboard\n\n")
+    (princ "LIFECYCLE (l)\n")
+    (princ "-------------\n")
+    (princ "  s     Start process\n")
+    (princ "  t     Stop process (graceful, suppresses restart)\n")
+    (princ "  r     Restart process (stop + start)\n")
+    (princ "  k     Kill process (send signal, restart policy unchanged)\n")
+    (princ "  u     Reload unit (re-read config and restart)\n")
+    (princ "  f     Reset failed state\n\n")
+    (princ "POLICY (p)\n")
+    (princ "----------\n")
+    (princ "  e     Enable entry\n")
+    (princ "  d     Disable entry\n")
+    (princ "  m     Mask entry (always disabled)\n")
+    (princ "  u     Unmask entry\n")
+    (princ "  r     Set restart policy (selection)\n")
+    (princ "  l     Set logging (selection)\n\n")
+    (princ "INSPECT (i)\n")
+    (princ "-----------\n")
+    (princ "  i     Show entry details (C-u for status legend)\n")
+    (princ "  d     Show dependencies for entry\n")
+    (princ "  g     Show dependency graph\n")
+    (princ "  b     Blame: startup timing sorted by duration\n")
+    (princ "  l     View log file\n")
+    (princ "  c     View unit file (read-only)\n")
+    (princ "  e     Edit unit file (create scaffold if missing)\n\n")
     (princ "STATUS VALUES\n")
     (princ "-------------\n")
     (princ "  running   Process is alive and running\n")
@@ -1113,6 +1143,135 @@ Disabled units can be started (session-only); only mask blocks."
              (effective (if current (eq current 'enabled) config-logging)))
         (puthash id (if effective 'disabled 'enabled) supervisor--logging))
       (supervisor--refresh-dashboard))))
+
+;;; Explicit Policy Commands
+
+(defun supervisor-dashboard-enable ()
+  "Enable the entry at point.
+Set an enabled override if the config default is disabled."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot enable separator row"))
+    (if (gethash id supervisor--invalid)
+        (message "Cannot enable invalid entry: %s" id)
+      (when-let* ((entry (supervisor--get-entry-for-id id)))
+        (let* ((config-enabled (supervisor-entry-enabled-p entry))
+               (effective (supervisor--get-effective-enabled id config-enabled)))
+          (if effective
+              (message "%s is already enabled" id)
+            (if config-enabled
+                (remhash id supervisor--enabled-override)
+              (puthash id 'enabled supervisor--enabled-override))
+            (supervisor--save-overrides)
+            (message "Enabled %s" id)
+            (supervisor--refresh-dashboard)))))))
+
+(defun supervisor-dashboard-disable ()
+  "Disable the entry at point.
+Set a disabled override if the config default is enabled."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot disable separator row"))
+    (if (gethash id supervisor--invalid)
+        (message "Cannot disable invalid entry: %s" id)
+      (when-let* ((entry (supervisor--get-entry-for-id id)))
+        (let* ((config-enabled (supervisor-entry-enabled-p entry))
+               (effective (supervisor--get-effective-enabled id config-enabled)))
+          (if (not effective)
+              (message "%s is already disabled" id)
+            (if (not config-enabled)
+                (remhash id supervisor--enabled-override)
+              (puthash id 'disabled supervisor--enabled-override))
+            (supervisor--save-overrides)
+            (message "Disabled %s" id)
+            (supervisor--refresh-dashboard)))))))
+
+(defun supervisor-dashboard-mask ()
+  "Mask the entry at point.
+Masked entries are always disabled regardless of enabled overrides."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot mask separator row"))
+    (when (supervisor--timer-row-p id)
+      (user-error "Cannot mask timer '%s'" id))
+    (if (gethash id supervisor--invalid)
+        (message "Cannot mask invalid entry: %s" id)
+      (if (eq (gethash id supervisor--mask-override) 'masked)
+          (message "%s is already masked" id)
+        (puthash id 'masked supervisor--mask-override)
+        (supervisor--save-overrides)
+        (message "Masked %s" id)
+        (supervisor--refresh-dashboard)))))
+
+(defun supervisor-dashboard-unmask ()
+  "Unmask the entry at point.
+Remove the mask override so the enabled state takes effect again."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot unmask separator row"))
+    (when (supervisor--timer-row-p id)
+      (user-error "Cannot unmask timer '%s'" id))
+    (if (gethash id supervisor--invalid)
+        (message "Cannot unmask invalid entry: %s" id)
+      (if (not (eq (gethash id supervisor--mask-override) 'masked))
+          (message "%s is not masked" id)
+        (remhash id supervisor--mask-override)
+        (supervisor--save-overrides)
+        (message "Unmasked %s" id)
+        (supervisor--refresh-dashboard)))))
+
+(defun supervisor-dashboard-set-restart-policy ()
+  "Set restart policy for entry at point via selection.
+Prompt with `completing-read' to choose the target policy explicitly."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot set restart on separator row"))
+    (if (gethash id supervisor--invalid)
+        (message "Cannot set restart for invalid entry: %s" id)
+      (when-let* ((entry (supervisor--get-entry-for-id id)))
+        (let ((type (supervisor-entry-type entry)))
+          (if (eq type 'oneshot)
+              (message "Restart policy not applicable to oneshot entries")
+            (let* ((choices '("always" "on-success" "on-failure" "no"))
+                   (choice (completing-read "Restart policy: " choices nil t))
+                   (policy (intern choice))
+                   (config-policy (supervisor--normalize-restart-policy
+                                   (supervisor-entry-restart-policy entry))))
+              (if (eq policy config-policy)
+                  (remhash id supervisor--restart-override)
+                (puthash id policy supervisor--restart-override))
+              (supervisor--save-overrides)
+              (when (eq policy 'no)
+                (when-let* ((timer (gethash id supervisor--restart-timers)))
+                  (when (timerp timer)
+                    (cancel-timer timer))
+                  (remhash id supervisor--restart-timers)))
+              (message "Restart policy for %s: %s" id policy)
+              (supervisor--refresh-dashboard))))))))
+
+(defun supervisor-dashboard-set-logging ()
+  "Set logging for entry at point via selection.
+Prompt with `completing-read' to choose on or off explicitly."
+  (interactive)
+  (when-let* ((id (tabulated-list-get-id)))
+    (when (supervisor--separator-row-p id)
+      (user-error "Cannot set logging on separator row"))
+    (if (gethash id supervisor--invalid)
+        (message "Cannot set logging for invalid entry: %s" id)
+      (let* ((choice (completing-read "Logging: " '("on" "off") nil t))
+             (new-state (string= choice "on"))
+             (entry (supervisor--get-entry-for-id id))
+             (config-logging (if entry (supervisor-entry-logging-p entry) t)))
+        (if (eq new-state config-logging)
+            (remhash id supervisor--logging)
+          (puthash id (if new-state 'enabled 'disabled) supervisor--logging))
+        (message "Logging for %s: %s" id choice)
+        (supervisor--refresh-dashboard)))))
 
 (defun supervisor-dashboard-view-log ()
   "Open the log file for process at point."

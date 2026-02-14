@@ -1075,43 +1075,71 @@ Timer reason column shows either:
 
 ** Dashboard Keymap
 
+The dashboard uses a Magit-style nested menu model.  Top-level keys handle
+navigation, filtering, and system controls.  Actions are grouped into three
+submenus accessed by a prefix key followed by a second key.
+
+*** Top-Level Keys
+
 | Key | Function |
-| ~e~ | Toggle enabled override |
-| ~m~ | Toggle mask (masked entries are always disabled) |
-| ~f~ | Cycle stage filter |
-| ~t~ | Cycle tag filter |
-| ~s~ | Start selected service |
-| ~x~ | Stop selected service (graceful, suppresses restart) |
-| ~R~ | Restart selected service (stop + start) |
-| ~k~ | Kill selected service (send signal, restart policy unchanged) |
-| ~K~ | Kill selected service (force, no confirmation) |
-| ~F~ | Reset failed state for selected service |
-| ~r~ | Cycle restart policy (no/on-success/on-failure/always) |
-| ~l~ | Toggle logging override |
-| ~L~ | Open selected service log file |
-| ~c~ | View unit file (read-only) |
-| ~E~ | Edit unit file (create scaffold if missing) |
-| ~p~ | Open ~proced~ |
-| ~P~ | Toggle proced auto-update |
-| ~d~ | Show dependencies for selected service |
-| ~D~ | Show full dependency graph |
-| ~B~ | Show startup blame timings |
+| ~f~ | Cycle stage filter (all -> stage1 -> stage2 -> ...) |
+| ~F~ | Cycle tag filter |
 | ~g~ | Refresh dashboard |
-| ~G~ | Toggle auto-refresh |
+| ~G~ | Toggle auto-refresh (live monitoring) |
+| ~t~ | Open ~proced~ (system process list) |
+| ~T~ | Toggle proced auto-update mode |
+| ~l~ | Open *Lifecycle* submenu |
+| ~p~ | Open *Policy* submenu |
+| ~i~ | Open *Inspect* submenu |
 | ~?~ | Open transient action menu |
-| ~i~ | Describe row (~C-u i~ shows status legend) |
 | ~h~ | Open dashboard help buffer |
 | ~q~ | Quit dashboard |
 
-Notes:
+*** Lifecycle (~l~)
+
+| Key | Function |
+| ~s~ | Start process |
+| ~t~ | Stop process (graceful, suppresses restart) |
+| ~r~ | Restart process (stop + start) |
+| ~k~ | Kill process (send signal, restart policy unchanged) |
+| ~u~ | Reload unit (re-read config and restart) |
+| ~f~ | Reset failed state |
+
+*** Policy (~p~)
+
+Policy actions are explicit verbs (not blind toggles).
+
+| Key | Function |
+| ~e~ | Enable entry |
+| ~d~ | Disable entry |
+| ~m~ | Mask entry (always disabled) |
+| ~u~ | Unmask entry |
+| ~r~ | Set restart policy (via selection) |
+| ~l~ | Set logging (via selection) |
+
+*** Inspect (~i~)
+
+All inspect actions are read-only.
+
+| Key | Function |
+| ~i~ | Show entry details (~C-u~ for status legend) |
+| ~d~ | Show dependencies for entry |
+| ~g~ | Show dependency graph |
+| ~b~ | Blame: startup timing sorted by duration |
+| ~l~ | View log file |
+| ~c~ | View unit file (read-only) |
+| ~e~ | Edit unit file (create scaffold if missing) |
+
+*** Notes
 
 - Separator rows reject service actions.
 - ~?~ requires the ~transient~ package.
 - Full ID is echoed in minibuffer when current row ID exceeds table width.
-- *Stop vs Kill*: ~x~ (stop) gracefully terminates and suppresses auto-restart;
-  ~k~ (kill) sends a signal without changing restart policy.  Use ~s~ to start a
-  stopped service again.
-- *Restart*: ~R~ performs a stop-then-start cycle.  Only for ~simple~ entries.
+- *Stop vs Kill*: ~l t~ (stop) gracefully terminates and suppresses
+  auto-restart; ~l k~ (kill) sends a signal without changing restart policy.
+  Use ~l s~ to start a stopped service again.
+- *Restart*: ~l r~ performs a stop-then-start cycle.  Only for ~simple~
+  entries.
 
 ** Mode Interaction and Buffer-Local State
 
@@ -1528,30 +1556,39 @@ All user options (defcustom) are listed below.
 ** Dashboard Interactive Commands
 
 | Command | Purpose |
+| ~M-x supervisor-dashboard-lifecycle~ | Open lifecycle submenu |
+| ~M-x supervisor-dashboard-policy~ | Open policy submenu |
+| ~M-x supervisor-dashboard-inspect~ | Open inspect submenu |
 | ~M-x supervisor-dashboard-refresh~ | Refresh dashboard buffer |
 | ~M-x supervisor-dashboard-cycle-filter~ | Cycle stage filter |
 | ~M-x supervisor-dashboard-cycle-tag-filter~ | Cycle tag filter |
-| ~M-x supervisor-dashboard-describe-entry~ | Describe selected row |
-| ~M-x supervisor-dashboard-help~ | Open dashboard help |
 | ~M-x supervisor-dashboard-toggle-auto-refresh~ | Toggle auto-refresh |
 | ~M-x supervisor-dashboard-quit~ | Quit dashboard |
-| ~M-x supervisor-dashboard-toggle-restart~ | Cycle restart policy (no/on-success/on-failure/always) |
-| ~M-x supervisor-dashboard-toggle-enabled~ | Toggle enabled override |
-| ~M-x supervisor-dashboard-toggle-mask~ | Toggle mask (always disabled) |
 | ~M-x supervisor-dashboard-start~ | Start selected service |
 | ~M-x supervisor-dashboard-stop~ | Stop selected service (graceful, suppresses restart) |
 | ~M-x supervisor-dashboard-restart~ | Restart selected service (stop + start) |
 | ~M-x supervisor-dashboard-kill~ | Kill selected service (send signal, restart unchanged) |
 | ~M-x supervisor-dashboard-kill-force~ | Kill selected service (no confirm) |
-| ~M-x supervisor-dashboard-toggle-logging~ | Toggle logging override |
+| ~M-x supervisor-dashboard-reset-failed~ | Reset failed state |
+| ~M-x supervisor-dashboard-reload-unit~ | Hot-reload unit at point |
+| ~M-x supervisor-dashboard-enable~ | Enable entry (explicit) |
+| ~M-x supervisor-dashboard-disable~ | Disable entry (explicit) |
+| ~M-x supervisor-dashboard-mask~ | Mask entry (always disabled) |
+| ~M-x supervisor-dashboard-unmask~ | Unmask entry |
+| ~M-x supervisor-dashboard-set-restart-policy~ | Set restart policy (selection) |
+| ~M-x supervisor-dashboard-set-logging~ | Set logging (selection) |
+| ~M-x supervisor-dashboard-toggle-enabled~ | Toggle enabled override (legacy) |
+| ~M-x supervisor-dashboard-toggle-mask~ | Toggle mask (legacy) |
+| ~M-x supervisor-dashboard-toggle-restart~ | Cycle restart policy (legacy) |
+| ~M-x supervisor-dashboard-toggle-logging~ | Toggle logging (legacy) |
+| ~M-x supervisor-dashboard-describe-entry~ | Describe selected row |
+| ~M-x supervisor-dashboard-show-deps~ | Show selected service deps |
+| ~M-x supervisor-dashboard-show-graph~ | Show full dependency graph |
+| ~M-x supervisor-dashboard-blame~ | Show startup timing view |
 | ~M-x supervisor-dashboard-view-log~ | Open selected service log |
 | ~M-x supervisor-dashboard-cat~ | View unit file (read-only) |
 | ~M-x supervisor-dashboard-edit~ | Edit unit file (scaffold if missing) |
-| ~M-x supervisor-dashboard-reload-unit~ | Hot-reload unit at point |
-| ~M-x supervisor-dashboard-toggle-proced-auto-update~ | Toggle proced auto-update |
-| ~M-x supervisor-dashboard-show-deps~ | Show selected service deps |
-| ~M-x supervisor-dashboard-blame~ | Show startup timing view |
-| ~M-x supervisor-dashboard-show-graph~ | Show full dependency graph |
+| ~M-x supervisor-dashboard-help~ | Open dashboard help |
 | ~M-x supervisor-dashboard-menu-open~ | Open transient menu |
 
 * Indexes
@@ -1564,7 +1601,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 ** Topical Index
 
 - Async oneshots (~:oneshot-async~, ~:oneshot-blocking~): [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Cat unit file (~cat~, ~c~ in dashboard): [[#unit-files-modular-configuration][Unit Files]]
+- Cat unit file (~cat~, ~i c~ in dashboard): [[#unit-files-modular-configuration][Unit Files]]
 - Blocking oneshot timeout (~:oneshot-timeout~, ~supervisor-oneshot-timeout~): [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Command parsing (no implicit shell, use ~sh -c~ when needed): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Config file watch and debounce (~supervisor-watch-config~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
@@ -1576,7 +1613,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Dashboard mode/filter state (buffer-local stage/tag/auto-refresh): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Dashboard visual customization (status/type/stage faces): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Dependency semantics split (~:after~ vs ~:requires~): [[#service-definition][Service Definition]]
-- Edit unit file (~edit~, ~E~ in dashboard, scaffold template): [[#unit-files-modular-configuration][Unit Files]]
+- Edit unit file (~edit~, ~i e~ in dashboard, scaffold template): [[#unit-files-modular-configuration][Unit Files]]
 - Event API (~supervisor-event-hook~ and event types): [[#events-and-hooks][Events and Hooks]]
 - Exit code semantics for oneshots (signals stored negative): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Graceful vs hard stop (~supervisor-stop~ vs ~supervisor-stop-now~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#command-reference][Command Reference]]

@@ -1446,27 +1446,18 @@ Only auto-started (not manually-started) disabled units are stopped."
         (should (string-match-p "inv" summary))))))
 
 (ert-deftest supervisor-test-help-text-key-parity ()
-  "Help text includes all bound keys."
-  ;; Keys that must be discoverable on-screen
-  (should (string-match-p "\\[e\\]" supervisor--help-text))
+  "Help text includes all top-level bound keys."
+  ;; Top-level keys that must be discoverable on-screen
   (should (string-match-p "\\[f\\]" supervisor--help-text))
-  (should (string-match-p "\\[t\\]" supervisor--help-text))
-  (should (string-match-p "\\[s\\]" supervisor--help-text))
-  (should (string-match-p "\\[k\\]" supervisor--help-text))
-  (should (string-match-p "\\[K\\]" supervisor--help-text))
-  (should (string-match-p "\\[r\\]" supervisor--help-text))
-  (should (string-match-p "\\[l\\]" supervisor--help-text))
-  (should (string-match-p "\\[L\\]" supervisor--help-text))
-  (should (string-match-p "\\[p\\]" supervisor--help-text))
-  (should (string-match-p "\\[P\\]" supervisor--help-text))
-  (should (string-match-p "\\[d\\]" supervisor--help-text))
-  (should (string-match-p "\\[D\\]" supervisor--help-text))
-  (should (string-match-p "\\[B\\]" supervisor--help-text))
   (should (string-match-p "\\[g\\]" supervisor--help-text))
   (should (string-match-p "\\[G\\]" supervisor--help-text))
-  (should (string-match-p "\\[h\\]" supervisor--help-text))
-  (should (string-match-p "\\[?\\]" supervisor--help-text))
+  (should (string-match-p "\\[t\\]" supervisor--help-text))
+  (should (string-match-p "\\[T\\]" supervisor--help-text))
+  (should (string-match-p "\\[l\\]" supervisor--help-text))
+  (should (string-match-p "\\[p\\]" supervisor--help-text))
   (should (string-match-p "\\[i\\]" supervisor--help-text))
+  (should (string-match-p "\\[?\\]" supervisor--help-text))
+  (should (string-match-p "\\[h\\]" supervisor--help-text))
   (should (string-match-p "\\[q\\]" supervisor--help-text)))
 
 (ert-deftest supervisor-test-stage-separator-creation ()
@@ -2581,9 +2572,9 @@ Regression test: stderr pipe processes used to pollute the process list."
               'supervisor-dashboard-menu-open)))
 
 (ert-deftest supervisor-test-dashboard-info-keybinding ()
-  "Dashboard i key is bound to entry info."
+  "Dashboard i key is bound to inspect submenu."
   (should (eq (lookup-key supervisor-dashboard-mode-map "i")
-              'supervisor-dashboard-describe-entry)))
+              'supervisor-dashboard-inspect)))
 
 (ert-deftest supervisor-test-header-hints-default-hidden ()
   "Header hints are hidden by default."
@@ -2604,14 +2595,14 @@ Regression test: stderr pipe processes used to pollute the process list."
 ;;; Dashboard Stop/Restart Tests
 
 (ert-deftest supervisor-test-dashboard-stop-keybinding ()
-  "Dashboard x key is bound to stop."
-  (should (eq (lookup-key supervisor-dashboard-mode-map "x")
-              'supervisor-dashboard-stop)))
+  "Dashboard l key reaches lifecycle submenu."
+  (should (eq (lookup-key supervisor-dashboard-mode-map "l")
+              'supervisor-dashboard-lifecycle)))
 
 (ert-deftest supervisor-test-dashboard-restart-keybinding ()
-  "Dashboard R key is bound to restart."
-  (should (eq (lookup-key supervisor-dashboard-mode-map "R")
-              'supervisor-dashboard-restart)))
+  "Dashboard p key reaches policy submenu."
+  (should (eq (lookup-key supervisor-dashboard-mode-map "p")
+              'supervisor-dashboard-policy)))
 
 (ert-deftest supervisor-test-dashboard-stop-is-defined ()
   "Dashboard stop command is defined as interactive."
@@ -2686,9 +2677,10 @@ Regression test: stderr pipe processes used to pollute the process list."
       (kill-buffer buf))))
 
 (ert-deftest supervisor-test-help-text-includes-stop-restart ()
-  "Dashboard help text includes stop and restart keys."
-  (should (string-match "\\[x\\]stop" supervisor--help-text))
-  (should (string-match "\\[R\\]estart" supervisor--help-text)))
+  "Dashboard help text includes lifecycle and policy submenu hints."
+  (should (string-match "\\[l\\]ifecycle" supervisor--help-text))
+  (should (string-match "\\[p\\]olicy" supervisor--help-text))
+  (should (string-match "\\[i\\]nspect" supervisor--help-text)))
 
 (ert-deftest supervisor-test-timer-row-p-detects-timer ()
   "Timer row predicate detects timer rows by Type column content."
@@ -3956,14 +3948,14 @@ conflicting ID, proving precedence derives from list position."
                 (supervisor-cli-result-exitcode result)))))
 
 (ert-deftest supervisor-test-dashboard-cat-keybinding ()
-  "Dashboard keymap binds `c' to cat."
-  (should (eq #'supervisor-dashboard-cat
-              (lookup-key supervisor-dashboard-mode-map "c"))))
+  "Dashboard keymap binds `t' to proced."
+  (should (eq #'proced
+              (lookup-key supervisor-dashboard-mode-map "t"))))
 
 (ert-deftest supervisor-test-dashboard-edit-keybinding ()
-  "Dashboard keymap binds `E' to edit."
-  (should (eq #'supervisor-dashboard-edit
-              (lookup-key supervisor-dashboard-mode-map "E"))))
+  "Dashboard keymap binds `F' to tag filter."
+  (should (eq #'supervisor-dashboard-cycle-tag-filter
+              (lookup-key supervisor-dashboard-mode-map "F"))))
 
 (ert-deftest supervisor-test-dashboard-cat-rejects-separator ()
   "Dashboard cat rejects separator rows."
@@ -6324,9 +6316,9 @@ at minute boundaries."
         (delete-process proc)))))
 
 (ert-deftest supervisor-test-dashboard-mask-keybinding ()
-  "Dashboard keymap binds `m' to toggle-mask."
-  (should (eq #'supervisor-dashboard-toggle-mask
-              (lookup-key supervisor-dashboard-mode-map "m"))))
+  "Dashboard keymap binds `T' to proced auto-update."
+  (should (eq #'supervisor-dashboard-toggle-proced-auto-update
+              (lookup-key supervisor-dashboard-mode-map "T"))))
 
 (ert-deftest supervisor-test-cli-restart-policy-always ()
   "Restart-policy always sets override."
@@ -11499,6 +11491,223 @@ No warning is emitted when there are simply no child processes."
                           (supervisor--validate-entry '(123 :id "x"))))
   (should (string-match-p "entry must be a string or list"
                           (supervisor--validate-entry nil))))
+
+;;; Dashboard nested menu tests
+
+(ert-deftest supervisor-test-dashboard-keymap-submenu-keys ()
+  "Dashboard keymap binds l, p, i to submenu dispatchers."
+  (should (eq (lookup-key supervisor-dashboard-mode-map "l")
+              'supervisor-dashboard-lifecycle))
+  (should (eq (lookup-key supervisor-dashboard-mode-map "p")
+              'supervisor-dashboard-policy))
+  (should (eq (lookup-key supervisor-dashboard-mode-map "i")
+              'supervisor-dashboard-inspect)))
+
+(ert-deftest supervisor-test-dashboard-keymap-top-level-only ()
+  "Dashboard keymap has no direct lifecycle/policy/inspect bindings."
+  ;; Old direct bindings should be gone
+  (should-not (eq (lookup-key supervisor-dashboard-mode-map "s")
+                  'supervisor-dashboard-start))
+  (should-not (eq (lookup-key supervisor-dashboard-mode-map "x")
+                  'supervisor-dashboard-stop))
+  (should-not (eq (lookup-key supervisor-dashboard-mode-map "e")
+                  'supervisor-dashboard-toggle-enabled))
+  (should-not (eq (lookup-key supervisor-dashboard-mode-map "m")
+                  'supervisor-dashboard-toggle-mask))
+  (should-not (eq (lookup-key supervisor-dashboard-mode-map "r")
+                  'supervisor-dashboard-toggle-restart))
+  (should-not (eq (lookup-key supervisor-dashboard-mode-map "d")
+                  'supervisor-dashboard-show-deps))
+  (should-not (eq (lookup-key supervisor-dashboard-mode-map "c")
+                  'supervisor-dashboard-cat)))
+
+(ert-deftest supervisor-test-dashboard-keymap-proced-moved ()
+  "Dashboard keymap binds proced to t (was p)."
+  (should (eq (lookup-key supervisor-dashboard-mode-map "t")
+              'proced))
+  (should (eq (lookup-key supervisor-dashboard-mode-map "T")
+              'supervisor-dashboard-toggle-proced-auto-update)))
+
+(ert-deftest supervisor-test-dashboard-keymap-tag-filter-moved ()
+  "Dashboard keymap binds tag filter to F (was t)."
+  (should (eq (lookup-key supervisor-dashboard-mode-map "F")
+              'supervisor-dashboard-cycle-tag-filter)))
+
+(ert-deftest supervisor-test-dashboard-enable-explicit ()
+  "Explicit enable sets enabled override."
+  (let* ((entry (supervisor--parse-entry '("cmd" :id "svc" :disabled t)))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor-overrides-file nil)
+         (msg nil))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+              ((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'supervisor--save-overrides) #'ignore)
+              ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+      (supervisor-dashboard-enable)
+      (should (eq 'enabled (gethash "svc" supervisor--enabled-override)))
+      (should (string-match-p "Enabled svc" msg)))))
+
+(ert-deftest supervisor-test-dashboard-disable-explicit ()
+  "Explicit disable sets disabled override."
+  (let* ((entry (supervisor--parse-entry '("cmd" :id "svc")))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor-overrides-file nil)
+         (msg nil))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+              ((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'supervisor--save-overrides) #'ignore)
+              ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+      (supervisor-dashboard-disable)
+      (should (eq 'disabled (gethash "svc" supervisor--enabled-override)))
+      (should (string-match-p "Disabled svc" msg)))))
+
+(ert-deftest supervisor-test-dashboard-enable-already-enabled ()
+  "Explicit enable on already-enabled entry shows message."
+  (let* ((entry (supervisor--parse-entry '("cmd" :id "svc")))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (msg nil))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+              ((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+      (supervisor-dashboard-enable)
+      (should (string-match-p "already enabled" msg)))))
+
+(ert-deftest supervisor-test-dashboard-mask-explicit ()
+  "Explicit mask sets mask override."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil)
+        (msg nil))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+              ((symbol-function 'supervisor--separator-row-p) (lambda (_) nil))
+              ((symbol-function 'supervisor--timer-row-p) (lambda (_) nil))
+              ((symbol-function 'supervisor--save-overrides) #'ignore)
+              ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+      (supervisor-dashboard-mask)
+      (should (eq 'masked (gethash "svc" supervisor--mask-override)))
+      (should (string-match-p "Masked svc" msg)))))
+
+(ert-deftest supervisor-test-dashboard-unmask-explicit ()
+  "Explicit unmask clears mask override."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor-overrides-file nil)
+        (msg nil))
+    (puthash "svc" 'masked supervisor--mask-override)
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+              ((symbol-function 'supervisor--separator-row-p) (lambda (_) nil))
+              ((symbol-function 'supervisor--timer-row-p) (lambda (_) nil))
+              ((symbol-function 'supervisor--save-overrides) #'ignore)
+              ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+      (supervisor-dashboard-unmask)
+      (should-not (gethash "svc" supervisor--mask-override))
+      (should (string-match-p "Unmasked svc" msg)))))
+
+(ert-deftest supervisor-test-dashboard-unmask-not-masked ()
+  "Explicit unmask on non-masked entry shows message."
+  (let ((supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (msg nil))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+              ((symbol-function 'supervisor--separator-row-p) (lambda (_) nil))
+              ((symbol-function 'supervisor--timer-row-p) (lambda (_) nil))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+      (supervisor-dashboard-unmask)
+      (should (string-match-p "not masked" msg)))))
+
+(ert-deftest supervisor-test-dashboard-set-restart-policy ()
+  "Set restart policy stores override via completing-read."
+  (let* ((entry (supervisor--parse-entry '("cmd" :id "svc" :restart on-failure)))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor-overrides-file nil)
+         (msg nil))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+              ((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt _coll &rest _) "always"))
+              ((symbol-function 'supervisor--save-overrides) #'ignore)
+              ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+      (supervisor-dashboard-set-restart-policy)
+      (should (eq 'always (gethash "svc" supervisor--restart-override)))
+      (should (string-match-p "Restart policy for svc: always" msg)))))
+
+(ert-deftest supervisor-test-dashboard-set-restart-policy-clears-on-match ()
+  "Set restart policy clears override when matching config default."
+  (let* ((entry (supervisor--parse-entry '("cmd" :id "svc" :restart on-failure)))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor-overrides-file nil))
+    ;; Pre-set an override
+    (puthash "svc" 'always supervisor--restart-override)
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+              ((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt _coll &rest _) "on-failure"))
+              ((symbol-function 'supervisor--save-overrides) #'ignore)
+              ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
+              ((symbol-function 'message) #'ignore))
+      (supervisor-dashboard-set-restart-policy)
+      ;; Override should be cleared since on-failure matches config
+      (should-not (gethash "svc" supervisor--restart-override)))))
+
+(ert-deftest supervisor-test-dashboard-set-logging ()
+  "Set logging stores override via completing-read."
+  (let* ((entry (supervisor--parse-entry '("cmd" :id "svc" :logging t)))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (msg nil))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+              ((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt _coll &rest _) "off"))
+              ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+      (supervisor-dashboard-set-logging)
+      (should (eq 'disabled (gethash "svc" supervisor--logging)))
+      (should (string-match-p "Logging for svc: off" msg)))))
+
+(ert-deftest supervisor-test-dashboard-submenu-commands-defined ()
+  "All submenu dispatcher commands are defined."
+  (should (commandp 'supervisor-dashboard-lifecycle))
+  (should (commandp 'supervisor-dashboard-policy))
+  (should (commandp 'supervisor-dashboard-inspect)))
+
+(ert-deftest supervisor-test-dashboard-explicit-policy-commands-defined ()
+  "All explicit policy commands are defined."
+  (should (commandp 'supervisor-dashboard-enable))
+  (should (commandp 'supervisor-dashboard-disable))
+  (should (commandp 'supervisor-dashboard-mask))
+  (should (commandp 'supervisor-dashboard-unmask))
+  (should (commandp 'supervisor-dashboard-set-restart-policy))
+  (should (commandp 'supervisor-dashboard-set-logging)))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
