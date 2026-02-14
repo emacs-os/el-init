@@ -8481,6 +8481,59 @@ could incorrectly preserve a non-running disabled unit."
     (should reason)
     (should (string-match-p "duplicate key :success-exit-status" reason))))
 
+(ert-deftest supervisor-test-validate-duplicate-key-working-directory ()
+  "Duplicate :working-directory key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :working-directory "/a"
+                   :working-directory "/b"))))
+    (should reason)
+    (should (string-match-p "duplicate key :working-directory" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-environment ()
+  "Duplicate :environment key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc"
+                   :environment (("A" . "1"))
+                   :environment (("B" . "2"))))))
+    (should reason)
+    (should (string-match-p "duplicate key :environment" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-environment-file ()
+  "Duplicate :environment-file key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc"
+                   :environment-file "/a.env"
+                   :environment-file "/b.env"))))
+    (should reason)
+    (should (string-match-p "duplicate key :environment-file" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-exec-stop ()
+  "Duplicate :exec-stop key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc"
+                   :exec-stop "stop1"
+                   :exec-stop "stop2"))))
+    (should reason)
+    (should (string-match-p "duplicate key :exec-stop" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-exec-reload ()
+  "Duplicate :exec-reload key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc"
+                   :exec-reload "reload1"
+                   :exec-reload "reload2"))))
+    (should reason)
+    (should (string-match-p "duplicate key :exec-reload" reason))))
+
+(ert-deftest supervisor-test-validate-duplicate-key-restart-sec ()
+  "Duplicate :restart-sec key is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc"
+                   :restart-sec 3
+                   :restart-sec 5))))
+    (should reason)
+    (should (string-match-p "duplicate key :restart-sec" reason))))
+
 (ert-deftest supervisor-test-validate-working-directory-invalid ()
   "Non-string :working-directory is rejected."
   (let ((reason (supervisor--validate-entry

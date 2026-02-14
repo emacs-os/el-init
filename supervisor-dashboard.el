@@ -766,6 +766,8 @@ With prefix argument, show status legend instead."
                          (oneshot-blocking (supervisor-entry-oneshot-blocking entry))
                          (oneshot-timeout (supervisor-entry-oneshot-timeout entry))
                          (working-directory (supervisor-entry-working-directory entry))
+                         (environment (supervisor-entry-environment entry))
+                         (environment-file (supervisor-entry-environment-file entry))
                          (exec-stop (supervisor-entry-exec-stop entry))
                          (exec-reload (supervisor-entry-exec-reload entry))
                          (restart-sec (supervisor-entry-restart-sec entry))
@@ -785,6 +787,17 @@ With prefix argument, show status legend instead."
                              "")
                            (if working-directory
                                (format " cwd=%s" working-directory)
+                             "")
+                           (if environment
+                               (format " env=%s"
+                                       (mapconcat
+                                        (lambda (pair)
+                                          (format "%s=%s" (car pair) (cdr pair)))
+                                        environment ","))
+                             "")
+                           (if environment-file
+                               (format " env-file=%s"
+                                       (mapconcat #'identity environment-file ","))
                              "")
                            (if exec-stop
                                (format " exec-stop=%s"
