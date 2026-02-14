@@ -9122,6 +9122,35 @@ could incorrectly preserve a non-running disabled unit."
       (when (process-live-p proc)
         (delete-process proc)))))
 
+(ert-deftest supervisor-test-reload-stopped-unit-with-exec-reload ()
+  "Stopped simple unit with exec-reload does not run reload chain."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (chain-called nil))
+    ;; No process in supervisor--processes — unit is stopped
+    (cl-letf (((symbol-function 'supervisor--reload-find-entry)
+               (lambda (_id)
+                 (list "stopped-svc" "echo hi" 0 t 'no t 'simple
+                       'stage1 nil nil 30 nil nil
+                       nil nil nil
+                       nil '("reload-cmd") nil)))
+              ((symbol-function 'supervisor--exec-command-chain)
+               (lambda (cmds _id _dir _env _log _timeout)
+                 (setq chain-called cmds)
+                 t))
+              ((symbol-function 'supervisor--unit-file-directory-for-id)
+               (lambda (_id) nil)))
+      (let ((result (supervisor--reload-unit "stopped-svc")))
+        ;; Should update definition, not run reload chain
+        (should (equal (plist-get result :action) "updated"))
+        (should (null chain-called))))))
+
 (ert-deftest supervisor-test-exec-stop-skips-on-cwd-resolution-error ()
   "Exec-stop is skipped when working directory resolution fails."
   (let ((supervisor--processes (make-hash-table :test 'equal))

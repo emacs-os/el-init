@@ -414,6 +414,12 @@ program list should use `supervisor--effective-programs' instead."
           " ;; :oneshot-async nil  ; inverse of :oneshot-blocking (oneshot only)\n"
           " ;; :oneshot-timeout 30 ; timeout in seconds (oneshot only)\n"
           " ;; :tags (tag1 tag2)   ; tags for filtering\n"
+          " ;; :working-directory \"/path/to/dir\"  ; process working directory\n"
+          " ;; :environment ((\"KEY\" . \"val\"))     ; environment variables\n"
+          " ;; :environment-file \"/path/to/env\"    ; environment file(s)\n"
+          " ;; :exec-stop \"cmd\"    ; custom stop command (simple only)\n"
+          " ;; :exec-reload \"cmd\"  ; custom reload command (simple only)\n"
+          " ;; :restart-sec 5      ; per-unit restart delay (simple only)\n"
           " )\n"))
 
 ;;; Unit-File Validate-on-Save

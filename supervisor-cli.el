@@ -240,7 +240,13 @@ Returns alist with all fields needed for status display."
       (duration . ,(when (and start-time ready-time)
                      (- ready-time start-time)))
       (unit-file . ,(when (fboundp 'supervisor--unit-file-path)
-                      (supervisor--unit-file-path id))))))
+                      (supervisor--unit-file-path id)))
+      (working-directory . ,(supervisor-entry-working-directory entry))
+      (environment . ,(supervisor-entry-environment entry))
+      (environment-file . ,(supervisor-entry-environment-file entry))
+      (exec-stop . ,(supervisor-entry-exec-stop entry))
+      (exec-reload . ,(supervisor-entry-exec-reload entry))
+      (restart-sec . ,(supervisor-entry-restart-sec entry)))))
 
 (defun supervisor--cli-all-entries-info (&optional snapshot)
   "Build info alists for all valid entries, using optional SNAPSHOT.
@@ -357,6 +363,28 @@ Includes both plan-level and unit-file-level invalid entries."
      (format "Delay: %s\n" delay)
      (format "After: %s\n" (if after (mapconcat #'identity after ", ") "none"))
      (format "Requires: %s\n" (if requires (mapconcat #'identity requires ", ") "none"))
+     (let ((wd (alist-get 'working-directory info)))
+       (when wd (format "Working directory: %s\n" wd)))
+     (let ((env (alist-get 'environment info)))
+       (when env
+         (format "Environment: %s\n"
+                 (mapconcat (lambda (pair)
+                              (format "%s=%s" (car pair) (cdr pair)))
+                            env ", "))))
+     (let ((ef (alist-get 'environment-file info)))
+       (when ef
+         (format "Environment file: %s\n"
+                 (mapconcat #'identity ef ", "))))
+     (let ((es (alist-get 'exec-stop info)))
+       (when es
+         (format "Exec stop: %s\n"
+                 (mapconcat #'identity es "; "))))
+     (let ((er (alist-get 'exec-reload info)))
+       (when er
+         (format "Exec reload: %s\n"
+                 (mapconcat #'identity er "; "))))
+     (let ((rs (alist-get 'restart-sec info)))
+       (when rs (format "Restart delay: %ss\n" rs)))
      (when pid (format "PID: %d\n" pid))
      (when start-time (format "Start time: %.3f\n" start-time))
      (when ready-time (format "Ready time: %.3f\n" ready-time))
@@ -393,7 +421,19 @@ Includes both plan-level and unit-file-level invalid entries."
     (start_time . ,(alist-get 'start-time info))
     (ready_time . ,(alist-get 'ready-time info))
     (duration . ,(alist-get 'duration info))
-    (unit_file . ,(alist-get 'unit-file info))))
+    (unit_file . ,(alist-get 'unit-file info))
+    (working_directory . ,(alist-get 'working-directory info))
+    (environment . ,(let ((env (alist-get 'environment info)))
+                      (if env
+                          (mapcar (lambda (pair)
+                                    `((key . ,(car pair))
+                                      (value . ,(cdr pair))))
+                                  env)
+                        [])))
+    (environment_file . ,(or (alist-get 'environment-file info) []))
+    (exec_stop . ,(or (alist-get 'exec-stop info) []))
+    (exec_reload . ,(or (alist-get 'exec-reload info) []))
+    (restart_sec . ,(alist-get 'restart-sec info))))
 
 (defun supervisor--cli-invalid-to-json-obj (info)
   "Convert invalid entry INFO to JSON-compatible alist."

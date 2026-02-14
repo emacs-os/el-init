@@ -3360,11 +3360,12 @@ briefly for processes to terminate, ensuring a clean exit."
 ;;;###autoload
 (defun supervisor-stop (&optional callback)
   "Stop all supervised processes gracefully (async).
-Sends SIGTERM immediately and returns.  A timer handles the graceful
-shutdown period: after `supervisor-shutdown-timeout' seconds, any
-survivors receive SIGKILL.  Optional CALLBACK is called with no
-arguments when shutdown completes.  Check `supervisor--shutdown-complete-flag'
-to poll completion status if needed.
+First runs `:exec-stop' command chains for applicable simple units,
+then sends SIGTERM to remaining live processes and returns.  A timer
+handles the graceful shutdown period: after `supervisor-shutdown-timeout'
+seconds, any survivors receive SIGKILL.  Optional CALLBACK is called
+with no arguments when shutdown completes.  Check
+`supervisor--shutdown-complete-flag' to poll completion status if needed.
 
 For `kill-emacs-hook', use `supervisor-stop-now' instead."
   (interactive)

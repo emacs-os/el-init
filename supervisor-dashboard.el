@@ -747,26 +747,53 @@ With prefix argument, show status legend instead."
             ;; Valid entry - show resolved config
             (let ((entry (supervisor--get-entry-for-id id)))
               (if entry
-                  (pcase-let ((`(,id ,_cmd ,delay ,enabled-p ,restart-policy ,logging-p
-                                     ,type ,stage ,after ,oneshot-blocking ,oneshot-timeout ,_tags)
-                               entry))
-                    (let ((eff-restart
-                           (if (eq type 'oneshot) "n/a"
-                             (symbol-name
-                              (supervisor--get-effective-restart
-                               id restart-policy)))))
-                      (message "%s: type=%s stage=%s enabled=%s restart=%s log=%s delay=%s after=%s%s"
-                               id type stage
-                               (if enabled-p "yes" "no")
-                               eff-restart
-                               (if logging-p "yes" "no")
-                               delay
-                               (or after "none")
-                               (if (eq type 'oneshot)
-                                   (format " blocking=%s timeout=%s"
-                                           (if oneshot-blocking "yes" "no")
-                                           (or oneshot-timeout "none"))
-                                 ""))))
+                  (let* ((type (supervisor-entry-type entry))
+                         (stage (supervisor-entry-stage entry))
+                         (enabled-p (supervisor-entry-enabled-p entry))
+                         (restart-policy (supervisor-entry-restart-policy entry))
+                         (logging-p (supervisor-entry-logging-p entry))
+                         (delay (supervisor-entry-delay entry))
+                         (after (supervisor-entry-after entry))
+                         (oneshot-blocking (supervisor-entry-oneshot-blocking entry))
+                         (oneshot-timeout (supervisor-entry-oneshot-timeout entry))
+                         (working-directory (supervisor-entry-working-directory entry))
+                         (exec-stop (supervisor-entry-exec-stop entry))
+                         (exec-reload (supervisor-entry-exec-reload entry))
+                         (restart-sec (supervisor-entry-restart-sec entry))
+                         (eff-restart
+                          (if (eq type 'oneshot) "n/a"
+                            (symbol-name
+                             (supervisor--get-effective-restart
+                              id restart-policy))))
+                         (extra
+                          (concat
+                           (if (eq type 'oneshot)
+                               (format " blocking=%s timeout=%s"
+                                       (if oneshot-blocking "yes" "no")
+                                       (or oneshot-timeout "none"))
+                             "")
+                           (if working-directory
+                               (format " cwd=%s" working-directory)
+                             "")
+                           (if exec-stop
+                               (format " exec-stop=%s"
+                                       (mapconcat #'identity exec-stop ";"))
+                             "")
+                           (if exec-reload
+                               (format " exec-reload=%s"
+                                       (mapconcat #'identity exec-reload ";"))
+                             "")
+                           (if restart-sec
+                               (format " restart-sec=%s" restart-sec)
+                             ""))))
+                    (message "%s: type=%s stage=%s enabled=%s restart=%s log=%s delay=%s after=%s%s"
+                             id type stage
+                             (if enabled-p "yes" "no")
+                             eff-restart
+                             (if logging-p "yes" "no")
+                             delay
+                             (or after "none")
+                             extra))
                 (message "Entry not found: %s" id))))))))))
 
 (defun supervisor-dashboard-help ()
