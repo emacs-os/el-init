@@ -1930,6 +1930,12 @@ Private helpers called by CLI and dashboard (not direct entry points):
 | ~supervisor--manual-kill~ | Explicit verb | Sends signal to process, restart policy unchanged |
 | ~supervisor--reset-failed~ | Explicit verb | Clears ~failed~, ~oneshot-completed~, ~restart-times~ for target |
 | ~supervisor--reload-unit~ | Unit-definition mutation | Re-reads unit file, stops/starts if running, clears stale state |
+| ~supervisor--policy-enable~ | Explicit verb | Sets/clears ~enabled-override~ with config normalization |
+| ~supervisor--policy-disable~ | Explicit verb | Sets/clears ~enabled-override~ with config normalization |
+| ~supervisor--policy-mask~ | Explicit verb | Sets ~mask-override~ |
+| ~supervisor--policy-unmask~ | Explicit verb | Clears ~mask-override~ |
+| ~supervisor--policy-set-restart~ | Explicit verb | Sets/clears ~restart-override~ with config normalization, cancels timer on ~no~ |
+| ~supervisor--policy-set-logging~ | Explicit verb | Sets/clears ~logging~ with config normalization |
 | ~supervisor--save-overrides~ | Implicit (scheduler) | Writes override hash tables to ~supervisor-overrides-file~ (called by policy commands) |
 | ~supervisor--check-crash-loop~ | Implicit (sentinel) | Records restart timestamp; marks ~failed~ if threshold exceeded |
 | ~supervisor--make-process-sentinel~ | Implicit (sentinel) | On exit: removes from ~processes~, records ~last-exit-info~, handles oneshot completion, schedules restart |
@@ -1948,12 +1954,12 @@ All CLI subcommand handlers.  Each dispatches to a core helper.
 | ~stop~ | ~supervisor--cli-cmd-stop~ | Explicit verb | ~supervisor--manual-stop~ / ~supervisor-stop~ | No |
 | ~restart~ | ~supervisor--cli-cmd-restart~ | Explicit verb | ~supervisor--manual-stop~ + ~supervisor--manual-start~ | No |
 | ~kill~ | ~supervisor--cli-cmd-kill~ | Explicit verb | ~supervisor--manual-kill~ | No |
-| ~enable~ | ~supervisor--cli-cmd-enable~ | Explicit verb | puthash ~enabled-override~ + ~save-overrides~ | Yes |
-| ~disable~ | ~supervisor--cli-cmd-disable~ | Explicit verb | puthash ~enabled-override~ + ~save-overrides~ | Yes |
-| ~mask~ | ~supervisor--cli-cmd-mask~ | Explicit verb | puthash ~mask-override~ + ~save-overrides~ | Yes |
-| ~unmask~ | ~supervisor--cli-cmd-unmask~ | Explicit verb | remhash ~mask-override~ + ~save-overrides~ | Yes |
-| ~restart-policy~ | ~supervisor--cli-cmd-restart-policy~ | Explicit verb | puthash ~restart-override~ + ~save-overrides~ | Yes |
-| ~logging~ | ~supervisor--cli-cmd-logging~ | Explicit verb | puthash ~logging~ + ~save-overrides~ | Yes |
+| ~enable~ | ~supervisor--cli-cmd-enable~ | Explicit verb | ~supervisor--policy-enable~ + ~save-overrides~ | Yes |
+| ~disable~ | ~supervisor--cli-cmd-disable~ | Explicit verb | ~supervisor--policy-disable~ + ~save-overrides~ | Yes |
+| ~mask~ | ~supervisor--cli-cmd-mask~ | Explicit verb | ~supervisor--policy-mask~ + ~save-overrides~ | Yes |
+| ~unmask~ | ~supervisor--cli-cmd-unmask~ | Explicit verb | ~supervisor--policy-unmask~ + ~save-overrides~ | Yes |
+| ~restart-policy~ | ~supervisor--cli-cmd-restart-policy~ | Explicit verb | ~supervisor--policy-set-restart~ + ~save-overrides~ | Yes |
+| ~logging~ | ~supervisor--cli-cmd-logging~ | Explicit verb | ~supervisor--policy-set-logging~ + ~save-overrides~ | Yes |
 | ~reset-failed~ | ~supervisor--cli-cmd-reset-failed~ | Explicit verb | ~supervisor--reset-failed~ | No |
 | ~reload~ | ~supervisor--cli-cmd-reload~ | Unit-definition mutation | ~supervisor--reload-unit~ | No |
 | ~daemon-reload~ | ~supervisor--cli-cmd-daemon-reload~ | Unit-definition mutation | ~supervisor-daemon-reload~ | No |
@@ -1970,12 +1976,12 @@ All interactive dashboard commands that change state.
 | ~supervisor-dashboard-kill~ | Explicit verb | ~supervisor--manual-kill~ | No |
 | ~supervisor-dashboard-kill-force~ | Explicit verb | ~supervisor--manual-kill~ (no confirm) | No |
 | ~supervisor-dashboard-reset-failed~ | Explicit verb | ~supervisor--reset-failed~ | No |
-| ~supervisor-dashboard-enable~ | Explicit verb | puthash/remhash ~enabled-override~ + ~save-overrides~ | Yes |
-| ~supervisor-dashboard-disable~ | Explicit verb | puthash/remhash ~enabled-override~ + ~save-overrides~ | Yes |
-| ~supervisor-dashboard-mask~ | Explicit verb | puthash ~mask-override~ + ~save-overrides~ | Yes |
-| ~supervisor-dashboard-unmask~ | Explicit verb | remhash ~mask-override~ + ~save-overrides~ | Yes |
-| ~supervisor-dashboard-set-restart-policy~ | Explicit verb | puthash/remhash ~restart-override~ + ~save-overrides~ | Yes |
-| ~supervisor-dashboard-set-logging~ | Explicit verb | puthash/remhash ~logging~ + ~save-overrides~ | Yes |
+| ~supervisor-dashboard-enable~ | Explicit verb | ~supervisor--policy-enable~ + ~save-overrides~ | Yes |
+| ~supervisor-dashboard-disable~ | Explicit verb | ~supervisor--policy-disable~ + ~save-overrides~ | Yes |
+| ~supervisor-dashboard-mask~ | Explicit verb | ~supervisor--policy-mask~ + ~save-overrides~ | Yes |
+| ~supervisor-dashboard-unmask~ | Explicit verb | ~supervisor--policy-unmask~ + ~save-overrides~ | Yes |
+| ~supervisor-dashboard-set-restart-policy~ | Explicit verb | ~supervisor--policy-set-restart~ + ~save-overrides~ | Yes |
+| ~supervisor-dashboard-set-logging~ | Explicit verb | ~supervisor--policy-set-logging~ + ~save-overrides~ | Yes |
 | ~supervisor-dashboard-reload-unit~ | Unit-definition mutation | ~supervisor--reload-unit~ | No |
 | ~supervisor-dashboard-daemon-reload~ | Unit-definition mutation | ~supervisor-daemon-reload~ | No |
 | ~supervisor-dashboard-cycle-filter~ | UI-local state | Sets buffer-local ~supervisor--dashboard-stage-filter~ | No |
@@ -1994,17 +2000,21 @@ Every CLI mutator has a dashboard counterpart with identical semantics.
 | Restart | ~restart ID~ | ~l r~ | stop + start |
 | Kill | ~kill ID~ | ~l k~ | ~supervisor--manual-kill~ |
 | Reset failed | ~reset-failed ID~ | ~l f~ | ~supervisor--reset-failed~ |
-| Enable | ~enable ID~ | ~p e~ | puthash ~enabled-override~ |
-| Disable | ~disable ID~ | ~p d~ | puthash ~enabled-override~ |
-| Mask | ~mask ID~ | ~p m~ | puthash ~mask-override~ |
-| Unmask | ~unmask ID~ | ~p u~ | remhash ~mask-override~ |
-| Restart policy | ~restart-policy ID POLICY~ | ~p r~ | puthash ~restart-override~ |
-| Logging | ~logging ID on\vert{}off~ | ~p l~ | puthash ~logging~ |
+| Enable | ~enable ID~ | ~p e~ | ~supervisor--policy-enable~ |
+| Disable | ~disable ID~ | ~p d~ | ~supervisor--policy-disable~ |
+| Mask | ~mask ID~ | ~p m~ | ~supervisor--policy-mask~ |
+| Unmask | ~unmask ID~ | ~p u~ | ~supervisor--policy-unmask~ |
+| Restart policy | ~restart-policy ID POLICY~ | ~p r~ | ~supervisor--policy-set-restart~ |
+| Logging | ~logging ID on\vert{}off~ | ~p l~ | ~supervisor--policy-set-logging~ |
 | Reload unit | ~reload ID~ | ~l u~ | ~supervisor--reload-unit~ |
 | Daemon reload | ~daemon-reload~ | ~X~ (transient) | ~supervisor-daemon-reload~ |
 
 All policy mutations (enable/disable/mask/unmask/restart-policy/logging)
-call ~supervisor--save-overrides~ in both CLI and dashboard paths.
+route through shared core policy mutators (~supervisor--policy-*~) that
+validate entry existence, reject invalid entries, normalize overrides
+against config defaults, and return a status plist.  Both CLI and
+dashboard call ~supervisor--save-overrides~ after the core mutator
+applies the change.
 
 * Unplanned systemd Directives
 :PROPERTIES:

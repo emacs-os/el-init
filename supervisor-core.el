@@ -3153,6 +3153,143 @@ disabled.  Runtime overrides take effect on next start."
             ((eq override 'disabled) nil)
             (t config-enabled)))))
 
+;;; Policy Mutators
+;;
+;; Shared policy mutation helpers used by both CLI and dashboard.
+;; Each validates the entry and applies config-default normalization.
+;; Callers are responsible for saving overrides and refreshing UI.
+;; Return value: plist (:status STATUS :message MSG) where STATUS
+;; is `applied', `skipped', or `error'.
+
+(defun supervisor--policy-enable (id)
+  "Enable entry ID by setting the appropriate override.
+If the config default is already enabled, clear any stale override
+instead of writing a redundant one.
+Return a plist with `:status' and `:message'."
+  (cond
+   ((gethash id supervisor--invalid)
+    (list :status 'error :message (format "Cannot enable invalid entry: %s" id)))
+   (t
+    (let ((entry (supervisor--get-entry-for-id id)))
+      (if (null entry)
+          (list :status 'error :message (format "Unknown entry: %s" id))
+        (let* ((config-enabled (supervisor-entry-enabled-p entry))
+               (effective (supervisor--get-effective-enabled id config-enabled)))
+          (if effective
+              (list :status 'skipped :message (format "%s is already enabled" id))
+            (if config-enabled
+                (remhash id supervisor--enabled-override)
+              (puthash id 'enabled supervisor--enabled-override))
+            (list :status 'applied :message (format "Enabled %s" id)))))))))
+
+(defun supervisor--policy-disable (id)
+  "Disable entry ID by setting the appropriate override.
+If the config default is already disabled, clear any stale override
+instead of writing a redundant one.
+Return a plist with `:status' and `:message'."
+  (cond
+   ((gethash id supervisor--invalid)
+    (list :status 'error
+          :message (format "Cannot disable invalid entry: %s" id)))
+   (t
+    (let ((entry (supervisor--get-entry-for-id id)))
+      (if (null entry)
+          (list :status 'error :message (format "Unknown entry: %s" id))
+        (let* ((config-enabled (supervisor-entry-enabled-p entry))
+               (effective (supervisor--get-effective-enabled id config-enabled)))
+          (if (not effective)
+              (list :status 'skipped
+                    :message (format "%s is already disabled" id))
+            (if (not config-enabled)
+                (remhash id supervisor--enabled-override)
+              (puthash id 'disabled supervisor--enabled-override))
+            (list :status 'applied
+                  :message (format "Disabled %s" id)))))))))
+
+(defun supervisor--policy-mask (id)
+  "Mask entry ID so it is always disabled.
+Return a plist with `:status' and `:message'."
+  (cond
+   ((gethash id supervisor--invalid)
+    (list :status 'error
+          :message (format "Cannot mask invalid entry: %s" id)))
+   (t
+    (let ((entry (supervisor--get-entry-for-id id)))
+      (if (null entry)
+          (list :status 'error :message (format "Unknown entry: %s" id))
+        (if (eq (gethash id supervisor--mask-override) 'masked)
+            (list :status 'skipped
+                  :message (format "%s is already masked" id))
+          (puthash id 'masked supervisor--mask-override)
+          (list :status 'applied :message (format "Masked %s" id))))))))
+
+(defun supervisor--policy-unmask (id)
+  "Unmask entry ID so the enabled state takes effect again.
+Return a plist with `:status' and `:message'."
+  (cond
+   ((gethash id supervisor--invalid)
+    (list :status 'error
+          :message (format "Cannot unmask invalid entry: %s" id)))
+   (t
+    (let ((entry (supervisor--get-entry-for-id id)))
+      (if (null entry)
+          (list :status 'error :message (format "Unknown entry: %s" id))
+        (if (not (eq (gethash id supervisor--mask-override) 'masked))
+            (list :status 'skipped :message (format "%s is not masked" id))
+          (remhash id supervisor--mask-override)
+          (list :status 'applied
+                :message (format "Unmasked %s" id))))))))
+
+(defun supervisor--policy-set-restart (id policy)
+  "Set restart POLICY for entry ID.
+POLICY must be a member of `supervisor--valid-restart-policies'.
+If POLICY matches the config default, clear the override instead.
+When POLICY is `no', cancel any pending restart timer.
+Return a plist with `:status' and `:message'."
+  (cond
+   ((not (memq policy supervisor--valid-restart-policies))
+    (list :status 'error
+          :message (format "Invalid restart policy: %s" policy)))
+   ((gethash id supervisor--invalid)
+    (list :status 'error
+          :message (format "Cannot set restart for invalid entry: %s" id)))
+   (t
+    (let ((entry (supervisor--get-entry-for-id id)))
+      (if (null entry)
+          (list :status 'error :message (format "Unknown entry: %s" id))
+        (if (eq (supervisor-entry-type entry) 'oneshot)
+            (list :status 'error
+                  :message
+                  "Restart policy not applicable to oneshot entries")
+          (let ((config-policy (supervisor--normalize-restart-policy
+                                (supervisor-entry-restart-policy entry))))
+            (if (eq policy config-policy)
+                (remhash id supervisor--restart-override)
+              (puthash id policy supervisor--restart-override))
+            (when (eq policy 'no)
+              (when-let* ((timer (gethash id supervisor--restart-timers)))
+                (when (timerp timer)
+                  (cancel-timer timer))
+                (remhash id supervisor--restart-timers)))
+            (list :status 'applied
+                  :message (format "Restart policy for %s: %s"
+                                   id policy)))))))))
+
+(defun supervisor--policy-set-logging (id enabled-p)
+  "Set logging for entry ID.  ENABLED-P is t for on, nil for off.
+If ENABLED-P matches the config default, clear the override instead.
+Return a plist with `:status' and `:message'."
+  (let ((entry (supervisor--get-entry-for-id id))
+        (config-logging t))
+    (when entry
+      (setq config-logging (supervisor-entry-logging-p entry)))
+    (if (eq enabled-p config-logging)
+        (remhash id supervisor--logging)
+      (puthash id (if enabled-p 'enabled 'disabled) supervisor--logging))
+    (list :status 'applied
+          :message (format "Logging for %s: %s"
+                           id (if enabled-p "on" "off")))))
+
 (defun supervisor--handle-oneshot-exit (name proc-status exit-code)
   "Handle exit of oneshot process NAME.
 PROC-STATUS is the process status symbol, EXIT-CODE is the exit code.

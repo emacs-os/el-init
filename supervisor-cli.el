@@ -112,6 +112,66 @@ When FORMAT is `json', the error is returned as a JSON object."
          (json-encode `((error . t) (message . ,message) (exitcode . ,exitcode)))
        (format "Error: %s\n" message)))))
 
+(defun supervisor--cli-policy-batch (ids mutator-fn verb json-p)
+  "Apply MUTATOR-FN to each ID in IDS and return a CLI result.
+MUTATOR-FN is a core policy function that accepts an ID and returns
+a plist with `:status' and `:message'.  VERB is the past-tense action
+word for human output (e.g., \"Enabled\").  JSON-P enables JSON output.
+Saves overrides once after all IDs are processed."
+  (let ((applied nil) (skipped nil) (errors nil))
+    (dolist (id ids)
+      (let ((result (funcall mutator-fn id)))
+        (pcase (plist-get result :status)
+          ('applied (push id applied))
+          ('skipped
+           (push (cons id (plist-get result :message)) skipped))
+          ('error
+           (push (cons id (plist-get result :message)) errors)))))
+    (supervisor--save-overrides)
+    (setq applied (nreverse applied)
+          skipped (nreverse skipped)
+          errors (nreverse errors))
+    (let ((fmt (if json-p 'json 'human))
+          (msg (concat
+                (when applied
+                  (format "%s: %s\n" verb
+                          (mapconcat #'identity applied ", ")))
+                (when skipped
+                  (mapconcat
+                   (lambda (pair)
+                     (format "Skipped: %s (%s)\n" (car pair) (cdr pair)))
+                   skipped ""))
+                (when errors
+                  (mapconcat
+                   (lambda (pair)
+                     (format "Error: %s (%s)\n" (car pair) (cdr pair)))
+                   errors "")))))
+      (if errors
+          (supervisor--cli-make-result
+           supervisor-cli-exit-failure fmt
+           (if json-p
+               (json-encode
+                `((applied . ,(or applied []))
+                  (skipped
+                   . ,(mapcar (lambda (p)
+                                `((id . ,(car p)) (reason . ,(cdr p))))
+                              skipped))
+                  (errors
+                   . ,(mapcar (lambda (p)
+                                `((id . ,(car p)) (reason . ,(cdr p))))
+                              errors))))
+             msg))
+        (supervisor--cli-success
+         (if json-p
+             (json-encode
+              `((applied . ,(or applied []))
+                (skipped
+                 . ,(mapcar (lambda (p)
+                              `((id . ,(car p)) (reason . ,(cdr p))))
+                            skipped))))
+           msg)
+         fmt)))))
+
 (defun supervisor--cli-split-at-separator (args)
   "Split ARGS at \"--\" separator into (before-list . after-list).
 The \"--\" itself is not included in either list.
@@ -1045,14 +1105,8 @@ Use -- before IDs that start with a hyphen."
                                  "enable requires at least one ID"
                                  (if json-p 'json 'human)))
          (t
-          (dolist (id args)
-            (puthash id 'enabled supervisor--enabled-override))
-          (supervisor--save-overrides)
-          (supervisor--cli-success
-           (if json-p
-               (json-encode `((enabled . ,args)))
-             (format "Enabled: %s\n" (mapconcat #'identity args ", ")))
-           (if json-p 'json 'human))))))))
+          (supervisor--cli-policy-batch
+           args #'supervisor--policy-enable "Enabled" json-p)))))))
 
 (defun supervisor--cli-cmd-disable (args json-p)
   "Handle `disable [--] ID...' command with ARGS.  JSON-P enables JSON output.
@@ -1069,14 +1123,8 @@ Use -- before IDs that start with a hyphen."
                                  "disable requires at least one ID"
                                  (if json-p 'json 'human)))
          (t
-          (dolist (id args)
-            (puthash id 'disabled supervisor--enabled-override))
-          (supervisor--save-overrides)
-          (supervisor--cli-success
-           (if json-p
-               (json-encode `((disabled . ,args)))
-             (format "Disabled: %s\n" (mapconcat #'identity args ", ")))
-           (if json-p 'json 'human))))))))
+          (supervisor--cli-policy-batch
+           args #'supervisor--policy-disable "Disabled" json-p)))))))
 
 (defun supervisor--cli-cmd-mask (args json-p)
   "Handle `mask [--] ID...' command with ARGS.  JSON-P enables JSON output.
@@ -1093,14 +1141,8 @@ Use -- before IDs that start with a hyphen."
                                  "mask requires at least one ID"
                                  (if json-p 'json 'human)))
          (t
-          (dolist (id args)
-            (puthash id 'masked supervisor--mask-override))
-          (supervisor--save-overrides)
-          (supervisor--cli-success
-           (if json-p
-               (json-encode `((masked . ,args)))
-             (format "Masked: %s\n" (mapconcat #'identity args ", ")))
-           (if json-p 'json 'human))))))))
+          (supervisor--cli-policy-batch
+           args #'supervisor--policy-mask "Masked" json-p)))))))
 
 (defun supervisor--cli-cmd-unmask (args json-p)
   "Handle `unmask [--] ID...' command with ARGS.  JSON-P enables JSON output.
@@ -1117,14 +1159,8 @@ Use -- before IDs that start with a hyphen."
                                  "unmask requires at least one ID"
                                  (if json-p 'json 'human)))
          (t
-          (dolist (id args)
-            (remhash id supervisor--mask-override))
-          (supervisor--save-overrides)
-          (supervisor--cli-success
-           (if json-p
-               (json-encode `((unmasked . ,args)))
-             (format "Unmasked: %s\n" (mapconcat #'identity args ", ")))
-           (if json-p 'json 'human))))))))
+          (supervisor--cli-policy-batch
+           args #'supervisor--policy-unmask "Unmasked" json-p)))))))
 
 (defun supervisor--cli-cmd-is-active (args json-p)
   "Handle `is-active ID' command with ARGS.  JSON-P enables JSON output.
@@ -1332,22 +1368,18 @@ Use -- before IDs that start with a hyphen."
          (t
           (let* ((policy-str (car args))
                  (ids (cdr args))
-                 (value (intern policy-str)))
-            (if (not (memq value supervisor--valid-restart-policies))
+                 (policy (intern policy-str)))
+            (if (not (memq policy supervisor--valid-restart-policies))
                 (supervisor--cli-error
                  supervisor-cli-exit-invalid-args
                  (format "Invalid restart policy: %s (must be no, on-success, on-failure, or always)"
                          policy-str)
                  (if json-p 'json 'human))
-              (dolist (id ids)
-                (puthash id value supervisor--restart-override))
-              (supervisor--save-overrides)
-              (supervisor--cli-success
-               (if json-p
-                   (json-encode `((restart_policy . ,policy-str) (ids . ,ids)))
-                 (format "Restart policy %s: %s\n"
-                         policy-str (mapconcat #'identity ids ", ")))
-               (if json-p 'json 'human))))))))))
+              (supervisor--cli-policy-batch
+               ids
+               (lambda (id) (supervisor--policy-set-restart id policy))
+               (format "Restart policy %s" policy-str)
+               json-p)))))))))
 
 (defun supervisor--cli-cmd-logging (args json-p)
   "Handle `logging (on|off) [--] ID...' with ARGS.  JSON-P for JSON.
@@ -1366,21 +1398,19 @@ Use -- before IDs that start with a hyphen."
          (t
           (let* ((policy (car args))
                  (ids (cdr args))
-                 (value (cond ((equal policy "on") 'enabled)
-                              ((equal policy "off") 'disabled)
-                              (t nil))))
-            (if (null value)
+                 (enabled-p (cond ((equal policy "on") 'on)
+                                  ((equal policy "off") 'off)
+                                  (t nil))))
+            (if (null enabled-p)
                 (supervisor--cli-error supervisor-cli-exit-invalid-args
                                        "logging requires 'on' or 'off'"
                                        (if json-p 'json 'human))
-              (dolist (id ids)
-                (puthash id value supervisor--logging))
-              (supervisor--save-overrides)
-              (supervisor--cli-success
-               (if json-p
-                   (json-encode `((logging . ,policy) (ids . ,ids)))
-                 (format "Logging %s: %s\n" policy (mapconcat #'identity ids ", ")))
-               (if json-p 'json 'human))))))))))
+              (supervisor--cli-policy-batch
+               ids
+               (lambda (id)
+                 (supervisor--policy-set-logging id (eq enabled-p 'on)))
+               (format "Logging %s" policy)
+               json-p)))))))))
 
 (defun supervisor--cli-cmd-blame (args json-p)
   "Handle `blame' command with ARGS.  JSON-P enables JSON output."

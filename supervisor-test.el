@@ -2753,13 +2753,14 @@ Regression test: stderr pipe processes used to pollute the process list."
           (should-error (supervisor-dashboard-stop)
                         :type 'user-error))))))
 
-(ert-deftest supervisor-test-restart-rejects-oneshot ()
-  "Restart rejects oneshot entries."
+(ert-deftest supervisor-test-restart-accepts-oneshot ()
+  "Restart accepts oneshot entries (parity with CLI)."
   (supervisor-test-with-unit-files
       '(("true" :id "my-oneshot" :type oneshot))
     (let* ((supervisor--processes (make-hash-table :test 'equal))
            (supervisor--entry-state (make-hash-table :test 'equal))
-           (supervisor--invalid (make-hash-table :test 'equal)))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (stopped nil))
       (with-temp-buffer
         (supervisor-dashboard-mode)
         (let ((tabulated-list-entries
@@ -2768,8 +2769,15 @@ Regression test: stderr pipe processes used to pollute the process list."
           (tabulated-list-init-header)
           (tabulated-list-print)
           (goto-char (point-min))
-          (should-error (supervisor-dashboard-restart)
-                        :type 'user-error))))))
+          (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t))
+                    ((symbol-function 'supervisor--manual-stop)
+                     (lambda (id) (setq stopped id)
+                       '(:status stopped)))
+                    ((symbol-function 'supervisor--manual-start)
+                     (lambda (_id) '(:status started)))
+                    ((symbol-function 'supervisor--refresh-dashboard) #'ignore))
+            (supervisor-dashboard-restart)
+            (should (equal "my-oneshot" stopped))))))))
 
 (ert-deftest supervisor-test-stop-rejects-timer-row ()
   "Stop rejects timer rows."
@@ -2797,13 +2805,14 @@ Regression test: stderr pipe processes used to pollute the process list."
       (should-error (supervisor-dashboard-restart)
                     :type 'user-error))))
 
-(ert-deftest supervisor-test-restart-rejects-not-running ()
-  "Restart rejects entries that are not currently running."
+(ert-deftest supervisor-test-restart-accepts-not-running ()
+  "Restart accepts non-running entries (parity with CLI)."
   (supervisor-test-with-unit-files
       '(("sleep 60" :id "my-svc" :type simple))
     (let* ((supervisor--processes (make-hash-table :test 'equal))
            (supervisor--entry-state (make-hash-table :test 'equal))
-           (supervisor--invalid (make-hash-table :test 'equal)))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (stopped nil))
       (with-temp-buffer
         (supervisor-dashboard-mode)
         (let ((tabulated-list-entries
@@ -2812,8 +2821,15 @@ Regression test: stderr pipe processes used to pollute the process list."
           (tabulated-list-init-header)
           (tabulated-list-print)
           (goto-char (point-min))
-          (should-error (supervisor-dashboard-restart)
-                        :type 'user-error))))))
+          (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t))
+                    ((symbol-function 'supervisor--manual-stop)
+                     (lambda (id) (setq stopped id)
+                       '(:status stopped)))
+                    ((symbol-function 'supervisor--manual-start)
+                     (lambda (_id) '(:status started)))
+                    ((symbol-function 'supervisor--refresh-dashboard) #'ignore))
+            (supervisor-dashboard-restart)
+            (should (equal "my-svc" stopped))))))))
 
 ;;; Unit-File Tests
 
@@ -6122,32 +6138,40 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-enable-sets-override ()
   "Enable command sets enabled override."
-  (let ((supervisor--enabled-override (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))  ; disable auto-save
-    (supervisor--cli-dispatch '("enable" "test-id"))
-    (should (eq 'enabled (gethash "test-id" supervisor--enabled-override)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "test-id" :type simple :enabled nil))
+    (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (supervisor--cli-dispatch '("enable" "test-id"))
+      (should (eq 'enabled (gethash "test-id" supervisor--enabled-override))))))
 
 (ert-deftest supervisor-test-cli-disable-sets-override ()
   "Disable command sets disabled override."
-  (let ((supervisor--enabled-override (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))  ; disable auto-save
-    (supervisor--cli-dispatch '("disable" "test-id"))
-    (should (eq 'disabled (gethash "test-id" supervisor--enabled-override)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "test-id" :type simple))
+    (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (supervisor--cli-dispatch '("disable" "test-id"))
+      (should (eq 'disabled (gethash "test-id" supervisor--enabled-override))))))
 
 (ert-deftest supervisor-test-cli-mask-sets-override ()
   "Mask command sets masked override."
-  (let ((supervisor--mask-override (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))
-    (supervisor--cli-dispatch '("mask" "test-id"))
-    (should (eq 'masked (gethash "test-id" supervisor--mask-override)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "test-id" :type simple))
+    (let ((supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (supervisor--cli-dispatch '("mask" "test-id"))
+      (should (eq 'masked (gethash "test-id" supervisor--mask-override))))))
 
 (ert-deftest supervisor-test-cli-unmask-clears-override ()
   "Unmask command clears masked override."
-  (let ((supervisor--mask-override (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))
-    (puthash "test-id" 'masked supervisor--mask-override)
-    (supervisor--cli-dispatch '("unmask" "test-id"))
-    (should-not (gethash "test-id" supervisor--mask-override))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "test-id" :type simple))
+    (let ((supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (puthash "test-id" 'masked supervisor--mask-override)
+      (supervisor--cli-dispatch '("unmask" "test-id"))
+      (should-not (gethash "test-id" supervisor--mask-override)))))
 
 (ert-deftest supervisor-test-cli-mask-requires-id ()
   "Mask command requires at least one ID."
@@ -6162,41 +6186,51 @@ at minute boundaries."
                 (supervisor-cli-result-exitcode result)))))
 
 (ert-deftest supervisor-test-cli-mask-json-output ()
-  "Mask command returns JSON with masked IDs."
-  (let ((supervisor--mask-override (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))
-    (let ((result (supervisor--cli-dispatch '("mask" "a" "b" "--json"))))
-      (should (eq 'json (supervisor-cli-result-format result)))
-      (let ((parsed (json-read-from-string
-                     (supervisor-cli-result-output result))))
-        (should (assoc 'masked parsed))))))
+  "Mask command returns JSON with applied IDs."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "a" :type simple)
+        ("sleep 300" :id "b" :type simple))
+    (let ((supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (let ((result (supervisor--cli-dispatch '("mask" "a" "b" "--json"))))
+        (should (eq 'json (supervisor-cli-result-format result)))
+        (let ((parsed (json-read-from-string
+                       (supervisor-cli-result-output result))))
+          (should (assoc 'applied parsed)))))))
 
 (ert-deftest supervisor-test-cli-mask-with-separator ()
   "Mask command supports -- separator for hyphen-prefixed IDs."
-  (let ((supervisor--mask-override (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))
-    (supervisor--cli-dispatch '("mask" "--" "-my-id"))
-    (should (eq 'masked (gethash "-my-id" supervisor--mask-override)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "-my-id" :type simple))
+    (let ((supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (supervisor--cli-dispatch '("mask" "--" "-my-id"))
+      (should (eq 'masked (gethash "-my-id" supervisor--mask-override))))))
 
 (ert-deftest supervisor-test-cli-unmask-json-output ()
-  "Unmask command returns JSON with unmasked IDs."
-  (let ((supervisor--mask-override (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))
-    (puthash "a" 'masked supervisor--mask-override)
-    (puthash "b" 'masked supervisor--mask-override)
-    (let ((result (supervisor--cli-dispatch '("unmask" "a" "b" "--json"))))
-      (should (eq 'json (supervisor-cli-result-format result)))
-      (let ((parsed (json-read-from-string
-                     (supervisor-cli-result-output result))))
-        (should (assoc 'unmasked parsed))))))
+  "Unmask command returns JSON with applied IDs."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "a" :type simple)
+        ("sleep 300" :id "b" :type simple))
+    (let ((supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (puthash "a" 'masked supervisor--mask-override)
+      (puthash "b" 'masked supervisor--mask-override)
+      (let ((result (supervisor--cli-dispatch '("unmask" "a" "b" "--json"))))
+        (should (eq 'json (supervisor-cli-result-format result)))
+        (let ((parsed (json-read-from-string
+                       (supervisor-cli-result-output result))))
+          (should (assoc 'applied parsed)))))))
 
 (ert-deftest supervisor-test-cli-unmask-with-separator ()
   "Unmask command supports -- separator for hyphen-prefixed IDs."
-  (let ((supervisor--mask-override (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))
-    (puthash "-my-id" 'masked supervisor--mask-override)
-    (supervisor--cli-dispatch '("unmask" "--" "-my-id"))
-    (should-not (gethash "-my-id" supervisor--mask-override))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "-my-id" :type simple))
+    (let ((supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (puthash "-my-id" 'masked supervisor--mask-override)
+      (supervisor--cli-dispatch '("unmask" "--" "-my-id"))
+      (should-not (gethash "-my-id" supervisor--mask-override)))))
 
 (ert-deftest supervisor-test-mask-precedence-over-enabled ()
   "Masked entry is always disabled regardless of enabled override."
@@ -6327,31 +6361,39 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-restart-policy-always ()
   "Restart-policy always sets override."
-  (let ((supervisor--restart-override (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))
-    (supervisor--cli-dispatch '("restart-policy" "always" "test-id"))
-    (should (eq 'always (gethash "test-id" supervisor--restart-override)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "test-id" :type simple :restart nil))
+    (let ((supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (supervisor--cli-dispatch '("restart-policy" "always" "test-id"))
+      (should (eq 'always (gethash "test-id" supervisor--restart-override))))))
 
 (ert-deftest supervisor-test-cli-restart-policy-no ()
   "Restart-policy no sets override."
-  (let ((supervisor--restart-override (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))
-    (supervisor--cli-dispatch '("restart-policy" "no" "test-id"))
-    (should (eq 'no (gethash "test-id" supervisor--restart-override)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "test-id" :type simple :restart t))
+    (let ((supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (supervisor--cli-dispatch '("restart-policy" "no" "test-id"))
+      (should (eq 'no (gethash "test-id" supervisor--restart-override))))))
 
 (ert-deftest supervisor-test-cli-restart-policy-on-failure ()
   "Restart-policy on-failure sets override."
-  (let ((supervisor--restart-override (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))
-    (supervisor--cli-dispatch '("restart-policy" "on-failure" "test-id"))
-    (should (eq 'on-failure (gethash "test-id" supervisor--restart-override)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "test-id" :type simple :restart nil))
+    (let ((supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (supervisor--cli-dispatch '("restart-policy" "on-failure" "test-id"))
+      (should (eq 'on-failure (gethash "test-id" supervisor--restart-override))))))
 
 (ert-deftest supervisor-test-cli-restart-policy-on-success ()
   "Restart-policy on-success sets override."
-  (let ((supervisor--restart-override (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))
-    (supervisor--cli-dispatch '("restart-policy" "on-success" "test-id"))
-    (should (eq 'on-success (gethash "test-id" supervisor--restart-override)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "test-id" :type simple :restart nil))
+    (let ((supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (supervisor--cli-dispatch '("restart-policy" "on-success" "test-id"))
+      (should (eq 'on-success (gethash "test-id" supervisor--restart-override))))))
 
 (ert-deftest supervisor-test-cli-restart-policy-invalid ()
   "Restart-policy with invalid value returns error."
@@ -6363,10 +6405,12 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-logging-on ()
   "Logging on sets override."
-  (let ((supervisor--logging (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))
-    (supervisor--cli-dispatch '("logging" "on" "test-id"))
-    (should (eq 'enabled (gethash "test-id" supervisor--logging)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "test-id" :type simple :logging nil))
+    (let ((supervisor--logging (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (supervisor--cli-dispatch '("logging" "on" "test-id"))
+      (should (eq 'enabled (gethash "test-id" supervisor--logging))))))
 
 (ert-deftest supervisor-test-cli-logging-off ()
   "Logging off sets override."
@@ -7246,11 +7290,16 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-enable-hyphen-id-with-separator ()
   "Enable allows hyphen-prefixed ID after -- separator."
-  (let ((supervisor--enabled-override (make-hash-table :test 'equal)))
-    (let ((result (supervisor--cli-dispatch '("enable" "--" "-svc"))))
-      (should (supervisor-cli-result-p result))
-      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
-      (should (eq 'enabled (gethash "-svc" supervisor--enabled-override))))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "-svc" :type simple :enabled nil))
+    (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (let ((result (supervisor--cli-dispatch '("enable" "--" "-svc"))))
+        (should (supervisor-cli-result-p result))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (should (eq 'enabled
+                    (gethash "-svc" supervisor--enabled-override)))))))
 
 (ert-deftest supervisor-test-cli-logs-hyphen-id-with-separator ()
   "Logs allows hyphen-prefixed ID after -- separator."
@@ -8277,45 +8326,52 @@ Only mask blocks; disabled does not."
 
 (ert-deftest supervisor-test-cli-enable-persists ()
   "CLI `enable' command persists the override to disk."
-  (let* ((temp-file (make-temp-file "supervisor-test-enable-" nil ".eld"))
-         (supervisor-overrides-file temp-file)
-         (supervisor--enabled-override (make-hash-table :test 'equal))
-         (supervisor--restart-override (make-hash-table :test 'equal))
-         (supervisor--logging (make-hash-table :test 'equal))
-         (supervisor--mask-override (make-hash-table :test 'equal))
-         (supervisor--overrides-loaded nil))
-    (unwind-protect
-        (progn
-          (supervisor--cli-dispatch '("enable" "svc1"))
-          ;; In-memory override set
-          (should (eq 'enabled (gethash "svc1" supervisor--enabled-override)))
-          ;; Clear memory and reload from file
-          (clrhash supervisor--enabled-override)
-          (should (supervisor--load-overrides))
-          ;; Should survive roundtrip
-          (should (eq 'enabled (gethash "svc1" supervisor--enabled-override))))
-      (delete-file temp-file))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc1" :type simple :enabled nil))
+    (let* ((temp-file (make-temp-file "supervisor-test-enable-" nil ".eld"))
+           (supervisor-overrides-file temp-file)
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--restart-override (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--overrides-loaded nil))
+      (unwind-protect
+          (progn
+            (supervisor--cli-dispatch '("enable" "svc1"))
+            ;; In-memory override set
+            (should (eq 'enabled (gethash "svc1" supervisor--enabled-override)))
+            ;; Clear memory and reload from file
+            (clrhash supervisor--enabled-override)
+            (should (supervisor--load-overrides))
+            ;; Should survive roundtrip
+            (should (eq 'enabled
+                        (gethash "svc1" supervisor--enabled-override))))
+        (delete-file temp-file)))))
 
 (ert-deftest supervisor-test-cli-disable-persists ()
   "CLI `disable' command persists the override to disk."
-  (let* ((temp-file (make-temp-file "supervisor-test-disable-" nil ".eld"))
-         (supervisor-overrides-file temp-file)
-         (supervisor--enabled-override (make-hash-table :test 'equal))
-         (supervisor--restart-override (make-hash-table :test 'equal))
-         (supervisor--logging (make-hash-table :test 'equal))
-         (supervisor--mask-override (make-hash-table :test 'equal))
-         (supervisor--overrides-loaded nil))
-    (unwind-protect
-        (progn
-          (supervisor--cli-dispatch '("disable" "svc1"))
-          ;; In-memory override set
-          (should (eq 'disabled (gethash "svc1" supervisor--enabled-override)))
-          ;; Clear memory and reload from file
-          (clrhash supervisor--enabled-override)
-          (should (supervisor--load-overrides))
-          ;; Should survive roundtrip
-          (should (eq 'disabled (gethash "svc1" supervisor--enabled-override))))
-      (delete-file temp-file))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc1" :type simple))
+    (let* ((temp-file (make-temp-file "supervisor-test-disable-" nil ".eld"))
+           (supervisor-overrides-file temp-file)
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--restart-override (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--overrides-loaded nil))
+      (unwind-protect
+          (progn
+            (supervisor--cli-dispatch '("disable" "svc1"))
+            ;; In-memory override set
+            (should (eq 'disabled
+                        (gethash "svc1" supervisor--enabled-override)))
+            ;; Clear memory and reload from file
+            (clrhash supervisor--enabled-override)
+            (should (supervisor--load-overrides))
+            ;; Should survive roundtrip
+            (should (eq 'disabled
+                        (gethash "svc1" supervisor--enabled-override))))
+        (delete-file temp-file)))))
 
 (ert-deftest supervisor-test-manual-start-failure-no-stale-flag ()
   "Failed manual start does not leave stale manually-started flag.
@@ -11605,13 +11661,16 @@ No warning is emitted when there are simply no child processes."
 
 (ert-deftest supervisor-test-dashboard-mask-explicit ()
   "Explicit mask sets mask override."
-  (let ((supervisor--mask-override (make-hash-table :test 'equal))
-        (supervisor--invalid (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil)
-        (msg nil))
+  (let* ((entry (supervisor--parse-entry '("cmd" :id "svc")))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor-overrides-file nil)
+         (msg nil))
     (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
               ((symbol-function 'supervisor--separator-row-p) (lambda (_) nil))
               ((symbol-function 'supervisor--timer-row-p) (lambda (_) nil))
+              ((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) entry))
               ((symbol-function 'supervisor--save-overrides) #'ignore)
               ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
               ((symbol-function 'message)
@@ -11622,14 +11681,17 @@ No warning is emitted when there are simply no child processes."
 
 (ert-deftest supervisor-test-dashboard-unmask-explicit ()
   "Explicit unmask clears mask override."
-  (let ((supervisor--mask-override (make-hash-table :test 'equal))
-        (supervisor--invalid (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil)
-        (msg nil))
+  (let* ((entry (supervisor--parse-entry '("cmd" :id "svc")))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor-overrides-file nil)
+         (msg nil))
     (puthash "svc" 'masked supervisor--mask-override)
     (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
               ((symbol-function 'supervisor--separator-row-p) (lambda (_) nil))
               ((symbol-function 'supervisor--timer-row-p) (lambda (_) nil))
+              ((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) entry))
               ((symbol-function 'supervisor--save-overrides) #'ignore)
               ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
               ((symbol-function 'message)
@@ -11640,12 +11702,15 @@ No warning is emitted when there are simply no child processes."
 
 (ert-deftest supervisor-test-dashboard-unmask-not-masked ()
   "Explicit unmask on non-masked entry shows message."
-  (let ((supervisor--mask-override (make-hash-table :test 'equal))
-        (supervisor--invalid (make-hash-table :test 'equal))
-        (msg nil))
+  (let* ((entry (supervisor--parse-entry '("cmd" :id "svc")))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (msg nil))
     (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
               ((symbol-function 'supervisor--separator-row-p) (lambda (_) nil))
               ((symbol-function 'supervisor--timer-row-p) (lambda (_) nil))
+              ((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) entry))
               ((symbol-function 'message)
                (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
       (supervisor-dashboard-unmask)
@@ -11941,6 +12006,147 @@ No warning is emitted when there are simply no child processes."
         (should (eq 'exited (plist-get exit-info :status))))
       ;; Verify restart count
       (should (= 1 (alist-get 'restart-count info))))))
+
+;;; Core Policy Mutator Tests
+
+(ert-deftest supervisor-test-policy-enable-sets-override ()
+  "Core enable mutator sets override for disabled entry."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple :enabled nil))
+    (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal)))
+      (let ((result (supervisor--policy-enable "svc")))
+        (should (eq 'applied (plist-get result :status)))
+        (should (eq 'enabled (gethash "svc" supervisor--enabled-override)))))))
+
+(ert-deftest supervisor-test-policy-enable-skips-already-enabled ()
+  "Core enable mutator returns skipped for already-enabled entry."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple))
+    (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal)))
+      (let ((result (supervisor--policy-enable "svc")))
+        (should (eq 'skipped (plist-get result :status)))))))
+
+(ert-deftest supervisor-test-policy-enable-clears-stale-override ()
+  "Core enable mutator clears override when config default is enabled."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple))
+    (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal)))
+      ;; Disable via override, then re-enable
+      (puthash "svc" 'disabled supervisor--enabled-override)
+      (let ((result (supervisor--policy-enable "svc")))
+        (should (eq 'applied (plist-get result :status)))
+        ;; Override cleared (config default is enabled)
+        (should-not (gethash "svc" supervisor--enabled-override))))))
+
+(ert-deftest supervisor-test-policy-disable-normalization ()
+  "Core disable mutator clears override when config default is disabled."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple :enabled nil))
+    (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal)))
+      ;; Enable via override, then disable
+      (puthash "svc" 'enabled supervisor--enabled-override)
+      (let ((result (supervisor--policy-disable "svc")))
+        (should (eq 'applied (plist-get result :status)))
+        ;; Override cleared (config default is disabled)
+        (should-not (gethash "svc" supervisor--enabled-override))))))
+
+(ert-deftest supervisor-test-policy-enable-rejects-invalid ()
+  "Core enable mutator rejects invalid entries."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple))
+    (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal)))
+      (puthash "svc" "bad type" supervisor--invalid)
+      (let ((result (supervisor--policy-enable "svc")))
+        (should (eq 'error (plist-get result :status)))))))
+
+(ert-deftest supervisor-test-policy-enable-rejects-unknown ()
+  "Core enable mutator rejects unknown entry ID."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple))
+    (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal)))
+      (let ((result (supervisor--policy-enable "nonexistent")))
+        (should (eq 'error (plist-get result :status)))
+        (should (string-match-p "Unknown" (plist-get result :message)))))))
+
+(ert-deftest supervisor-test-policy-mask-idempotent ()
+  "Core mask mutator returns skipped when already masked."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple))
+    (let ((supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal)))
+      (puthash "svc" 'masked supervisor--mask-override)
+      (let ((result (supervisor--policy-mask "svc")))
+        (should (eq 'skipped (plist-get result :status)))))))
+
+(ert-deftest supervisor-test-policy-unmask-idempotent ()
+  "Core unmask mutator returns skipped when not masked."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple))
+    (let ((supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal)))
+      (let ((result (supervisor--policy-unmask "svc")))
+        (should (eq 'skipped (plist-get result :status)))))))
+
+(ert-deftest supervisor-test-policy-restart-rejects-oneshot ()
+  "Core restart-policy mutator rejects oneshot entries."
+  (supervisor-test-with-unit-files
+      '(("true" :id "svc" :type oneshot))
+    (let ((supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal)))
+      (let ((result (supervisor--policy-set-restart "svc" 'always)))
+        (should (eq 'error (plist-get result :status)))
+        (should (string-match-p "oneshot" (plist-get result :message)))))))
+
+(ert-deftest supervisor-test-policy-restart-normalizes-config ()
+  "Core restart-policy mutator clears override matching config."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple :restart t))
+    (let ((supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--restart-timers (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal)))
+      ;; Setting to 'always matches config default (t normalizes to always)
+      (let ((result (supervisor--policy-set-restart "svc" 'always)))
+        (should (eq 'applied (plist-get result :status)))
+        ;; Override cleared since it matches config
+        (should-not (gethash "svc" supervisor--restart-override))))))
+
+(ert-deftest supervisor-test-policy-logging-normalizes-config ()
+  "Core logging mutator clears override matching config default."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple))
+    (let ((supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal)))
+      ;; Config default is logging=t; setting on matches
+      (let ((result (supervisor--policy-set-logging "svc" t)))
+        (should (eq 'applied (plist-get result :status)))
+        (should-not (gethash "svc" supervisor--logging))))))
+
+(ert-deftest supervisor-test-cli-policy-batch-reports-errors ()
+  "CLI policy batch reports errors for unknown entries."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple :enabled nil))
+    (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("enable" "svc" "bogus" "--json"))))
+        ;; Should fail because of unknown entry
+        (should (= supervisor-cli-exit-failure
+                    (supervisor-cli-result-exitcode result)))
+        ;; But svc should still be enabled
+        (should (eq 'enabled
+                    (gethash "svc" supervisor--enabled-override)))))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
