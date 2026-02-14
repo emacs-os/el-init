@@ -657,7 +657,7 @@ Return nil if valid, or a reason string if invalid."
       (when errors
         (mapconcat #'identity (nreverse errors) "; "))))))
 
-;; Forward declarations for supervisor-validate and supervisor-dry-run
+;; Forward declarations for supervisor-verify and supervisor-dry-run
 (defvar supervisor--invalid)
 (defvar supervisor--invalid-timers)
 (defvar supervisor--cycle-fallback-ids)
@@ -3602,11 +3602,16 @@ effect."
   "Reset the failed state for entry ID.
 Returns a plist with :status and :reason.
 :status is one of: reset, skipped
-Clears crash-loop tracking so the entry can be restarted."
+Clears crash-loop tracking and failed oneshot completion results
+so the entry can be restarted."
   (if (not (gethash id supervisor--failed))
       (list :status 'skipped :reason "not failed")
     (remhash id supervisor--failed)
     (remhash id supervisor--restart-times)
+    ;; Clear failed oneshot completion (non-zero or signal exit).
+    (let ((oneshot-exit (gethash id supervisor--oneshot-completed)))
+      (when (and oneshot-exit (not (eql oneshot-exit 0)))
+        (remhash id supervisor--oneshot-completed)))
     (list :status 'reset :reason nil)))
 
 (defun supervisor--dag-force-stage-complete ()
@@ -4362,7 +4367,7 @@ Stages (run sequentially):
 - stage1, stage2, stage3, stage4: run in order (stage3 is default)
 
 Use `M-x supervisor' to open the dashboard for monitoring and control.
-Use `M-x supervisor-validate' to check config without starting processes."
+Use `M-x supervisor-verify' to check config without starting processes."
   :global t
   :group 'supervisor
   :lighter " Sup"

@@ -6538,6 +6538,36 @@ at minute boundaries."
       (should-not (gethash "test-id" supervisor--failed))
       (should-not (gethash "test-id" supervisor--restart-times)))))
 
+(ert-deftest supervisor-test-reset-failed-clears-failed-oneshot ()
+  "Core reset-failed clears failed oneshot completion results."
+  (let ((supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+    (puthash "fail-id" t supervisor--failed)
+    (puthash "fail-id" 1 supervisor--oneshot-completed)
+    (supervisor--reset-failed "fail-id")
+    (should-not (gethash "fail-id" supervisor--oneshot-completed))))
+
+(ert-deftest supervisor-test-reset-failed-preserves-successful-oneshot ()
+  "Core reset-failed does not clear successful oneshot completion."
+  (let ((supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+    (puthash "ok-id" t supervisor--failed)
+    (puthash "ok-id" 0 supervisor--oneshot-completed)
+    (supervisor--reset-failed "ok-id")
+    (should (eql 0 (gethash "ok-id" supervisor--oneshot-completed)))))
+
+(ert-deftest supervisor-test-reset-failed-clears-signal-oneshot ()
+  "Core reset-failed clears oneshot that died by signal."
+  (let ((supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+    (puthash "sig-id" t supervisor--failed)
+    (puthash "sig-id" -9 supervisor--oneshot-completed)
+    (supervisor--reset-failed "sig-id")
+    (should-not (gethash "sig-id" supervisor--oneshot-completed))))
+
 (ert-deftest supervisor-test-reset-failed-not-failed ()
   "Core reset-failed on non-failed ID returns skipped."
   (let ((supervisor--failed (make-hash-table :test 'equal)))
