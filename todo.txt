@@ -1,4 +1,3 @@
-PLAN-PT2.md
 PLAN-PT3.md
 PLAN-dashboard-keybinds-nested-menu.md
 PLAN-runtime-telemetry-parity-docs-audit.md
