@@ -487,7 +487,7 @@ Date: 2026-02-14
 | V8 | c65ceaf | 10 (incl V6 supp + V7 fix) | 851 |
 | V9 | 53556b0 | 6 | 857 |
 | V10 | 0a6c2aa | 4 (+ 3 test adjustments) | 861 |
-| V11 | (pending) | 1 (coverage gap) | 862 |
+| V11 | 0224434 | 1 (coverage gap) | 862 |
 
 Final `make check`: PASS (862/862)
 

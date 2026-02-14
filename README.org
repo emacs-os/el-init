@@ -145,7 +145,8 @@ Each unit file is a single plist expression with ~:id~ and ~:command~ required.
 ** Entry Keywords
 
 | Keyword | Type | Default | Notes |
-| ~:id~ | string | basename of executable token | Must be string if provided |
+| ~:id~ | string | *(required)* | Unit ID (non-empty string) |
+| ~:command~ | string | *(required)* | Command to execute |
 | ~:type~ | symbol | ~simple~ | ~simple~ or ~oneshot~ |
 | ~:stage~ | symbol | ~stage3~ | ~stage1~, ~stage2~, ~stage3~, ~stage4~ |
 | ~:delay~ | non-negative number | ~0~ | Delays spawn in seconds |
@@ -170,42 +171,60 @@ Each unit file is a single plist expression with ~:id~ and ~:command~ required.
 | ~:documentation~ | string or list of strings | ~nil~ | Documentation URIs/paths, metadata only |
 | ~:before~ | string or list of strings | ~nil~ | Inverse ordering (same stage), see below |
 | ~:wants~ | string or list of strings | ~nil~ | Soft dependency (same stage), see below |
-| ~:kill-signal~ | symbol | ~SIGTERM~ | Graceful stop signal for this unit |
-| ~:kill-mode~ | symbol | ~process~ | ~process~ or ~mixed~, see Stop Semantics |
+| ~:kill-signal~ | symbol or string | ~SIGTERM~ | Graceful stop signal for this unit |
+| ~:kill-mode~ | symbol or string | ~process~ | ~process~ or ~mixed~, see Stop Semantics |
 | ~:remain-after-exit~ | boolean | ~nil~ | ~oneshot~ only: latch active on success |
-| ~:success-exit-status~ | int, signal, or list | ~nil~ | ~simple~ only: extra clean exit criteria |
+| ~:success-exit-status~ | int, signal symbol/string, or list | ~nil~ | ~simple~ only: extra clean exit criteria |
 
 ** Validation Rules
 
-Validation is performed by ~supervisor--validate-entry~ and plan building.
+Validation is performed by unit-file validation
+(~supervisor--validate-unit-file-plist~) plus
+~supervisor--validate-entry~ during plan building.
 
+- Malformed plist structures are rejected (non-proper lists, odd number of
+  elements).
 - Unknown keywords are rejected.
-- ~:id~ must be a string when present.
+- Duplicate plist keys are rejected.
+- Unit files require both ~:id~ and ~:command~.
+- ~:id~ must be a non-empty string containing only ~A-Z~, ~a-z~, ~0-9~, ~.~,
+  ~_~, ~:~, ~@~, and ~-~.
+- ~:command~ must be a non-empty, non-whitespace-only string.
 - ~:type~ must be symbol ~simple~ or ~oneshot~.
 - ~:stage~ must be symbol ~stage1..stage4~.
 - ~:delay~ must be non-negative number.
-- ~:oneshot-timeout~ must be number or ~nil~.
-- ~:after~ and ~:requires~ must be string or proper list of strings.
+- ~:restart~, when provided, must be ~t~/~nil~ or one of
+  ~always~/~no~/~on-success~/~on-failure~.
+- ~:oneshot-timeout~ must be a positive number or ~nil~.
+- Boolean flag keys (~:enabled~, ~:disabled~, ~:logging~, ~:no-restart~,
+  ~:oneshot-blocking~, ~:oneshot-async~) must be exactly ~t~ or ~nil~.
 - Mutually exclusive pairs are rejected: ~:enabled~ with ~:disabled~, ~:restart~
   with ~:no-restart~, and ~:oneshot-blocking~ with ~:oneshot-async~.
+- ~:restart-sec~ with a disabled restart policy (~:no-restart t~, ~:restart no~,
+  or ~:restart nil~) is rejected as contradictory.
 - Type restrictions are enforced: ~oneshot~ rejects ~:restart~ and
   ~:no-restart~; ~simple~ rejects ~:oneshot-blocking~, ~:oneshot-async~, and
   ~:oneshot-timeout~.  ~oneshot~ rejects ~:exec-stop~, ~:exec-reload~, and
   ~:restart-sec~ (simple-only keys).
-- ~:working-directory~ must be a string.
-- ~:environment~ must be an alist of ~(KEY . VALUE)~ string pairs.
-- ~:environment-file~, ~:exec-stop~, and ~:exec-reload~ must be string or proper
-  list of strings.
-- ~:restart-sec~ must be a non-negative number.
-- ~:description~ must be a string.
-- ~:documentation~ must be a string or proper list of strings.
-- ~:before~ and ~:wants~ must be a string or proper list of strings.
+- ~:tags~ must be a symbol, string, or proper list of symbols/strings.  Empty
+  strings and ~nil~ elements within the list are rejected.
+- ~:after~, ~:requires~, ~:before~, and ~:wants~ must be string or proper list
+  of strings.  Empty or whitespace-only dependency IDs are rejected.
+  Self-referencing the entry's own ID is rejected.
+- ~:working-directory~ must be a string or ~nil~.
+- ~:environment~ must be an alist of ~(KEY . VALUE)~ string pairs.  Keys must
+  match ~[A-Za-z_][A-Za-z0-9_]*~.  Duplicate keys are rejected.
+- ~:environment-file~ must be a string, proper list of strings, or ~nil~.
+- ~:exec-stop~ and ~:exec-reload~ must be a string, proper list of strings, or
+  ~nil~.  Empty or whitespace-only command strings within are rejected.
+- ~:restart-sec~ must be a non-negative number or ~nil~.
+- ~:description~ must be a string or ~nil~.
+- ~:documentation~ must be a string, proper list of strings, or ~nil~.
 - ~:kill-signal~ must be a recognized signal name (e.g., ~SIGTERM~, ~SIGINT~).
 - ~:kill-mode~ must be symbol ~process~ or ~mixed~.
 - ~:remain-after-exit~ must be boolean; rejected for ~simple~ type.
-- ~:success-exit-status~ items must be integers or recognized signal names;
-  rejected for ~oneshot~ type.
-- Duplicate plist keys are rejected.
+- ~:success-exit-status~ items must be integers (0--255) or recognized signal
+  names; rejected for ~oneshot~ type.
 
 Invalid entries are skipped at start and shown as ~invalid~ in dashboard
 and CLI status/validate output.
@@ -251,7 +270,7 @@ Planner rules:
 Valid entries are normalized to schema v1 tuple form:
 
 #+begin_src elisp
-(id cmd delay enabled-p restart-p logging-p type stage after
+(id cmd delay enabled-p restart-policy logging-p type stage after
     oneshot-blocking oneshot-timeout tags requires
     working-directory environment environment-file
     exec-stop exec-reload restart-sec
@@ -1606,8 +1625,9 @@ Practical guidance:
 :CUSTOM_ID: unplanned-systemd-directives
 :END:
 
-The following systemd directives are not implemented and have no planned
-implementation.  They are listed here explicitly for auditability.
+The following systemd directives are not implemented in the current codebase
+and are not covered by approved implementation plans in this repository.  They
+are listed explicitly for auditability.
 
 | Directive | Category |
 |-----------+----------|
@@ -1646,8 +1666,6 @@ implementation.  They are listed here explicitly for auditability.
 | ~LoadCredential~ | Credentials and security |
 | ~SetCredential~ | Credentials and security |
 | ~DynamicUser~ | Credentials and security |
-| ~User~ | Credentials and security |
-| ~Group~ | Credentials and security |
 | ~Type=notify~ | Notification protocol |
 | ~NotifyAccess~ | Notification protocol |
 | ~Type=socket~ | Socket activation |
@@ -1660,15 +1678,8 @@ implementation.  They are listed here explicitly for auditability.
 | systemd timer units | Timers (supervisor has its own timer subsystem) |
 | Slice units | Slices and scopes |
 | Scope units | Slices and scopes |
-| ~ConditionPathExists~ | Conditions and assertions |
-| ~ConditionPathIsDirectory~ | Conditions and assertions |
-| ~ConditionFileNotEmpty~ | Conditions and assertions |
-| ~ConditionUser~ | Conditions and assertions |
-| ~ConditionGroup~ | Conditions and assertions |
-| ~ConditionHost~ | Conditions and assertions |
-| ~ConditionEnvironment~ | Conditions and assertions |
-| ~AssertPathExists~ | Conditions and assertions |
-| ~AssertUser~ | Conditions and assertions |
+| ~Condition*=~ (all condition directives) | Conditions and assertions |
+| ~Assert*=~ (all assertion directives) | Conditions and assertions |
 
 Rationale: these are primarily PID 1 / system-manager concerns (cgroups,
 namespaces, boot targets) or require integration with system services (D-Bus,
