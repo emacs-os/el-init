@@ -9799,13 +9799,30 @@ could incorrectly preserve a non-running disabled unit."
 (ert-deftest supervisor-test-cli-status-id-includes-description ()
   "The `status ID' detail view includes Description."
   (supervisor-test-with-unit-files
-      '(("cmd" :id "svc" :description "Status desc test"))
+      '(("cmd" :id "svc" :description "Status desc test"
+         :documentation ("man:svc(1)" "https://example.com")))
     (let* ((supervisor--processes (make-hash-table :test 'equal))
            (supervisor--entry-state (make-hash-table :test 'equal))
            (result (supervisor--cli-dispatch '("status" "svc"))))
       (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
       (should (string-match-p "Description: Status desc test"
+                              (supervisor-cli-result-output result)))
+      (should (string-match-p "Documentation: man:svc(1), https://example.com"
                               (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-status-id-json-includes-metadata ()
+  "The `status ID --json' includes description and documentation."
+  (supervisor-test-with-unit-files
+      '(("cmd" :id "svc" :description "JSON meta"
+         :documentation ("man:svc(1)")))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("status" "svc" "--json"))))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (let* ((parsed (json-read-from-string (supervisor-cli-result-output result)))
+             (entry (aref (alist-get 'entries parsed) 0)))
+        (should (equal "JSON meta" (alist-get 'description entry)))
+        (should (equal ["man:svc(1)"] (alist-get 'documentation entry)))))))
 
 ;; Dashboard describe-entry integration test
 
