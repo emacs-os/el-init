@@ -11315,5 +11315,33 @@ No warning is emitted when there are simply no child processes."
     (should (stringp result))
     (should (string-match-p ":wants must not reference the entry's own ID" result))))
 
+;;; V7: Cross-keyword contradiction tests
+
+(ert-deftest supervisor-test-validate-restart-sec-with-no-restart-true ()
+  "Restart-sec with :no-restart t is contradictory."
+  (let ((result (supervisor--validate-entry
+                 '("cmd" :no-restart t :restart-sec 5))))
+    (should (stringp result))
+    (should (string-match-p "contradictory" result))))
+
+(ert-deftest supervisor-test-validate-restart-sec-with-restart-no ()
+  "Restart-sec with :restart no is contradictory."
+  (let ((result (supervisor--validate-entry
+                 '("cmd" :restart no :restart-sec 5))))
+    (should (stringp result))
+    (should (string-match-p "contradictory" result))))
+
+(ert-deftest supervisor-test-validate-restart-sec-with-restart-nil ()
+  "Restart-sec with :restart nil is contradictory."
+  (let ((result (supervisor--validate-entry
+                 '("cmd" :restart nil :restart-sec 5))))
+    (should (stringp result))
+    (should (string-match-p "contradictory" result))))
+
+(ert-deftest supervisor-test-validate-restart-sec-with-restart-always ()
+  "Restart-sec with :restart always is valid."
+  (should-not (supervisor--validate-entry
+               '("cmd" :restart always :restart-sec 5))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

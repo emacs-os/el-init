@@ -542,6 +542,16 @@ Return nil if valid, or a reason string if invalid."
       (when (and (plist-member plist :oneshot-blocking)
                  (plist-member plist :oneshot-async))
         (push ":oneshot-blocking and :oneshot-async are mutually exclusive" errors))
+      ;; Cross-keyword contradiction: :restart-sec with disabled restart
+      (when (plist-member plist :restart-sec)
+        (let ((restart-val (plist-get plist :restart))
+              (no-restart-val (plist-get plist :no-restart)))
+          (when (or (eq no-restart-val t)
+                    (eq restart-val 'no)
+                    (and (plist-member plist :restart)
+                         (eq restart-val nil)))
+            (push ":restart-sec is contradictory with disabled restart policy"
+                  errors))))
       ;; Type-specific keyword restrictions
       (when (eq type 'oneshot)
         (dolist (kw supervisor--simple-only-keywords)
