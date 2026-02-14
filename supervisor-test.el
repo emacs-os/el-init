@@ -8231,15 +8231,23 @@ could incorrectly preserve a non-running disabled unit."
 ;;;; Phase P1: New keyword parsing, validation, and normalization
 
 (ert-deftest supervisor-test-parse-entry-new-fields-defaults ()
-  "Parsed entry has nil defaults for six new fields."
+  "Parsed entry has nil defaults for P2 and PT3 fields."
   (let ((entry (supervisor--parse-entry "echo hello")))
-    (should (= (length entry) 19))
+    (should (= (length entry) 27))
     (should-not (supervisor-entry-working-directory entry))
     (should-not (supervisor-entry-environment entry))
     (should-not (supervisor-entry-environment-file entry))
     (should-not (supervisor-entry-exec-stop entry))
     (should-not (supervisor-entry-exec-reload entry))
-    (should-not (supervisor-entry-restart-sec entry))))
+    (should-not (supervisor-entry-restart-sec entry))
+    (should-not (supervisor-entry-description entry))
+    (should-not (supervisor-entry-documentation entry))
+    (should-not (supervisor-entry-before entry))
+    (should-not (supervisor-entry-wants entry))
+    (should-not (supervisor-entry-kill-signal entry))
+    (should-not (supervisor-entry-kill-mode entry))
+    (should-not (supervisor-entry-remain-after-exit entry))
+    (should-not (supervisor-entry-success-exit-status entry))))
 
 (ert-deftest supervisor-test-parse-entry-working-directory ()
   "Parsed entry extracts :working-directory."
@@ -8448,7 +8456,7 @@ could incorrectly preserve a non-running disabled unit."
     (should (equal (supervisor-service-restart-sec svc) 3))))
 
 (ert-deftest supervisor-test-service-to-entry-new-fields ()
-  "Service-to-entry conversion preserves all six new fields."
+  "Service-to-entry conversion preserves all P2 and PT3 fields."
   (let* ((svc (supervisor-service--create
                :id "svc" :command "cmd"
                :working-directory "/opt"
@@ -8456,15 +8464,21 @@ could incorrectly preserve a non-running disabled unit."
                :environment-file '("/etc/env")
                :exec-stop '("stop1")
                :exec-reload '("reload1")
-               :restart-sec 3))
+               :restart-sec 3
+               :description "test"
+               :kill-signal 'SIGTERM
+               :kill-mode 'mixed))
          (entry (supervisor-service-to-entry svc)))
-    (should (= (length entry) 19))
+    (should (= (length entry) 27))
     (should (equal (supervisor-entry-working-directory entry) "/opt"))
     (should (equal (supervisor-entry-environment entry) '(("K" . "V"))))
     (should (equal (supervisor-entry-environment-file entry) '("/etc/env")))
     (should (equal (supervisor-entry-exec-stop entry) '("stop1")))
     (should (equal (supervisor-entry-exec-reload entry) '("reload1")))
-    (should (equal (supervisor-entry-restart-sec entry) 3))))
+    (should (equal (supervisor-entry-restart-sec entry) 3))
+    (should (equal (supervisor-entry-description entry) "test"))
+    (should (eq (supervisor-entry-kill-signal entry) 'SIGTERM))
+    (should (eq (supervisor-entry-kill-mode entry) 'mixed))))
 
 (ert-deftest supervisor-test-normalize-string-or-list ()
   "String-or-list normalization works correctly."
@@ -8474,89 +8488,103 @@ could incorrectly preserve a non-running disabled unit."
   (should-not (supervisor--normalize-string-or-list 123)))
 
 (ert-deftest supervisor-test-build-plan-preserves-new-fields ()
-  "Build-plan :requires normalization preserves fields 13-18."
+  "Build-plan :requires normalization preserves fields 13-26."
   (let* ((supervisor--authority-snapshot nil)
          (programs '(("svc-a" :id "svc-a" :stage stage3
                       :working-directory "/opt"
                       :environment (("K" . "V"))
-                      :exec-stop "stop-cmd")
+                      :exec-stop "stop-cmd"
+                      :description "Service A")
                      ("svc-b" :id "svc-b" :stage stage3
                       :requires "svc-a"
                       :restart-sec 5
-                      :exec-reload "reload-cmd")))
+                      :exec-reload "reload-cmd"
+                      :kill-signal SIGTERM)))
          (plan (supervisor--build-plan programs))
          (entries (supervisor-plan-entries plan)))
-    ;; Both entries must be 19 fields
+    ;; Both entries must be 27 fields
     (dolist (entry entries)
-      (should (= (length entry) 19)))
+      (should (= (length entry) 27)))
     ;; svc-a new fields preserved
     (let ((a (cl-find "svc-a" entries :key #'car :test #'equal)))
       (should (equal (supervisor-entry-working-directory a) "/opt"))
       (should (equal (supervisor-entry-environment a) '(("K" . "V"))))
-      (should (equal (supervisor-entry-exec-stop a) '("stop-cmd"))))
+      (should (equal (supervisor-entry-exec-stop a) '("stop-cmd")))
+      (should (equal (supervisor-entry-description a) "Service A")))
     ;; svc-b new fields preserved (has :requires which triggers rewrite)
     (let ((b (cl-find "svc-b" entries :key #'car :test #'equal)))
       (should (equal (supervisor-entry-restart-sec b) 5))
-      (should (equal (supervisor-entry-exec-reload b) '("reload-cmd"))))))
+      (should (equal (supervisor-entry-exec-reload b) '("reload-cmd")))
+      (should (eq (supervisor-entry-kill-signal b) 'SIGTERM)))))
 
 (ert-deftest supervisor-test-stable-topo-cycle-preserves-new-fields ()
-  "Cycle fallback in stable-topo-sort preserves fields 13-18."
+  "Cycle fallback in stable-topo-sort preserves fields 13-26."
   (let ((supervisor--computed-deps (make-hash-table :test 'equal))
         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
-    ;; 19-element entries with cycle: a -> b -> a
+    ;; 27-element entries with cycle: a -> b -> a
     (let* ((entries (list (list "a" "cmd" 0 t 'always t 'simple 'stage3 '("b")
                                 t 30 nil nil "/opt" '(("K" . "V")) nil
-                                '("stop") nil 3)
+                                '("stop") nil 3
+                                "desc-a" nil nil nil nil nil nil nil)
                           (list "b" "cmd" 0 t 'always t 'simple 'stage3 '("a")
                                 t 30 nil nil nil nil '("/env") nil
-                                '("reload") nil)))
+                                '("reload") nil
+                                nil nil nil nil 'SIGTERM nil nil nil)))
            (sorted (supervisor--stable-topo-sort entries)))
-      ;; All entries must remain 19 fields
+      ;; All entries must remain 27 fields
       (dolist (entry sorted)
-        (should (= (length entry) 19)))
+        (should (= (length entry) 27)))
       ;; :after (8) and :requires (12) cleared
       (dolist (entry sorted)
         (should (null (nth 8 entry)))
         (should (null (nth 12 entry))))
-      ;; New fields preserved
+      ;; P2 fields preserved
       (let ((a (cl-find "a" sorted :key #'car :test #'equal)))
         (should (equal (supervisor-entry-working-directory a) "/opt"))
         (should (equal (supervisor-entry-environment a) '(("K" . "V"))))
         (should (equal (supervisor-entry-exec-stop a) '("stop")))
-        (should (equal (supervisor-entry-restart-sec a) 3)))
+        (should (equal (supervisor-entry-restart-sec a) 3))
+        (should (equal (supervisor-entry-description a) "desc-a")))
       (let ((b (cl-find "b" sorted :key #'car :test #'equal)))
         (should (equal (supervisor-entry-environment-file b) '("/env")))
-        (should (equal (supervisor-entry-exec-reload b) '("reload")))))))
+        (should (equal (supervisor-entry-exec-reload b) '("reload")))
+        (should (eq (supervisor-entry-kill-signal b) 'SIGTERM))))))
 
 (ert-deftest supervisor-test-build-plan-topo-cycle-preserves-new-fields ()
-  "Cycle fallback in build-plan-topo-sort preserves fields 13-18."
-  ;; 19-element entries with cycle: a -> b -> a
+  "Cycle fallback in build-plan-topo-sort preserves fields 13-26."
+  ;; 27-element entries with cycle: a -> b -> a
   (let* ((deps (make-hash-table :test 'equal))
          (order-index (make-hash-table :test 'equal))
          (cycle-fallback-ids (make-hash-table :test 'equal))
          (entries (list (list "a" "cmd" 0 t 'always t 'simple 'stage3 '("b")
-                              t 30 nil nil "/tmp" nil nil '("s1") '("r1") 2)
+                              t 30 nil nil "/tmp" nil nil '("s1") '("r1") 2
+                              "desc" nil nil nil nil 'mixed nil nil)
                         (list "b" "cmd" 0 t 'always t 'simple 'stage3 '("a")
-                              t 30 nil nil nil '(("X" . "Y")) '("/e") nil nil 0))))
+                              t 30 nil nil nil '(("X" . "Y")) '("/e") nil nil 0
+                              nil '("man:b(1)") nil nil 'SIGHUP nil nil nil))))
     (puthash "a" '("b") deps)
     (puthash "b" '("a") deps)
     (puthash "a" 0 order-index)
     (puthash "b" 1 order-index)
     (let ((sorted (supervisor--build-plan-topo-sort
                    entries deps order-index cycle-fallback-ids)))
-      ;; All entries must remain 19 fields
+      ;; All entries must remain 27 fields
       (dolist (entry sorted)
-        (should (= (length entry) 19)))
-      ;; New fields preserved
+        (should (= (length entry) 27)))
+      ;; P2 fields preserved
       (let ((a (cl-find "a" sorted :key #'car :test #'equal)))
         (should (equal (supervisor-entry-working-directory a) "/tmp"))
         (should (equal (supervisor-entry-exec-stop a) '("s1")))
         (should (equal (supervisor-entry-exec-reload a) '("r1")))
-        (should (equal (supervisor-entry-restart-sec a) 2)))
+        (should (equal (supervisor-entry-restart-sec a) 2))
+        (should (equal (supervisor-entry-description a) "desc"))
+        (should (eq (supervisor-entry-kill-mode a) 'mixed)))
       (let ((b (cl-find "b" sorted :key #'car :test #'equal)))
         (should (equal (supervisor-entry-environment b) '(("X" . "Y"))))
         (should (equal (supervisor-entry-environment-file b) '("/e")))
-        (should (equal (supervisor-entry-restart-sec b) 0))))))
+        (should (equal (supervisor-entry-restart-sec b) 0))
+        (should (equal (supervisor-entry-documentation b) '("man:b(1)")))
+        (should (eq (supervisor-entry-kill-signal b) 'SIGHUP))))))
 
 ;;;; Phase P2: Runtime foundation tests (cwd/env/restart-sec)
 
@@ -9267,6 +9295,390 @@ could incorrectly preserve a non-running disabled unit."
             (should (member "test-stop-all" exec-stop-ids))))
       (when (process-live-p proc)
         (delete-process proc)))))
+
+;;;; Phase N1: PT3 Parser/Schema/Validation Tests
+
+;; Signal normalization
+
+(ert-deftest supervisor-test-normalize-signal-name-sigterm ()
+  "Normalize SIGTERM symbol."
+  (should (eq (supervisor--normalize-signal-name 'SIGTERM) 'SIGTERM)))
+
+(ert-deftest supervisor-test-normalize-signal-name-term ()
+  "Normalize short form TERM to SIGTERM."
+  (should (eq (supervisor--normalize-signal-name 'TERM) 'SIGTERM)))
+
+(ert-deftest supervisor-test-normalize-signal-name-string ()
+  "Normalize string form."
+  (should (eq (supervisor--normalize-signal-name "sigterm") 'SIGTERM)))
+
+(ert-deftest supervisor-test-normalize-signal-name-string-short ()
+  "Normalize short string form."
+  (should (eq (supervisor--normalize-signal-name "hup") 'SIGHUP)))
+
+(ert-deftest supervisor-test-normalize-signal-name-unknown ()
+  "Return nil for unknown signal."
+  (should-not (supervisor--normalize-signal-name 'SIGFAKE)))
+
+(ert-deftest supervisor-test-normalize-signal-name-sigusr1 ()
+  "Normalize SIGUSR1."
+  (should (eq (supervisor--normalize-signal-name 'USR1) 'SIGUSR1)))
+
+;; Kill-mode normalization
+
+(ert-deftest supervisor-test-normalize-kill-mode-process ()
+  "Normalize process symbol."
+  (should (eq (supervisor--normalize-kill-mode 'process) 'process)))
+
+(ert-deftest supervisor-test-normalize-kill-mode-mixed ()
+  "Normalize mixed symbol."
+  (should (eq (supervisor--normalize-kill-mode 'mixed) 'mixed)))
+
+(ert-deftest supervisor-test-normalize-kill-mode-string ()
+  "Normalize string form."
+  (should (eq (supervisor--normalize-kill-mode "process") 'process)))
+
+(ert-deftest supervisor-test-normalize-kill-mode-invalid ()
+  "Return nil for invalid kill mode."
+  (should-not (supervisor--normalize-kill-mode 'group)))
+
+;; Success-exit-status normalization
+
+(ert-deftest supervisor-test-normalize-success-exit-status-nil ()
+  "Return nil for nil input."
+  (should-not (supervisor--normalize-success-exit-status nil)))
+
+(ert-deftest supervisor-test-normalize-success-exit-status-int ()
+  "Normalize single integer."
+  (let ((result (supervisor--normalize-success-exit-status 42)))
+    (should (equal (plist-get result :codes) '(42)))
+    (should (equal (plist-get result :signals) nil))))
+
+(ert-deftest supervisor-test-normalize-success-exit-status-signal ()
+  "Normalize single signal."
+  (let ((result (supervisor--normalize-success-exit-status 'TERM)))
+    (should (equal (plist-get result :codes) nil))
+    (should (equal (plist-get result :signals) '(SIGTERM)))))
+
+(ert-deftest supervisor-test-normalize-success-exit-status-list ()
+  "Normalize mixed list of ints and signals."
+  (let ((result (supervisor--normalize-success-exit-status '(0 42 SIGHUP "term"))))
+    (should (equal (plist-get result :codes) '(0 42)))
+    (should (equal (plist-get result :signals) '(SIGHUP SIGTERM)))))
+
+(ert-deftest supervisor-test-normalize-success-exit-status-dedup ()
+  "Deduplicate codes and signals."
+  (let ((result (supervisor--normalize-success-exit-status '(1 1 TERM SIGTERM))))
+    (should (equal (plist-get result :codes) '(1)))
+    (should (equal (plist-get result :signals) '(SIGTERM)))))
+
+;; Deduplicate-stable
+
+(ert-deftest supervisor-test-deduplicate-stable ()
+  "Deduplicate preserving first occurrence."
+  (should (equal (supervisor--deduplicate-stable '("a" "b" "a" "c" "b"))
+                 '("a" "b" "c"))))
+
+(ert-deftest supervisor-test-deduplicate-stable-empty ()
+  "Empty list returns empty."
+  (should (equal (supervisor--deduplicate-stable nil) nil)))
+
+;; Parse-entry with PT3 fields
+
+(ert-deftest supervisor-test-parse-entry-description ()
+  "Parse entry with :description."
+  (let ((entry (supervisor--parse-entry '("cmd" :description "my service"))))
+    (should (equal (supervisor-entry-description entry) "my service"))))
+
+(ert-deftest supervisor-test-parse-entry-documentation-string ()
+  "Parse entry with :documentation as string, normalized to list."
+  (let ((entry (supervisor--parse-entry '("cmd" :documentation "man:foo(1)"))))
+    (should (equal (supervisor-entry-documentation entry) '("man:foo(1)")))))
+
+(ert-deftest supervisor-test-parse-entry-documentation-list ()
+  "Parse entry with :documentation as list."
+  (let ((entry (supervisor--parse-entry
+                '("cmd" :documentation ("man:foo(1)" "https://example.com")))))
+    (should (equal (supervisor-entry-documentation entry)
+                   '("man:foo(1)" "https://example.com")))))
+
+(ert-deftest supervisor-test-parse-entry-documentation-dedup ()
+  "Parse entry with :documentation deduplicates."
+  (let ((entry (supervisor--parse-entry
+                '("cmd" :documentation ("man:foo(1)" "man:foo(1)")))))
+    (should (equal (supervisor-entry-documentation entry)
+                   '("man:foo(1)")))))
+
+(ert-deftest supervisor-test-parse-entry-before ()
+  "Parse entry with :before."
+  (let ((entry (supervisor--parse-entry '("cmd" :before "other"))))
+    (should (equal (supervisor-entry-before entry) '("other")))))
+
+(ert-deftest supervisor-test-parse-entry-before-list ()
+  "Parse entry with :before as list."
+  (let ((entry (supervisor--parse-entry '("cmd" :before ("a" "b")))))
+    (should (equal (supervisor-entry-before entry) '("a" "b")))))
+
+(ert-deftest supervisor-test-parse-entry-before-dedup ()
+  "Parse entry with :before deduplicates."
+  (let ((entry (supervisor--parse-entry '("cmd" :before ("a" "a" "b")))))
+    (should (equal (supervisor-entry-before entry) '("a" "b")))))
+
+(ert-deftest supervisor-test-parse-entry-wants ()
+  "Parse entry with :wants."
+  (let ((entry (supervisor--parse-entry '("cmd" :wants "dep"))))
+    (should (equal (supervisor-entry-wants entry) '("dep")))))
+
+(ert-deftest supervisor-test-parse-entry-wants-list ()
+  "Parse entry with :wants as list."
+  (let ((entry (supervisor--parse-entry '("cmd" :wants ("a" "b")))))
+    (should (equal (supervisor-entry-wants entry) '("a" "b")))))
+
+(ert-deftest supervisor-test-parse-entry-kill-signal ()
+  "Parse entry with :kill-signal."
+  (let ((entry (supervisor--parse-entry '("cmd" :kill-signal SIGTERM))))
+    (should (eq (supervisor-entry-kill-signal entry) 'SIGTERM))))
+
+(ert-deftest supervisor-test-parse-entry-kill-signal-short ()
+  "Parse entry with :kill-signal short form."
+  (let ((entry (supervisor--parse-entry '("cmd" :kill-signal HUP))))
+    (should (eq (supervisor-entry-kill-signal entry) 'SIGHUP))))
+
+(ert-deftest supervisor-test-parse-entry-kill-mode ()
+  "Parse entry with :kill-mode."
+  (let ((entry (supervisor--parse-entry '("cmd" :kill-mode mixed))))
+    (should (eq (supervisor-entry-kill-mode entry) 'mixed))))
+
+(ert-deftest supervisor-test-parse-entry-remain-after-exit ()
+  "Parse entry with :remain-after-exit."
+  (let ((entry (supervisor--parse-entry
+                '("cmd" :type oneshot :remain-after-exit t))))
+    (should (eq (supervisor-entry-remain-after-exit entry) t))))
+
+(ert-deftest supervisor-test-parse-entry-success-exit-status ()
+  "Parse entry with :success-exit-status."
+  (let ((entry (supervisor--parse-entry
+                '("cmd" :success-exit-status (42 SIGHUP)))))
+    (should (equal (plist-get (supervisor-entry-success-exit-status entry) :codes)
+                   '(42)))
+    (should (equal (plist-get (supervisor-entry-success-exit-status entry) :signals)
+                   '(SIGHUP)))))
+
+(ert-deftest supervisor-test-parse-entry-pt3-defaults ()
+  "All PT3 fields default to nil for string entry."
+  (let ((entry (supervisor--parse-entry "sleep 300")))
+    (should-not (supervisor-entry-description entry))
+    (should-not (supervisor-entry-documentation entry))
+    (should-not (supervisor-entry-before entry))
+    (should-not (supervisor-entry-wants entry))
+    (should-not (supervisor-entry-kill-signal entry))
+    (should-not (supervisor-entry-kill-mode entry))
+    (should-not (supervisor-entry-remain-after-exit entry))
+    (should-not (supervisor-entry-success-exit-status entry))))
+
+(ert-deftest supervisor-test-parse-entry-27-elements ()
+  "Parse entry returns 27 elements."
+  (let ((entry (supervisor--parse-entry "sleep 300")))
+    (should (= (length entry) 27))))
+
+;; Validation tests for PT3 keys
+
+(ert-deftest supervisor-test-validate-description-valid ()
+  "Valid :description passes validation."
+  (should-not (supervisor--validate-entry '("cmd" :description "my service"))))
+
+(ert-deftest supervisor-test-validate-description-nil ()
+  "Nil :description passes validation."
+  (should-not (supervisor--validate-entry '("cmd" :description nil))))
+
+(ert-deftest supervisor-test-validate-description-invalid ()
+  "Non-string :description fails validation."
+  (should (string-match-p ":description must be"
+                          (supervisor--validate-entry '("cmd" :description 42)))))
+
+(ert-deftest supervisor-test-validate-documentation-valid-string ()
+  "String :documentation passes validation."
+  (should-not (supervisor--validate-entry '("cmd" :documentation "man:foo(1)"))))
+
+(ert-deftest supervisor-test-validate-documentation-valid-list ()
+  "List :documentation passes validation."
+  (should-not (supervisor--validate-entry
+               '("cmd" :documentation ("man:foo(1)" "https://example.com")))))
+
+(ert-deftest supervisor-test-validate-documentation-invalid ()
+  "Invalid :documentation fails validation."
+  (should (string-match-p ":documentation must be"
+                          (supervisor--validate-entry '("cmd" :documentation 42)))))
+
+(ert-deftest supervisor-test-validate-before-valid ()
+  "Valid :before passes."
+  (should-not (supervisor--validate-entry '("cmd" :before "other"))))
+
+(ert-deftest supervisor-test-validate-before-valid-list ()
+  "List :before passes."
+  (should-not (supervisor--validate-entry '("cmd" :before ("a" "b")))))
+
+(ert-deftest supervisor-test-validate-before-invalid ()
+  "Invalid :before fails."
+  (should (string-match-p ":before must be"
+                          (supervisor--validate-entry '("cmd" :before 42)))))
+
+(ert-deftest supervisor-test-validate-wants-valid ()
+  "Valid :wants passes."
+  (should-not (supervisor--validate-entry '("cmd" :wants "dep"))))
+
+(ert-deftest supervisor-test-validate-wants-invalid ()
+  "Invalid :wants fails."
+  (should (string-match-p ":wants must be"
+                          (supervisor--validate-entry '("cmd" :wants 42)))))
+
+(ert-deftest supervisor-test-validate-kill-signal-valid ()
+  "Valid :kill-signal passes."
+  (should-not (supervisor--validate-entry '("cmd" :kill-signal SIGTERM))))
+
+(ert-deftest supervisor-test-validate-kill-signal-short ()
+  "Short form :kill-signal passes."
+  (should-not (supervisor--validate-entry '("cmd" :kill-signal HUP))))
+
+(ert-deftest supervisor-test-validate-kill-signal-invalid ()
+  "Invalid :kill-signal fails."
+  (should (string-match-p ":kill-signal must be"
+                          (supervisor--validate-entry '("cmd" :kill-signal SIGFAKE)))))
+
+(ert-deftest supervisor-test-validate-kill-mode-valid ()
+  "Valid :kill-mode passes."
+  (should-not (supervisor--validate-entry '("cmd" :kill-mode process))))
+
+(ert-deftest supervisor-test-validate-kill-mode-mixed ()
+  "Mixed :kill-mode passes."
+  (should-not (supervisor--validate-entry '("cmd" :kill-mode mixed))))
+
+(ert-deftest supervisor-test-validate-kill-mode-invalid ()
+  "Invalid :kill-mode fails."
+  (should (string-match-p ":kill-mode must be"
+                          (supervisor--validate-entry '("cmd" :kill-mode group)))))
+
+(ert-deftest supervisor-test-validate-remain-after-exit-valid ()
+  "Valid :remain-after-exit passes."
+  (should-not (supervisor--validate-entry
+               '("cmd" :type oneshot :remain-after-exit t))))
+
+(ert-deftest supervisor-test-validate-remain-after-exit-nil ()
+  "Nil :remain-after-exit passes."
+  (should-not (supervisor--validate-entry
+               '("cmd" :type oneshot :remain-after-exit nil))))
+
+(ert-deftest supervisor-test-validate-remain-after-exit-invalid ()
+  "Non-boolean :remain-after-exit fails."
+  (should (string-match-p ":remain-after-exit must be"
+                          (supervisor--validate-entry
+                           '("cmd" :type oneshot :remain-after-exit 1)))))
+
+(ert-deftest supervisor-test-validate-remain-after-exit-simple-invalid ()
+  "Remain-after-exit on simple type fails."
+  (should (string-match-p ":remain-after-exit is invalid for :type simple"
+                          (supervisor--validate-entry
+                           '("cmd" :type simple :remain-after-exit t)))))
+
+(ert-deftest supervisor-test-validate-success-exit-status-valid-int ()
+  "Valid int :success-exit-status passes."
+  (should-not (supervisor--validate-entry '("cmd" :success-exit-status 42))))
+
+(ert-deftest supervisor-test-validate-success-exit-status-valid-signal ()
+  "Valid signal :success-exit-status passes."
+  (should-not (supervisor--validate-entry '("cmd" :success-exit-status SIGHUP))))
+
+(ert-deftest supervisor-test-validate-success-exit-status-valid-list ()
+  "Valid list :success-exit-status passes."
+  (should-not (supervisor--validate-entry
+               '("cmd" :success-exit-status (42 SIGHUP)))))
+
+(ert-deftest supervisor-test-validate-success-exit-status-invalid ()
+  "Non-int/signal :success-exit-status item fails."
+  (should (string-match-p ":success-exit-status item must be"
+                          (supervisor--validate-entry
+                           '("cmd" :success-exit-status (42 3.14))))))
+
+(ert-deftest supervisor-test-validate-success-exit-status-unknown-signal ()
+  "Unknown signal name in :success-exit-status fails."
+  (should (string-match-p "unknown signal SIGFAKE"
+                          (supervisor--validate-entry
+                           '("cmd" :success-exit-status SIGFAKE)))))
+
+(ert-deftest supervisor-test-validate-success-exit-status-oneshot-invalid ()
+  "Success-exit-status on oneshot type fails."
+  (should (string-match-p ":success-exit-status is invalid for :type oneshot"
+                          (supervisor--validate-entry
+                           '("cmd" :type oneshot :success-exit-status 42)))))
+
+;; Entry-to-service and service-to-entry roundtrip with PT3 fields
+
+(ert-deftest supervisor-test-entry-service-roundtrip-pt3 ()
+  "Round-trip entry->service->entry preserves PT3 fields."
+  (let* ((entry (supervisor--parse-entry
+                 '("cmd" :description "test svc"
+                   :documentation ("man:foo(1)")
+                   :before ("b")
+                   :wants ("w")
+                   :kill-signal SIGTERM
+                   :kill-mode mixed
+                   :success-exit-status (42 SIGHUP))))
+         (service (supervisor-entry-to-service entry))
+         (roundtripped (supervisor-service-to-entry service)))
+    (should (equal (supervisor-entry-description roundtripped) "test svc"))
+    (should (equal (supervisor-entry-documentation roundtripped) '("man:foo(1)")))
+    (should (equal (supervisor-entry-before roundtripped) '("b")))
+    (should (equal (supervisor-entry-wants roundtripped) '("w")))
+    (should (eq (supervisor-entry-kill-signal roundtripped) 'SIGTERM))
+    (should (eq (supervisor-entry-kill-mode roundtripped) 'mixed))
+    (should (equal (plist-get (supervisor-entry-success-exit-status roundtripped) :codes)
+                   '(42)))
+    (should (equal (plist-get (supervisor-entry-success-exit-status roundtripped) :signals)
+                   '(SIGHUP)))))
+
+(ert-deftest supervisor-test-entry-service-roundtrip-pt3-remain ()
+  "Round-trip preserves remain-after-exit for oneshot."
+  (let* ((entry (supervisor--parse-entry
+                 '("cmd" :type oneshot :remain-after-exit t)))
+         (service (supervisor-entry-to-service entry))
+         (roundtripped (supervisor-service-to-entry service)))
+    (should (eq (supervisor-entry-remain-after-exit roundtripped) t))))
+
+;; Unit-file keyword whitelist includes PT3 keys
+
+(ert-deftest supervisor-test-unit-file-keywords-pt3 ()
+  "Unit-file keywords include all PT3 keys."
+  (dolist (kw '(:description :documentation :before :wants
+                :kill-signal :kill-mode :remain-after-exit :success-exit-status))
+    (should (memq kw supervisor--unit-file-keywords))))
+
+;; Core keyword whitelist includes PT3 keys
+
+(ert-deftest supervisor-test-valid-keywords-pt3 ()
+  "Valid keywords include all PT3 keys."
+  (dolist (kw '(:description :documentation :before :wants
+                :kill-signal :kill-mode :remain-after-exit :success-exit-status))
+    (should (memq kw supervisor--valid-keywords))))
+
+;; Type-gating
+
+(ert-deftest supervisor-test-remain-after-exit-oneshot-only ()
+  "Remain-after-exit is in oneshot-only keywords."
+  (should (memq :remain-after-exit supervisor--oneshot-only-keywords)))
+
+(ert-deftest supervisor-test-success-exit-status-simple-only ()
+  "Success-exit-status is in simple-only keywords."
+  (should (memq :success-exit-status supervisor--simple-only-keywords)))
+
+;; Scaffold includes PT3 keys
+
+(ert-deftest supervisor-test-scaffold-pt3-keys ()
+  "Scaffold template mentions PT3 keywords."
+  (let ((scaffold (supervisor--unit-file-scaffold "test-id")))
+    (dolist (kw '(":description" ":documentation" ":before" ":wants"
+                  ":kill-signal" ":kill-mode" ":remain-after-exit"
+                  ":success-exit-status"))
+      (should (string-match-p kw scaffold)))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

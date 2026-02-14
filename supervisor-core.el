@@ -341,7 +341,9 @@ Scan PLIST and collect any key that appears more than once."
   '(:id :type :stage :delay :after :requires :enabled :disabled
     :restart :no-restart :logging :oneshot-blocking :oneshot-async :oneshot-timeout :tags
     :working-directory :environment :environment-file
-    :exec-stop :exec-reload :restart-sec)
+    :exec-stop :exec-reload :restart-sec
+    :description :documentation :before :wants
+    :kill-signal :kill-mode :remain-after-exit :success-exit-status)
   "List of valid keywords for entry plists.")
 
 (defconst supervisor--valid-types '(simple oneshot)
@@ -359,10 +361,12 @@ Scan PLIST and collect any key that appears more than once."
 HUP (1), INT (2), PIPE (13), TERM (15).")
 
 (defconst supervisor--simple-only-keywords
-  '(:restart :no-restart :exec-stop :exec-reload :restart-sec)
+  '(:restart :no-restart :exec-stop :exec-reload :restart-sec
+    :success-exit-status)
   "Keywords valid only for :type simple.")
 
-(defconst supervisor--oneshot-only-keywords '(:oneshot-blocking :oneshot-async :oneshot-timeout)
+(defconst supervisor--oneshot-only-keywords
+  '(:oneshot-blocking :oneshot-async :oneshot-timeout :remain-after-exit)
   "Keywords valid only for :type oneshot.")
 
 (defun supervisor--clean-exit-p (proc-status exit-code)
@@ -557,6 +561,68 @@ Return nil if valid, or a reason string if invalid."
                       (and (proper-list-p requires)
                            (cl-every #'stringp requires)))
             (push ":requires must be a string or list of strings" errors))))
+      ;; Check :description is a string or nil
+      (when (plist-member plist :description)
+        (let ((val (plist-get plist :description)))
+          (unless (or (null val) (stringp val))
+            (push ":description must be a string or nil" errors))))
+      ;; Check :documentation is string, list of strings, or nil
+      (when (plist-member plist :documentation)
+        (let ((val (plist-get plist :documentation)))
+          (unless (or (null val)
+                      (stringp val)
+                      (and (proper-list-p val)
+                           (cl-every #'stringp val)))
+            (push ":documentation must be a string, list of strings, or nil" errors))))
+      ;; Check :before is string or list of strings
+      (when (plist-member plist :before)
+        (let ((val (plist-get plist :before)))
+          (unless (or (null val)
+                      (stringp val)
+                      (and (proper-list-p val)
+                           (cl-every #'stringp val)))
+            (push ":before must be a string or list of strings" errors))))
+      ;; Check :wants is string or list of strings
+      (when (plist-member plist :wants)
+        (let ((val (plist-get plist :wants)))
+          (unless (or (null val)
+                      (stringp val)
+                      (and (proper-list-p val)
+                           (cl-every #'stringp val)))
+            (push ":wants must be a string or list of strings" errors))))
+      ;; Check :kill-signal is a valid signal name
+      (when (plist-member plist :kill-signal)
+        (let ((val (plist-get plist :kill-signal)))
+          (unless (or (null val)
+                      (supervisor--normalize-signal-name val))
+            (push ":kill-signal must be a valid signal name" errors))))
+      ;; Check :kill-mode is process or mixed
+      (when (plist-member plist :kill-mode)
+        (let ((val (plist-get plist :kill-mode)))
+          (unless (or (null val)
+                      (supervisor--normalize-kill-mode val))
+            (push ":kill-mode must be process or mixed" errors))))
+      ;; Check :remain-after-exit is boolean
+      (when (plist-member plist :remain-after-exit)
+        (let ((val (plist-get plist :remain-after-exit)))
+          (unless (or (eq val t) (eq val nil))
+            (push ":remain-after-exit must be t or nil" errors))))
+      ;; Check :success-exit-status shape: each item must be int or known signal
+      (when (plist-member plist :success-exit-status)
+        (let* ((val (plist-get plist :success-exit-status))
+               (items (cond ((null val) nil)
+                            ((listp val) val)
+                            (t (list val)))))
+          (dolist (item items)
+            (cond
+             ((integerp item)) ; ok
+             ((or (symbolp item) (stringp item))
+              (unless (supervisor--normalize-signal-name item)
+                (push (format ":success-exit-status contains unknown signal %s" item)
+                      errors)))
+             (t
+              (push (format ":success-exit-status item must be int or signal name, got %S" item)
+                    errors))))))
       ;; Return nil if valid, or joined error string
       (when errors
         (mapconcat #'identity (nreverse errors) "; "))))))
@@ -1232,7 +1298,25 @@ Field documentation:
   exec-reload    - Ordered list of reload command strings, simple only, or nil
                    Default: nil
   restart-sec    - Per-unit restart delay in seconds, simple only, or nil
-                   Default: nil (uses global `supervisor-restart-delay')"
+                   Default: nil (uses global `supervisor-restart-delay')
+  description    - Human-readable one-line description or nil
+                   Default: nil
+  documentation  - List of documentation URIs/paths, or nil
+                   Default: nil
+  before         - Before-ordering deps: list of IDs (same stage only)
+                   Inverted into :after edges during scheduling.
+                   Default: nil
+  wants          - Soft dependencies: list of IDs (same stage only)
+                   Missing/disabled/failed wanted units do not block.
+                   Default: nil
+  kill-signal    - Graceful stop signal symbol (e.g., `SIGTERM'), or nil
+                   Default: nil (uses SIGTERM)
+  kill-mode      - Kill mode symbol: `process' or `mixed', or nil
+                   Default: nil (uses process mode)
+  remain-after-exit - Oneshot active latch (boolean), oneshot only
+                   Default: nil
+  success-exit-status - Extra success criteria plist (:codes :signals)
+                   Simple only.  Default: nil"
   (id nil :type string :documentation "Unique identifier (required)")
   (command nil :type string :documentation "Shell command to execute (required)")
   (type 'simple :type symbol :documentation "Process type: simple or oneshot")
@@ -1251,7 +1335,15 @@ Field documentation:
   (environment-file nil :type list :documentation "Environment file paths")
   (exec-stop nil :type list :documentation "Stop command list (simple only)")
   (exec-reload nil :type list :documentation "Reload command list (simple only)")
-  (restart-sec nil :type (or null number) :documentation "Per-unit restart delay"))
+  (restart-sec nil :type (or null number) :documentation "Per-unit restart delay")
+  (description nil :type (or null string) :documentation "Human-readable description")
+  (documentation nil :type list :documentation "Documentation URI/path list")
+  (before nil :type list :documentation "Before-ordering dependencies")
+  (wants nil :type list :documentation "Soft dependencies (same stage)")
+  (kill-signal nil :type (or null symbol) :documentation "Graceful stop signal")
+  (kill-mode nil :type (or null symbol) :documentation "Kill mode: process or mixed")
+  (remain-after-exit nil :type boolean :documentation "Oneshot active latch")
+  (success-exit-status nil :type list :documentation "Extra success criteria plist"))
 
 (defconst supervisor-service-required-fields '(id command)
   "List of required fields in a service record.")
@@ -1273,7 +1365,15 @@ Field documentation:
     (environment-file . nil)
     (exec-stop . nil)
     (exec-reload . nil)
-    (restart-sec . nil))
+    (restart-sec . nil)
+    (description . nil)
+    (documentation . nil)
+    (before . nil)
+    (wants . nil)
+    (kill-signal . nil)
+    (kill-mode . nil)
+    (remain-after-exit . nil)
+    (success-exit-status . nil))
   "Alist of optional fields with their default values.
 A value of :defer means the default is resolved at runtime.")
 
@@ -1285,7 +1385,9 @@ A value of :defer means the default is resolved at runtime.")
 ;;   (id cmd delay enabled-p restart-policy logging-p type stage after
 ;;    oneshot-blocking oneshot-timeout tags requires
 ;;    working-directory environment environment-file
-;;    exec-stop exec-reload restart-sec)
+;;    exec-stop exec-reload restart-sec
+;;    description documentation before wants
+;;    kill-signal kill-mode remain-after-exit success-exit-status)
 
 (defsubst supervisor-entry-id (entry)
   "Return the ID of parsed ENTRY."
@@ -1367,6 +1469,38 @@ Value is one of `always', `no', `on-success', or `on-failure'."
 (defsubst supervisor-entry-restart-sec (entry)
   "Return the per-unit restart delay of parsed ENTRY, or nil."
   (nth 18 entry))
+
+(defsubst supervisor-entry-description (entry)
+  "Return the description string of parsed ENTRY, or nil."
+  (nth 19 entry))
+
+(defsubst supervisor-entry-documentation (entry)
+  "Return the documentation list of parsed ENTRY, or nil."
+  (nth 20 entry))
+
+(defsubst supervisor-entry-before (entry)
+  "Return the before-ordering dependencies of parsed ENTRY."
+  (nth 21 entry))
+
+(defsubst supervisor-entry-wants (entry)
+  "Return the soft dependencies of parsed ENTRY."
+  (nth 22 entry))
+
+(defsubst supervisor-entry-kill-signal (entry)
+  "Return the kill signal symbol of parsed ENTRY, or nil."
+  (nth 23 entry))
+
+(defsubst supervisor-entry-kill-mode (entry)
+  "Return the kill mode symbol of parsed ENTRY, or nil."
+  (nth 24 entry))
+
+(defsubst supervisor-entry-remain-after-exit (entry)
+  "Return non-nil if oneshot ENTRY latches active on success."
+  (nth 25 entry))
+
+(defsubst supervisor-entry-success-exit-status (entry)
+  "Return the success-exit-status plist of parsed ENTRY, or nil."
+  (nth 26 entry))
 
 ;; Forward declarations for timer state variables (defined in supervisor-timer.el)
 ;; These are only accessed when timer module is loaded.
@@ -1861,13 +1995,13 @@ Returns sorted entries list."
             (puthash id t cycle-fallback-ids)
             (puthash id nil deps)))
         ;; Return entries with :after and :requires stripped
-        ;; (full 19-element entries from parse-entry)
+        ;; (full 27-element entries from parse-entry)
         (mapcar (lambda (entry)
                   (append (cl-subseq entry 0 8)
                           (list nil)                ; clear :after (index 8)
                           (cl-subseq entry 9 12)
                           (list nil)                ; clear :requires (index 12)
-                          (cl-subseq entry 13 19))) ; preserve new fields
+                          (cl-subseq entry 13 27))) ; preserve new fields
                 entries)))))
 
 ;;; Helpers
@@ -1882,33 +2016,102 @@ If VAL is nil, return nil."
         ((and (proper-list-p val) (cl-every #'stringp val)) val)
         (t nil)))
 
+(defun supervisor--deduplicate-stable (list)
+  "Return LIST with duplicates removed, preserving first occurrence order.
+Uses `equal' for comparison."
+  (let ((seen (make-hash-table :test 'equal))
+        (result nil))
+    (dolist (item list)
+      (unless (gethash item seen)
+        (puthash item t seen)
+        (push item result)))
+    (nreverse result)))
+
+(defconst supervisor--known-signals
+  '(SIGHUP SIGINT SIGQUIT SIGILL SIGTRAP SIGABRT SIGBUS SIGFPE
+    SIGKILL SIGUSR1 SIGSEGV SIGUSR2 SIGPIPE SIGALRM SIGTERM
+    SIGSTKFLT SIGCHLD SIGCONT SIGSTOP SIGTSTP SIGTTIN SIGTTOU
+    SIGURG SIGXCPU SIGXFSZ SIGVTALRM SIGPROF SIGWINCH SIGIO
+    SIGPWR SIGSYS)
+  "List of known POSIX signal names as symbols.")
+
+(defun supervisor--normalize-signal-name (name)
+  "Normalize signal NAME to canonical SIGXXX symbol.
+Accept symbol or string forms like TERM, SIGTERM, term, sigterm.
+Return the canonical symbol (e.g., `SIGTERM'), or nil if unknown."
+  (let* ((s (upcase (if (symbolp name) (symbol-name name)
+                      (if (stringp name) name ""))))
+         (full (if (string-prefix-p "SIG" s) s (concat "SIG" s)))
+         (sym (intern full)))
+    (when (memq sym supervisor--known-signals)
+      sym)))
+
+(defun supervisor--normalize-kill-mode (val)
+  "Normalize VAL to a kill-mode symbol.
+Accept `process' or `mixed' (symbol or string).
+Return the symbol, or nil if invalid."
+  (let ((sym (cond ((symbolp val) val)
+                   ((stringp val) (intern val))
+                   (t nil))))
+    (when (memq sym '(process mixed))
+      sym)))
+
+(defun supervisor--normalize-success-exit-status (val)
+  "Normalize VAL to a success-exit-status plist with :codes and :signals.
+Accept integer, signal name (symbol/string), or list of mixed.
+Return (:codes (INTS...) :signals (SYMS...)) with stable dedup,
+or nil if VAL is nil."
+  (when val
+    (let ((items (if (listp val) val (list val)))
+          (codes nil)
+          (signals nil))
+      (dolist (item items)
+        (cond
+         ((integerp item)
+          (push item codes))
+         ((or (symbolp item) (stringp item))
+          (let ((sig (supervisor--normalize-signal-name item)))
+            (when sig
+              (push sig signals))))))
+      (list :codes (supervisor--deduplicate-stable (nreverse codes))
+            :signals (supervisor--deduplicate-stable (nreverse signals))))))
+
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
-Return a 19-element list: (id cmd delay enabled-p restart-policy
+Return a 27-element list: (id cmd delay enabled-p restart-policy
 logging-p type stage after oneshot-blocking oneshot-timeout tags
 requires working-directory environment environment-file exec-stop
-exec-reload restart-sec).
+exec-reload restart-sec description documentation before wants
+kill-signal kill-mode remain-after-exit success-exit-status).
 
 Indices (schema v1):
-  0  id                - unique identifier string
-  1  cmd               - shell command string
-  2  delay             - seconds to wait before starting
-  3  enabled-p         - whether to start this service
-  4  restart-policy    - restart policy symbol
-  5  logging-p         - whether to log stdout/stderr
-  6  type              - `simple' or `oneshot'
-  7  stage             - startup stage symbol
-  8  after             - ordering dependencies (same stage)
-  9  oneshot-blocking  - block stage for oneshot exit
-  10 oneshot-timeout   - timeout for blocking oneshots
-  11 tags              - list of filter tags
-  12 requires          - requirement dependencies
-  13 working-directory - process working directory or nil
-  14 environment       - environment alist or nil
-  15 environment-file  - list of env-file paths or nil
-  16 exec-stop         - list of stop commands or nil
-  17 exec-reload       - list of reload commands or nil
-  18 restart-sec       - per-unit restart delay or nil
+  0  id                  - unique identifier string
+  1  cmd                 - shell command string
+  2  delay               - seconds to wait before starting
+  3  enabled-p           - whether to start this service
+  4  restart-policy      - restart policy symbol
+  5  logging-p           - whether to log stdout/stderr
+  6  type                - `simple' or `oneshot'
+  7  stage               - startup stage symbol
+  8  after               - ordering dependencies (same stage)
+  9  oneshot-blocking    - block stage for oneshot exit
+  10 oneshot-timeout     - timeout for blocking oneshots
+  11 tags                - list of filter tags
+  12 requires            - requirement dependencies
+  13 working-directory   - process working directory or nil
+  14 environment         - environment alist or nil
+  15 environment-file    - list of env-file paths or nil
+  16 exec-stop           - list of stop commands or nil
+  17 exec-reload         - list of reload commands or nil
+  18 restart-sec         - per-unit restart delay or nil
+  19 description         - human-readable description or nil
+  20 documentation       - list of doc URIs/paths or nil
+  21 before              - before-ordering deps or nil
+  22 wants               - soft deps or nil
+  23 kill-signal         - canonical signal symbol or nil
+  24 kill-mode           - `process' or `mixed' or nil
+  25 remain-after-exit   - oneshot active latch boolean
+  26 success-exit-status - plist (:codes :signals) or nil
 
 ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
@@ -1916,7 +2119,8 @@ Use accessor functions instead of direct indexing for new code."
       (let ((id (file-name-nondirectory (car (split-string-and-unquote entry)))))
         (list id entry 0 t 'always t 'simple 'stage3 nil
               supervisor-oneshot-default-blocking supervisor-oneshot-timeout nil nil
-              nil nil nil nil nil nil))
+              nil nil nil nil nil nil
+              nil nil nil nil nil nil nil nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
            (id (or (plist-get plist :id)
@@ -1966,7 +2170,7 @@ Use accessor functions instead of direct indexing for new code."
            (tags (cond ((null tags-raw) nil)
                        ((listp tags-raw) tags-raw)
                        (t (list tags-raw))))
-           ;; New P2 fields (indices 13-18)
+           ;; P2 fields (indices 13-18)
            (working-directory (plist-get plist :working-directory))
            (environment (plist-get plist :environment))
            (environment-file
@@ -1978,11 +2182,35 @@ Use accessor functions instead of direct indexing for new code."
            (exec-reload
             (supervisor--normalize-string-or-list
              (plist-get plist :exec-reload)))
-           (restart-sec (plist-get plist :restart-sec)))
+           (restart-sec (plist-get plist :restart-sec))
+           ;; PT3 fields (indices 19-26)
+           (description (plist-get plist :description))
+           (documentation-raw (plist-get plist :documentation))
+           (documentation
+            (supervisor--deduplicate-stable
+             (supervisor--normalize-string-or-list documentation-raw)))
+           (before
+            (supervisor--deduplicate-stable
+             (supervisor--normalize-after (plist-get plist :before))))
+           (wants
+            (supervisor--deduplicate-stable
+             (supervisor--normalize-after (plist-get plist :wants))))
+           (kill-signal-raw (plist-get plist :kill-signal))
+           (kill-signal (when kill-signal-raw
+                          (supervisor--normalize-signal-name kill-signal-raw)))
+           (kill-mode-raw (plist-get plist :kill-mode))
+           (kill-mode (when kill-mode-raw
+                        (supervisor--normalize-kill-mode kill-mode-raw)))
+           (remain-after-exit (plist-get plist :remain-after-exit))
+           (success-exit-status-raw (plist-get plist :success-exit-status))
+           (success-exit-status
+            (supervisor--normalize-success-exit-status success-exit-status-raw)))
       (list id cmd delay enabled restart logging type stage after
             oneshot-blocking oneshot-timeout tags requires
             working-directory environment environment-file
-            exec-stop exec-reload restart-sec))))
+            exec-stop exec-reload restart-sec
+            description documentation before wants
+            kill-signal kill-mode remain-after-exit success-exit-status))))
 
 ;;; Entry/Service Conversion Functions
 
@@ -2007,7 +2235,15 @@ Use accessor functions instead of direct indexing for new code."
    :environment-file (supervisor-entry-environment-file entry)
    :exec-stop (supervisor-entry-exec-stop entry)
    :exec-reload (supervisor-entry-exec-reload entry)
-   :restart-sec (supervisor-entry-restart-sec entry)))
+   :restart-sec (supervisor-entry-restart-sec entry)
+   :description (supervisor-entry-description entry)
+   :documentation (supervisor-entry-documentation entry)
+   :before (supervisor-entry-before entry)
+   :wants (supervisor-entry-wants entry)
+   :kill-signal (supervisor-entry-kill-signal entry)
+   :kill-mode (supervisor-entry-kill-mode entry)
+   :remain-after-exit (supervisor-entry-remain-after-exit entry)
+   :success-exit-status (supervisor-entry-success-exit-status entry)))
 
 (defun supervisor-service-to-entry (service)
   "Convert SERVICE struct to a parsed entry tuple."
@@ -2029,7 +2265,15 @@ Use accessor functions instead of direct indexing for new code."
         (supervisor-service-environment-file service)
         (supervisor-service-exec-stop service)
         (supervisor-service-exec-reload service)
-        (supervisor-service-restart-sec service)))
+        (supervisor-service-restart-sec service)
+        (supervisor-service-description service)
+        (supervisor-service-documentation service)
+        (supervisor-service-before service)
+        (supervisor-service-wants service)
+        (supervisor-service-kill-signal service)
+        (supervisor-service-kill-mode service)
+        (supervisor-service-remain-after-exit service)
+        (supervisor-service-success-exit-status service)))
 
 (defun supervisor--check-crash-loop (id)
   "Check if ID is crash-looping.  Return t if should NOT restart."

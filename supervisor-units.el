@@ -204,7 +204,9 @@ Return a plist with keys:
   '(:id :command :type :stage :delay :after :requires :enabled :disabled
     :restart :no-restart :logging :oneshot-blocking :oneshot-async :oneshot-timeout :tags
     :working-directory :environment :environment-file
-    :exec-stop :exec-reload :restart-sec)
+    :exec-stop :exec-reload :restart-sec
+    :description :documentation :before :wants
+    :kill-signal :kill-mode :remain-after-exit :success-exit-status)
   "Valid keywords in a unit-file plist.
 Includes `:command' which is unit-file specific.")
 
@@ -420,6 +422,14 @@ program list should use `supervisor--effective-programs' instead."
           " ;; :exec-stop \"cmd\"    ; custom stop command (simple only)\n"
           " ;; :exec-reload \"cmd\"  ; custom reload command (simple only)\n"
           " ;; :restart-sec 5      ; per-unit restart delay (simple only)\n"
+          " ;; :description \"short desc\"           ; human-readable description\n"
+          " ;; :documentation (\"man:foo(1)\")       ; doc URIs/paths\n"
+          " ;; :before (\"other-id\")                ; start before these IDs\n"
+          " ;; :wants (\"other-id\")                 ; soft dependency\n"
+          " ;; :kill-signal SIGTERM                 ; graceful stop signal\n"
+          " ;; :kill-mode process                   ; process or mixed\n"
+          " ;; :remain-after-exit t                 ; active latch (oneshot only)\n"
+          " ;; :success-exit-status (0 SIGHUP)      ; extra success criteria (simple only)\n"
           " )\n"))
 
 ;;; Unit-File Validate-on-Save
