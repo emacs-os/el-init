@@ -495,11 +495,16 @@ Return nil if valid, or a reason string if invalid."
             (push ":stage must be a symbol, not a string" errors))
            ((not (assq stage supervisor-stages))
             (push (format ":stage must be one of %s" supervisor-stage-names) errors)))))
-      ;; Check :id is a string when provided
+      ;; Check :id is a valid string when provided
       (when (plist-member plist :id)
         (let ((id (plist-get plist :id)))
-          (unless (stringp id)
-            (push ":id must be a string" errors))))
+          (cond
+           ((not (stringp id))
+            (push ":id must be a string" errors))
+           ((string-empty-p id)
+            (push ":id must not be empty" errors))
+           ((not (string-match-p "\\`[A-Za-z0-9._:@-]+\\'" id))
+            (push ":id contains invalid characters (allowed: A-Z a-z 0-9 . _ : @ -)" errors)))))
       ;; Check :delay is a non-negative number
       (when (plist-member plist :delay)
         (let ((delay (plist-get plist :delay)))

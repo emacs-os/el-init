@@ -11146,5 +11146,37 @@ No warning is emitted when there are simply no child processes."
     (should (stringp result))
     (should (string-match-p "empty or whitespace-only" result))))
 
+;;; V3: ID hardening tests
+
+(ert-deftest supervisor-test-validate-entry-empty-id ()
+  "Empty :id is rejected by entry validation."
+  (let ((result (supervisor--validate-entry '("cmd" :id ""))))
+    (should (stringp result))
+    (should (string-match-p ":id must not be empty" result))))
+
+(ert-deftest supervisor-test-validate-entry-id-with-slash ()
+  "ID containing slash is rejected by entry validation."
+  (let ((result (supervisor--validate-entry '("cmd" :id "../etc/passwd"))))
+    (should (stringp result))
+    (should (string-match-p "invalid characters" result))))
+
+(ert-deftest supervisor-test-validate-entry-id-with-control-char ()
+  "ID containing control characters is rejected by entry validation."
+  (let ((result (supervisor--validate-entry '("cmd" :id "foo\nbar"))))
+    (should (stringp result))
+    (should (string-match-p "invalid characters" result))))
+
+(ert-deftest supervisor-test-validate-entry-id-valid-chars ()
+  "ID with valid characters passes entry validation."
+  (let ((result (supervisor--validate-entry '("cmd" :id "my-svc_2.0:main@host"))))
+    (should-not result)))
+
+(ert-deftest supervisor-test-validate-unit-file-id-invalid-chars ()
+  "ID with invalid characters is rejected by unit-file validation."
+  (let ((result (supervisor--validate-unit-file-plist
+                 '(:id "foo/bar" :command "cmd") "test.el" 1)))
+    (should (stringp result))
+    (should (string-match-p "invalid characters" result))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

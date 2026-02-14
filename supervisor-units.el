@@ -326,6 +326,9 @@ Return nil if valid, or a reason string with file:line context if invalid."
     (format "%s:%d: :id must be a string" path line))
    ((string-empty-p (plist-get plist :id))
     (format "%s:%d: :id must be non-empty" path line))
+   ((not (string-match-p "\\`[A-Za-z0-9._:@-]+\\'" (plist-get plist :id)))
+    (format "%s:%d: :id contains invalid characters (allowed: A-Z a-z 0-9 . _ : @ -)"
+            path line))
    ((not (plist-get plist :command))
     (format "%s:%d: missing :command" path line))
    ((not (stringp (plist-get plist :command)))
