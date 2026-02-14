@@ -470,3 +470,31 @@ This plan is complete only when all are true:
 2. `PLAN_UNIFIED_FINALIZED.md` checklist is filled with actual SHAs.
 3. `README.org` validation rules match implemented behavior exactly.
 4. `make check` passes on final tip.
+
+## 9. Implementation Checklist
+
+Date: 2026-02-14
+
+| Phase | Commit | Tests Added | Total Tests |
+|-------|--------|-------------|-------------|
+| V1 | 943a717 | 4 | 805 |
+| V2 | 4fa520b | 5 | 810 |
+| V3 | d5c5185 | 5 | 815 |
+| V4 | 727605a | 6 | 821 |
+| V5 | 20e2cf2 | 5 | 826 |
+| V6 | 8bc91f7 | 11 | 837 |
+| V7 | 127f34f | 4 | 841 |
+| V8 | c65ceaf | 10 (incl V6 supp + V7 fix) | 851 |
+| V9 | 53556b0 | 6 | 857 |
+| V10 | 0a6c2aa | 4 (+ 3 test adjustments) | 861 |
+| V11 | (pending) | 1 (coverage gap) | 862 |
+
+Final `make check`: PASS (862/862)
+
+Coverage sweep results:
+- Every error string in `supervisor--validate-entry` has negative test coverage.
+- Every validation check has positive test coverage.
+- Boundary-value tests present for: exit-status (0, 255, -1, 256),
+  oneshot-timeout (0, positive), restart-sec (nil edge case).
+- V11 gap closed: added test for "entry must be a string or list" path.
+- No validation path signals on malformed input (all return nil or reason string).

@@ -11489,5 +11489,16 @@ No warning is emitted when there are simply no child processes."
     (should (stringp result))
     (should (string-match-p ":exec-stop must not contain empty commands" result))))
 
+;;; V11: Coverage sweep gap tests
+
+(ert-deftest supervisor-test-validate-entry-invalid-entry-type ()
+  "Non-string non-list entries are rejected."
+  (should (string-match-p "entry must be a string or list"
+                          (supervisor--validate-entry 123)))
+  (should (string-match-p "entry must be a string or list"
+                          (supervisor--validate-entry '(123 :id "x"))))
+  (should (string-match-p "entry must be a string or list"
+                          (supervisor--validate-entry nil))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
