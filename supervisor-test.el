@@ -4932,25 +4932,29 @@ When from-time is exactly at a matching minute boundary, should return next occu
 (ert-deftest supervisor-test-calendar-next-minute-dst-gap ()
   "Calendar next minute skips non-existent DST gap times.
 On March 9, 2025 in America/New_York, 2:00-2:59 AM doesn't exist (spring forward).
-Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM."
-  (let ((process-environment (cons "TZ=America/New_York" process-environment)))
-    ;; Skip test if TZ setting doesn't take effect (CI may lack timezone data)
-    ;; In America/New_York, 2:30 AM on March 9 2025 doesn't exist due to DST.
-    ;; encode-time will shift it to 3:30 AM. If it stays at 2:30, TZ isn't working.
-    (let* ((test-time (encode-time 0 30 2 9 3 2025))
-           (test-decoded (decode-time test-time)))
-      ;; If DST is working, hour should be 3 (shifted from non-existent 2:30)
-      (skip-unless (= 3 (decoded-time-hour test-decoded))))
-    ;; From March 9, 2025 00:00:00 (before DST transition)
-    (let* ((from (encode-time 0 0 0 9 3 2025))
-           (next (supervisor-timer--calendar-next-minute
-                  from '(:hour 2 :minute 30) 7)))  ; 7 days max
-      (should next)
-      (let ((decoded (decode-time next)))
-        ;; Should be March 10 (next day), not March 9
-        (should (= 10 (decoded-time-day decoded)))
-        (should (= 2 (decoded-time-hour decoded)))
-        (should (= 30 (decoded-time-minute decoded)))))))
+Searching for 2:30 AM should skip March 9 and return March 10 2:30 AM.
+Uses `setenv' rather than `process-environment' to ensure the C-level
+timezone that `encode-time' and `decode-time' use is actually changed."
+  (let ((orig-tz (getenv "TZ")))
+    (unwind-protect
+        (progn
+          (setenv "TZ" "America/New_York")
+          ;; Skip test if TZ setting doesn't take effect
+          ;; (CI may lack timezone data for America/New_York)
+          (let* ((test-time (encode-time 0 30 2 9 3 2025))
+                 (test-decoded (decode-time test-time)))
+            (skip-unless (= 3 (decoded-time-hour test-decoded))))
+          ;; From March 9, 2025 00:00:00 (before DST transition)
+          (let* ((from (encode-time 0 0 0 9 3 2025))
+                 (next (supervisor-timer--calendar-next-minute
+                        from '(:hour 2 :minute 30) 7)))  ; 7 days max
+            (should next)
+            (let ((decoded (decode-time next)))
+              ;; Should be March 10 (next day), not March 9
+              (should (= 10 (decoded-time-day decoded)))
+              (should (= 2 (decoded-time-hour decoded)))
+              (should (= 30 (decoded-time-minute decoded))))))
+      (setenv "TZ" orig-tz))))
 
 (ert-deftest supervisor-test-timer-next-startup-time ()
   "Startup trigger computes time relative to scheduler start."
@@ -8920,12 +8924,13 @@ could incorrectly preserve a non-running disabled unit."
                  nil "test-id" nil nil nil 5))))
 
 (ert-deftest supervisor-test-manual-stop-with-exec-stop ()
-  "Exec-stop commands run before process termination with signal fallback."
+  "Exec-stop commands run before kill-signal with escalation timer."
   (let ((supervisor--processes (make-hash-table :test 'equal))
         (supervisor--manually-stopped (make-hash-table :test 'equal))
         (supervisor--manually-started (make-hash-table :test 'equal))
         (chain-called nil)
-        (delete-called nil)
+        (signal-sent nil)
+        (timer-set nil)
         (proc (start-process "test-stop" nil "sleep" "300")))
     (unwind-protect
         (progn
@@ -8943,19 +8948,18 @@ could incorrectly preserve a non-running disabled unit."
                        (should (process-live-p proc))
                        t))
                     ((symbol-function 'supervisor--unit-file-directory-for-id)
-                     (lambda (_id) nil)))
-            ;; Wrap delete-process to track it was called after chain
-            (let ((orig-delete (symbol-function 'delete-process)))
-              (cl-letf (((symbol-function 'delete-process)
-                         (lambda (p &rest args)
-                           (when (eq p proc)
-                             (setq delete-called t))
-                           (apply orig-delete p args))))
-                (let ((result (supervisor--manual-stop "test-stop")))
-                  (should (eq (plist-get result :status) 'stopped))
-                  (should (equal chain-called '("my-stop-cmd")))
-                  ;; Signal fallback: delete-process called after exec-stop
-                  (should delete-called))))))
+                     (lambda (_id) nil))
+                    ((symbol-function 'signal-process)
+                     (lambda (_p sig) (setq signal-sent sig)))
+                    ((symbol-function 'run-at-time)
+                     (lambda (&rest _args) (setq timer-set t))))
+            (let ((result (supervisor--manual-stop "test-stop")))
+              (should (eq (plist-get result :status) 'stopped))
+              (should (equal chain-called '("my-stop-cmd")))
+              ;; Kill-signal sent after exec-stop
+              (should (eq 'SIGTERM signal-sent))
+              ;; Escalation timer set up
+              (should timer-set))))
       (when (process-live-p proc)
         (delete-process proc)))))
 
@@ -8990,10 +8994,11 @@ could incorrectly preserve a non-running disabled unit."
         (delete-process proc)))))
 
 (ert-deftest supervisor-test-manual-stop-exec-stop-failure-still-terminates ()
-  "Even if exec-stop fails, process is still terminated."
+  "Even if exec-stop fails, kill-signal is still sent."
   (let ((supervisor--processes (make-hash-table :test 'equal))
         (supervisor--manually-stopped (make-hash-table :test 'equal))
         (supervisor--manually-started (make-hash-table :test 'equal))
+        (signal-sent nil)
         (proc (start-process "test-stop3" nil "sleep" "300")))
     (unwind-protect
         (progn
@@ -9008,11 +9013,15 @@ could incorrectly preserve a non-running disabled unit."
                      (lambda (_cmds _id _dir _env _log _timeout)
                        nil))  ; Simulate failure
                     ((symbol-function 'supervisor--unit-file-directory-for-id)
-                     (lambda (_id) nil)))
+                     (lambda (_id) nil))
+                    ((symbol-function 'signal-process)
+                     (lambda (_p sig) (setq signal-sent sig)))
+                    ((symbol-function 'run-at-time)
+                     (lambda (&rest _args))))
             (let ((result (supervisor--manual-stop "test-stop3")))
               (should (eq (plist-get result :status) 'stopped))
-              ;; Process should be terminated regardless
-              (should-not (process-live-p proc)))))
+              ;; Kill-signal sent regardless of exec-stop failure
+              (should (eq 'SIGTERM signal-sent)))))
       (when (process-live-p proc)
         (delete-process proc)))))
 
@@ -10117,6 +10126,385 @@ in-degree of dependents including :wants edges."
     (supervisor--dag-handle-spawn-failure "a")
     ;; b should now be unblocked (in-degree 0)
     (should (= 0 (gethash "b" supervisor--dag-in-degree)))))
+
+;;;; Phase N4: Kill Controls
+
+(ert-deftest supervisor-test-kill-signal-for-id-default ()
+  "Return SIGTERM when unit has no :kill-signal configured."
+  (let* ((supervisor--programs-cache
+          (list (list "sleep 300" :id "svc1")))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (should (eq 'SIGTERM (supervisor--kill-signal-for-id "svc1")))))
+
+(ert-deftest supervisor-test-kill-signal-for-id-configured ()
+  "Return configured :kill-signal for unit."
+  (let* ((supervisor--programs-cache
+          (list (list "sleep 300" :id "svc1" :kill-signal "SIGINT")))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (should (eq 'SIGINT (supervisor--kill-signal-for-id "svc1")))))
+
+(ert-deftest supervisor-test-kill-signal-for-id-unknown ()
+  "Return SIGTERM for unknown unit ID."
+  (let* ((supervisor--programs-cache nil)
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (should (eq 'SIGTERM (supervisor--kill-signal-for-id "nonexistent")))))
+
+(ert-deftest supervisor-test-kill-mode-for-id-default ()
+  "Return `process' when unit has no :kill-mode configured."
+  (let* ((supervisor--programs-cache
+          (list (list "sleep 300" :id "svc1")))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (should (eq 'process (supervisor--kill-mode-for-id "svc1")))))
+
+(ert-deftest supervisor-test-kill-mode-for-id-mixed ()
+  "Return `mixed' when unit has :kill-mode mixed."
+  (let* ((supervisor--programs-cache
+          (list (list "sleep 300" :id "svc1" :kill-mode 'mixed)))
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (should (eq 'mixed (supervisor--kill-mode-for-id "svc1")))))
+
+(ert-deftest supervisor-test-kill-mode-for-id-unknown ()
+  "Return `process' for unknown unit ID."
+  (let* ((supervisor--programs-cache nil)
+         (supervisor--invalid (make-hash-table :test 'equal)))
+    (should (eq 'process (supervisor--kill-mode-for-id "nonexistent")))))
+
+(ert-deftest supervisor-test-process-descendants-returns-children ()
+  "Descendant discovery finds child PIDs via process-attributes."
+  (cl-letf (((symbol-function 'list-system-processes)
+             (lambda () '(1 10 20 30 40)))
+            ((symbol-function 'process-attributes)
+             (lambda (pid)
+               (pcase pid
+                 (10 '((ppid . 1)))
+                 (20 '((ppid . 10)))
+                 (30 '((ppid . 10)))
+                 (40 '((ppid . 99)))
+                 (_ nil)))))
+    (let ((desc (supervisor--process-descendants 10)))
+      (should (member 20 desc))
+      (should (member 30 desc))
+      (should-not (member 40 desc))
+      (should-not (member 1 desc)))))
+
+(ert-deftest supervisor-test-process-descendants-transitive ()
+  "Descendant discovery finds grandchildren transitively."
+  (cl-letf (((symbol-function 'list-system-processes)
+             (lambda () '(1 10 20 30)))
+            ((symbol-function 'process-attributes)
+             (lambda (pid)
+               (pcase pid
+                 (10 '((ppid . 1)))
+                 (20 '((ppid . 10)))
+                 (30 '((ppid . 20)))
+                 (_ nil)))))
+    (let ((desc (supervisor--process-descendants 10)))
+      (should (member 20 desc))
+      (should (member 30 desc)))))
+
+(ert-deftest supervisor-test-process-descendants-fallback-on-error ()
+  "Descendant discovery returns nil and logs warning on error."
+  (let ((warnings nil))
+    (cl-letf (((symbol-function 'list-system-processes)
+               (lambda () (error "Not supported")))
+              ((symbol-function 'supervisor--log)
+               (lambda (level fmt &rest args)
+                 (when (eq level 'warning)
+                   (push (apply #'format fmt args) warnings)))))
+      (should-not (supervisor--process-descendants 1234))
+      (should (= 1 (length warnings)))
+      (should (string-match-p "descendant discovery failed" (car warnings))))))
+
+(ert-deftest supervisor-test-kill-with-descendants-main-only ()
+  "Kill with descendants sends SIGKILL to main process only.
+No warning is emitted when there are simply no child processes."
+  (let* ((killed-signals nil)
+         (warnings nil)
+         (proc (start-process "test-kill" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--process-descendants)
+                   (lambda (_pid) nil))
+                  ((symbol-function 'signal-process)
+                   (lambda (p sig)
+                     (push (list p sig) killed-signals)))
+                  ((symbol-function 'supervisor--log)
+                   (lambda (level _fmt &rest _args)
+                     (when (eq level 'warning)
+                       (push t warnings)))))
+          (supervisor--kill-with-descendants proc)
+          (should (= 1 (length killed-signals)))
+          (should (eq 'SIGKILL (cadr (car killed-signals))))
+          ;; No warning for normal "no children" case
+          (should (= 0 (length warnings))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-kill-with-descendants-mixed ()
+  "Kill with descendants sends SIGKILL to main and descendant PIDs."
+  (let* ((killed nil)
+         (proc (start-process "test-kill-mixed" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--process-descendants)
+                   (lambda (_pid) '(9991 9992)))
+                  ((symbol-function 'signal-process)
+                   (lambda (p sig)
+                     (push (list p sig) killed)))
+                  ((symbol-function 'supervisor--log)
+                   (lambda (&rest _args))))
+          (supervisor--kill-with-descendants proc)
+          ;; Main process + 2 descendants = 3 SIGKILL signals
+          (should (= 3 (length killed)))
+          (should (cl-every (lambda (entry) (eq 'SIGKILL (cadr entry)))
+                            killed)))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-manual-stop-uses-kill-signal ()
+  "Manual stop sends configured :kill-signal instead of default."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (signaled-with nil)
+         (proc (start-process "test-stop-sig" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "svc1" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--run-exec-stop-for-id)
+                     (lambda (_id)))
+                    ((symbol-function 'supervisor--kill-signal-for-id)
+                     (lambda (_id) 'SIGUSR1))
+                    ((symbol-function 'supervisor--kill-mode-for-id)
+                     (lambda (_id) 'process))
+                    ((symbol-function 'signal-process)
+                     (lambda (_p sig)
+                       (push sig signaled-with)))
+                    ((symbol-function 'run-at-time)
+                     (lambda (&rest _args))))
+            (let ((result (supervisor--manual-stop "svc1")))
+              (should (eq 'stopped (plist-get result :status)))
+              ;; Should have sent SIGUSR1, not SIGTERM
+              (should (memq 'SIGUSR1 signaled-with))
+              (should-not (memq 'SIGTERM signaled-with)))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-manual-stop-escalation-timer ()
+  "Manual stop sets up SIGKILL escalation timer."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (timer-set nil)
+         (proc (start-process "test-esc" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "svc1" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--run-exec-stop-for-id)
+                     (lambda (_id)))
+                    ((symbol-function 'supervisor--kill-signal-for-id)
+                     (lambda (_id) 'SIGTERM))
+                    ((symbol-function 'supervisor--kill-mode-for-id)
+                     (lambda (_id) 'process))
+                    ((symbol-function 'signal-process)
+                     (lambda (_p _sig)))
+                    ((symbol-function 'run-at-time)
+                     (lambda (timeout _repeat fn)
+                       (setq timer-set
+                             (list :timeout timeout :fn fn)))))
+            (supervisor--manual-stop "svc1")
+            ;; Escalation timer should be set
+            (should timer-set)
+            (should (= supervisor-shutdown-timeout
+                       (plist-get timer-set :timeout)))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-manual-stop-mixed-escalation ()
+  "Manual stop with :kill-mode mixed uses kill-with-descendants on escalation."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (escalation-fn nil)
+         (kill-descendants-called nil)
+         (proc (start-process "test-mixed" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "svc1" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--run-exec-stop-for-id)
+                     (lambda (_id)))
+                    ((symbol-function 'supervisor--kill-signal-for-id)
+                     (lambda (_id) 'SIGTERM))
+                    ((symbol-function 'supervisor--kill-mode-for-id)
+                     (lambda (_id) 'mixed))
+                    ((symbol-function 'signal-process)
+                     (lambda (_p _sig)))
+                    ((symbol-function 'run-at-time)
+                     (lambda (_timeout _repeat fn)
+                       (setq escalation-fn fn))))
+            (supervisor--manual-stop "svc1")
+            ;; Fire the escalation timer while process is still live
+            (cl-letf (((symbol-function 'supervisor--kill-with-descendants)
+                       (lambda (_proc)
+                         (setq kill-descendants-called t))))
+              (funcall escalation-fn)
+              (should kill-descendants-called))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-manual-kill-defaults-to-unit-signal ()
+  "Manual kill without explicit signal uses unit's :kill-signal."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (signaled-with nil)
+         (proc (start-process "test-kill-def" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "svc1" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--kill-signal-for-id)
+                     (lambda (_id) 'SIGINT))
+                    ((symbol-function 'signal-process)
+                     (lambda (_p sig)
+                       (setq signaled-with sig))))
+            (supervisor--manual-kill "svc1")
+            (should (eq 'SIGINT signaled-with))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-manual-kill-explicit-signal-overrides ()
+  "Manual kill with explicit signal overrides unit's :kill-signal."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (signaled-with nil)
+         (proc (start-process "test-kill-exp" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "svc1" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--kill-signal-for-id)
+                     (lambda (_id) 'SIGINT))
+                    ((symbol-function 'signal-process)
+                     (lambda (_p sig)
+                       (setq signaled-with sig))))
+            (supervisor--manual-kill "svc1" 'SIGUSR2)
+            (should (eq 'SIGUSR2 signaled-with))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-shutdown-uses-per-unit-kill-signal ()
+  "Shutdown sends per-unit :kill-signal instead of blanket SIGTERM."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--timers nil)
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (supervisor--shutting-down nil)
+         (supervisor--shutdown-complete-flag nil)
+         (supervisor--shutdown-remaining 0)
+         (supervisor--shutdown-callback nil)
+         (supervisor--shutdown-timer nil)
+         (signals-sent nil)
+         (proc1 (start-process "svc1" nil "sleep" "300"))
+         (proc2 (start-process "svc2" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "svc1" proc1 supervisor--processes)
+          (puthash "svc2" proc2 supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--run-exec-stop-for-id)
+                     (lambda (_id)))
+                    ((symbol-function 'supervisor--dag-cleanup)
+                     (lambda ()))
+                    ((symbol-function 'supervisor--emit-event)
+                     (lambda (&rest _args)))
+                    ((symbol-function 'supervisor--kill-signal-for-id)
+                     (lambda (id)
+                       (if (string= id "svc1") 'SIGUSR1 'SIGINT)))
+                    ((symbol-function 'signal-process)
+                     (lambda (p sig)
+                       (push (list (process-name p) sig) signals-sent)))
+                    ((symbol-function 'run-at-time)
+                     (lambda (&rest _args))))
+            (supervisor-stop)
+            ;; Each unit should get its own kill-signal
+            (should (cl-find-if (lambda (e)
+                                  (and (string= "svc1" (car e))
+                                       (eq 'SIGUSR1 (cadr e))))
+                                signals-sent))
+            (should (cl-find-if (lambda (e)
+                                  (and (string= "svc2" (car e))
+                                       (eq 'SIGINT (cadr e))))
+                                signals-sent))))
+      (when (process-live-p proc1) (delete-process proc1))
+      (when (process-live-p proc2) (delete-process proc2)))))
+
+(ert-deftest supervisor-test-shutdown-escalation-respects-kill-mode ()
+  "Shutdown SIGKILL escalation uses kill-with-descendants for mixed mode."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--timers nil)
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (supervisor--shutting-down nil)
+         (supervisor--shutdown-complete-flag nil)
+         (supervisor--shutdown-remaining 0)
+         (supervisor--shutdown-callback nil)
+         (supervisor--shutdown-timer nil)
+         (escalation-fn nil)
+         (kill-desc-called nil)
+         (plain-kill-called nil)
+         (proc1 (start-process "mixed-svc" nil "sleep" "300"))
+         (proc2 (start-process "normal-svc" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "mixed-svc" proc1 supervisor--processes)
+          (puthash "normal-svc" proc2 supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--run-exec-stop-for-id)
+                     (lambda (_id)))
+                    ((symbol-function 'supervisor--dag-cleanup)
+                     (lambda ()))
+                    ((symbol-function 'supervisor--emit-event)
+                     (lambda (&rest _args)))
+                    ((symbol-function 'supervisor--kill-signal-for-id)
+                     (lambda (_id) 'SIGTERM))
+                    ((symbol-function 'supervisor--kill-mode-for-id)
+                     (lambda (id)
+                       (if (string= id "mixed-svc") 'mixed 'process)))
+                    ((symbol-function 'signal-process)
+                     (lambda (_p _sig)))
+                    ((symbol-function 'run-at-time)
+                     (lambda (_timeout _repeat fn)
+                       (setq escalation-fn fn))))
+            (supervisor-stop)
+            ;; Fire the escalation timer
+            (cl-letf (((symbol-function 'supervisor--kill-with-descendants)
+                       (lambda (_proc)
+                         (setq kill-desc-called t)))
+                      ((symbol-function 'signal-process)
+                       (lambda (_p sig)
+                         (when (eq sig 'SIGKILL)
+                           (setq plain-kill-called t)))))
+              (funcall escalation-fn)
+              ;; mixed-svc should use kill-with-descendants
+              (should kill-desc-called)
+              ;; normal-svc should use plain SIGKILL
+              (should plain-kill-called))))
+      (when (process-live-p proc1) (delete-process proc1))
+      (when (process-live-p proc2) (delete-process proc2)))))
+
+(ert-deftest supervisor-test-kill-signal-real-process ()
+  "Kill-signal SIGTERM terminates a real process."
+  (let* ((proc (start-process "test-real-kill" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (should (process-live-p proc))
+          (signal-process proc 'SIGTERM)
+          ;; Wait briefly for process to die
+          (let ((deadline (+ (float-time) 1.0)))
+            (while (and (< (float-time) deadline)
+                        (process-live-p proc))
+              (sleep-for 0.05)))
+          (should-not (process-live-p proc)))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-manual-stop-not-running-skipped ()
+  "Manual stop on non-running process returns skipped."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal)))
+    (let ((result (supervisor--manual-stop "nonexistent")))
+      (should (eq 'skipped (plist-get result :status))))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

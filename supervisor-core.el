@@ -3404,6 +3404,64 @@ are blocked.  Manually started disabled units are tracked in
                     (list :status 'started :reason nil))
                 (list :status 'error :reason "failed to start process")))))))))))
 
+;;;; Kill Controls (PT3-N4)
+
+(defun supervisor--kill-signal-for-id (id)
+  "Return the effective kill signal for unit ID.
+Return the configured `:kill-signal' if set, or `SIGTERM' as default."
+  (if-let* ((entry (supervisor--get-entry-for-id id)))
+      (or (supervisor-entry-kill-signal entry) 'SIGTERM)
+    'SIGTERM))
+
+(defun supervisor--kill-mode-for-id (id)
+  "Return the effective kill mode for unit ID.
+Return the configured `:kill-mode' if set, or `process' as default."
+  (if-let* ((entry (supervisor--get-entry-for-id id)))
+      (or (supervisor-entry-kill-mode entry) 'process)
+    'process))
+
+(defun supervisor--process-descendants (pid)
+  "Return list of PIDs that are descendants of PID.
+Use `list-system-processes' and `process-attributes' for tree traversal.
+Snapshot all descendants at call time via breadth-first search.
+Return nil and log a warning if OS/process metadata is unavailable."
+  (condition-case err
+      (let ((all-pids (list-system-processes))
+            (descendants nil)
+            (to-check (list pid)))
+        (while to-check
+          (let ((parent (pop to-check)))
+            (dolist (cpid all-pids)
+              (when-let* ((attrs (process-attributes cpid))
+                          (ppid (alist-get 'ppid attrs)))
+                (when (= ppid parent)
+                  (push cpid descendants)
+                  (push cpid to-check))))))
+        descendants)
+    (error
+     (supervisor--log 'warning "PID %d: descendant discovery failed: %s"
+                      pid (error-message-string err))
+     nil)))
+
+(defun supervisor--kill-with-descendants (proc)
+  "Send SIGKILL to PROC and its discovered descendants.
+If descendant discovery fails, log a warning and fall back to
+process-only SIGKILL.  Descendant PIDs are snapshotted at call time."
+  (when (process-live-p proc)
+    (let* ((pid (process-id proc))
+           (descendants (when pid
+                          (supervisor--process-descendants pid))))
+      ;; Kill main process
+      (signal-process proc 'SIGKILL)
+      ;; Kill descendants (best effort)
+      (dolist (dpid descendants)
+        (condition-case nil
+            (signal-process dpid 'SIGKILL)
+          (error nil)))
+      (when descendants
+        (supervisor--log 'info "%s: killed %d descendant(s) (mixed mode)"
+                         (process-name proc) (length descendants))))))
+
 (defun supervisor--manual-stop (id)
   "Attempt to manually stop entry with ID.
 Returns a plist with :status and :reason.
@@ -3414,10 +3472,11 @@ This function sets manually-stopped to suppress restart,
 ensuring consistent behavior between dashboard and CLI.
 
 When the unit has `:exec-stop' commands, they are executed
-before the process is terminated.  Stop commands inherit the
-unit's effective working directory and environment.  After
-stop commands complete (or fail), the existing signal-based
-termination remains authoritative."
+before the process is signaled.  The configured `:kill-signal'
+\(default SIGTERM) is then sent to the main process.  If the
+process does not exit within `supervisor-shutdown-timeout'
+seconds, SIGKILL is sent.  For units with `:kill-mode' `mixed',
+SIGKILL is also sent to discovered descendants at escalation time."
   (let ((proc (gethash id supervisor--processes)))
     (cond
      ((not proc)
@@ -3431,7 +3490,18 @@ termination remains authoritative."
       (remhash id supervisor--manually-started)
       ;; Execute exec-stop commands if configured
       (supervisor--run-exec-stop-for-id id)
-      (delete-process proc)
+      ;; Send configured kill-signal (default SIGTERM)
+      (let ((kill-signal (supervisor--kill-signal-for-id id))
+            (kill-mode (supervisor--kill-mode-for-id id)))
+        (when (process-live-p proc)
+          (signal-process proc kill-signal)
+          ;; Set up SIGKILL escalation timer
+          (run-at-time supervisor-shutdown-timeout nil
+                       (lambda ()
+                         (when (process-live-p proc)
+                           (if (eq kill-mode 'mixed)
+                               (supervisor--kill-with-descendants proc)
+                             (signal-process proc 'SIGKILL)))))))
       (list :status 'stopped :reason nil)))))
 
 (defun supervisor--manual-kill (id &optional signal)
@@ -3440,10 +3510,11 @@ Returns a plist with :status and :reason.
 :status is one of: signaled, skipped, error
 :reason explains why (for skipped/error cases).
 
-SIGNAL defaults to `SIGTERM'.  Unlike `supervisor--manual-stop', this
-does not mark the entry as manually stopped, so restart policy remains
-in effect."
-  (let* ((sig (or signal 'SIGTERM))
+SIGNAL defaults to the unit's configured `:kill-signal' or
+`SIGTERM'.  Unlike `supervisor--manual-stop', this does not mark
+the entry as manually stopped, so restart policy remains in
+effect."
+  (let* ((sig (or signal (supervisor--kill-signal-for-id id)))
          (proc (gethash id supervisor--processes)))
     (cond
      ((not proc)
@@ -3685,11 +3756,14 @@ briefly for processes to terminate, ensuring a clean exit."
 (defun supervisor-stop (&optional callback)
   "Stop all supervised processes gracefully (async).
 First runs `:exec-stop' command chains for applicable simple units,
-then sends SIGTERM to remaining live processes and returns.  A timer
-handles the graceful shutdown period: after `supervisor-shutdown-timeout'
-seconds, any survivors receive SIGKILL.  Optional CALLBACK is called
-with no arguments when shutdown completes.  Check
-`supervisor--shutdown-complete-flag' to poll completion status if needed.
+then sends each unit's configured `:kill-signal' (default SIGTERM)
+to remaining live processes and returns.  A timer handles the
+graceful shutdown period: after `supervisor-shutdown-timeout' seconds,
+any survivors receive SIGKILL.  For units with `:kill-mode' `mixed',
+SIGKILL is also sent to discovered descendants at escalation time.
+Optional CALLBACK is called with no arguments when shutdown completes.
+Check `supervisor--shutdown-complete-flag' to poll completion status
+if needed.
 
 For `kill-emacs-hook', use `supervisor-stop-now' instead."
   (interactive)
@@ -3727,10 +3801,10 @@ For `kill-emacs-hook', use `supervisor-stop-now' instead."
                (cancel-timer timer)))
            supervisor--restart-timers)
   (clrhash supervisor--restart-timers)
-  ;; Send SIGTERM to all remaining live processes
-  (maphash (lambda (_name proc)
+  ;; Send per-unit kill-signal (default SIGTERM) to all remaining live processes
+  (maphash (lambda (name proc)
              (when (process-live-p proc)
-               (signal-process proc 'SIGTERM)))
+               (signal-process proc (supervisor--kill-signal-for-id name))))
            supervisor--processes)
   ;; Set up event-driven shutdown (sentinel-driven, no polling)
   (let ((live-count 0))
@@ -3754,10 +3828,12 @@ For `kill-emacs-hook', use `supervisor-stop-now' instead."
              supervisor-shutdown-timeout nil
              (lambda ()
                (setq supervisor--shutdown-timer nil)
-               ;; SIGKILL any survivors
-               (maphash (lambda (_name proc)
+               ;; SIGKILL any survivors, respecting kill-mode
+               (maphash (lambda (name proc)
                           (when (process-live-p proc)
-                            (signal-process proc 'SIGKILL)))
+                            (if (eq (supervisor--kill-mode-for-id name) 'mixed)
+                                (supervisor--kill-with-descendants proc)
+                              (signal-process proc 'SIGKILL))))
                         supervisor--processes)
                ;; Complete shutdown
                (let ((cb supervisor--shutdown-callback))
