@@ -950,78 +950,6 @@ With prefix argument, show status legend instead."
   (supervisor--cleanup-auto-refresh)
   (quit-window))
 
-(defun supervisor-dashboard-toggle-restart ()
-  "Cycle restart policy for process at point (no-op for oneshot).
-Cycles through `no' -> `on-success' -> `on-failure' -> `always'.
-When the result matches the config default, the override is cleared."
-  (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot toggle restart on separator row"))
-    (if (gethash id supervisor--invalid)
-        (message "Cannot toggle restart for invalid entry: %s" id)
-      (when-let* ((entry (supervisor--get-entry-for-id id)))
-        (pcase-let ((`(,_id ,_cmd ,_delay ,_enabled-p ,restart-policy ,_logging-p ,type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
-          ;; Oneshot processes don't have restart semantics
-          (unless (eq type 'oneshot)
-            (let* ((effective (supervisor--get-effective-restart id restart-policy))
-                   (new-policy (supervisor--cycle-restart-policy effective)))
-              ;; If new state matches config, clear override; otherwise set override
-              (if (eq new-policy restart-policy)
-                  (remhash id supervisor--restart-override)
-                (puthash id new-policy supervisor--restart-override))
-              ;; Persist the override
-              (supervisor--save-overrides)
-              ;; Cancel pending restart timer when disabling
-              (when (eq new-policy 'no)
-                (when-let* ((timer (gethash id supervisor--restart-timers)))
-                  (when (timerp timer)
-                    (cancel-timer timer))
-                  (remhash id supervisor--restart-timers)))
-              (message "Restart policy for %s: %s" id new-policy))
-            (supervisor--refresh-dashboard)))))))
-
-(defun supervisor-dashboard-toggle-enabled ()
-  "Toggle enabled state for entry at point.
-Runtime override takes effect on next start (manual or automatic restart).
-Cycles: config default -> override opposite -> back to config default."
-  (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot toggle enabled on separator row"))
-    (if (gethash id supervisor--invalid)
-        (message "Cannot toggle enabled for invalid entry: %s" id)
-      (when-let* ((entry (supervisor--get-entry-for-id id)))
-        (pcase-let ((`(,_id ,_cmd ,_delay ,enabled-p ,_restart-policy ,_logging-p ,_type ,_stage ,_after ,_owait ,_otimeout ,_tags) entry))
-          (let* ((currently-enabled (supervisor--get-effective-enabled id enabled-p))
-                 (new-enabled (not currently-enabled)))
-            ;; If new state matches config, clear override; otherwise set override
-            (if (eq new-enabled enabled-p)
-                (remhash id supervisor--enabled-override)
-              (puthash id (if new-enabled 'enabled 'disabled) supervisor--enabled-override))
-            ;; Persist the override
-            (supervisor--save-overrides)
-            (supervisor--refresh-dashboard)))))))
-
-(defun supervisor-dashboard-toggle-mask ()
-  "Toggle mask state for entry at point.
-Masked entries are always disabled regardless of enabled overrides.
-Cycles: unmasked -> masked -> unmasked.  Persists immediately."
-  (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot toggle mask on separator row"))
-    (when (supervisor--timer-row-p id)
-      (user-error "Cannot mask timer '%s'" id))
-    (if (gethash id supervisor--invalid)
-        (message "Cannot toggle mask for invalid entry: %s" id)
-      (let ((currently-masked (eq (gethash id supervisor--mask-override) 'masked)))
-        (if currently-masked
-            (remhash id supervisor--mask-override)
-          (puthash id 'masked supervisor--mask-override))
-        (supervisor--save-overrides)
-        (supervisor--refresh-dashboard)))))
-
 (defun supervisor-dashboard-stop ()
   "Stop process at point with confirmation.
 Gracefully stops the process and suppresses auto-restart.
@@ -1128,21 +1056,6 @@ Disabled units can be started (session-only); only mask blocks."
         ('started (supervisor--refresh-dashboard))
         ('skipped (message "Entry %s is %s" id (plist-get result :reason)))
         ('error (message "Cannot start %s: %s" id (plist-get result :reason)))))))
-
-(defun supervisor-dashboard-toggle-logging ()
-  "Toggle logging for process at point (takes effect on next start)."
-  (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot toggle logging on separator row"))
-    (if (gethash id supervisor--invalid)
-        (message "Cannot toggle logging for invalid entry: %s" id)
-      (let* ((current (gethash id supervisor--logging))
-             (entry (supervisor--get-entry-for-id id))
-             (config-logging (if entry (nth 5 entry) t))  ; logging-p is index 5
-             (effective (if current (eq current 'enabled) config-logging)))
-        (puthash id (if effective 'disabled 'enabled) supervisor--logging))
-      (supervisor--refresh-dashboard))))
 
 ;;; Explicit Policy Commands
 

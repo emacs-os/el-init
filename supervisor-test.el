@@ -458,10 +458,10 @@ core symbols exist without dashboard/cli-specific dependencies."
   ;; Unknown values default to no
   (should (eq 'no (supervisor--cycle-restart-policy 'bogus))))
 
-(ert-deftest supervisor-test-dashboard-restart-cycle-interactive ()
-  "Dashboard toggle-restart cycles all four policies end-to-end.
+(ert-deftest supervisor-test-dashboard-set-restart-policy-interactive ()
+  "Dashboard set-restart-policy applies explicit selections end-to-end.
 Exercises the interactive function with a real tabulated-list buffer,
-verifying cycle progression, override-clear on return to config, and
+verifying policy selection, override-clear on return to config, and
 restart-timer cancellation on `no'."
   (supervisor-test-with-unit-files
       '(("sleep 999" :id "svc" :type simple :restart always))
@@ -496,23 +496,28 @@ restart-timer cancellation on `no'."
                                 (forward-line 1))))
                     ;; Initial refresh to populate entries from unit file
                     (supervisor--refresh-dashboard)
-                    ;; Cycle 1: config=always -> no (override set, timer cancelled)
-                    (goto-svc)
-                    (supervisor-dashboard-toggle-restart)
-                    (should (eq 'no (gethash "svc" supervisor--restart-override)))
-                    (should-not (gethash "svc" supervisor--restart-timers))
-                    ;; Cycle 2: no -> on-success
-                    (goto-svc)
-                    (supervisor-dashboard-toggle-restart)
-                    (should (eq 'on-success (gethash "svc" supervisor--restart-override)))
-                    ;; Cycle 3: on-success -> on-failure
-                    (goto-svc)
-                    (supervisor-dashboard-toggle-restart)
-                    (should (eq 'on-failure (gethash "svc" supervisor--restart-override)))
-                    ;; Cycle 4: on-failure -> always (matches config, override cleared)
-                    (goto-svc)
-                    (supervisor-dashboard-toggle-restart)
-                    (should-not (gethash "svc" supervisor--restart-override))))
+                    (let ((choices '("no" "on-success" "on-failure" "always")))
+                      (cl-letf (((symbol-function 'completing-read)
+                                 (lambda (_prompt _collection &rest _)
+                                   (prog1 (car choices)
+                                     (setq choices (cdr choices))))))
+                        ;; Selection 1: config=always -> no (override set, timer cancelled)
+                        (goto-svc)
+                        (supervisor-dashboard-set-restart-policy)
+                        (should (eq 'no (gethash "svc" supervisor--restart-override)))
+                        (should-not (gethash "svc" supervisor--restart-timers))
+                        ;; Selection 2: no -> on-success
+                        (goto-svc)
+                        (supervisor-dashboard-set-restart-policy)
+                        (should (eq 'on-success (gethash "svc" supervisor--restart-override)))
+                        ;; Selection 3: on-success -> on-failure
+                        (goto-svc)
+                        (supervisor-dashboard-set-restart-policy)
+                        (should (eq 'on-failure (gethash "svc" supervisor--restart-override)))
+                        ;; Selection 4: on-failure -> always (matches config, override cleared)
+                        (goto-svc)
+                        (supervisor-dashboard-set-restart-policy)
+                        (should-not (gethash "svc" supervisor--restart-override))))))
               (kill-buffer buf)))
         (when (timerp fake-timer) (cancel-timer fake-timer))))))
 

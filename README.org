@@ -1577,10 +1577,6 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-unmask~ | Unmask entry |
 | ~M-x supervisor-dashboard-set-restart-policy~ | Set restart policy (selection) |
 | ~M-x supervisor-dashboard-set-logging~ | Set logging (selection) |
-| ~M-x supervisor-dashboard-toggle-enabled~ | Toggle enabled override (legacy) |
-| ~M-x supervisor-dashboard-toggle-mask~ | Toggle mask (legacy) |
-| ~M-x supervisor-dashboard-toggle-restart~ | Cycle restart policy (legacy) |
-| ~M-x supervisor-dashboard-toggle-logging~ | Toggle logging (legacy) |
 | ~M-x supervisor-dashboard-describe-entry~ | Describe selected row |
 | ~M-x supervisor-dashboard-show-deps~ | Show selected service deps |
 | ~M-x supervisor-dashboard-show-graph~ | Show full dependency graph |
