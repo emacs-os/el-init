@@ -52,8 +52,8 @@ it in Emacs at any time.
 The [[#quick-start][Quick Start]] below gets you running immediately. The rest of the handbook
 provides detailed reference material:
 
-- [[#service-definition-handbook-supervisor-programs][Service Definition]] - all the options for defining services
-- [[#unit-files-modular-configuration][Unit Files]] - modular one-file-per-unit configuration
+- [[#service-definition-handbook-supervisor-programs][Service Definition]] - all unit-file keywords for defining services
+- [[#unit-files-modular-configuration][Unit Files]] - authority roots, precedence, and unit-file management
 - [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] - how stages, dependencies, and restarts work
 - [[#runtime-overrides-and-reconciliation][Runtime Overrides]] - enabling, disabling, and policy changes at runtime
 - [[#timer-subsystem-handbook-experimental][Timer Subsystem]] - scheduled oneshot execution (experimental)
@@ -72,37 +72,6 @@ provides detailed reference material:
 (add-to-list 'load-path "~/repos/supervisor.el")
 (require 'supervisor)
 
-(setq supervisor-programs
-      `(;; Stage 1: X session setup (oneshots)
-        ;; Use backtick+comma for Elisp expansion instead of sh -c for shell expansion
-        (,(format "xhost +SI:localuser:%s" (user-login-name))
-         :type oneshot :id "xhost" :stage stage1 :tags (x-setup))
-        (,(format "xrdb -merge %s" (expand-file-name "~/.Xresources"))
-         :type oneshot :id "xrdb" :stage stage1 :after "xhost" :tags (x-setup))
-        ("xsetroot -cursor_name left_ptr" :type oneshot :id "xsetroot" :stage stage1
-         :tags (x-setup))
-        ("xset r rate 200 60" :type oneshot :id "xset-repeat" :stage stage1
-         :tags (x-setup))
-        ("xset -dpms" :type oneshot :id "xset-dpms" :stage stage1
-         :tags (x-setup))
-        ("xset s off" :type oneshot :id "xset-s" :stage stage1
-         :tags (x-setup))
-        ("xinput set-prop \"Kingsis Peripherals ZOWIE Gaming mouse\" \"libinput Accel Profile Enabled\" 0 1"
-         :type oneshot :id "xinput-mouse" :stage stage1 :tags (x-setup))
-        ("redshift -P -O 2500"
-         :type oneshot :id "redshift" :stage stage1 :tags (x-setup))
-
-        ;; Stage 2: system agents
-        ("/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
-         :type simple :id "polkit" :stage stage2 :restart t :tags (system))
-
-        ;; Stage 3: tray applets (delay for EXWM systray init)
-        ("nm-applet" :type simple :stage stage3 :delay 3 :restart t :tags (applet tray))
-
-        ;; Stage 4: more tray applets
-        ("blueman-applet" :type simple :stage stage4 :delay 3 :restart t :tags (applet tray))
-        ("pasystray" :type simple :stage stage4 :delay 3 :restart t :tags (applet tray))))
-
 ;; Use supervisor-stop-now for immediate SIGKILL - ensures clean X session exit
 (add-hook 'kill-emacs-hook #'supervisor-stop-now)
 
@@ -111,6 +80,29 @@ provides detailed reference material:
 
 ;; Start supervisor
 (supervisor-start)
+#+end_src
+
+Services are defined as individual unit files in your authority roots (default
+~~/.config/supervisor.el/~).  For example:
+
+#+begin_src emacs-lisp
+;; ~/.config/supervisor.el/xhost.el
+(:id "xhost"
+ :command "xhost +SI:localuser:$USER"
+ :type oneshot
+ :stage stage1
+ :tags (x-setup))
+#+end_src
+
+#+begin_src emacs-lisp
+;; ~/.config/supervisor.el/nm-applet.el
+(:id "nm-applet"
+ :command "nm-applet"
+ :type simple
+ :stage stage3
+ :delay 3
+ :restart t
+ :tags (applet tray))
 #+end_src
 
 With the above configuration running, ~sbin/supervisorctl status~ shows:
@@ -138,21 +130,16 @@ pasystray        simple   stage4   yes      running    yes      yes   1442    -
 #+CAPTION: Supervisor dashboard
 [[file:doc/dashboard.png]]
 
-As your setup grows, consider [[#unit-files-modular-configuration][unit files]] as an alternative to the
-monolithic ~supervisor-programs~ list---each service gets its own ~.el~ file
-in your authority roots (default ~~/.config/supervisor.el/~).
+Each service gets its own ~.el~ file in an authority root.  See
+[[#unit-files-modular-configuration][Unit Files]] for the full authority-root model, precedence rules, and
+all available keywords.
 
-* Service Definition (~supervisor-programs~)
+* Service Definition (Unit-File Keywords)
 :PROPERTIES:
 :CUSTOM_ID: service-definition-handbook-supervisor-programs
 :END:
 
-~supervisor-programs~ is a list of entries.
-
-Entry forms:
-
-- Command string: ~"nm-applet"~
-- Command + plist: ~("nm-applet" :id "nm" :stage stage3 ...)~
+Each unit file is a single plist expression with ~:id~ and ~:command~ required.
 
 ** Entry Keywords
 
@@ -251,9 +238,8 @@ the canonical way to read entry fields.
 :CUSTOM_ID: unit-files-modular-configuration
 :END:
 
-In addition to the monolithic ~supervisor-programs~ list, services can be defined
-as individual unit files.  Each unit file is a single ~.el~ file containing one
-plist expression.
+Services are defined as individual unit files.  Each unit file is a single ~.el~
+file containing one plist expression.
 
 ** Authority Roots (Cascading Resolution)
 
@@ -272,8 +258,8 @@ merge).  Non-existent roots are silently skipped.
 The default three-tier layout mirrors systemd's resolution order.  You can add,
 remove, or reorder roots to suit your environment.
 
-Unit files found in any active root are merged with ~supervisor-programs~ at
-startup.  Unit-file entries take precedence on ID collision with legacy entries.
+Unit files found across all active roots are resolved at startup using the
+precedence rules described below.
 
 ** Unit File Format
 
@@ -293,7 +279,7 @@ Required keys:
 - ~:id~ (non-empty string)
 - ~:command~ (string, the shell command)
 
-All other keys from ~supervisor-programs~ entry plists are supported (~:type~,
+All other keys are optional (~:type~,
 ~:stage~, ~:delay~, ~:after~, ~:requires~, ~:enabled~, ~:disabled~, ~:restart~,
 ~:no-restart~, ~:logging~, ~:oneshot-blocking~, ~:oneshot-async~, ~:oneshot-timeout~,
 ~:tags~).
@@ -350,8 +336,7 @@ highest-precedence root wins completely---no per-key merge is performed.
   warning.
 - Cross-root, same ID: highest-precedence root wins, lower-precedence entries
   are shadowed.
-- ID collision between unit file and ~supervisor-programs~: unit file wins, legacy
-  entry is dropped with informational log.
+- ID absent from all roots: not loaded (use ~edit ID~ to create a new unit).
 
 *** Override Example
 
@@ -389,6 +374,30 @@ misconfigured path does not cause an error---it simply contributes no units:
         "/etc/supervisor.el/"         ; Active if exists
         "~/.config/supervisor.el/"))  ; Active if exists
 #+end_src
+
+*** Invalid Winner Blocks Fallback Example
+
+If the highest-tier unit file for an ID is invalid, it blocks fallback to a
+valid lower-tier unit for the same ID.  This prevents surprising behavior where
+a broken override silently reverts to the vendor default:
+
+#+begin_src emacs-lisp
+;; /usr/lib/supervisor.el/backup.el  (Tier 1, vendor — valid)
+(:id "backup"
+ :command "/usr/bin/backup-agent"
+ :type simple
+ :stage stage3)
+#+end_src
+
+#+begin_src emacs-lisp
+;; ~/.config/supervisor.el/backup.el  (Tier 3, user — INVALID: missing :command)
+(:id "backup"
+ :type simple)
+#+end_src
+
+Result: ~backup~ appears as ~invalid~ in the dashboard and CLI.  The vendor
+definition is *not* used as a fallback---the invalid higher-tier winner blocks it.
+Fix the user unit file or delete it to unblock the vendor definition.
 
 ** Validation
 
@@ -438,41 +447,13 @@ supervisorctl cat nm-applet
 This outputs the raw unit file content.  Returns an error if the file does not
 exist.  With ~--json~, returns ~{"path": "...", "content": "..."}~.
 
-** Migrating to Unit Files
-:PROPERTIES:
-:CUSTOM_ID: migrating-to-unit-files
-:END:
+** Adding a New Service
 
-You can migrate from the monolithic ~supervisor-programs~ list to individual
-unit files.  Both formats can coexist: ~supervisor-programs~ entries and unit
-files are merged at startup, with unit files taking precedence on ID collision.
+*** Step 1: Create the unit file
 
-*** Step 1: Normalize your configuration
-
-Run ~M-x supervisor-migrate-config~ to display your current ~supervisor-programs~
-in canonical schema v1 form.  This normalizes all entries, drops any that are
-invalid or duplicated, and emits a clean ~supervisor-programs~ definition.
-Review the output to understand what each entry looks like in plist form.
-
-*** Step 2: Configure authority roots (optional)
-
-The default authority path is usually sufficient:
-
-#+begin_src emacs-lisp
-;; Default: vendor → system → user (highest precedence)
-(setq supervisor-unit-authority-path
-      '("/usr/lib/supervisor.el/"
-        "/etc/supervisor.el/"
-        "~/.config/supervisor.el/"))
-#+end_src
-
-Only customize this if you need additional or different roots.
-
-*** Step 3: Create unit files
-
-For each service you want to extract, create a file in your highest-precedence
-authority root (default ~~/.config/supervisor.el/~).  The filename should be
-~ID.el~ (e.g., ~nm-applet.el~).  Each file contains a single plist:
+Create a file in your highest-precedence authority root (default
+~~/.config/supervisor.el/~).  The filename should be ~ID.el~ (e.g.,
+~nm-applet.el~):
 
 #+begin_src emacs-lisp
 ;; ~/.config/supervisor.el/nm-applet.el
@@ -483,17 +464,11 @@ authority root (default ~~/.config/supervisor.el/~).  The filename should be
  :restart t)
 #+end_src
 
-You can also press ~E~ in the dashboard to scaffold a unit file for any service.
+Or press ~E~ in the dashboard to scaffold a unit file interactively.
 
-*** Step 4: Remove migrated entries from ~supervisor-programs~
+*** Step 2: Reload
 
-After creating a unit file for a service, remove its entry from
-~supervisor-programs~.  The unit file version takes over.  You can migrate
-gradually---services not yet extracted remain in ~supervisor-programs~.
-
-*** Step 5: Reload
-
-Run ~supervisorctl daemon-reload~ to pick up the new configuration.
+Run ~supervisorctl daemon-reload~ to pick up the new unit file.
 
 * Startup and Lifecycle Model
 :PROPERTIES:
@@ -1138,8 +1113,7 @@ IDs.
 ~daemon-reload~:
 
 - no arguments
-- re-reads ~supervisor-programs~ and unit files from all authority roots,
-  rebuilds the internal plan
+- re-reads unit files from all authority roots and rebuilds the internal plan
 - does NOT start, stop, or restart anything; runtime state is untouched
 - after daemon-reload, the next ~start~ or ~reload~ operates on the refreshed
   plan
@@ -1317,7 +1291,6 @@ All user options (defcustom) are listed below.
 ** Core Options
 
 | Variable | Default | Purpose |
-| ~supervisor-programs~ | ~nil~ | Service definition list |
 | ~supervisor-timers~ | ~nil~ | Timer definition list |
 | ~supervisor-log-directory~ | ~(expand-file-name "supervisor" user-emacs-directory)~ | Log directory |
 | ~supervisor-restart-delay~ | ~2~ | Restart delay (seconds) |
@@ -1439,7 +1412,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Manual stop behavior and restart suppression: [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Mask/unmask (~mask~, ~unmask~, ~m~ in dashboard): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Max concurrent stage starts (~supervisor-max-concurrent-starts~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
-- Migration from ~supervisor-programs~ to unit files (~supervisor-migrate-config~): [[#migrating-to-unit-files][Migrating to Unit Files]]
+- Adding a new service (~edit~, scaffold template): [[#unit-files-modular-configuration][Unit Files]]
 - Override precedence (runtime override vs config default): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Override persistence (~supervisor-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
 - Reload unit (~reload~, ~u~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]

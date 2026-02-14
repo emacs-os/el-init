@@ -3552,6 +3552,39 @@ prior snapshot, lookup returns the correct root and actual file path."
         (should (member "high-shared" cmds))
         (should-not (member "low-shared" cmds))))))
 
+(ert-deftest supervisor-test-reordered-root-list-flips-winner ()
+  "User-configured root order determines precedence, not directory names.
+Reversing the authority path order flips which root wins for a
+conflicting ID, proving precedence derives from list position."
+  (let* ((dir-a (make-temp-file "rootA-" t))
+         (dir-b (make-temp-file "rootB-" t))
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--authority-snapshot nil)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          ;; Same ID in both roots, different commands
+          (with-temp-file (expand-file-name "svc.el" dir-a)
+            (insert "(:id \"svc\" :command \"from-a\")"))
+          (with-temp-file (expand-file-name "svc.el" dir-b)
+            (insert "(:id \"svc\" :command \"from-b\")"))
+          ;; Order A, B: B is last = highest precedence
+          (let ((supervisor-unit-authority-path (list dir-a dir-b)))
+            (supervisor--publish-authority-snapshot)
+            (setq supervisor--programs-cache :not-yet-loaded)
+            (let ((programs (supervisor--effective-programs)))
+              (should (= 1 (length programs)))
+              (should (equal "from-b" (caar programs)))))
+          ;; Reverse to B, A: A is last = highest precedence
+          (let ((supervisor-unit-authority-path (list dir-b dir-a)))
+            (setq supervisor--authority-snapshot nil)
+            (setq supervisor--programs-cache :not-yet-loaded)
+            (let ((programs (supervisor--effective-programs)))
+              (should (= 1 (length programs)))
+              (should (equal "from-a" (caar programs))))))
+      (delete-directory dir-a t)
+      (delete-directory dir-b t))))
+
 (ert-deftest supervisor-test-cli-verify-invalid-unit-file ()
   "CLI verify reports invalid unit files in count and output."
   (let* ((dir (make-temp-file "units-" t))
