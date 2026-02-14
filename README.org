@@ -52,7 +52,7 @@ it in Emacs at any time.
 The [[#quick-start][Quick Start]] below gets you running immediately. The rest of the handbook
 provides detailed reference material:
 
-- [[#service-definition-handbook-supervisor-programs][Service Definition]] - all unit-file keywords for defining services
+- [[#service-definition][Service Definition]] - all unit-file keywords for defining services
 - [[#unit-files-modular-configuration][Unit Files]] - authority roots, precedence, and unit-file management
 - [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] - how stages, dependencies, and restarts work
 - [[#runtime-overrides-and-reconciliation][Runtime Overrides]] - enabling, disabling, and policy changes at runtime
@@ -136,7 +136,7 @@ all available keywords.
 
 * Service Definition (Unit-File Keywords)
 :PROPERTIES:
-:CUSTOM_ID: service-definition-handbook-supervisor-programs
+:CUSTOM_ID: service-definition
 :END:
 
 Each unit file is a single plist expression with ~:id~ and ~:command~ required.
@@ -1388,19 +1388,19 @@ This is a topical index for targeted lookup of less-obvious behavior.
 
 ** Topical Index
 
-- Async oneshots (~:oneshot-async~, ~:oneshot-blocking~): [[#service-definition-handbook-supervisor-programs][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Async oneshots (~:oneshot-async~, ~:oneshot-blocking~): [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Cat unit file (~cat~, ~c~ in dashboard): [[#unit-files-modular-configuration][Unit Files]]
-- Blocking oneshot timeout (~:oneshot-timeout~, ~supervisor-oneshot-timeout~): [[#service-definition-handbook-supervisor-programs][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Blocking oneshot timeout (~:oneshot-timeout~, ~supervisor-oneshot-timeout~): [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Command parsing (no implicit shell, use ~sh -c~ when needed): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Config file watch and debounce (~supervisor-watch-config~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Crash-loop detection (~supervisor-max-restarts~, ~supervisor-restart-window~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
-- Cycle fallback behavior for dependencies: [[#service-definition-handbook-supervisor-programs][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Cycle fallback behavior for dependencies: [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Dashboard filtering (stage/tag): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Disabled unit manual start (session-only, systemctl model): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Dashboard live updates (~supervisor-auto-refresh-interval~): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]], [[#customization-reference][Customization Reference]]
 - Dashboard mode/filter state (buffer-local stage/tag/auto-refresh): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Dashboard visual customization (status/type/stage faces): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
-- Dependency semantics split (~:after~ vs ~:requires~): [[#service-definition-handbook-supervisor-programs][Service Definition]]
+- Dependency semantics split (~:after~ vs ~:requires~): [[#service-definition][Service Definition]]
 - Edit unit file (~edit~, ~E~ in dashboard, scaffold template): [[#unit-files-modular-configuration][Unit Files]]
 - Event API (~supervisor-event-hook~ and event types): [[#events-and-hooks][Events and Hooks]]
 - Exit code semantics for oneshots (signals stored negative): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
