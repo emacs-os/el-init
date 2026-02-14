@@ -551,6 +551,35 @@ Return nil if valid, or a reason string if invalid."
         (dolist (kw supervisor--oneshot-only-keywords)
           (when (plist-member plist kw)
             (push (format "%s is invalid for :type simple" kw) errors))))
+      ;; Check :tags is a symbol, string, or list of symbols/strings
+      (when (plist-member plist :tags)
+        (let ((val (plist-get plist :tags)))
+          (cond
+           ((null val)) ; nil is ok
+           ((or (symbolp val) (and (stringp val)
+                                   (not (string-empty-p (string-trim val))))))
+           ((and (stringp val) (string-empty-p (string-trim val)))
+            (push ":tags must not contain empty strings" errors))
+           ((proper-list-p val)
+            (cond
+             ((cl-some #'null val)
+              (push ":tags must not contain nil values" errors))
+             ((not (cl-every (lambda (item)
+                               (or (symbolp item)
+                                   (and (stringp item)
+                                        (not (string-empty-p
+                                              (string-trim item))))))
+                             val))
+              (if (cl-some (lambda (item)
+                             (and (stringp item)
+                                  (string-empty-p (string-trim item))))
+                           val)
+                  (push ":tags must not contain empty strings" errors)
+                (push ":tags must be a symbol, string, or list of symbols/strings"
+                      errors)))))
+           (t
+            (push ":tags must be a symbol, string, or list of symbols/strings"
+                  errors)))))
       ;; Check :working-directory is a string
       (when (plist-member plist :working-directory)
         (let ((val (plist-get plist :working-directory)))

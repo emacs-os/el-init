@@ -11218,5 +11218,33 @@ No warning is emitted when there are simply no child processes."
     (should (stringp result))
     (should (string-match-p ":oneshot-async must be t or nil" result))))
 
+;;; V5: Tags validation tests
+
+(ert-deftest supervisor-test-validate-tags-number ()
+  "Numeric :tags value is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :tags 42))))
+    (should (stringp result))
+    (should (string-match-p ":tags must be a symbol, string, or list" result))))
+
+(ert-deftest supervisor-test-validate-tags-valid-symbol-list ()
+  "List of symbols is valid for :tags."
+  (should-not (supervisor--validate-entry '("cmd" :tags (web api)))))
+
+(ert-deftest supervisor-test-validate-tags-valid-string-list ()
+  "List of strings is valid for :tags."
+  (should-not (supervisor--validate-entry '("cmd" :tags ("web" "api")))))
+
+(ert-deftest supervisor-test-validate-tags-empty-string ()
+  "Empty string in :tags is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :tags ""))))
+    (should (stringp result))
+    (should (string-match-p "empty strings" result))))
+
+(ert-deftest supervisor-test-validate-tags-nil-element ()
+  "Nil element in :tags list is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :tags (web nil)))))
+    (should (stringp result))
+    (should (string-match-p "nil values" result))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
