@@ -246,7 +246,9 @@ Returns alist with all fields needed for status display."
       (environment-file . ,(supervisor-entry-environment-file entry))
       (exec-stop . ,(supervisor-entry-exec-stop entry))
       (exec-reload . ,(supervisor-entry-exec-reload entry))
-      (restart-sec . ,(supervisor-entry-restart-sec entry)))))
+      (restart-sec . ,(supervisor-entry-restart-sec entry))
+      (description . ,(supervisor-entry-description entry))
+      (documentation . ,(supervisor-entry-documentation entry)))))
 
 (defun supervisor--cli-all-entries-info (&optional snapshot)
   "Build info alists for all valid entries, using optional SNAPSHOT.
@@ -347,6 +349,8 @@ Includes both plan-level and unit-file-level invalid entries."
         (duration (alist-get 'duration info)))
     (concat
      (format "ID: %s\n" id)
+     (let ((desc (alist-get 'description info)))
+       (when desc (format "Description: %s\n" desc)))
      (format "Type: %s\n" type)
      (format "Stage: %s\n" stage)
      (format "Status: %s%s\n" status (if reason (format " (%s)" reason) ""))
@@ -390,7 +394,11 @@ Includes both plan-level and unit-file-level invalid entries."
      (when ready-time (format "Ready time: %.3f\n" ready-time))
      (when duration (format "Duration: %.3fs\n" duration))
      (let ((uf (alist-get 'unit-file info)))
-       (when uf (format "Unit file: %s\n" uf))))))
+       (when uf (format "Unit file: %s\n" uf)))
+     (let ((docs (alist-get 'documentation info)))
+       (when docs
+         (format "Documentation: %s\n"
+                 (mapconcat #'identity docs ", ")))))))
 
 (defun supervisor--cli-describe-invalid-human (info)
   "Format invalid entry INFO as human-readable detail view."
@@ -433,7 +441,9 @@ Includes both plan-level and unit-file-level invalid entries."
     (environment_file . ,(or (alist-get 'environment-file info) []))
     (exec_stop . ,(or (alist-get 'exec-stop info) []))
     (exec_reload . ,(or (alist-get 'exec-reload info) []))
-    (restart_sec . ,(alist-get 'restart-sec info))))
+    (restart_sec . ,(alist-get 'restart-sec info))
+    (description . ,(alist-get 'description info))
+    (documentation . ,(or (alist-get 'documentation info) []))))
 
 (defun supervisor--cli-invalid-to-json-obj (info)
   "Convert invalid entry INFO to JSON-compatible alist."

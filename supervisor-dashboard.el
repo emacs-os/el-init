@@ -760,6 +760,8 @@ With prefix argument, show status legend instead."
                          (exec-stop (supervisor-entry-exec-stop entry))
                          (exec-reload (supervisor-entry-exec-reload entry))
                          (restart-sec (supervisor-entry-restart-sec entry))
+                         (description (supervisor-entry-description entry))
+                         (documentation (supervisor-entry-documentation entry))
                          (eff-restart
                           (if (eq type 'oneshot) "n/a"
                             (symbol-name
@@ -785,6 +787,13 @@ With prefix argument, show status legend instead."
                              "")
                            (if restart-sec
                                (format " restart-sec=%s" restart-sec)
+                             "")
+                           (if description
+                               (format " desc=%s" description)
+                             "")
+                           (if documentation
+                               (format " docs=%s"
+                                       (mapconcat #'identity documentation ","))
                              ""))))
                     (message "%s: type=%s stage=%s enabled=%s restart=%s log=%s delay=%s after=%s%s"
                              id type stage

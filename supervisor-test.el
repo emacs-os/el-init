@@ -9680,5 +9680,162 @@ could incorrectly preserve a non-running disabled unit."
                   ":success-exit-status"))
       (should (string-match-p kw scaffold)))))
 
+;;;; Phase N2: Metadata Surface Tests
+
+(ert-deftest supervisor-test-cli-entry-info-description ()
+  "Entry info includes :description."
+  (let ((entry (supervisor--parse-entry
+                '("cmd" :id "svc" :description "My service"))))
+    (let ((info (supervisor--cli-entry-info entry)))
+      (should (equal (alist-get 'description info) "My service")))))
+
+(ert-deftest supervisor-test-cli-entry-info-documentation ()
+  "Entry info includes :documentation."
+  (let ((entry (supervisor--parse-entry
+                '("cmd" :id "svc" :documentation ("man:foo(1)")))))
+    (let ((info (supervisor--cli-entry-info entry)))
+      (should (equal (alist-get 'documentation info) '("man:foo(1)"))))))
+
+(ert-deftest supervisor-test-cli-entry-info-description-nil ()
+  "Entry info description is nil when not set."
+  (let ((entry (supervisor--parse-entry '("cmd" :id "svc"))))
+    (let ((info (supervisor--cli-entry-info entry)))
+      (should-not (alist-get 'description info)))))
+
+(ert-deftest supervisor-test-cli-describe-human-description ()
+  "Human describe includes description line."
+  (let* ((entry (supervisor--parse-entry
+                 '("cmd" :id "svc" :description "My service")))
+         (info (supervisor--cli-entry-info entry))
+         (output (supervisor--cli-describe-human info)))
+    (should (string-match-p "Description: My service" output))))
+
+(ert-deftest supervisor-test-cli-describe-human-documentation ()
+  "Human describe includes documentation line."
+  (let* ((entry (supervisor--parse-entry
+                 '("cmd" :id "svc" :documentation ("man:foo(1)" "https://x.com"))))
+         (info (supervisor--cli-entry-info entry))
+         (output (supervisor--cli-describe-human info)))
+    (should (string-match-p "Documentation: man:foo(1), https://x.com" output))))
+
+(ert-deftest supervisor-test-cli-describe-human-no-desc ()
+  "Human describe omits description line when nil."
+  (let* ((entry (supervisor--parse-entry '("cmd" :id "svc")))
+         (info (supervisor--cli-entry-info entry))
+         (output (supervisor--cli-describe-human info)))
+    (should-not (string-match-p "Description:" output))))
+
+(ert-deftest supervisor-test-cli-json-description ()
+  "JSON output includes description."
+  (let* ((entry (supervisor--parse-entry
+                 '("cmd" :id "svc" :description "My service")))
+         (info (supervisor--cli-entry-info entry))
+         (json (supervisor--cli-entry-to-json-obj info)))
+    (should (equal (alist-get 'description json) "My service"))))
+
+(ert-deftest supervisor-test-cli-json-documentation ()
+  "JSON output includes documentation array."
+  (let* ((entry (supervisor--parse-entry
+                 '("cmd" :id "svc" :documentation ("man:foo(1)"))))
+         (info (supervisor--cli-entry-info entry))
+         (json (supervisor--cli-entry-to-json-obj info)))
+    (should (equal (alist-get 'documentation json) '("man:foo(1)")))))
+
+(ert-deftest supervisor-test-cli-json-documentation-empty ()
+  "JSON output uses empty array when no documentation."
+  (let* ((entry (supervisor--parse-entry '("cmd" :id "svc")))
+         (info (supervisor--cli-entry-info entry))
+         (json (supervisor--cli-entry-to-json-obj info)))
+    (should (equal (alist-get 'documentation json) []))))
+
+;; CLI dispatcher integration tests for metadata
+
+(ert-deftest supervisor-test-cli-show-includes-description ()
+  "The `show ID' output includes Description when set."
+  (supervisor-test-with-unit-files
+      '(("cmd" :id "svc" :description "My test service"))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("show" "svc"))))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (string-match-p "Description: My test service"
+                              (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-show-includes-documentation ()
+  "The `show ID' output includes Documentation when set."
+  (supervisor-test-with-unit-files
+      '(("cmd" :id "svc" :documentation ("man:svc(1)" "https://example.com")))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("show" "svc"))))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (string-match-p "Documentation: man:svc(1), https://example.com"
+                              (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-show-omits-description-when-nil ()
+  "The `show ID' output omits Description line when not set."
+  (supervisor-test-with-unit-files
+      '(("cmd" :id "svc"))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("show" "svc"))))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should-not (string-match-p "Description:"
+                                  (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-show-json-includes-metadata ()
+  "The `show --json ID' includes description and documentation."
+  (supervisor-test-with-unit-files
+      '(("cmd" :id "svc" :description "Test"
+         :documentation ("man:svc(1)")))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("show" "svc" "--json"))))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (let ((parsed (json-read-from-string (supervisor-cli-result-output result))))
+        (should (equal "Test" (alist-get 'description parsed)))
+        (should (equal ["man:svc(1)"] (alist-get 'documentation parsed)))))))
+
+(ert-deftest supervisor-test-cli-status-id-includes-description ()
+  "The `status ID' detail view includes Description."
+  (supervisor-test-with-unit-files
+      '(("cmd" :id "svc" :description "Status desc test"))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (result (supervisor--cli-dispatch '("status" "svc"))))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+      (should (string-match-p "Description: Status desc test"
+                              (supervisor-cli-result-output result))))))
+
+;; Dashboard describe-entry integration test
+
+(ert-deftest supervisor-test-dashboard-describe-shows-metadata ()
+  "Dashboard describe-entry includes desc= and docs= in message."
+  (let* ((entry (supervisor--parse-entry
+                 '("cmd" :id "svc" :description "Dashboard desc"
+                   :documentation ("man:svc(1)"))))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--manually-started (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--logging-override (make-hash-table :test 'equal))
+         (msg nil))
+    ;; Mock get-entry-for-id to return our entry
+    (cl-letf (((symbol-function 'tabulated-list-get-id)
+               (lambda () "svc"))
+              ((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+      (supervisor-dashboard-describe-entry)
+      (should (string-match-p "desc=Dashboard desc" msg))
+      (should (string-match-p "docs=man:svc(1)" msg)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
