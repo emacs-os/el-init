@@ -11246,5 +11246,74 @@ No warning is emitted when there are simply no child processes."
     (should (stringp result))
     (should (string-match-p "nil values" result))))
 
+;;; V6: Dependency and timeout hardening tests
+
+(ert-deftest supervisor-test-validate-oneshot-timeout-negative ()
+  "Negative :oneshot-timeout is rejected."
+  (let ((result (supervisor--validate-entry
+                 '("cmd" :type oneshot :oneshot-timeout -5))))
+    (should (stringp result))
+    (should (string-match-p ":oneshot-timeout must be a positive number" result))))
+
+(ert-deftest supervisor-test-validate-oneshot-timeout-zero ()
+  "Zero :oneshot-timeout is rejected."
+  (let ((result (supervisor--validate-entry
+                 '("cmd" :type oneshot :oneshot-timeout 0))))
+    (should (stringp result))
+    (should (string-match-p ":oneshot-timeout must be a positive number" result))))
+
+(ert-deftest supervisor-test-validate-oneshot-timeout-valid ()
+  "Positive :oneshot-timeout passes validation."
+  (should-not (supervisor--validate-entry
+               '("cmd" :type oneshot :oneshot-timeout 5))))
+
+(ert-deftest supervisor-test-validate-after-empty-string ()
+  "Empty string in :after is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :after ""))))
+    (should (stringp result))
+    (should (string-match-p ":after must not contain empty" result))))
+
+(ert-deftest supervisor-test-validate-requires-empty-string ()
+  "Empty string in :requires is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :requires ""))))
+    (should (stringp result))
+    (should (string-match-p ":requires must not contain empty" result))))
+
+(ert-deftest supervisor-test-validate-before-empty-string ()
+  "Empty string in :before is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :before ""))))
+    (should (stringp result))
+    (should (string-match-p ":before must not contain empty" result))))
+
+(ert-deftest supervisor-test-validate-wants-empty-string ()
+  "Empty string in :wants is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :wants ""))))
+    (should (stringp result))
+    (should (string-match-p ":wants must not contain empty" result))))
+
+(ert-deftest supervisor-test-validate-after-self-dependency ()
+  "Self-reference in :after is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :id "a" :after "a"))))
+    (should (stringp result))
+    (should (string-match-p ":after must not reference the entry's own ID" result))))
+
+(ert-deftest supervisor-test-validate-requires-self-dependency ()
+  "Self-reference in :requires is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :id "a" :requires "a"))))
+    (should (stringp result))
+    (should (string-match-p ":requires must not reference the entry's own ID" result))))
+
+(ert-deftest supervisor-test-validate-before-self-dependency ()
+  "Self-reference in :before is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :id "a" :before "a"))))
+    (should (stringp result))
+    (should (string-match-p ":before must not reference the entry's own ID" result))))
+
+(ert-deftest supervisor-test-validate-wants-self-dependency ()
+  "Self-reference in :wants is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :id "a" :wants "a"))))
+    (should (stringp result))
+    (should (string-match-p ":wants must not reference the entry's own ID" result))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

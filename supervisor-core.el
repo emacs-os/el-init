@@ -521,8 +521,8 @@ Return nil if valid, or a reason string if invalid."
       ;; Check :oneshot-timeout is number or nil
       (when (plist-member plist :oneshot-timeout)
         (let ((timeout (plist-get plist :oneshot-timeout)))
-          (unless (or (null timeout) (numberp timeout))
-            (push ":oneshot-timeout must be a number or nil" errors))))
+          (unless (or (null timeout) (and (numberp timeout) (> timeout 0)))
+            (push ":oneshot-timeout must be a positive number or nil" errors))))
       ;; Strict boolean checks for flag keywords
       (dolist (key '(:enabled :disabled :logging :no-restart
                      :oneshot-blocking :oneshot-async))
@@ -672,6 +672,31 @@ Return nil if valid, or a reason string if invalid."
                       (and (proper-list-p val)
                            (cl-every #'stringp val)))
             (push ":wants must be a string or list of strings" errors))))
+      ;; Check dependency lists for empty strings and self-references
+      (let ((effective-id (when (plist-member plist :id)
+                            (plist-get plist :id))))
+        (dolist (dep-spec '((:after . ":after")
+                            (:requires . ":requires")
+                            (:before . ":before")
+                            (:wants . ":wants")))
+          (when (plist-member plist (car dep-spec))
+            (let* ((val (plist-get plist (car dep-spec)))
+                   (items (cond ((null val) nil)
+                                ((stringp val) (list val))
+                                ((proper-list-p val) val))))
+              (when (cl-some (lambda (s)
+                               (and (stringp s)
+                                    (string-empty-p (string-trim s))))
+                             items)
+                (push (format "%s must not contain empty dependency IDs"
+                              (cdr dep-spec))
+                      errors))
+              (when (and effective-id
+                         (cl-some (lambda (s) (equal s effective-id))
+                                  items))
+                (push (format "%s must not reference the entry's own ID"
+                              (cdr dep-spec))
+                      errors))))))
       ;; Check :kill-signal is a valid signal name
       (when (plist-member plist :kill-signal)
         (let ((val (plist-get plist :kill-signal)))
