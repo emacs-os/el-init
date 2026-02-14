@@ -330,6 +330,9 @@ Return nil if valid, or a reason string with file:line context if invalid."
     (format "%s:%d: missing :command" path line))
    ((not (stringp (plist-get plist :command)))
     (format "%s:%d: :command must be a string" path line))
+   ((string-empty-p (string-trim (plist-get plist :command)))
+    (format "%s:%d: :command must not be empty or whitespace-only"
+            path line))
    (t
     ;; Check for unknown keywords
     (let ((keys plist)

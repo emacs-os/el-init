@@ -11112,5 +11112,39 @@ No warning is emitted when there are simply no child processes."
     (should (stringp result))
     (should (string-match-p "must be a proper key/value list" result))))
 
+;;; V2: Command non-empty guard tests
+
+(ert-deftest supervisor-test-validate-entry-empty-string-command ()
+  "Empty string command is rejected by entry validation."
+  (let ((result (supervisor--validate-entry "")))
+    (should (stringp result))
+    (should (string-match-p "empty or whitespace-only" result))))
+
+(ert-deftest supervisor-test-validate-entry-whitespace-string-command ()
+  "Whitespace-only string command is rejected by entry validation."
+  (let ((result (supervisor--validate-entry "   ")))
+    (should (stringp result))
+    (should (string-match-p "empty or whitespace-only" result))))
+
+(ert-deftest supervisor-test-validate-entry-empty-list-command ()
+  "Empty command in list entry is rejected by entry validation."
+  (let ((result (supervisor--validate-entry '("" :id "svc"))))
+    (should (stringp result))
+    (should (string-match-p "empty or whitespace-only" result))))
+
+(ert-deftest supervisor-test-validate-unit-file-empty-command ()
+  "Empty :command is rejected by unit-file validation."
+  (let ((result (supervisor--validate-unit-file-plist
+                 '(:id "svc" :command "") "test.el" 1)))
+    (should (stringp result))
+    (should (string-match-p "empty or whitespace-only" result))))
+
+(ert-deftest supervisor-test-validate-unit-file-whitespace-command ()
+  "Whitespace-only :command is rejected by unit-file validation."
+  (let ((result (supervisor--validate-unit-file-plist
+                 '(:id "svc" :command "   ") "test.el" 1)))
+    (should (stringp result))
+    (should (string-match-p "empty or whitespace-only" result))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

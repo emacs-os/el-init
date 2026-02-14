@@ -448,11 +448,16 @@ Cycles through `no' -> `on-success' -> `on-failure' -> `always' -> `no'."
   "Validate ENTRY configuration.
 Return nil if valid, or a reason string if invalid."
   (cond
-   ;; String entries are always valid (use all defaults)
-   ((stringp entry) nil)
+   ;; String entries: must be non-empty/non-whitespace
+   ((stringp entry)
+    (when (string-empty-p (string-trim entry))
+      "command string must not be empty or whitespace-only"))
    ;; Must be a list with command string first
    ((not (and (listp entry) (stringp (car entry))))
     "entry must be a string or list starting with command string")
+   ;; List entry: command must be non-empty/non-whitespace
+   ((string-empty-p (string-trim (car entry)))
+    "command must not be empty or whitespace-only")
    (t
     (let ((plist (cdr entry)))
       (cond
@@ -2221,15 +2226,21 @@ Indices (schema v1):
 ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
   (if (stringp entry)
-      (let ((id (file-name-nondirectory (car (split-string-and-unquote entry)))))
+      (let* ((tokens (split-string-and-unquote entry))
+             (id (or (car tokens)
+                     (error "Supervisor: empty command string")))
+             (id (file-name-nondirectory id)))
         (list id entry 0 t 'always t 'simple 'stage3 nil
               supervisor-oneshot-default-blocking supervisor-oneshot-timeout nil nil
               nil nil nil nil nil nil
               nil nil nil nil nil nil nil nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
+           (cmd-tokens (split-string-and-unquote cmd))
+           (_ (unless cmd-tokens
+                (error "Supervisor: empty command in entry")))
            (id (or (plist-get plist :id)
-                   (file-name-nondirectory (car (split-string-and-unquote cmd)))))
+                   (file-name-nondirectory (car cmd-tokens))))
            (delay (or (plist-get plist :delay) 0))
            (type-raw (plist-get plist :type))
            (type (cond ((null type-raw) 'simple)
