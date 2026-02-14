@@ -153,8 +153,8 @@ Each unit file is a single plist expression with ~:id~ and ~:command~ required.
 | ~:requires~ | string or list of strings | ~nil~ | Requirement + ordering dependency (same stage) |
 | ~:enabled~ | boolean | ~t~ | Enable/disable service |
 | ~:disabled~ | boolean | ~nil~ | Inverse form of ~:enabled~ |
-| ~:restart~ | boolean | ~t~ | For ~simple~ only |
-| ~:no-restart~ | boolean | ~nil~ | Inverse form of ~:restart~ |
+| ~:restart~ | boolean or policy symbol | ~always~ | For ~simple~ only; accepts ~t~/~nil~ or ~always~/~no~/~on-success~/~on-failure~ |
+| ~:no-restart~ | boolean | ~nil~ | Inverse form of ~:restart~ (~t~ means policy ~no~) |
 | ~:logging~ | boolean | ~t~ | Per-process log capture |
 | ~:oneshot-blocking~ | boolean | ~supervisor-oneshot-default-blocking~ | For ~oneshot~ only |
 | ~:oneshot-async~ | boolean | ~nil~ | Inverse of ~:oneshot-blocking~ |
@@ -1609,22 +1609,66 @@ Practical guidance:
 The following systemd directives are not implemented and have no planned
 implementation.  They are listed here explicitly for auditability.
 
-| Category | Directives |
-|----------+------------|
-| Default dependencies | ~DefaultDependencies~ |
-| Boot/target/install graph | ~WantedBy~, ~RequiredBy~, ~Also~, ~Alias~, target units |
-| Cgroup hardening | ~ProtectSystem~, ~ProtectHome~, ~NoNewPrivileges~, ~PrivateTmp~, ~PrivateNetwork~, ~PrivateDevices~, namespace knobs |
-| Resource limits | ~MemoryMax~, ~CPUQuota~, ~TasksMax~, ~LimitNOFILE~, ~LimitCORE~ |
-| OOM and failure policy | ~OOMPolicy~, ~FailureAction~, ~SuccessAction~, ~StartLimitBurst~, ~StartLimitIntervalSec~ |
-| Watchdog | ~WatchdogSec~, ~WatchdogSignal~ |
-| Credentials and security | ~LoadCredential~, ~SetCredential~, ~DynamicUser~, ~User~, ~Group~ |
-| Notification | ~Type=notify~, ~NotifyAccess~ |
-| Socket activation | ~Type=socket~, socket units |
-| D-Bus activation | ~Type=dbus~, ~BusName~ |
-| Paths and mounts | Path units, mount units, automount units |
-| Timers | systemd timer units (supervisor has its own timer subsystem) |
-| Slices and scopes | Slice units, scope units |
-| Conditions | ~ConditionPathExists~, ~AssertPathExists~, etc. |
+| Directive | Category |
+|-----------+----------|
+| ~DefaultDependencies~ | Default dependencies |
+| ~WantedBy~ | Install/target graph |
+| ~RequiredBy~ | Install/target graph |
+| ~Also~ | Install/target graph |
+| ~Alias~ | Install/target graph |
+| Target units | Install/target graph |
+| ~ProtectSystem~ | Cgroup/namespace hardening |
+| ~ProtectHome~ | Cgroup/namespace hardening |
+| ~NoNewPrivileges~ | Cgroup/namespace hardening |
+| ~PrivateTmp~ | Cgroup/namespace hardening |
+| ~PrivateNetwork~ | Cgroup/namespace hardening |
+| ~PrivateDevices~ | Cgroup/namespace hardening |
+| ~ProtectKernelTunables~ | Cgroup/namespace hardening |
+| ~ProtectKernelModules~ | Cgroup/namespace hardening |
+| ~ProtectControlGroups~ | Cgroup/namespace hardening |
+| ~RestrictAddressFamilies~ | Cgroup/namespace hardening |
+| ~RestrictNamespaces~ | Cgroup/namespace hardening |
+| ~SystemCallFilter~ | Cgroup/namespace hardening |
+| ~MemoryMax~ | Resource limits |
+| ~MemoryHigh~ | Resource limits |
+| ~CPUQuota~ | Resource limits |
+| ~TasksMax~ | Resource limits |
+| ~LimitNOFILE~ | Resource limits |
+| ~LimitCORE~ | Resource limits |
+| ~LimitNPROC~ | Resource limits |
+| ~OOMPolicy~ | OOM and failure policy |
+| ~FailureAction~ | OOM and failure policy |
+| ~SuccessAction~ | OOM and failure policy |
+| ~StartLimitBurst~ | OOM and failure policy |
+| ~StartLimitIntervalSec~ | OOM and failure policy |
+| ~WatchdogSec~ | Watchdog |
+| ~WatchdogSignal~ | Watchdog |
+| ~LoadCredential~ | Credentials and security |
+| ~SetCredential~ | Credentials and security |
+| ~DynamicUser~ | Credentials and security |
+| ~User~ | Credentials and security |
+| ~Group~ | Credentials and security |
+| ~Type=notify~ | Notification protocol |
+| ~NotifyAccess~ | Notification protocol |
+| ~Type=socket~ | Socket activation |
+| Socket units | Socket activation |
+| ~Type=dbus~ | D-Bus activation |
+| ~BusName~ | D-Bus activation |
+| Path units | Paths and mounts |
+| Mount units | Paths and mounts |
+| Automount units | Paths and mounts |
+| systemd timer units | Timers (supervisor has its own timer subsystem) |
+| Slice units | Slices and scopes |
+| Scope units | Slices and scopes |
+| ~ConditionPathExists~ | Conditions and assertions |
+| ~ConditionPathIsDirectory~ | Conditions and assertions |
+| ~ConditionFileNotEmpty~ | Conditions and assertions |
+| ~ConditionUser~ | Conditions and assertions |
+| ~ConditionGroup~ | Conditions and assertions |
+| ~ConditionHost~ | Conditions and assertions |
+| ~ConditionEnvironment~ | Conditions and assertions |
+| ~AssertPathExists~ | Conditions and assertions |
+| ~AssertUser~ | Conditions and assertions |
 
 Rationale: these are primarily PID 1 / system-manager concerns (cgroups,
 namespaces, boot targets) or require integration with system services (D-Bus,
