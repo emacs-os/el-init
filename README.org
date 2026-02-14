@@ -159,6 +159,12 @@ Each unit file is a single plist expression with ~:id~ and ~:command~ required.
 | ~:oneshot-async~ | boolean | ~nil~ | Inverse of ~:oneshot-blocking~ |
 | ~:oneshot-timeout~ | number or ~nil~ | ~supervisor-oneshot-timeout~ | For ~oneshot~ only |
 | ~:tags~ | symbol, string, or list | ~nil~ | Dashboard tag filtering |
+| ~:working-directory~ | string | ~nil~ | Process working directory |
+| ~:environment~ | alist of ~(KEY . VALUE)~ | ~nil~ | Environment variables |
+| ~:environment-file~ | string or list of strings | ~nil~ | Environment file path(s) |
+| ~:exec-stop~ | string or list of strings | ~nil~ | Custom stop command(s), ~simple~ only |
+| ~:exec-reload~ | string or list of strings | ~nil~ | Custom reload command(s), ~simple~ only |
+| ~:restart-sec~ | non-negative number | ~nil~ | Per-unit restart delay, ~simple~ only |
 
 ** Validation Rules
 
@@ -175,7 +181,14 @@ Validation is performed by ~supervisor--validate-entry~ and plan building.
   with ~:no-restart~, and ~:oneshot-blocking~ with ~:oneshot-async~.
 - Type restrictions are enforced: ~oneshot~ rejects ~:restart~ and
   ~:no-restart~; ~simple~ rejects ~:oneshot-blocking~, ~:oneshot-async~, and
-  ~:oneshot-timeout~.
+  ~:oneshot-timeout~.  ~oneshot~ rejects ~:exec-stop~, ~:exec-reload~, and
+  ~:restart-sec~ (simple-only keys).
+- ~:working-directory~ must be a string.
+- ~:environment~ must be an alist of ~(KEY . VALUE)~ string pairs.
+- ~:environment-file~, ~:exec-stop~, and ~:exec-reload~ must be string or proper
+  list of strings.
+- ~:restart-sec~ must be a non-negative number.
+- Duplicate plist keys are rejected.
 
 Invalid entries are skipped at start and shown as ~invalid~ in dashboard
 and CLI status/validate output.
@@ -279,10 +292,11 @@ Required keys:
 - ~:id~ (non-empty string)
 - ~:command~ (string, the shell command)
 
-All other keys are optional (~:type~,
-~:stage~, ~:delay~, ~:after~, ~:requires~, ~:enabled~, ~:disabled~, ~:restart~,
-~:no-restart~, ~:logging~, ~:oneshot-blocking~, ~:oneshot-async~, ~:oneshot-timeout~,
-~:tags~).
+All other keys are optional (~:type~, ~:stage~, ~:delay~, ~:after~, ~:requires~,
+~:enabled~, ~:disabled~, ~:restart~, ~:no-restart~, ~:logging~,
+~:oneshot-blocking~, ~:oneshot-async~, ~:oneshot-timeout~, ~:tags~,
+~:working-directory~, ~:environment~, ~:environment-file~, ~:exec-stop~,
+~:exec-reload~, ~:restart-sec~).
 
 ** Unit File Best Practices (Data-Only Declarations)
 
@@ -557,12 +571,68 @@ four) or via CLI: ~supervisorctl restart-policy always myservice~.
 
 Crash-loop protection:
 
-- Delay: ~supervisor-restart-delay~
+- Delay: ~supervisor-restart-delay~ (overridden per-unit by ~:restart-sec~)
 - Window: ~supervisor-restart-window~ seconds
 - Threshold: ~supervisor-max-restarts~
 - On crash-loop threshold, service is marked failed (~dead~) and restart stops.
 
 ~oneshot~ services are not auto-restarted.
+
+** Per-Unit Restart Delay (~:restart-sec~)
+
+Set ~:restart-sec~ to override ~supervisor-restart-delay~ for a single unit.
+A value of ~0~ means immediate retry.  If ~nil~ (the default), the global
+delay applies.  ~simple~ only.
+
+** Working Directory (~:working-directory~)
+
+Set ~:working-directory~ to a path string.  The process starts with that
+directory as its working directory.
+
+- ~"~"~ and ~~/...~ are expanded to the home directory.
+- Relative paths are resolved against the directory containing the
+  authoritative unit file for that unit.
+- If the resolved directory does not exist, the process fails to start.
+
+** Environment Variables (~:environment~, ~:environment-file~)
+
+Effective environment build order:
+
+1. Start from inherited ~process-environment~.
+2. Apply ~:environment-file~ entries in list order.
+3. Apply ~:environment~ pairs in list order.
+4. Later assignment for the same key overrides earlier assignment.
+
+~:environment~ is an alist of ~(KEY . VALUE)~ string pairs:
+
+#+begin_src emacs-lisp
+:environment (("APP_ENV" . "prod")
+              ("LOG_LEVEL" . "info"))
+#+end_src
+
+~:environment-file~ is a path (or list of paths) to files containing
+~KEY=VALUE~ lines:
+
+- Blank lines and lines starting with ~#~ or ~;~ are ignored.
+- Optional ~export ~ prefix is accepted and stripped.
+- Key must match ~[A-Za-z_][A-Za-z0-9_]*~.
+- Invalid lines produce logged warnings with file:line context (non-fatal).
+- Relative paths are resolved against the authoritative unit file directory.
+- Leading ~-~ in a path means a missing file is silently ignored; without it,
+  a missing file is an error that prevents the process from starting.
+
+** Reload Semantics (~:exec-reload~)
+
+When a running ~simple~ unit has ~:exec-reload~ commands, reloading it
+(~supervisorctl reload ID~, dashboard ~u~) runs the reload commands
+sequentially without stopping or restarting the process.  Each command
+has a per-command timeout of ~supervisor-shutdown-timeout~ seconds.
+
+- If reload commands succeed, the unit reports ~reloaded~.
+- If any reload command fails, the unit reports an error and the process
+  continues running.
+- If ~:exec-reload~ is ~nil~, reload falls back to the default behavior
+  (stop the process, start with new config).
 
 ** Oneshot Exit Encoding
 
@@ -585,6 +655,12 @@ services, but the mapping is not one-to-one.
 | ~:oneshot-async t~ | No direct equivalent | Process runs without blocking stage advancement |
 | ~:oneshot-timeout 30~ | ~TimeoutStartSec=30~ | Kill the process if it hasn't exited in time |
 | No restart for oneshot | ~Restart=~ partially valid | systemd allows ~Restart=on-failure~ etc. for oneshot; supervisor forbids all restart for oneshot |
+| ~:working-directory~ | ~WorkingDirectory=~ | Process working directory |
+| ~:environment~ | ~Environment=~ | Key-value pairs as alist |
+| ~:environment-file~ | ~EnvironmentFile=~ | Paths to env files; ~-~ prefix = optional |
+| ~:exec-stop~ | ~ExecStop=~ | Custom stop commands (~simple~ only) |
+| ~:exec-reload~ | ~ExecReload=~ | Custom reload commands (~simple~ only) |
+| ~:restart-sec~ | ~RestartSec=~ | Per-unit restart delay (~simple~ only) |
 
 Key differences:
 
@@ -615,16 +691,25 @@ Key differences:
 
 ** Stop Semantics
 
+Per-unit stop (~supervisorctl stop ID~, dashboard ~x~):
+
+1. If the unit has ~:exec-stop~ commands, they run sequentially with the unit's
+   effective working directory and environment.  Each command has a per-command
+   timeout of ~supervisor-shutdown-timeout~ seconds.
+2. After stop commands complete (or fail), the process is terminated via signal.
+3. Stop commands failing does not abort the shutdown path.
+
 ~supervisor-stop~ (async graceful):
 
-- sends ~SIGTERM~
-- waits asynchronously for exits
-- after ~supervisor-shutdown-timeout~, sends ~SIGKILL~ to survivors
+1. Runs ~:exec-stop~ command chains for applicable simple units.
+2. Sends ~SIGTERM~ to remaining live processes.
+3. After ~supervisor-shutdown-timeout~, sends ~SIGKILL~ to survivors.
 
 ~supervisor-stop-now~ (sync hard stop):
 
 - sends immediate ~SIGKILL~
 - waits up to ~0.5s~ for process death
+- does not run ~:exec-stop~ commands
 - intended for ~kill-emacs-hook~
 
 * Runtime Overrides and Reconciliation

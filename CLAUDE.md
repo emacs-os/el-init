@@ -98,8 +98,8 @@ CI failures that pass locally often involve Emacs version differences (e.g., `wh
 ## Architecture
 
 ### Entry Parsing (Schema v1)
-`supervisor--parse-entry` converts user config into a 13-element list:
-`(id cmd delay enabled-p restart-p logging-p type stage after oneshot-blocking oneshot-timeout tags requires)`
+`supervisor--parse-entry` converts user config into a 19-element list:
+`(id cmd delay enabled-p restart-p logging-p type stage after oneshot-blocking oneshot-timeout tags requires working-directory environment environment-file exec-stop exec-reload restart-sec)`
 
 Use accessor functions (`supervisor-entry-id`, `supervisor-entry-command`, etc.) instead of direct indexing.
 The `supervisor-service` struct provides a canonical schema v1 representation with conversion functions.
