@@ -543,7 +543,8 @@ Return nil if valid, or a reason string if invalid."
                  (plist-member plist :oneshot-async))
         (push ":oneshot-blocking and :oneshot-async are mutually exclusive" errors))
       ;; Cross-keyword contradiction: :restart-sec with disabled restart
-      (when (plist-member plist :restart-sec)
+      (when (and (plist-member plist :restart-sec)
+                 (plist-get plist :restart-sec))
         (let ((restart-val (plist-get plist :restart))
               (no-restart-val (plist-get plist :no-restart)))
           (when (or (eq no-restart-val t)
@@ -598,14 +599,30 @@ Return nil if valid, or a reason string if invalid."
       ;; Check :environment is an alist of (string . string) pairs
       (when (plist-member plist :environment)
         (let ((val (plist-get plist :environment)))
-          (unless (or (null val)
-                      (and (proper-list-p val)
-                           (cl-every (lambda (pair)
-                                       (and (consp pair)
-                                            (stringp (car pair))
-                                            (stringp (cdr pair))))
-                                     val)))
-            (push ":environment must be an alist of (KEY . VALUE) string pairs" errors))))
+          (if (not (or (null val)
+                       (and (proper-list-p val)
+                            (cl-every (lambda (pair)
+                                        (and (consp pair)
+                                             (stringp (car pair))
+                                             (stringp (cdr pair))))
+                                      val))))
+              (push ":environment must be an alist of (KEY . VALUE) string pairs"
+                    errors)
+            ;; Shape is valid; check key names and duplicates
+            (when val
+              (dolist (pair val)
+                (unless (string-match-p
+                         "\\`[A-Za-z_][A-Za-z0-9_]*\\'" (car pair))
+                  (push (format ":environment key %S is not a valid variable name"
+                                (car pair))
+                        errors)))
+              (let ((seen nil))
+                (dolist (pair val)
+                  (if (member (car pair) seen)
+                      (push (format ":environment contains duplicate key %S"
+                                    (car pair))
+                            errors)
+                    (push (car pair) seen))))))))
       ;; Check :environment-file is string, list of strings, or nil
       (when (plist-member plist :environment-file)
         (let ((val (plist-get plist :environment-file)))
@@ -683,8 +700,9 @@ Return nil if valid, or a reason string if invalid."
                            (cl-every #'stringp val)))
             (push ":wants must be a string or list of strings" errors))))
       ;; Check dependency lists for empty strings and self-references
-      (let ((effective-id (when (plist-member plist :id)
-                            (plist-get plist :id))))
+      (let ((effective-id (if (plist-member plist :id)
+                              (plist-get plist :id)
+                            (file-name-nondirectory (car entry)))))
         (dolist (dep-spec '((:after . ":after")
                             (:requires . ":requires")
                             (:before . ":before")

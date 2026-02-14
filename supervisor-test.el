@@ -11343,5 +11343,74 @@ No warning is emitted when there are simply no child processes."
   (should-not (supervisor--validate-entry
                '("cmd" :restart always :restart-sec 5))))
 
+(ert-deftest supervisor-test-validate-restart-sec-nil-with-no-restart ()
+  "Explicit :restart-sec nil with disabled restart is accepted."
+  (should-not (supervisor--validate-entry
+               '("cmd" :no-restart t :restart-sec nil))))
+
+;;; V6 supplement: derived-ID self-reference regression
+
+(ert-deftest supervisor-test-validate-after-self-dependency-derived-id ()
+  "Self-reference in :after detected via derived command ID."
+  (let ((result (supervisor--validate-entry '("svc" :after "svc"))))
+    (should (stringp result))
+    (should (string-match-p ":after must not reference the entry's own ID" result))))
+
+(ert-deftest supervisor-test-validate-requires-self-dependency-derived-id ()
+  "Self-reference in :requires detected via derived command ID."
+  (let ((result (supervisor--validate-entry '("svc" :requires "svc"))))
+    (should (stringp result))
+    (should (string-match-p ":requires must not reference the entry's own ID" result))))
+
+(ert-deftest supervisor-test-validate-before-self-dependency-derived-id ()
+  "Self-reference in :before detected via derived command ID."
+  (let ((result (supervisor--validate-entry '("svc" :before "svc"))))
+    (should (stringp result))
+    (should (string-match-p ":before must not reference the entry's own ID" result))))
+
+(ert-deftest supervisor-test-validate-wants-self-dependency-derived-id ()
+  "Self-reference in :wants detected via derived command ID."
+  (let ((result (supervisor--validate-entry '("svc" :wants "svc"))))
+    (should (stringp result))
+    (should (string-match-p ":wants must not reference the entry's own ID" result))))
+
+;;; V8: Environment validation tests
+
+(ert-deftest supervisor-test-validate-environment-empty-key ()
+  "Empty environment key is rejected."
+  (let ((result (supervisor--validate-entry
+                 '("cmd" :environment (("" . "val"))))))
+    (should (stringp result))
+    (should (string-match-p ":environment key .* is not a valid variable name"
+                            result))))
+
+(ert-deftest supervisor-test-validate-environment-key-with-space ()
+  "Environment key with space is rejected."
+  (let ((result (supervisor--validate-entry
+                 '("cmd" :environment (("FOO BAR" . "val"))))))
+    (should (stringp result))
+    (should (string-match-p ":environment key .* is not a valid variable name"
+                            result))))
+
+(ert-deftest supervisor-test-validate-environment-key-with-equals ()
+  "Environment key with equals sign is rejected."
+  (let ((result (supervisor--validate-entry
+                 '("cmd" :environment (("FOO=BAR" . "val"))))))
+    (should (stringp result))
+    (should (string-match-p ":environment key .* is not a valid variable name"
+                            result))))
+
+(ert-deftest supervisor-test-validate-environment-valid-key ()
+  "Valid environment key is accepted."
+  (should-not (supervisor--validate-entry
+               '("cmd" :environment (("MY_VAR_1" . "val"))))))
+
+(ert-deftest supervisor-test-validate-environment-duplicate-key ()
+  "Duplicate environment key is rejected."
+  (let ((result (supervisor--validate-entry
+                 '("cmd" :environment (("FOO" . "a") ("FOO" . "b"))))))
+    (should (stringp result))
+    (should (string-match-p ":environment contains duplicate key" result))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
