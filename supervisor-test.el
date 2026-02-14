@@ -11084,5 +11084,33 @@ No warning is emitted when there are simply no child processes."
         (should (eq t (alist-get 'active parsed)))
         (should (equal "active" (alist-get 'status parsed)))))))
 
+;;; V1: Plist shape guard tests
+
+(ert-deftest supervisor-test-validate-entry-odd-plist ()
+  "Odd-length plist is rejected by entry validation."
+  (let ((result (supervisor--validate-entry '("cmd" :id "svc" :enabled))))
+    (should (stringp result))
+    (should (string-match-p "odd number of elements" result))))
+
+(ert-deftest supervisor-test-validate-entry-dotted-plist ()
+  "Dotted plist is rejected by entry validation."
+  (let ((result (supervisor--validate-entry '("cmd" :enabled . t))))
+    (should (stringp result))
+    (should (string-match-p "must be a proper key/value list" result))))
+
+(ert-deftest supervisor-test-validate-unit-file-odd-plist ()
+  "Odd-length plist is rejected by unit-file validation."
+  (let ((result (supervisor--validate-unit-file-plist
+                 '(:id "svc" :command "cmd" :enabled) "test.el" 1)))
+    (should (stringp result))
+    (should (string-match-p "odd number of elements" result))))
+
+(ert-deftest supervisor-test-validate-unit-file-dotted-plist ()
+  "Dotted plist is rejected by unit-file validation."
+  (let ((result (supervisor--validate-unit-file-plist
+                 '(:id "svc" :command . "cmd") "test.el" 1)))
+    (should (stringp result))
+    (should (string-match-p "must be a proper key/value list" result))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

@@ -308,6 +308,13 @@ or signals an error with file:line context."
   "Validate unit-file PLIST loaded from PATH at LINE.
 Return nil if valid, or a reason string with file:line context if invalid."
   (cond
+   ;; Plist shape checks
+   ((not (proper-list-p plist))
+    (format "%s:%d: malformed plist: must be a proper key/value list"
+            path line))
+   ((cl-oddp (length plist))
+    (format "%s:%d: malformed plist: odd number of elements"
+            path line))
    ;; Check for duplicate keys first
    ((let ((dupes (supervisor--plist-duplicate-keys plist)))
       (when dupes

@@ -454,11 +454,17 @@ Return nil if valid, or a reason string if invalid."
    ((not (and (listp entry) (stringp (car entry))))
     "entry must be a string or list starting with command string")
    (t
-    (let* ((plist (cdr entry))
-           (type (or (plist-get plist :type) 'simple))
-           (errors nil))
-      ;; Check for duplicate keys
-      (let ((dupes (supervisor--plist-duplicate-keys plist)))
+    (let ((plist (cdr entry)))
+      (cond
+       ((not (proper-list-p plist))
+        "malformed plist: must be a proper key/value list")
+       ((cl-oddp (length plist))
+        "malformed plist: odd number of elements (missing value?)")
+       (t
+        (let* ((type (or (plist-get plist :type) 'simple))
+               (errors nil))
+          ;; Check for duplicate keys
+          (let ((dupes (supervisor--plist-duplicate-keys plist)))
         (dolist (key dupes)
           (push (format "duplicate key %s" key) errors)))
       ;; Check for unknown keywords
@@ -653,9 +659,9 @@ Return nil if valid, or a reason string if invalid."
              (t
               (push (format ":success-exit-status item must be int or signal name, got %S" item)
                     errors))))))
-      ;; Return nil if valid, or joined error string
-      (when errors
-        (mapconcat #'identity (nreverse errors) "; "))))))
+          ;; Return nil if valid, or joined error string
+          (when errors
+            (mapconcat #'identity (nreverse errors) "; ")))))))))
 
 ;; Forward declarations for supervisor-verify and supervisor-dry-run
 (defvar supervisor--invalid)
