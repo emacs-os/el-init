@@ -79,34 +79,21 @@ preserving the configured order (low to high precedence)."
 
 (defun supervisor--authority-root-for-id (id)
   "Return the highest-precedence authority root containing a unit for ID.
-Consult the authority snapshot first; fall back to a filesystem scan
-of `supervisor-unit-authority-path' (high to low) if no snapshot
-exists.  Return nil if no root contains a unit for ID."
-  ;; Prefer the snapshot: it is canonical and filename-agnostic.
-  (let ((snap supervisor--authority-snapshot))
-    (if snap
-        (let ((winner (gethash id (plist-get snap :winners))))
-          (when winner
-            (supervisor--authority-candidate-root winner)))
-      ;; No snapshot yet; fall back to filesystem scan.
-      (let ((roots (reverse (supervisor--active-authority-roots)))
-            (found nil))
-        (while (and roots (not found))
-          (let ((path (expand-file-name (concat id ".el") (car roots))))
-            (when (file-exists-p path)
-              (setq found (car roots))))
-          (setq roots (cdr roots)))
-        found))))
+Ensure the authority snapshot is published (lazy-init if needed) and
+look up the winning candidate.  Return nil if no root contains ID."
+  (let* ((snap (supervisor--ensure-authority-snapshot))
+         (winner (gethash id (plist-get snap :winners))))
+    (when winner
+      (supervisor--authority-candidate-root winner))))
 
 (defun supervisor--authority-tier-for-id (id)
   "Return the tier index of the winning authority candidate for ID.
-Consult the authority snapshot.  Return nil if ID is not found or
-no snapshot exists.  Tier 0 is the lowest-precedence root."
-  (let ((snap supervisor--authority-snapshot))
-    (when snap
-      (let ((winner (gethash id (plist-get snap :winners))))
-        (when winner
-          (supervisor--authority-candidate-tier winner))))))
+Ensure the authority snapshot is published (lazy-init if needed).
+Return nil if ID is not found.  Tier 0 is the lowest-precedence root."
+  (let* ((snap (supervisor--ensure-authority-snapshot))
+         (winner (gethash id (plist-get snap :winners))))
+    (when winner
+      (supervisor--authority-candidate-tier winner))))
 
 ;;; Authority Candidate Structure
 
@@ -222,31 +209,20 @@ Includes `:command' which is unit-file specific.")
 
 (defun supervisor--unit-file-path (id)
   "Return the authoritative path to the unit file for ID.
-Consult the authority snapshot first for the actual winning path
-\(which may differ from ID.el if the file has a different name).
-Fall back to a filesystem scan when no snapshot exists.  If no
-existing file is found, return a creation path (ID.el in the
-highest-precedence active root).  Return nil when no active roots
-exist."
-  ;; Prefer the snapshot: it tracks actual filenames.
-  (let ((snap supervisor--authority-snapshot))
-    (if snap
-        (let ((winner (gethash id (plist-get snap :winners))))
-          (if winner
-              (supervisor--authority-candidate-path winner)
-            ;; Not in snapshot; return creation path.
-            (let ((active (supervisor--active-authority-roots)))
-              (when active
-                (expand-file-name (concat id ".el")
-                                  (car (last active)))))))
-      ;; No snapshot yet; fall back to filesystem scan.
-      (let ((root (supervisor--authority-root-for-id id)))
-        (if root
-            (expand-file-name (concat id ".el") root)
-          (let ((active (supervisor--active-authority-roots)))
-            (when active
-              (expand-file-name (concat id ".el")
-                                (car (last active))))))))))
+Ensure the authority snapshot is published (lazy-init if needed) and
+return the winning candidate's actual path (which may differ from
+ID.el if the file has a different name).  If ID is not in the
+snapshot, return a creation path (ID.el in the highest-precedence
+active root).  Return nil when no active roots exist."
+  (let* ((snap (supervisor--ensure-authority-snapshot))
+         (winner (gethash id (plist-get snap :winners))))
+    (if winner
+        (supervisor--authority-candidate-path winner)
+      ;; Not in snapshot; return creation path.
+      (let ((active (supervisor--active-authority-roots)))
+        (when active
+          (expand-file-name (concat id ".el")
+                            (car (last active))))))))
 
 ;;; Authority Snapshot
 
@@ -271,6 +247,14 @@ and `supervisor-daemon-reload'.")
 Compute the full resolution, then store the result in
 `supervisor--authority-snapshot' in a single assignment."
   (setq supervisor--authority-snapshot (supervisor--resolve-authority)))
+
+(defun supervisor--ensure-authority-snapshot ()
+  "Ensure the authority snapshot is published, lazy-initializing if needed.
+Return the snapshot.  This guarantees that path lookups always use
+the canonical snapshot rather than a lossy filesystem scan."
+  (or supervisor--authority-snapshot
+      (progn (supervisor--publish-authority-snapshot)
+             supervisor--authority-snapshot)))
 
 ;;; Invalid unit-file tracking
 

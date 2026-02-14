@@ -2794,7 +2794,9 @@ Regression test: stderr pipe processes used to pollute the process list."
       (delete-directory dir1 t))))
 
 (ert-deftest supervisor-test-unit-file-path-authority-aware ()
-  "Unit file path resolves through authority roots."
+  "Unit file path resolves through authority snapshot.
+Adding a file on disk does not change the result until the snapshot
+is re-published (daemon-reload semantics)."
   (let* ((dir1 (make-temp-file "tier1-" t))
          (dir2 (make-temp-file "tier2-" t))
          (supervisor-unit-authority-path (list dir1 dir2))
@@ -2806,9 +2808,13 @@ Regression test: stderr pipe processes used to pollute the process list."
             (insert "(:id \"svc\" :command \"echo\")"))
           (should (equal (expand-file-name "svc.el" dir1)
                          (supervisor--unit-file-path "svc")))
-          ;; Add to tier 2 (higher precedence) - should switch
+          ;; Add to tier 2 — snapshot is stale, still returns tier 1
           (with-temp-file (expand-file-name "svc.el" dir2)
             (insert "(:id \"svc\" :command \"echo\")"))
+          (should (equal (expand-file-name "svc.el" dir1)
+                         (supervisor--unit-file-path "svc")))
+          ;; Re-publish snapshot — now tier 2 wins
+          (supervisor--publish-authority-snapshot)
           (should (equal (expand-file-name "svc.el" dir2)
                          (supervisor--unit-file-path "svc"))))
       (delete-directory dir1 t)
@@ -2828,7 +2834,9 @@ Regression test: stderr pipe processes used to pollute the process list."
       (delete-directory dir2 t))))
 
 (ert-deftest supervisor-test-snapshot-resolves-mismatched-filename ()
-  "Snapshot-based resolution finds units whose filename differs from :id."
+  "Cold-start resolution finds units whose filename differs from :id.
+Lazy-init publishes the snapshot automatically, so even with no
+prior snapshot, lookup returns the correct root and actual file path."
   (let* ((dir (make-temp-file "tier-" t))
          (supervisor-unit-authority-path (list dir))
          (supervisor--authority-snapshot nil)
@@ -2836,14 +2844,10 @@ Regression test: stderr pipe processes used to pollute the process list."
          (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
     (unwind-protect
         (progn
-          ;; File foo.el contains :id "bar"
+          ;; File foo.el contains :id "bar" (filename != :id)
           (with-temp-file (expand-file-name "foo.el" dir)
             (insert "(:id \"bar\" :command \"echo\")"))
-          ;; Without snapshot, filesystem scan for "bar" fails (no bar.el)
-          (should-not (supervisor--authority-root-for-id "bar"))
-          ;; Publish snapshot — resolver reads :id from plist
-          (supervisor--publish-authority-snapshot)
-          ;; Now snapshot-based lookup finds the correct root and path
+          ;; Cold-start: no snapshot yet, but lazy-init resolves correctly
           (should (equal dir (supervisor--authority-root-for-id "bar")))
           (should (equal (expand-file-name "foo.el" dir)
                          (supervisor--unit-file-path "bar"))))
@@ -6855,6 +6859,31 @@ at minute boundaries."
     ;; Should start with 2: (invalid args)
     (should (stringp result))
     (should (string-match "^2:" result))))
+
+(ert-deftest supervisor-test-cli-wrapper-edit-transport-clean ()
+  "Wrapper edit output has clean EXITCODE:BASE64 format with no extra stdout."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--authority-snapshot nil)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch-for-wrapper
+                  '("edit" "new-svc" "--json"))))
+    (unwind-protect
+        (progn
+          ;; Must be EXITCODE:BASE64 with numeric exit code
+          (should (stringp result))
+          (should (string-match "^\\([0-9]+\\):\\(.*\\)$" result))
+          ;; Decode and verify valid JSON
+          (let* ((b64 (match-string 2 result))
+                 (decoded (decode-coding-string
+                           (base64-decode-string b64) 'utf-8))
+                 (parsed (json-read-from-string decoded)))
+            (should (assoc 'path parsed))
+            (should (assoc 'tier parsed))
+            (should (assoc 'created parsed))))
+      (delete-directory dir t))))
 
 ;;; CLI Malformed Option Tests
 

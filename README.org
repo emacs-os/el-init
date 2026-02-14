@@ -1131,9 +1131,9 @@ IDs.
 - resolves path via authority roots; new files are created in the
   highest-precedence active root
 - creates scaffold template if unit file does not exist
-- reports the authority root in human output and JSON
+- reports the authority root and tier in human output and JSON
 - non-interactive: launches ~$VISUAL~ or ~$EDITOR~
-- JSON: ~{"path": "...", "root": "...", "created": true/false}~
+- JSON: ~{"path": "...", "root": "...", "tier": N, "created": true/false}~
 
 ~daemon-reload~:
 

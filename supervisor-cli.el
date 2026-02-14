@@ -1782,27 +1782,30 @@ In non-interactive context, launch $VISUAL or $EDITOR."
                                       root (or tier "?")))
                             ""))
                    (editor (or (getenv "VISUAL") (getenv "EDITOR"))))
-              ;; Print preamble before launching editor
-              (princ preamble)
+              ;; Report tier/path before launching editor.
+              ;; Use `message' so it shows in echo area / *Messages*
+              ;; without corrupting the wrapper transport format.
+              (message "%s" (string-trim-right preamble))
               (if editor
                   (let ((exit-status
                          (supervisor--cli-edit-launch-editor
                           editor path)))
                     (if (= 0 exit-status)
                         (supervisor--cli-success
-                         (concat "\nNext steps after editing:\n"
+                         (concat preamble
+                                 "\nNext steps after editing:\n"
                                  "  supervisorctl daemon-reload"
                                  "    Reload unit definitions")
                          'human)
                       (supervisor--cli-error
                        supervisor-cli-exit-failure
-                       (format "Editor exited with status %d"
-                               exit-status)
+                       (format "%sEditor exited with status %d"
+                               preamble exit-status)
                        'human)))
                 (supervisor--cli-error
                  supervisor-cli-exit-failure
-                 (format "No $VISUAL or $EDITOR set.  Edit the file manually:\n  %s\n\nNext steps after editing:\n  supervisorctl daemon-reload    Reload unit definitions"
-                         path)
+                 (format "%sNo $VISUAL or $EDITOR set.  Edit the file manually:\n  %s\n\nNext steps after editing:\n  supervisorctl daemon-reload    Reload unit definitions"
+                         preamble path)
                  'human))))))))))
 
 (defun supervisor--cli-dispatch (argv)
