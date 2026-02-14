@@ -841,10 +841,9 @@ Interactive helpers:
 - ~M-x supervisor-overrides-save~
 - ~M-x supervisor-overrides-clear~
 
-Dashboard toggles for enabled/restart/mask persist immediately.
-Dashboard logging toggle updates runtime state; use explicit save command (or CLI
-logging command) when you want persistence written immediately. In other words:
-dashboard logging toggle does not auto-save, but CLI ~logging on|off ...~ does.
+All dashboard policy commands (~enable~, ~disable~, ~mask~, ~unmask~,
+~set-restart-policy~, ~set-logging~) persist overrides immediately via
+~supervisor--save-overrides~, matching the CLI behaviour.
 
 * Timer Subsystem (Experimental)
 :PROPERTIES:
@@ -1892,13 +1891,21 @@ supervisor unit file (~webapp.el~):
 Every state-mutating entry point across all modules, classified by
 semantic category.  Classification key:
 
-- *Explicit verb*: performs exactly one named operation on a named target.
+- *Explicit verb*: user-invoked command that performs exactly one named
+  operation on a named target.
 - *Unit-definition mutation*: re-reads or modifies the on-disk unit
   definition; state changes are a side-effect of the new definition.
+- *Implicit (sentinel)*: triggered automatically by a process exit
+  event; not directly user-invoked.
+- *Implicit (scheduler)*: triggered automatically by the staging engine
+  during startup sequencing; not directly user-invoked.
+- *UI-local state*: mutates dashboard-local or display state only
+  (buffer-local variables, timers); does not change service runtime
+  state.
 
-No toggle/cycle mutators remain.  Legacy toggle commands
-(~toggle-restart~, ~toggle-enabled~, ~toggle-mask~, ~toggle-logging~)
-were removed in favour of explicit verb replacements.
+No toggle/cycle mutators for service policy remain.  Legacy toggle
+commands (~toggle-restart~, ~toggle-enabled~, ~toggle-mask~,
+~toggle-logging~) were removed in favour of explicit verb replacements.
 
 *** Core Engine (~supervisor-core.el~)
 
@@ -1910,6 +1917,9 @@ Public entry points that change runtime state:
 | ~supervisor-stop~ | Explicit verb | Sends graceful stop to all processes (async) |
 | ~supervisor-stop-now~ | Explicit verb | Sends hard stop to all processes (sync, for ~kill-emacs-hook~) |
 | ~supervisor-daemon-reload~ | Unit-definition mutation | Re-reads unit files, refreshes invalid hash |
+| ~supervisor-overrides-load~ | Explicit verb | Reads override hash tables from ~supervisor-overrides-file~ |
+| ~supervisor-overrides-save~ | Explicit verb | Writes override hash tables to ~supervisor-overrides-file~ |
+| ~supervisor-overrides-clear~ | Explicit verb | Clears all override hash tables and deletes file |
 
 Private helpers called by CLI and dashboard (not direct entry points):
 
@@ -1920,9 +1930,7 @@ Private helpers called by CLI and dashboard (not direct entry points):
 | ~supervisor--manual-kill~ | Explicit verb | Sends signal to process, restart policy unchanged |
 | ~supervisor--reset-failed~ | Explicit verb | Clears ~failed~, ~oneshot-completed~, ~restart-times~ for target |
 | ~supervisor--reload-unit~ | Unit-definition mutation | Re-reads unit file, stops/starts if running, clears stale state |
-| ~supervisor--save-overrides~ | Explicit verb | Writes override hash tables to ~supervisor-overrides-file~ |
-| ~supervisor--load-overrides~ | Explicit verb | Reads override hash tables from ~supervisor-overrides-file~ |
-| ~supervisor--clear-all-overrides~ | Explicit verb | Clears all override hash tables and deletes file |
+| ~supervisor--save-overrides~ | Implicit (scheduler) | Writes override hash tables to ~supervisor-overrides-file~ (called by policy commands) |
 | ~supervisor--check-crash-loop~ | Implicit (sentinel) | Records restart timestamp; marks ~failed~ if threshold exceeded |
 | ~supervisor--make-process-sentinel~ | Implicit (sentinel) | On exit: removes from ~processes~, records ~last-exit-info~, handles oneshot completion, schedules restart |
 | ~supervisor--start-process~ | Implicit (scheduler) | Inserts into ~processes~, clears ~manually-stopped~, records ~start-times~ |
@@ -1970,6 +1978,10 @@ All interactive dashboard commands that change state.
 | ~supervisor-dashboard-set-logging~ | Explicit verb | puthash/remhash ~logging~ + ~save-overrides~ | Yes |
 | ~supervisor-dashboard-reload-unit~ | Unit-definition mutation | ~supervisor--reload-unit~ | No |
 | ~supervisor-dashboard-daemon-reload~ | Unit-definition mutation | ~supervisor-daemon-reload~ | No |
+| ~supervisor-dashboard-cycle-filter~ | UI-local state | Sets buffer-local ~supervisor--dashboard-stage-filter~ | No |
+| ~supervisor-dashboard-cycle-tag-filter~ | UI-local state | Sets buffer-local ~supervisor--dashboard-tag-filter~ | No |
+| ~supervisor-dashboard-toggle-auto-refresh~ | UI-local state | Creates/cancels buffer-local auto-refresh timer | No |
+| ~supervisor-dashboard-toggle-proced-auto-update~ | UI-local state | Toggles ~proced-auto-update-flag~ | No |
 
 *** CLI / Dashboard Parity
 
