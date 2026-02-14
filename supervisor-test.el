@@ -8806,5 +8806,438 @@ could incorrectly preserve a non-running disabled unit."
                            (file-name-as-directory tmp-dir)))))
       (delete-directory tmp-dir t))))
 
+;;;; Phase P3: Stop and Reload Command Execution
+
+(ert-deftest supervisor-test-run-command-with-timeout-success ()
+  "Command that exits 0 returns 0."
+  (should (= 0 (supervisor--run-command-with-timeout
+                "true" 5 nil nil nil))))
+
+(ert-deftest supervisor-test-run-command-with-timeout-failure ()
+  "Command that exits non-zero returns its exit code."
+  (should (= 1 (supervisor--run-command-with-timeout
+                "false" 5 nil nil nil))))
+
+(ert-deftest supervisor-test-run-command-with-timeout-timeout ()
+  "Command that exceeds timeout returns 124."
+  (should (= 124 (supervisor--run-command-with-timeout
+                  "sleep 60" 0.2 nil nil nil))))
+
+(ert-deftest supervisor-test-run-command-with-timeout-inherits-dir ()
+  "Command runs in the specified working directory."
+  (let ((tmp-dir (make-temp-file "sv-test-" t)))
+    (unwind-protect
+        (should (= 0 (supervisor--run-command-with-timeout
+                      "test -d ." 5 tmp-dir nil nil)))
+      (delete-directory tmp-dir t))))
+
+(ert-deftest supervisor-test-run-command-with-timeout-inherits-env ()
+  "Command inherits the specified environment."
+  (let ((env (cons "SV_TEST_VAR=hello42" process-environment)))
+    (should (= 0 (supervisor--run-command-with-timeout
+                  "test \"$SV_TEST_VAR\" = hello42" 5 nil env nil)))))
+
+(ert-deftest supervisor-test-run-command-with-timeout-logs-output ()
+  "Command output is written to log file when provided."
+  (let ((log-file (make-temp-file "sv-test-log-")))
+    (unwind-protect
+        (progn
+          (supervisor--run-command-with-timeout
+           "echo test-output-marker" 5 nil nil log-file)
+          (let ((content (with-temp-buffer
+                           (insert-file-contents log-file)
+                           (buffer-string))))
+            (should (string-match-p "test-output-marker" content))))
+      (delete-file log-file))))
+
+(ert-deftest supervisor-test-exec-command-chain-all-succeed ()
+  "All commands succeed returns t."
+  (should (eq t (supervisor--exec-command-chain
+                 '("true" "true" "true") "test-id"
+                 nil nil nil 5))))
+
+(ert-deftest supervisor-test-exec-command-chain-partial-failure ()
+  "One failure returns nil but all commands still run."
+  (let ((log-file (make-temp-file "sv-test-log-")))
+    (unwind-protect
+        (progn
+          (should (eq nil (supervisor--exec-command-chain
+                           '("echo before" "false" "echo after") "test-id"
+                           nil nil log-file 5)))
+          ;; Verify "after" command ran despite "false" failure
+          (let ((content (with-temp-buffer
+                           (insert-file-contents log-file)
+                           (buffer-string))))
+            (should (string-match-p "before" content))
+            (should (string-match-p "after" content))))
+      (delete-file log-file))))
+
+(ert-deftest supervisor-test-exec-command-chain-timeout ()
+  "Timeout in one command returns nil but continues to next."
+  (let ((log-file (make-temp-file "sv-test-log-")))
+    (unwind-protect
+        (progn
+          (should (eq nil (supervisor--exec-command-chain
+                           '("sleep 60" "echo ran-after-timeout") "test-id"
+                           nil nil log-file 0.2)))
+          (let ((content (with-temp-buffer
+                           (insert-file-contents log-file)
+                           (buffer-string))))
+            (should (string-match-p "ran-after-timeout" content))))
+      (delete-file log-file))))
+
+(ert-deftest supervisor-test-exec-command-chain-empty ()
+  "Empty command list returns t."
+  (should (eq t (supervisor--exec-command-chain
+                 nil "test-id" nil nil nil 5))))
+
+(ert-deftest supervisor-test-manual-stop-with-exec-stop ()
+  "Exec-stop commands run before process termination with signal fallback."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (chain-called nil)
+        (delete-called nil)
+        (proc (start-process "test-stop" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-stop" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+                     (lambda (_id)
+                       (list "test-stop" "sleep 300" 0 t 'no t 'simple
+                             'stage1 nil nil 30 nil nil
+                             nil nil nil
+                             '("my-stop-cmd") nil nil)))
+                    ((symbol-function 'supervisor--exec-command-chain)
+                     (lambda (cmds _id _dir _env _log _timeout)
+                       (setq chain-called cmds)
+                       ;; Process should still be alive at this point
+                       (should (process-live-p proc))
+                       t))
+                    ((symbol-function 'supervisor--unit-file-directory-for-id)
+                     (lambda (_id) nil)))
+            ;; Wrap delete-process to track it was called after chain
+            (let ((orig-delete (symbol-function 'delete-process)))
+              (cl-letf (((symbol-function 'delete-process)
+                         (lambda (p &rest args)
+                           (when (eq p proc)
+                             (setq delete-called t))
+                           (apply orig-delete p args))))
+                (let ((result (supervisor--manual-stop "test-stop")))
+                  (should (eq (plist-get result :status) 'stopped))
+                  (should (equal chain-called '("my-stop-cmd")))
+                  ;; Signal fallback: delete-process called after exec-stop
+                  (should delete-called))))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-manual-stop-without-exec-stop ()
+  "Without exec-stop, process is terminated directly."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (chain-called nil)
+        (proc (start-process "test-stop2" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-stop2" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+                     (lambda (_id)
+                       ;; Entry with no exec-stop (nil at index 16)
+                       (list "test-stop2" "sleep 300" 0 t 'no t 'simple
+                             'stage1 nil nil 30 nil nil
+                             nil nil nil
+                             nil nil nil)))
+                    ((symbol-function 'supervisor--exec-command-chain)
+                     (lambda (cmds _id _dir _env _log _timeout)
+                       (setq chain-called cmds)
+                       t))
+                    ((symbol-function 'supervisor--unit-file-directory-for-id)
+                     (lambda (_id) nil)))
+            (let ((result (supervisor--manual-stop "test-stop2")))
+              (should (eq (plist-get result :status) 'stopped))
+              ;; Chain should NOT have been called
+              (should (null chain-called)))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-manual-stop-exec-stop-failure-still-terminates ()
+  "Even if exec-stop fails, process is still terminated."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (proc (start-process "test-stop3" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-stop3" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+                     (lambda (_id)
+                       (list "test-stop3" "sleep 300" 0 t 'no t 'simple
+                             'stage1 nil nil 30 nil nil
+                             nil nil nil
+                             '("false") nil nil)))
+                    ((symbol-function 'supervisor--exec-command-chain)
+                     (lambda (_cmds _id _dir _env _log _timeout)
+                       nil))  ; Simulate failure
+                    ((symbol-function 'supervisor--unit-file-directory-for-id)
+                     (lambda (_id) nil)))
+            (let ((result (supervisor--manual-stop "test-stop3")))
+              (should (eq (plist-get result :status) 'stopped))
+              ;; Process should be terminated regardless
+              (should-not (process-live-p proc)))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-reload-unit-with-exec-reload ()
+  "Reload with exec-reload runs commands without stop/start."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal))
+        (chain-called nil)
+        (stop-called nil)
+        (proc (start-process "test-reload" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-reload" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--reload-find-entry)
+                     (lambda (_id)
+                       (list "test-reload" "sleep 300" 0 t 'no t 'simple
+                             'stage1 nil nil 30 nil nil
+                             nil nil nil
+                             nil '("my-reload-cmd") nil)))
+                    ((symbol-function 'supervisor--exec-command-chain)
+                     (lambda (cmds _id _dir _env _log _timeout)
+                       (setq chain-called cmds)
+                       t))
+                    ((symbol-function 'supervisor--manual-stop)
+                     (lambda (_id)
+                       (setq stop-called t)
+                       (list :status 'stopped :reason nil)))
+                    ((symbol-function 'supervisor--unit-file-directory-for-id)
+                     (lambda (_id) nil)))
+            (let ((result (supervisor--reload-unit "test-reload")))
+              (should (equal (plist-get result :action) "reloaded"))
+              (should (equal chain-called '("my-reload-cmd")))
+              ;; Stop should NOT have been called
+              (should (null stop-called))
+              ;; Process should still be running
+              (should (process-live-p proc)))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-reload-unit-without-exec-reload ()
+  "Reload without exec-reload does stop + start."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal))
+        (stop-called nil)
+        (start-called nil)
+        (proc (start-process "test-reload2" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-reload2" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--reload-find-entry)
+                     (lambda (_id)
+                       ;; No exec-reload (nil at index 17)
+                       (list "test-reload2" "sleep 300" 0 t 'no t 'simple
+                             'stage1 nil nil 30 nil nil
+                             nil nil nil
+                             nil nil nil)))
+                    ((symbol-function 'supervisor--manual-stop)
+                     (lambda (_id)
+                       (setq stop-called t)
+                       (list :status 'stopped :reason nil)))
+                    ((symbol-function 'supervisor--start-process)
+                     (lambda (&rest _args)
+                       (setq start-called t)
+                       proc))
+                    ((symbol-function 'supervisor--unit-file-directory-for-id)
+                     (lambda (_id) nil)))
+            (let ((result (supervisor--reload-unit "test-reload2")))
+              (should (equal (plist-get result :action) "reloaded"))
+              (should stop-called)
+              (should start-called))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-reload-unit-exec-reload-failure ()
+  "Reload command failure reports error, keeps process running."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal))
+        (proc (start-process "test-reload3" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-reload3" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--reload-find-entry)
+                     (lambda (_id)
+                       (list "test-reload3" "sleep 300" 0 t 'no t 'simple
+                             'stage1 nil nil 30 nil nil
+                             nil nil nil
+                             nil '("false") nil)))
+                    ((symbol-function 'supervisor--exec-command-chain)
+                     (lambda (_cmds _id _dir _env _log _timeout)
+                       nil))  ; Simulate failure
+                    ((symbol-function 'supervisor--unit-file-directory-for-id)
+                     (lambda (_id) nil)))
+            (let ((result (supervisor--reload-unit "test-reload3")))
+              (should (string-match-p "reload command failed"
+                                      (plist-get result :action)))
+              ;; Process should still be running
+              (should (process-live-p proc)))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-manual-stop-entry-not-found ()
+  "Exec-stop is skipped when entry lookup returns nil."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (chain-called nil)
+        (proc (start-process "test-stop-nf" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-stop-nf" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+                     (lambda (_id) nil))
+                    ((symbol-function 'supervisor--exec-command-chain)
+                     (lambda (cmds _id _dir _env _log _timeout)
+                       (setq chain-called cmds)
+                       t)))
+            (let ((result (supervisor--manual-stop "test-stop-nf")))
+              (should (eq (plist-get result :status) 'stopped))
+              (should (null chain-called)))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-exec-stop-skips-on-cwd-resolution-error ()
+  "Exec-stop is skipped when working directory resolution fails."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (chain-called nil)
+        (proc (start-process "test-cwd-err" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-cwd-err" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+                     (lambda (_id)
+                       (list "test-cwd-err" "sleep 300" 0 t 'no t 'simple
+                             'stage1 nil nil 30 nil nil
+                             "/nonexistent/dir" nil nil
+                             '("stop-cmd") nil nil)))
+                    ((symbol-function 'supervisor--exec-command-chain)
+                     (lambda (cmds _id _dir _env _log _timeout)
+                       (setq chain-called cmds)
+                       t))
+                    ((symbol-function 'supervisor--unit-file-directory-for-id)
+                     (lambda (_id) nil)))
+            (let ((result (supervisor--manual-stop "test-cwd-err")))
+              (should (eq (plist-get result :status) 'stopped))
+              ;; Chain should NOT have been called due to cwd error
+              (should (null chain-called)))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-exec-stop-skips-on-env-resolution-error ()
+  "Exec-stop is skipped when environment resolution fails."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (chain-called nil)
+        (proc (start-process "test-env-err" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-env-err" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+                     (lambda (_id)
+                       (list "test-env-err" "sleep 300" 0 t 'no t 'simple
+                             'stage1 nil nil 30 nil nil
+                             nil nil '("/nonexistent/env-file")
+                             '("stop-cmd") nil nil)))
+                    ((symbol-function 'supervisor--exec-command-chain)
+                     (lambda (cmds _id _dir _env _log _timeout)
+                       (setq chain-called cmds)
+                       t))
+                    ((symbol-function 'supervisor--unit-file-directory-for-id)
+                     (lambda (_id) nil)))
+            (let ((result (supervisor--manual-stop "test-env-err")))
+              (should (eq (plist-get result :status) 'stopped))
+              ;; Chain should NOT have been called due to env error
+              (should (null chain-called)))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-reload-unit-exec-reload-context-error ()
+  "Reload reports error when context resolution fails."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal))
+        (proc (start-process "test-reload-ctx" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-reload-ctx" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--reload-find-entry)
+                     (lambda (_id)
+                       (list "test-reload-ctx" "sleep 300" 0 t 'no t 'simple
+                             'stage1 nil nil 30 nil nil
+                             "/nonexistent/dir" nil nil
+                             nil '("reload-cmd") nil)))
+                    ((symbol-function 'supervisor--unit-file-directory-for-id)
+                     (lambda (_id) nil)))
+            (let ((result (supervisor--reload-unit "test-reload-ctx")))
+              (should (string-match-p "cannot resolve"
+                                      (plist-get result :action)))
+              ;; Process should still be running
+              (should (process-live-p proc)))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-stop-all-runs-exec-stop ()
+  "The stop-all flow runs exec-stop for applicable units."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (supervisor--timers nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--shutdown-complete-flag nil)
+        (supervisor--shutdown-remaining 0)
+        (supervisor--shutdown-timer nil)
+        (supervisor--shutdown-callback nil)
+        (exec-stop-ids nil)
+        (proc (start-process "test-stop-all" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-stop-all" proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor--run-exec-stop-for-id)
+                     (lambda (id)
+                       (push id exec-stop-ids)))
+                    ((symbol-function 'supervisor--dag-cleanup)
+                     #'ignore)
+                    ((symbol-function 'supervisor--emit-event)
+                     #'ignore))
+            (supervisor-stop)
+            ;; exec-stop should have been called for the unit
+            (should (member "test-stop-all" exec-stop-ids))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

@@ -2587,19 +2587,23 @@ to distinguish from normal exits with positive exit codes."
 
 (defun supervisor--handle-shutdown-exit ()
   "Handle process exit during shutdown.
-Decrement remaining count and signal completion when all done."
-  (cl-decf supervisor--shutdown-remaining)
-  (when (<= supervisor--shutdown-remaining 0)
-    ;; Cancel timeout timer (early completion)
-    (when supervisor--shutdown-timer
-      (cancel-timer supervisor--shutdown-timer)
-      (setq supervisor--shutdown-timer nil))
-    ;; Mark complete and invoke callback if provided
-    (let ((cb supervisor--shutdown-callback))
-      (setq supervisor--shutdown-callback nil)
-      (clrhash supervisor--processes)
-      (setq supervisor--shutdown-complete-flag t)
-      (when cb (funcall cb)))))
+Decrement remaining count and signal completion when all done.
+Only activates after `supervisor--shutdown-remaining' has been set
+to a positive value; early exits during the exec-stop phase are
+ignored."
+  (when (> supervisor--shutdown-remaining 0)
+    (cl-decf supervisor--shutdown-remaining)
+    (when (<= supervisor--shutdown-remaining 0)
+      ;; Cancel timeout timer (early completion)
+      (when supervisor--shutdown-timer
+        (cancel-timer supervisor--shutdown-timer)
+        (setq supervisor--shutdown-timer nil))
+      ;; Mark complete and invoke callback if provided
+      (let ((cb supervisor--shutdown-callback))
+        (setq supervisor--shutdown-callback nil)
+        (clrhash supervisor--processes)
+        (setq supervisor--shutdown-complete-flag t)
+        (when cb (funcall cb))))))
 
 (defun supervisor--schedule-restart (id cmd default-logging type config-restart
                                         proc-status exit-code
@@ -2752,6 +2756,114 @@ Return nil if no unit file is found or if `supervisor-units' is not loaded."
   (when (fboundp 'supervisor--unit-file-path)
     (when-let* ((path (supervisor--unit-file-path id)))
       (file-name-directory path))))
+
+(defun supervisor--run-command-with-timeout (cmd timeout dir env log-file)
+  "Run CMD synchronously with per-command TIMEOUT in seconds.
+DIR is the working directory.  ENV is the process environment.
+LOG-FILE, when non-nil, receives stdout and stderr output.
+Return 0 on success, non-zero on failure.  Timeout returns exit
+code 124 (matching coreutils timeout convention)."
+  (let* ((default-directory (or dir default-directory))
+         (process-environment (or env process-environment))
+         (timed-out nil)
+         (finished nil)
+         (proc (make-process
+                :name "supervisor-exec-cmd"
+                :command (list shell-file-name shell-command-switch cmd)
+                :connection-type 'pipe
+                :stderr nil
+                :filter (when log-file
+                          (lambda (_p output)
+                            (write-region output nil log-file t 'silent)))
+                :sentinel (lambda (_p _e) (setq finished t))))
+         (timer (run-at-time timeout nil
+                             (lambda ()
+                               (when (process-live-p proc)
+                                 (setq timed-out t)
+                                 (delete-process proc))))))
+    (set-process-query-on-exit-flag proc nil)
+    (while (not finished)
+      (accept-process-output proc 0.1))
+    (cancel-timer timer)
+    (if timed-out 124 (process-exit-status proc))))
+
+(defun supervisor--exec-command-chain (commands id dir env log-file timeout)
+  "Execute COMMANDS sequentially for unit ID.
+DIR is the working directory.  ENV is the process environment.
+LOG-FILE receives output when non-nil.  TIMEOUT is the
+per-command timeout in seconds.
+Return t if all commands succeed (exit 0), nil otherwise.
+All commands are executed regardless of individual failures."
+  (let ((all-ok t))
+    (dolist (cmd commands)
+      (supervisor--log 'info "%s: executing: %s" id cmd)
+      (let ((exit-code
+             (condition-case err
+                 (supervisor--run-command-with-timeout
+                  cmd timeout dir env log-file)
+               (error
+                (supervisor--log 'warning "%s: command error: %s"
+                                 id (error-message-string err))
+                1))))
+        (cond
+         ((= exit-code 124)
+          (supervisor--log 'warning "%s: command timed out after %ds: %s"
+                           id timeout cmd)
+          (setq all-ok nil))
+         ((/= exit-code 0)
+          (supervisor--log 'warning "%s: command failed (exit %d): %s"
+                           id exit-code cmd)
+          (setq all-ok nil)))))
+    all-ok))
+
+(defun supervisor--run-exec-stop-for-id (id)
+  "Run exec-stop commands for unit ID if configured.
+Look up the entry, verify it is a simple-type unit with
+`:exec-stop' commands, resolve the unit's effective working
+directory and environment, and execute the stop command chain.
+
+Skip silently if the entry has no exec-stop commands, is not
+a simple type, or cannot be found.  If context resolution fails,
+log a warning and skip the chain rather than running commands in
+the wrong context."
+  (when-let* ((entry (supervisor--get-entry-for-id id))
+              (exec-stop (supervisor-entry-exec-stop entry)))
+    (when (eq (supervisor-entry-type entry) 'simple)
+      (let* ((working-directory (supervisor-entry-working-directory entry))
+             (environment (supervisor-entry-environment entry))
+             (environment-file (supervisor-entry-environment-file entry))
+             (logging-p (supervisor-entry-logging-p entry))
+             (unit-file-directory (supervisor--unit-file-directory-for-id id))
+             (dir (if working-directory
+                      (condition-case err
+                          (supervisor--resolve-working-directory
+                           working-directory unit-file-directory)
+                        (error
+                         (supervisor--log
+                          'warning
+                          "%s: cannot resolve working directory for exec-stop: %s"
+                          id (error-message-string err))
+                         nil))
+                    default-directory))
+             (env (when dir
+                    (if (or environment-file environment)
+                        (condition-case err
+                            (supervisor--build-process-environment
+                             environment-file environment unit-file-directory)
+                          (error
+                           (supervisor--log
+                            'warning
+                            "%s: cannot resolve environment for exec-stop: %s"
+                            id (error-message-string err))
+                           nil))
+                      process-environment))))
+        (when (and dir env)
+          (let* ((logging (supervisor--get-effective-logging id logging-p))
+                 (log-file (when logging
+                             (supervisor--ensure-log-directory)
+                             (supervisor--log-file id))))
+            (supervisor--exec-command-chain
+             exec-stop id dir env log-file supervisor-shutdown-timeout)))))))
 
 (defun supervisor--start-process (id cmd default-logging type config-restart
                                      &optional is-restart
@@ -2975,7 +3087,13 @@ Returns a plist with :status and :reason.
 :reason explains why (for skipped/error cases).
 
 This function sets manually-stopped to suppress restart,
-ensuring consistent behavior between dashboard and CLI."
+ensuring consistent behavior between dashboard and CLI.
+
+When the unit has `:exec-stop' commands, they are executed
+before the process is terminated.  Stop commands inherit the
+unit's effective working directory and environment.  After
+stop commands complete (or fail), the existing signal-based
+termination remains authoritative."
   (let ((proc (gethash id supervisor--processes)))
     (cond
      ((not proc)
@@ -2987,6 +3105,8 @@ ensuring consistent behavior between dashboard and CLI."
       (puthash id t supervisor--manually-stopped)
       ;; Clear manually-started so reconcile can treat it normally
       (remhash id supervisor--manually-started)
+      ;; Execute exec-stop commands if configured
+      (supervisor--run-exec-stop-for-id id)
       (delete-process proc)
       (list :status 'stopped :reason nil)))))
 
@@ -3266,7 +3386,23 @@ For `kill-emacs-hook', use `supervisor-stop-now' instead."
   ;; Clean up DAG scheduler
   (supervisor--dag-cleanup)
   (supervisor--emit-event 'cleanup nil nil nil)
-  ;; Send SIGTERM to all
+  ;; Run exec-stop for applicable units before signal escalation.
+  ;; The shutdown-remaining guard in supervisor--handle-shutdown-exit
+  ;; prevents premature completion if processes exit during this phase.
+  (let ((ids nil))
+    (maphash (lambda (id _proc) (push id ids))
+             supervisor--processes)
+    (dolist (id ids)
+      (when-let* ((proc (gethash id supervisor--processes)))
+        (when (process-live-p proc)
+          (supervisor--run-exec-stop-for-id id)))))
+  ;; Cancel any restart timers scheduled by sentinels during exec-stop
+  (maphash (lambda (_id timer)
+             (when (timerp timer)
+               (cancel-timer timer)))
+           supervisor--restart-timers)
+  (clrhash supervisor--restart-timers)
+  ;; Send SIGTERM to all remaining live processes
   (maphash (lambda (_name proc)
              (when (process-live-p proc)
                (signal-process proc 'SIGTERM)))
@@ -3508,19 +3644,21 @@ exists but cannot be parsed, or nil if ID is not found."
 Re-reads the unit definition from unit files by calling
 `supervisor--reload-find-entry', then applies the change:
 
-- Running simple process: stop gracefully, start with new definition.
-  Bypasses enabled/disabled policy so a running unit is never left
-  stopped by reload.
+- Running simple with `:exec-reload': execute reload commands without
+  stopping or restarting the process.
+- Running simple without `:exec-reload': stop gracefully, start with
+  new definition.  Bypasses enabled/disabled policy so a running unit
+  is never left stopped by reload.
 - Running oneshot: update definition only (let it finish naturally).
 - Not running: update stored definition only (next start uses new config).
 - Masked: skip with warning.
 - Unknown ID: error.
 
 Returns a plist (:id ID :action ACTION) where ACTION is one of:
-  \"reloaded\"        - running simple unit restarted with new config
+  \"reloaded\"        - running simple unit restarted or reload commands run
   \"updated\"         - definition refreshed (stopped or running oneshot)
   \"skipped (masked)\" - unit is masked, no action taken
-  \"error: REASON\"   - not found, invalid config, or start failed"
+  \"error: REASON\"   - not found, invalid config, or start/reload failed"
   (cond
    ;; Masked: skip
    ((eq (gethash id supervisor--mask-override) 'masked)
@@ -3540,10 +3678,57 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
                (running (and proc (process-live-p proc)))
                (type (supervisor-entry-type entry)))
           (cond
-           ;; Running simple: stop + start with new definition.
-           ;; Bypass supervisor--manual-start to avoid disabled-policy
-           ;; refusal; reload's contract is config hot-swap, not
-           ;; enable/disable enforcement.
+           ;; Running simple with exec-reload: run reload commands,
+           ;; keep process running.
+           ((and running (eq type 'simple)
+                 (supervisor-entry-exec-reload entry))
+            (let* ((exec-reload (supervisor-entry-exec-reload entry))
+                   (working-directory (supervisor-entry-working-directory entry))
+                   (environment (supervisor-entry-environment entry))
+                   (environment-file (supervisor-entry-environment-file entry))
+                   (logging-p (supervisor-entry-logging-p entry))
+                   (unit-file-directory (supervisor--unit-file-directory-for-id id))
+                   (dir (if working-directory
+                            (condition-case err
+                                (supervisor--resolve-working-directory
+                                 working-directory unit-file-directory)
+                              (error
+                               (supervisor--log
+                                'warning
+                                "%s: cannot resolve working directory for exec-reload: %s"
+                                id (error-message-string err))
+                               nil))
+                          default-directory))
+                   (env (when dir
+                          (if (or environment-file environment)
+                              (condition-case err
+                                  (supervisor--build-process-environment
+                                   environment-file environment
+                                   unit-file-directory)
+                                (error
+                                 (supervisor--log
+                                  'warning
+                                  "%s: cannot resolve environment for exec-reload: %s"
+                                  id (error-message-string err))
+                                 nil))
+                            process-environment))))
+              (if (not (and dir env))
+                  (list :id id
+                        :action "error: cannot resolve exec-reload context")
+                (let* ((logging (supervisor--get-effective-logging id logging-p))
+                       (log-file (when logging
+                                   (supervisor--ensure-log-directory)
+                                   (supervisor--log-file id))))
+                  (if (supervisor--exec-command-chain
+                       exec-reload id dir env log-file
+                       supervisor-shutdown-timeout)
+                      (list :id id :action "reloaded")
+                    (list :id id
+                          :action "error: reload command failed"))))))
+           ;; Running simple without exec-reload: stop + start with
+           ;; new definition.  Bypass supervisor--manual-start to avoid
+           ;; disabled-policy refusal; reload's contract is config
+           ;; hot-swap, not enable/disable enforcement.
            ((and running (eq type 'simple))
             (supervisor--manual-stop id)
             (remhash id supervisor--failed)
