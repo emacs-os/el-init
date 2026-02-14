@@ -523,6 +523,13 @@ Return nil if valid, or a reason string if invalid."
         (let ((timeout (plist-get plist :oneshot-timeout)))
           (unless (or (null timeout) (numberp timeout))
             (push ":oneshot-timeout must be a number or nil" errors))))
+      ;; Strict boolean checks for flag keywords
+      (dolist (key '(:enabled :disabled :logging :no-restart
+                     :oneshot-blocking :oneshot-async))
+        (when (plist-member plist key)
+          (let ((val (plist-get plist key)))
+            (unless (or (eq val t) (eq val nil))
+              (push (format "%s must be t or nil, got %S" key val) errors)))))
       ;; Mutually exclusive: :enabled and :disabled
       (when (and (plist-member plist :enabled)
                  (plist-member plist :disabled))

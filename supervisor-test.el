@@ -11178,5 +11178,45 @@ No warning is emitted when there are simply no child processes."
     (should (stringp result))
     (should (string-match-p "invalid characters" result))))
 
+;;; V4: Strict boolean flag tests
+
+(ert-deftest supervisor-test-validate-boolean-enabled-string ()
+  "String value for :enabled is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :enabled "yes"))))
+    (should (stringp result))
+    (should (string-match-p ":enabled must be t or nil" result))))
+
+(ert-deftest supervisor-test-validate-boolean-disabled-string ()
+  "String value for :disabled is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :disabled "no"))))
+    (should (stringp result))
+    (should (string-match-p ":disabled must be t or nil" result))))
+
+(ert-deftest supervisor-test-validate-boolean-logging-number ()
+  "Numeric value for :logging is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :logging 1))))
+    (should (stringp result))
+    (should (string-match-p ":logging must be t or nil" result))))
+
+(ert-deftest supervisor-test-validate-boolean-no-restart-string ()
+  "String value for :no-restart is rejected."
+  (let ((result (supervisor--validate-entry '("cmd" :no-restart "no"))))
+    (should (stringp result))
+    (should (string-match-p ":no-restart must be t or nil" result))))
+
+(ert-deftest supervisor-test-validate-boolean-oneshot-blocking-string ()
+  "String value for :oneshot-blocking is rejected."
+  (let ((result (supervisor--validate-entry
+                 '("cmd" :type oneshot :oneshot-blocking "no"))))
+    (should (stringp result))
+    (should (string-match-p ":oneshot-blocking must be t or nil" result))))
+
+(ert-deftest supervisor-test-validate-boolean-oneshot-async-string ()
+  "String value for :oneshot-async is rejected."
+  (let ((result (supervisor--validate-entry
+                 '("cmd" :type oneshot :oneshot-async "yes"))))
+    (should (stringp result))
+    (should (string-match-p ":oneshot-async must be t or nil" result))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
