@@ -301,6 +301,88 @@ core symbols exist without dashboard/cli-specific dependencies."
   (should (supervisor--should-restart-p t 'exit 1))
   (should-not (supervisor--should-restart-p nil 'exit 1)))
 
+(ert-deftest supervisor-test-signal-to-number ()
+  "Signal symbol to number lookup."
+  (should (= 1 (supervisor--signal-to-number 'SIGHUP)))
+  (should (= 9 (supervisor--signal-to-number 'SIGKILL)))
+  (should (= 10 (supervisor--signal-to-number 'SIGUSR1)))
+  (should (= 15 (supervisor--signal-to-number 'SIGTERM)))
+  (should (= 17 (supervisor--signal-to-number 'SIGCHLD)))
+  (should (= 31 (supervisor--signal-to-number 'SIGSYS)))
+  (should-not (supervisor--signal-to-number 'SIGFAKE)))
+
+(ert-deftest supervisor-test-signal-to-number-covers-known-signals ()
+  "Every signal in `supervisor--known-signals' has a number mapping."
+  (dolist (sig supervisor--known-signals)
+    (should (integerp (supervisor--signal-to-number sig)))))
+
+(ert-deftest supervisor-test-clean-exit-p-extra-codes ()
+  "Extra exit codes from :success-exit-status are treated as clean."
+  (let ((ses '(:codes (42 77) :signals nil)))
+    ;; 42 is normally not clean
+    (should-not (supervisor--clean-exit-p 'exit 42))
+    ;; With extra codes, 42 is clean
+    (should (supervisor--clean-exit-p 'exit 42 ses))
+    (should (supervisor--clean-exit-p 'exit 77 ses))
+    ;; Other codes still not clean
+    (should-not (supervisor--clean-exit-p 'exit 99 ses))
+    ;; Exit 0 still clean (baseline)
+    (should (supervisor--clean-exit-p 'exit 0 ses))))
+
+(ert-deftest supervisor-test-clean-exit-p-extra-signals ()
+  "Extra signals from :success-exit-status are treated as clean."
+  (let ((ses '(:codes nil :signals (SIGUSR1 SIGUSR2))))
+    ;; SIGUSR1 (10) is normally not clean
+    (should-not (supervisor--clean-exit-p 'signal 10))
+    ;; With extra signals, SIGUSR1 is clean
+    (should (supervisor--clean-exit-p 'signal 10 ses))
+    ;; SIGUSR2 (12) is clean
+    (should (supervisor--clean-exit-p 'signal 12 ses))
+    ;; SIGKILL (9) still not clean
+    (should-not (supervisor--clean-exit-p 'signal 9 ses))
+    ;; Baseline clean signals still clean
+    (should (supervisor--clean-exit-p 'signal 15 ses))))
+
+(ert-deftest supervisor-test-should-restart-p-on-failure-extra-code ()
+  "On-failure policy: extra success code suppresses restart."
+  (let ((ses '(:codes (42) :signals nil)))
+    ;; Without extra, exit 42 triggers restart under on-failure
+    (should (supervisor--should-restart-p 'on-failure 'exit 42))
+    ;; With extra, exit 42 is clean so no restart
+    (should-not (supervisor--should-restart-p 'on-failure 'exit 42 ses))
+    ;; Exit 1 still triggers restart
+    (should (supervisor--should-restart-p 'on-failure 'exit 1 ses))))
+
+(ert-deftest supervisor-test-should-restart-p-on-success-extra-code ()
+  "On-success policy: extra success code triggers restart."
+  (let ((ses '(:codes (42) :signals nil)))
+    ;; Without extra, exit 42 does NOT trigger restart under on-success
+    (should-not (supervisor--should-restart-p 'on-success 'exit 42))
+    ;; With extra, exit 42 is clean so restart triggers
+    (should (supervisor--should-restart-p 'on-success 'exit 42 ses))))
+
+(ert-deftest supervisor-test-should-restart-p-on-failure-extra-signal ()
+  "On-failure policy: extra success signal suppresses restart."
+  (let ((ses '(:codes nil :signals (SIGUSR1))))
+    ;; SIGUSR1 (10) normally triggers restart under on-failure
+    (should (supervisor--should-restart-p 'on-failure 'signal 10))
+    ;; With extra, SIGUSR1 is clean so no restart
+    (should-not (supervisor--should-restart-p 'on-failure 'signal 10 ses))))
+
+(ert-deftest supervisor-test-should-restart-p-always-no-unaffected ()
+  "Always/no policies unaffected by :success-exit-status."
+  (let ((ses '(:codes (42) :signals (SIGUSR1))))
+    (should (supervisor--should-restart-p 'always 'exit 42 ses))
+    (should-not (supervisor--should-restart-p 'no 'exit 42 ses))))
+
+(ert-deftest supervisor-test-clean-exit-p-extra-signal-beyond-15 ()
+  "Signals beyond the base 1-15 range work in :success-exit-status."
+  (let ((ses '(:codes nil :signals (SIGCHLD))))
+    ;; SIGCHLD (17) is not in the baseline clean set
+    (should-not (supervisor--clean-exit-p 'signal 17))
+    ;; With :success-exit-status, SIGCHLD is treated as clean
+    (should (supervisor--clean-exit-p 'signal 17 ses))))
+
 (ert-deftest supervisor-test-overrides-load-migrates-legacy-restart ()
   "Loading overrides with legacy enabled/disabled migrates to policy symbols."
   (let* ((temp-file (make-temp-file "supervisor-test-migrate-" nil ".eld"))

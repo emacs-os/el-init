@@ -369,25 +369,55 @@ HUP (1), INT (2), PIPE (13), TERM (15).")
   '(:oneshot-blocking :oneshot-async :oneshot-timeout :remain-after-exit)
   "Keywords valid only for :type oneshot.")
 
-(defun supervisor--clean-exit-p (proc-status exit-code)
+(defconst supervisor--signal-number-alist
+  '((SIGHUP . 1) (SIGINT . 2) (SIGQUIT . 3) (SIGILL . 4) (SIGTRAP . 5)
+    (SIGABRT . 6) (SIGBUS . 7) (SIGFPE . 8) (SIGKILL . 9) (SIGUSR1 . 10)
+    (SIGSEGV . 11) (SIGUSR2 . 12) (SIGPIPE . 13) (SIGALRM . 14) (SIGTERM . 15)
+    (SIGSTKFLT . 16) (SIGCHLD . 17) (SIGCONT . 18) (SIGSTOP . 19)
+    (SIGTSTP . 20) (SIGTTIN . 21) (SIGTTOU . 22) (SIGURG . 23)
+    (SIGXCPU . 24) (SIGXFSZ . 25) (SIGVTALRM . 26) (SIGPROF . 27)
+    (SIGWINCH . 28) (SIGIO . 29) (SIGPWR . 30) (SIGSYS . 31))
+  "Mapping of signal name symbols to POSIX signal numbers.
+Covers all signals in `supervisor--known-signals'.")
+
+(defun supervisor--signal-to-number (sig)
+  "Return the signal number for signal symbol SIG, or nil if unknown."
+  (cdr (assq sig supervisor--signal-number-alist)))
+
+(defun supervisor--clean-exit-p (proc-status exit-code
+                                              &optional success-exit-status)
   "Return non-nil if PROC-STATUS and EXIT-CODE indicate a clean exit.
-A clean exit is exit code 0, or a signal in `supervisor--clean-exit-signals'."
+A clean exit is exit code 0, or a signal in `supervisor--clean-exit-signals'.
+SUCCESS-EXIT-STATUS, if non-nil, is a plist (:codes INTS :signals SYMS)
+that extends the clean exit criteria."
   (or (and (eq proc-status 'exit) (eq exit-code 0))
       (and (eq proc-status 'signal)
-           (memq exit-code supervisor--clean-exit-signals))))
+           (memq exit-code supervisor--clean-exit-signals))
+      (and success-exit-status
+           (eq proc-status 'exit)
+           (memq exit-code (plist-get success-exit-status :codes)))
+      (and success-exit-status
+           (eq proc-status 'signal)
+           (cl-some (lambda (sig)
+                      (eq exit-code (supervisor--signal-to-number sig)))
+                    (plist-get success-exit-status :signals)))))
 
-(defun supervisor--should-restart-p (policy proc-status exit-code)
+(defun supervisor--should-restart-p (policy proc-status exit-code
+                                            &optional success-exit-status)
   "Return non-nil if POLICY dictates restart given PROC-STATUS and EXIT-CODE.
 POLICY is a restart policy symbol: `always', `no', `on-failure', `on-success'.
-Legacy boolean values are accepted: t is treated as `always', nil as `no'."
+Legacy boolean values are accepted: t is treated as `always', nil as `no'.
+SUCCESS-EXIT-STATUS, if non-nil, extends the clean exit criteria."
   (let ((p (cond ((eq policy t) 'always)
                  ((eq policy nil) 'no)
                  (t policy))))
     (pcase p
       ('always t)
       ('no nil)
-      ('on-failure (not (supervisor--clean-exit-p proc-status exit-code)))
-      ('on-success (supervisor--clean-exit-p proc-status exit-code))
+      ('on-failure
+       (not (supervisor--clean-exit-p proc-status exit-code success-exit-status)))
+      ('on-success
+       (supervisor--clean-exit-p proc-status exit-code success-exit-status))
       (_ nil))))
 
 (defun supervisor--normalize-restart-policy (value)
@@ -3013,9 +3043,11 @@ and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts."
                     supervisor--shutting-down
                     (gethash name supervisor--manually-stopped)
                     (eq (gethash name supervisor--enabled-override) 'disabled)
-                    (not (supervisor--should-restart-p
-                          (supervisor--get-effective-restart name config-restart)
-                          proc-status exit-code))
+                    (not (let ((ses (when-let* ((e (supervisor--get-entry-for-id name)))
+                                     (supervisor-entry-success-exit-status e))))
+                           (supervisor--should-restart-p
+                            (supervisor--get-effective-restart name config-restart)
+                            proc-status exit-code ses)))
                     (gethash name supervisor--failed)
                     (supervisor--check-crash-loop name))
           (supervisor--schedule-restart id cmd default-logging type config-restart
