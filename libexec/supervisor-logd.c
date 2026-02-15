@@ -68,8 +68,9 @@ handle_term(int sig)
     got_term = 1;
 }
 
-/* Build the rotated file name: <base-without-.log>.YYYYMMDD-HHMMSS.log
- * If the file doesn't end in .log, append .YYYYMMDD-HHMMSS directly.
+/* Build a unique rotated file name.
+ * Format: <base>.YYYYMMDD-HHMMSS[.N].log
+ * If the candidate already exists, appends .1, .2, ... until unique.
  * Returns a malloc'd string or NULL on error. */
 static char *
 make_rotated_name(const char *path)
@@ -77,10 +78,13 @@ make_rotated_name(const char *path)
     time_t now = time(NULL);
     struct tm tm;
     char stamp[64];
-    char *result;
     size_t pathlen = strlen(path);
     size_t baselen;
-    int has_log_ext = 0;
+    const char *ext = "";
+    /* Allocate generously: base + "." + stamp + ".99999" + ".log" + NUL */
+    size_t alloc;
+    char *result;
+    int seq;
 
     if (localtime_r(&now, &tm) == NULL)
         return NULL;
@@ -89,24 +93,24 @@ make_rotated_name(const char *path)
              tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
              tm.tm_hour, tm.tm_min, tm.tm_sec);
 
-    /* Check for .log extension */
     if (pathlen >= 4 && strcmp(path + pathlen - 4, ".log") == 0) {
         baselen = pathlen - 4;
-        has_log_ext = 1;
+        ext = ".log";
     } else {
         baselen = pathlen;
     }
 
-    /* base + "." + stamp + ".log" + NUL */
-    result = malloc(baselen + 1 + strlen(stamp) + 4 + 1);
+    alloc = baselen + 1 + strlen(stamp) + 8 + strlen(ext) + 1;
+    result = malloc(alloc);
     if (!result)
         return NULL;
 
-    memcpy(result, path, baselen);
-    result[baselen] = '.';
-    strcpy(result + baselen + 1, stamp);
-    if (has_log_ext)
-        strcat(result, ".log");
+    /* Try without sequence suffix first */
+    snprintf(result, alloc, "%.*s.%s%s", (int)baselen, path, stamp, ext);
+
+    for (seq = 1; access(result, F_OK) == 0 && seq < 100000; seq++)
+        snprintf(result, alloc, "%.*s.%s.%d%s",
+                 (int)baselen, path, stamp, seq, ext);
 
     return result;
 }
@@ -301,8 +305,19 @@ main(int argc, char **argv)
         if (current_size >= (off_t)max_size) {
             char *rotated = make_rotated_name(file_path);
             if (rotated) {
+                if (rename(file_path, rotated) != 0) {
+                    fprintf(stderr,
+                            "supervisor-logd: rotate %s -> %s: %s\n",
+                            file_path, rotated, strerror(errno));
+                    free(rotated);
+                    /* Rotation failed; truncate the file to enforce cap */
+                    if (ftruncate(fd, 0) == 0) {
+                        lseek(fd, 0, SEEK_SET);
+                        current_size = 0;
+                    }
+                    continue;
+                }
                 close(fd);
-                rename(file_path, rotated);
                 fd = open_log(file_path);
                 if (fd < 0) {
                     fprintf(stderr,
