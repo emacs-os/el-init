@@ -127,7 +127,8 @@ Saves overrides once after all IDs are processed."
            (push (cons id (plist-get result :message)) skipped))
           ('error
            (push (cons id (plist-get result :message)) errors)))))
-    (supervisor--save-overrides)
+    (when applied
+      (supervisor--save-overrides))
     (setq applied (nreverse applied)
           skipped (nreverse skipped)
           errors (nreverse errors))

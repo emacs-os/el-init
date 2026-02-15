@@ -1246,26 +1246,6 @@ Clears existing in-memory overrides before loading to prevent stale state."
          ;; Don't delete corrupted file - leave for manual inspection
          nil)))))
 
-(defun supervisor--merge-override (id key value)
-  "Set override KEY for ID to VALUE and save.
-KEY is one of :enabled, :restart, :logging, or :mask.
-VALUE is `enabled', `disabled', `masked', or nil (to clear)."
-  (if (not (supervisor--ensure-overrides-loaded))
-      (progn
-        (supervisor--log 'warning
-                         "Cannot merge override for %s; load failed"
-                         id)
-        nil)
-    (let ((hash (pcase key
-                  (:enabled supervisor--enabled-override)
-                  (:restart supervisor--restart-override)
-                  (:logging supervisor--logging)
-                  (:mask supervisor--mask-override))))
-      (if (null value)
-          (remhash id hash)
-        (puthash id value hash)))
-    (supervisor--save-overrides)))
-
 (defun supervisor--clear-all-overrides ()
   "Clear all overrides from memory and file."
   (clrhash supervisor--enabled-override)

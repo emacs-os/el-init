@@ -1207,8 +1207,9 @@ Prompt with `completing-read' to choose on or off explicitly."
            (enabled-p (string= choice "on"))
            (result (supervisor--policy-set-logging id enabled-p)))
       (message "%s" (plist-get result :message))
-      (supervisor--save-overrides)
-      (supervisor--refresh-dashboard))))
+      (when (eq (plist-get result :status) 'applied)
+        (supervisor--save-overrides)
+        (supervisor--refresh-dashboard)))))
 
 (defun supervisor-dashboard-view-log ()
   "Open the log file for process at point."
