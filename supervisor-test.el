@@ -13199,5 +13199,49 @@ No warning is emitted when there are simply no child processes."
     (supervisor--reset-failed "svc")
     (should-not (gethash "svc" supervisor--spawn-failure-reason))))
 
+;;; Phase 8: reload path preserves configured identity
+
+(ert-deftest supervisor-test-reload-running-simple-passes-user-group ()
+  "Reload of a running simple unit threads user and group to start-process."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--manually-started (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal))
+        (captured-user nil)
+        (captured-group nil)
+        (proc (start-process "test-reload-id" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-reload-id" proc supervisor--processes)
+          ;; 29-element entry with :user="webuser" at 27, :group="webgrp" at 28
+          (cl-letf (((symbol-function 'supervisor--reload-find-entry)
+                     (lambda (_id)
+                       (list "test-reload-id" "sleep 300" 0 t 'always t
+                             'simple 'stage3 nil nil 30 nil nil
+                             nil nil nil nil nil nil
+                             nil nil nil nil nil nil nil nil
+                             "webuser" "webgrp")))
+                    ((symbol-function 'supervisor--manual-stop)
+                     (lambda (_id)
+                       (list :status 'stopped :reason nil)))
+                    ((symbol-function 'supervisor--start-process)
+                     (lambda (_id _cmd _logging _type _restart
+                              &optional _is-restart _wd _env _ef _rs _ufd
+                              user group)
+                       (setq captured-user user)
+                       (setq captured-group group)
+                       t))
+                    ((symbol-function 'supervisor--unit-file-directory-for-id)
+                     (lambda (_id) nil)))
+            (let ((result (supervisor--reload-unit "test-reload-id")))
+              (should (equal "reloaded" (plist-get result :action)))
+              (should (equal "webuser" captured-user))
+              (should (equal "webgrp" captured-group)))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
