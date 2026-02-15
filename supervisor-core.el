@@ -3021,7 +3021,9 @@ Mark ready immediately for simple processes, on exit for oneshot."
         (environment-file (supervisor-entry-environment-file entry))
         (restart-sec (supervisor-entry-restart-sec entry))
         (unit-file-directory (supervisor--unit-file-directory-for-id
-                              (supervisor-entry-id entry))))
+                              (supervisor-entry-id entry)))
+        (user (supervisor-entry-user entry))
+        (group (supervisor-entry-group entry)))
     ;; Check effective enabled state (config + runtime override)
     (let ((effective-enabled (supervisor--get-effective-enabled id enabled-p)))
       (cond
@@ -3044,7 +3046,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
                                  oneshot-blocking oneshot-timeout
                                  working-directory environment
                                  environment-file restart-sec
-                                 unit-file-directory)))
+                                 unit-file-directory
+                                 user group)))
                  supervisor--dag-delay-timers))
        ;; Start immediately
        (t
@@ -3053,7 +3056,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
          oneshot-blocking oneshot-timeout
          working-directory environment
          environment-file restart-sec
-         unit-file-directory))))))
+         unit-file-directory
+         user group))))))
 
 (defun supervisor--dag-finish-spawn-attempt ()
   "Finish a spawn attempt by decrementing count and processing queue."
@@ -3097,15 +3101,16 @@ Mark ready immediately for simple processes, on exit for oneshot."
                                     _oneshot-blocking oneshot-timeout
                                     &optional working-directory environment
                                     environment-file restart-sec
-                                    unit-file-directory)
+                                    unit-file-directory
+                                    user group)
   "Start process ID with CMD, LOGGING-P, TYPE, RESTART-POLICY, ONESHOT-TIMEOUT.
 Optional WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE,
-RESTART-SEC, and UNIT-FILE-DIRECTORY are passed through to
+RESTART-SEC, UNIT-FILE-DIRECTORY, USER, and GROUP are passed through to
 `supervisor--start-process'."
   (puthash id t supervisor--dag-started)
   (puthash id (float-time) supervisor--start-times)
   (cl-incf supervisor--dag-active-starts)
-  (let ((args (supervisor--build-launch-command cmd)))
+  (let ((args (supervisor--build-launch-command cmd user group)))
     (if (not (executable-find (car args)))
         (progn
           (supervisor--log 'warning "executable not found for %s: %s" id (car args))
@@ -3114,7 +3119,8 @@ RESTART-SEC, and UNIT-FILE-DIRECTORY are passed through to
                    id cmd logging-p type restart-policy nil
                    working-directory environment
                    environment-file restart-sec
-                   unit-file-directory)))
+                   unit-file-directory
+                   user group)))
         (if (not proc)
             (supervisor--dag-handle-spawn-failure id)
           (supervisor--dag-handle-spawn-success id type oneshot-timeout))))))
@@ -3403,12 +3409,14 @@ ignored."
                                         proc-status exit-code
                                         &optional working-directory environment
                                         environment-file restart-sec
-                                        unit-file-directory)
+                                        unit-file-directory
+                                        user group)
   "Schedule restart of process ID after crash.
 CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are original process params.
 PROC-STATUS and EXIT-CODE describe the exit for logging.
 WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, RESTART-SEC,
-and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts."
+and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts.
+USER and GROUP are identity parameters preserved for restart."
   (supervisor--log 'info "%s %s, restarting..."
                    id (supervisor--format-exit-status proc-status exit-code))
   (let ((delay (or restart-sec supervisor-restart-delay)))
@@ -3418,17 +3426,20 @@ and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts."
                           id cmd default-logging type config-restart t
                           working-directory environment
                           environment-file restart-sec
-                          unit-file-directory)
+                          unit-file-directory
+                          user group)
              supervisor--restart-timers)))
 
 (defun supervisor--make-process-sentinel (id cmd default-logging type config-restart
                                              &optional working-directory environment
                                              environment-file restart-sec
-                                             unit-file-directory)
+                                             unit-file-directory
+                                             user group)
   "Create a process sentinel for ID with captured parameters.
 CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart.
 WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, RESTART-SEC,
-and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts."
+and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts.
+USER and GROUP are identity parameters preserved for restart."
   (lambda (p _event)
     (unless (process-live-p p)
       (let* ((name (process-name p))
@@ -3469,7 +3480,8 @@ and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts."
                                         proc-status exit-code
                                         working-directory environment
                                         environment-file restart-sec
-                                        unit-file-directory))))))
+                                        unit-file-directory
+                                        user group))))))
 
 ;;; Process Environment and Working Directory Helpers
 
@@ -3706,7 +3718,8 @@ Return a list suitable for the `make-process' :command keyword."
                                      &optional is-restart
                                      working-directory environment
                                      environment-file restart-sec
-                                     unit-file-directory)
+                                     unit-file-directory
+                                     user group)
   "Start CMD with identifier ID.
 DEFAULT-LOGGING is the config value; runtime override is checked at restart.
 TYPE is `simple' (long-running) or `oneshot' (run once).
@@ -3715,7 +3728,10 @@ IS-RESTART is t when called from a crash-triggered restart timer.
 WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, and RESTART-SEC
 are per-unit overrides from the unit file.
 UNIT-FILE-DIRECTORY is the directory of the authoritative unit file,
-captured at plan time for deterministic relative-path resolution."
+captured at plan time for deterministic relative-path resolution.
+USER and GROUP are optional identity parameters for privilege drop.
+When set, `supervisor-runas-command' is used to launch the process
+as the specified identity.  Requires root privileges."
   ;; Clear any pending restart timer for this ID first
   (when-let* ((timer (gethash id supervisor--restart-timers)))
     (when (timerp timer)
@@ -3732,7 +3748,16 @@ captured at plan time for deterministic relative-path resolution."
               (and is-restart (gethash id supervisor--failed))
               (and is-restart (eq (gethash id supervisor--enabled-override) 'disabled))
               (and (gethash id supervisor--processes)
-                   (process-live-p (gethash id supervisor--processes))))
+                   (process-live-p (gethash id supervisor--processes)))
+              ;; Non-root supervisor cannot change process identity
+              (and (or user group)
+                   (not (zerop (user-uid)))
+                   (progn
+                     (supervisor--log
+                      'warning
+                      "%s: identity change requires root (user=%s group=%s)"
+                      id user group)
+                     t)))
     (let* ((default-directory
             (if working-directory
                 (condition-case err
@@ -3752,7 +3777,7 @@ captured at plan time for deterministic relative-path resolution."
                    nil))
               process-environment)))
       (when (and default-directory process-environment)
-        (let* ((args (supervisor--build-launch-command cmd))
+        (let* ((args (supervisor--build-launch-command cmd user group))
                (logging (supervisor--get-effective-logging id default-logging))
                (log-file (when logging
                            (supervisor--ensure-log-directory)
@@ -3770,7 +3795,8 @@ captured at plan time for deterministic relative-path resolution."
                                  id cmd default-logging type config-restart
                                  working-directory environment
                                  environment-file restart-sec
-                                 unit-file-directory))))
+                                 unit-file-directory
+                                 user group))))
           (set-process-query-on-exit-flag proc nil)
           (puthash id proc supervisor--processes)
           proc)))))
@@ -3815,12 +3841,14 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
         (environment-file (supervisor-entry-environment-file entry))
         (restart-sec (supervisor-entry-restart-sec entry))
         (unit-file-directory (supervisor--unit-file-directory-for-id
-                              (supervisor-entry-id entry))))
+                              (supervisor-entry-id entry)))
+        (user (supervisor-entry-user entry))
+        (group (supervisor-entry-group entry)))
     (if (not (supervisor--get-effective-enabled id enabled-p))
         (progn
           (supervisor--log 'info "%s disabled (config or override), skipping" id)
           (when callback (funcall callback t)))
-      (let ((args (supervisor--build-launch-command cmd)))
+      (let ((args (supervisor--build-launch-command cmd user group)))
         (if (not (executable-find (car args)))
             (progn
               (supervisor--log 'warning "executable not found for %s: %s" id (car args))
@@ -3831,7 +3859,8 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
                        id cmd logging-p type restart-policy nil
                        working-directory environment
                        environment-file restart-sec
-                       unit-file-directory)))
+                       unit-file-directory
+                       user group)))
             (if (not proc)
                 (progn
                   (supervisor--emit-event 'process-failed id nil nil)
@@ -3891,13 +3920,21 @@ are blocked.  Manually started disabled units are tracked in
               (environment (supervisor-entry-environment entry))
               (environment-file (supervisor-entry-environment-file entry))
               (restart-sec (supervisor-entry-restart-sec entry))
-              (unit-file-directory (supervisor--unit-file-directory-for-id id)))
+              (unit-file-directory (supervisor--unit-file-directory-for-id id))
+              (user (supervisor-entry-user entry))
+              (group (supervisor-entry-group entry)))
           (cond
            ;; Masked (highest precedence - only mask blocks manual start)
            ((eq (gethash id supervisor--mask-override) 'masked)
             (list :status 'skipped :reason "masked"))
+           ;; Non-root cannot change identity
+           ((and (or user group) (not (zerop (user-uid))))
+            (list :status 'error
+                  :reason (format "identity change requires root (user=%s group=%s)"
+                                  user group)))
            ;; Executable not found
-           ((not (executable-find (car (supervisor--build-launch-command cmd))))
+           ((not (executable-find
+                  (car (supervisor--build-launch-command cmd user group))))
             (list :status 'error :reason "executable not found"))
            ;; All checks passed - start
            (t
@@ -3912,7 +3949,8 @@ are blocked.  Manually started disabled units are tracked in
                          id cmd logging-p type restart-policy nil
                          working-directory environment
                          environment-file restart-sec
-                         unit-file-directory)))
+                         unit-file-directory
+                         user group)))
               (if proc
                   (progn
                     ;; Track manual start only on success so reconcile
@@ -4496,9 +4534,11 @@ Returns a plist with :stopped and :started counts."
                    (environment (supervisor-entry-environment entry))
                    (environment-file (supervisor-entry-environment-file entry))
                    (restart-sec (supervisor-entry-restart-sec entry))
-                   (unit-file-directory (supervisor--unit-file-directory-for-id id)))
+                   (unit-file-directory (supervisor--unit-file-directory-for-id id))
+                   (user (supervisor-entry-user entry))
+                   (group (supervisor-entry-group entry)))
                (when (supervisor--get-effective-enabled id enabled-p)
-                 (let ((args (supervisor--build-launch-command cmd)))
+                 (let ((args (supervisor--build-launch-command cmd user group)))
                    (if (not (executable-find (car args)))
                        (progn
                          (supervisor--log 'warning "reconcile: executable not found for %s: %s"
@@ -4509,7 +4549,8 @@ Returns a plist with :stopped and :started counts."
                                   id cmd logging-p type restart-policy nil
                                   working-directory environment
                                   environment-file restart-sec
-                                  unit-file-directory)))
+                                  unit-file-directory
+                                  user group)))
                        (if proc
                            (progn
                              (supervisor--emit-event 'process-started id nil (list :type type))
@@ -4675,14 +4716,17 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
                    (environment-file (supervisor-entry-environment-file entry))
                    (restart-sec (supervisor-entry-restart-sec entry))
                    (unit-file-directory (supervisor--unit-file-directory-for-id id))
-                   (exe (car (supervisor--build-launch-command cmd))))
+                   (user (supervisor-entry-user entry))
+                   (group (supervisor-entry-group entry))
+                   (exe (car (supervisor--build-launch-command cmd user group))))
               (if (not (executable-find exe))
                   (list :id id :action "error: executable not found")
                 (let ((new-proc (supervisor--start-process
                                  id cmd logging-p type restart-policy nil
                                  working-directory environment
                                  environment-file restart-sec
-                                 unit-file-directory)))
+                                 unit-file-directory
+                                 user group)))
                   (if new-proc
                       (list :id id :action "reloaded")
                     (list :id id

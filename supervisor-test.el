@@ -12730,5 +12730,207 @@ No warning is emitted when there are simply no child processes."
         (should cmd-after-sep)
         (should (file-name-absolute-p (car cmd-after-sep)))))))
 
+;;;; Phase 4 – Core integration (user/group threading)
+
+(ert-deftest supervisor-test-start-process-nonroot-rejects-identity ()
+  "Non-root supervisor returns nil when user/group identity is requested."
+  (skip-unless (not (zerop (user-uid))))
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil))
+    ;; Should return nil because non-root cannot change identity
+    (should-not (supervisor--start-process
+                 "svc" "sleep 300" nil 'simple 'yes nil
+                 nil nil nil nil nil "alice" nil))))
+
+(ert-deftest supervisor-test-start-process-nonroot-rejects-group-only ()
+  "Non-root supervisor returns nil when only group identity is requested."
+  (skip-unless (not (zerop (user-uid))))
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil))
+    (should-not (supervisor--start-process
+                 "svc" "sleep 300" nil 'simple 'yes nil
+                 nil nil nil nil nil nil "staff"))))
+
+(ert-deftest supervisor-test-start-process-nil-identity-ok-nonroot ()
+  "Non-root supervisor starts normally when user/group are nil."
+  (skip-unless (not (zerop (user-uid))))
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (proc nil))
+    (unwind-protect
+        (progn
+          (setq proc (supervisor--start-process
+                      "svc-p4-test" "sleep 300" nil 'simple 'yes nil
+                      nil nil nil nil nil nil nil))
+          (should proc)
+          (should (process-live-p proc)))
+      (when (and proc (process-live-p proc))
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-manual-start-nonroot-rejects-identity ()
+  "Manual start returns error when non-root and user/group set."
+  (skip-unless (not (zerop (user-uid))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc1" :user "alice"))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--restart-timers (make-hash-table :test 'equal))
+           (supervisor--manually-stopped (make-hash-table :test 'equal))
+           (supervisor--manually-started (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--restart-times (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--remain-active (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+           (supervisor--computed-deps (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal)))
+      (let ((result (supervisor--manual-start "svc1")))
+        (should (eq (plist-get result :status) 'error))
+        (should (string-match-p "identity change requires root"
+                                (plist-get result :reason)))))))
+
+(ert-deftest supervisor-test-dag-start-threads-user-group ()
+  "DAG start passes user/group from entry through to start-process."
+  (let* ((entry (supervisor--parse-entry
+                 '("sleep 300" :id "svc1" :user "www-data" :group "www-data")))
+         (supervisor--dag-started (make-hash-table :test 'equal))
+         (supervisor--start-times (make-hash-table :test 'equal))
+         (supervisor--dag-active-starts 0)
+         (captured-user nil)
+         (captured-group nil))
+    (cl-letf (((symbol-function 'supervisor--start-process)
+               (lambda (_id _cmd _log _type _restart &rest args)
+                 ;; args = (is-restart wd env env-file restart-sec ufd user group)
+                 ;; user is at position 6, group at 7
+                 (setq captured-user (nth 6 args))
+                 (setq captured-group (nth 7 args))
+                 t))
+              ((symbol-function 'supervisor--dag-handle-spawn-success) #'ignore)
+              ((symbol-function 'executable-find) (lambda (_) t)))
+      (supervisor--dag-do-start
+       (supervisor-entry-id entry)
+       (supervisor-entry-command entry)
+       (supervisor-entry-logging-p entry)
+       (supervisor-entry-type entry)
+       (supervisor-entry-restart-policy entry)
+       (supervisor-entry-oneshot-blocking entry)
+       (supervisor-entry-oneshot-timeout entry)
+       (supervisor-entry-working-directory entry)
+       (supervisor-entry-environment entry)
+       (supervisor-entry-environment-file entry)
+       (supervisor-entry-restart-sec entry)
+       nil  ; unit-file-directory
+       "www-data"
+       "www-data"))
+    (should (equal captured-user "www-data"))
+    (should (equal captured-group "www-data"))))
+
+(ert-deftest supervisor-test-dag-start-entry-extracts-user-group ()
+  "DAG start-entry-async extracts user/group from entry tuple."
+  (let* ((entry (supervisor--parse-entry
+                 '("sleep 300" :id "svc-ug" :user "postgres" :group "postgres")))
+         (supervisor--dag-started (make-hash-table :test 'equal))
+         (supervisor--dag-entries (make-hash-table :test 'equal))
+         (supervisor--start-times (make-hash-table :test 'equal))
+         (supervisor--dag-active-starts 0)
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+         (supervisor--unit-file-dirs (make-hash-table :test 'equal))
+         (captured-user nil)
+         (captured-group nil))
+    (puthash "svc-ug" entry supervisor--dag-entries)
+    (cl-letf (((symbol-function 'supervisor--start-process)
+               (lambda (_id _cmd _log _type _restart &rest args)
+                 (setq captured-user (nth 6 args))
+                 (setq captured-group (nth 7 args))
+                 t))
+              ((symbol-function 'supervisor--dag-handle-spawn-success) #'ignore)
+              ((symbol-function 'executable-find) (lambda (_) t)))
+      (supervisor--dag-start-entry-async entry))
+    (should (equal captured-user "postgres"))
+    (should (equal captured-group "postgres"))))
+
+(ert-deftest supervisor-test-sentinel-preserves-identity-for-restart ()
+  "Process sentinel forwards user/group to schedule-restart."
+  (let* ((captured-user nil)
+         (captured-group nil)
+         (sentinel (supervisor--make-process-sentinel
+                    "svc-rs" "sleep 300" nil 'simple 'yes
+                    nil nil nil nil nil
+                    "alice" "staff")))
+    (cl-letf (((symbol-function 'supervisor--schedule-restart)
+               (lambda (_id _cmd _log _type _restart _status _code &rest args)
+                 ;; args = (wd env env-file restart-sec ufd user group)
+                 (setq captured-user (nth 5 args))
+                 (setq captured-group (nth 6 args))))
+              ((symbol-function 'supervisor--should-restart-p) (lambda (&rest _) t))
+              ((symbol-function 'supervisor--check-crash-loop) (lambda (_) nil))
+              ((symbol-function 'supervisor--get-effective-restart)
+               (lambda (_id _cfg) 'yes))
+              ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor--get-entry-for-id) (lambda (_) nil)))
+      (let* ((supervisor--processes (make-hash-table :test 'equal))
+             (supervisor--last-exit-info (make-hash-table :test 'equal))
+             (supervisor--shutting-down nil)
+             (supervisor--manually-stopped (make-hash-table :test 'equal))
+             (supervisor--enabled-override (make-hash-table :test 'equal))
+             (supervisor--failed (make-hash-table :test 'equal))
+             (proc (start-process "svc-rs" nil "sleep" "300")))
+        (puthash "svc-rs" proc supervisor--processes)
+        (unwind-protect
+            (progn
+              (delete-process proc)
+              ;; Give sentinel time to fire
+              (sleep-for 0.1)
+              (funcall sentinel proc "finished\n")
+              (should (equal captured-user "alice"))
+              (should (equal captured-group "staff")))
+          (when (process-live-p proc)
+            (delete-process proc)))))))
+
+(ert-deftest supervisor-test-build-launch-command-threads-through-start-process ()
+  "Start-process passes user/group to build-launch-command."
+  (let ((captured-user nil)
+        (captured-group nil)
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (proc nil))
+    ;; Mock user-uid to 0 so the non-root guard does not reject
+    (cl-letf (((symbol-function 'user-uid) (lambda () 0))
+              ((symbol-function 'supervisor--build-launch-command)
+               (lambda (cmd &optional user group)
+                 (setq captured-user user)
+                 (setq captured-group group)
+                 (split-string-and-unquote cmd))))
+      (unwind-protect
+          (progn
+            (setq proc (supervisor--start-process
+                        "svc-blc" "sleep 300" nil 'simple 'yes nil
+                        nil nil nil nil nil "bob" "users"))
+            (should (equal captured-user "bob"))
+            (should (equal captured-group "users")))
+        (when (and proc (process-live-p proc))
+          (delete-process proc))))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
