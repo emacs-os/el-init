@@ -26,6 +26,7 @@
 #   --log-dir DIR          Log directory to operate on (required)
 #   --max-total-bytes N    Hard cap on total directory size (default: 1073741824)
 #   --lock-file PATH       Exclusive lock file path (default: <log-dir>/.prune.lock)
+#   --protect-id ID        Never delete log-<ID>.log (repeatable)
 #   --dry-run              Print actions without executing
 #   --help                 Show this help message
 #
@@ -52,6 +53,7 @@ show_help() {
 log_dir=""
 max_total_bytes=1073741824
 lock_file=""
+protected_ids=""
 dry_run=0
 
 # --- Parse arguments ---
@@ -73,6 +75,12 @@ while [ "${#}" -gt 0 ]; do
         --lock-file)
             [ -n "${2-}" ] || die 1 "--lock-file requires a path argument"
             lock_file="${2}"
+            shift 2
+            ;;
+        --protect-id)
+            [ -n "${2-}" ] || die 1 "--protect-id requires an ID argument"
+            protected_ids="${protected_ids}
+log-${2}.log"
             shift 2
             ;;
         --dry-run)
@@ -154,36 +162,24 @@ rotated_files="$(find "${log_dir}" -maxdepth 1 -type f \
 
 [ -n "${rotated_files}" ] || exit 0
 
-# --- Build deletion-safety lookup tables ---
-# Three signals determine whether a rotated-pattern file is safe to
-# delete.  A file is confirmed ACTIVE (never delete) if another
-# rotated file names it as its parent — it has rotated children.
-# A file is confirmed ROTATED (safe to delete) if its parent active
-# file exists on disk, or if other rotated files share the same parent
-# base (siblings confirm the parent base is a real service).
-# Files matching none of these signals are ambiguous (could be an
-# active log for a timestamp-like service ID that hasn't been rotated
-# yet) and are skipped; logrotate --keep-days handles them by age.
+# --- Build protected-file set ---
+# A file is protected from deletion if:
+#  - It has rotated children in the directory (confirmed active log
+#    for a service whose ID contains a timestamp pattern), or
+#  - Its service ID was passed via --protect-id.
+# All other is_rotated() files are eligible for deletion.
 
-# parent_list: one parent basename per rotated file (with duplicates).
-parent_list="$(printf '%s\n' "${rotated_files}" | while IFS= read -r cf; do
+# confirmed_active: basenames that are parents of other rotated files.
+confirmed_active="$(printf '%s\n' "${rotated_files}" | while IFS= read -r cf; do
     cname="${cf##*/}"
     is_rotated "${cname}" || continue
     printf '%s\n' "$(rotated_parent_name "${cname}")"
-done)"
+done | sort -u)"
 
-# confirmed_active: basenames that appear as parents of other rotated
-# files.  These are active logs whose service ID contains a timestamp
-# pattern (e.g. svc.20250101-120000).
-confirmed_active="$(printf '%s\n' "${parent_list}" | sort -u)"
+# Merge --protect-id entries into the protected set.
+protected_set="${confirmed_active}${protected_ids}"
 
-# multi_child_parents: parent basenames that appear two or more times.
-# When multiple rotated files share a parent, that parent base is a
-# real service (possibly stopped) and each file is safe to delete.
-multi_child_parents="$(printf '%s\n' "${parent_list}" | sort | uniq -c \
-    | awk '$1 >= 2 { print $2 }')"
-
-# --- Filter to only truly rotated files and delete oldest first ---
+# --- Delete oldest rotated files until under cap ---
 excess=$((total - max_total_bytes))
 
 printf '%s\n' "${rotated_files}" | while IFS= read -r f; do
@@ -191,24 +187,10 @@ printf '%s\n' "${rotated_files}" | while IFS= read -r f; do
     name="${f##*/}"
     is_rotated "${name}" || continue
 
-    # Guard 1: skip files confirmed as active parents (have rotated
-    # children in the directory).
-    if [ -n "${confirmed_active}" ] && \
-       printf '%s\n' "${confirmed_active}" | grep -qxF "${name}"; then
+    # Skip protected files (confirmed active parents or --protect-id).
+    if [ -n "${protected_set}" ] && \
+       printf '%s\n' "${protected_set}" | grep -qxF "${name}"; then
         continue
-    fi
-
-    # Guard 2: only delete if we can confirm the file is genuinely
-    # rotated — its parent active file exists on disk, or its parent
-    # base has sibling rotated files (multiple rotations confirm the
-    # parent is a real service).  Otherwise the file is ambiguous and
-    # might be an active log for a timestamp-like service ID.
-    parent="$(rotated_parent_name "${name}")"
-    if ! [ -f "${log_dir}/${parent}" ]; then
-        if [ -z "${multi_child_parents}" ] || \
-           ! printf '%s\n' "${multi_child_parents}" | grep -qxF "${parent}"; then
-            continue
-        fi
     fi
 
     fsize="$(file_size_bytes "${f}")"

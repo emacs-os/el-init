@@ -10,38 +10,49 @@ under window managers like EXWM, or running inside
 long-lived daemonized Emacs instances that need to manage child processes or
 automate tasks with timers.
 
+Its core advantage is the interactive ~M-x supervisor~ dashboard: a fast,
+Emacs-native control plane for lifecycle actions, policy changes, and live
+status/log inspection in one place. If you only need CLI service control,
+~systemctl --user~ may already be enough; ~supervisor.el~ is for an
+interactive Emacs-first workflow.
+
 Define your services in Elisp, organize them into startup stages, declare
 dependencies between them, and let supervisor handle the rest. When something
 crashes, it restarts. When you log out, everything stops cleanly.
 
 ** Features
 
-- *Staged startup*: Services start in four stages (stage1 through stage4), so
-  your X session setup runs before your system tray, and your tray runs before
-  the applets that need it.
+- *Interactive control plane first*: ~M-x supervisor~ is the core experience:
+  a live dashboard for lifecycle actions, policy changes, dependency
+  inspection, logs, and status in one Emacs buffer.
 
-- *Dependencies*: Control start order with ~:after~, or pull in requirements
-  with ~:requires~.
+- *Systemd-style service model, in Elisp*: Unit-style definitions with
+  ~:after~, ~:requires~, explicit stages, ~simple~/~oneshot~, and restart
+  policies (~always~, ~on-success~, ~on-failure~, ~no~).
 
-- *Two service types*: Long-running daemons (~simple~) that restart on crash,
-  and run-once scripts (~oneshot~) for initialization commands.
+- *Persistent runtime policy overrides*: Enable/disable, mask/unmask,
+  restart-policy, and logging overrides are available from dashboard and CLI
+  and persist across restarts.
 
-- *Crash recovery*: Simple services automatically restart when they die.
-  Crash-looping services are marked failed after repeated crashes.
+- *Robust lifecycle behavior*: Crash recovery, crash-loop protection,
+  manual-stop restart suppression, and reconcile-based convergence keep service
+  state predictable.
 
-- *Interactive dashboard*: ~M-x supervisor~ opens a live view where you can
-  start, stop, restart, enable, and disable services with single keystrokes.
+- *Authority-tier unit files*: Vendor/base defaults can be cleanly overridden by
+  higher-precedence user tiers, with daemon-reload support.
 
-- *CLI control*: The included ~sbin/supervisorctl~ script lets you manage
-  services from any terminal, even remotely via SSH.
+- *CLI parity for remote/automation workflows*: ~sbin/supervisorctl~ provides
+  scriptable control with human and JSON output for terminal and SSH usage.
 
-- *Scheduled tasks*: An experimental timer subsystem can run oneshots on cron-like
-  schedules.
+- *Timer subsystem (experimental)*: Cron-like calendar timers and relative
+  timers for oneshot services, including persistent catch-up semantics.
+
+- *Disk-safe logging pipeline*: External log writers, bounded file growth,
+  rotate/prune maintenance tooling, and dashboard/CLI log access.
 
 ** Requirements
 
 - Emacs 28.1 or later
-- Optional: ~transient~ package for the dashboard help menu (~?~ key)
 - For CLI: ~emacsclient~, ~base64~, and ~sed~ in your ~PATH~
 
 ** Handbook Overview
@@ -1510,10 +1521,19 @@ Options:
   total directory size in bytes
 - ~--lock-file PATH~ (default: ~<log-dir>/.prune.lock~) --- exclusive lock
   file path to prevent concurrent prune races
+- ~--protect-id ID~ (repeatable) --- never delete ~log-<ID>.log~; use this
+  for services whose ID contains a timestamp pattern (e.g.
+  ~svc.20250101-120000~) to prevent their active log from being
+  misidentified as rotated
 - ~--dry-run~ --- print actions without executing
 
 The script uses ~flock~ for exclusive locking.  If another prune instance
 is already running, the script exits 0 silently without taking action.
+
+Active logs whose service ID contains a timestamp pattern (e.g.
+~svc.20250101-120000~) are automatically protected once they have been
+rotated at least once (the rotated child confirms the parent as active).
+For brand-new services that have not yet been rotated, use ~--protect-id~.
 
 A typical cron entry for periodic pruning (e.g. hourly):
 
