@@ -229,9 +229,15 @@ Deliverables:
 
 Acceptance:
 
-- total directory size reduced under cap when possible,
+- total directory size is reduced under cap when files can be safely
+  classified as rotated,
 - active logs are never deleted,
 - concurrent invocations are safe.
+
+Note: ambiguous lone-orphan timestamp-pattern files (no parent active
+log, no sibling rotated files) are preserved.  Reaching cap strictly in
+all cases would require authoritative active-log metadata, not just
+filesystem heuristics.
 
 ### Phase 7: Rotate/Prune Integration Rules
 
