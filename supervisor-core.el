@@ -2928,20 +2928,26 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
 (defun supervisor--start-writer (id log-file)
   "Start a log writer process for service ID writing to LOG-FILE.
 Spawn `supervisor-logd' with the configured size cap and log directory.
-Return the writer process.  Store it in `supervisor--writers'."
-  (let* ((cmd (list supervisor-logd-command
-                    "--file" log-file
-                    "--max-file-size-bytes"
-                    (number-to-string supervisor-logd-max-file-size)
-                    "--log-dir" supervisor-log-directory))
-         (proc (make-process
-                :name (format "logd-%s" id)
-                :command cmd
-                :connection-type 'pipe
-                :noquery t)))
-    (set-process-query-on-exit-flag proc nil)
-    (puthash id proc supervisor--writers)
-    proc))
+Return the writer process, or nil if the writer could not be started.
+Store it in `supervisor--writers' on success."
+  (condition-case err
+      (let* ((cmd (list supervisor-logd-command
+                        "--file" log-file
+                        "--max-file-size-bytes"
+                        (number-to-string supervisor-logd-max-file-size)
+                        "--log-dir" supervisor-log-directory))
+             (proc (make-process
+                    :name (format "logd-%s" id)
+                    :command cmd
+                    :connection-type 'pipe
+                    :noquery t)))
+        (set-process-query-on-exit-flag proc nil)
+        (puthash id proc supervisor--writers)
+        proc)
+    (error
+     (supervisor--log 'warning "%s: log writer failed to start: %s"
+                      id (error-message-string err))
+     nil)))
 
 (defun supervisor--stop-writer (id)
   "Stop the log writer process for service ID.
@@ -3512,7 +3518,8 @@ ignored."
       (when supervisor--shutdown-timer
         (cancel-timer supervisor--shutdown-timer)
         (setq supervisor--shutdown-timer nil))
-      ;; Mark complete and invoke callback if provided
+      ;; All services exited; stop log writers and complete
+      (supervisor--stop-all-writers)
       (let ((cb supervisor--shutdown-callback))
         (setq supervisor--shutdown-callback nil)
         (clrhash supervisor--processes)
@@ -4546,8 +4553,6 @@ For `kill-emacs-hook', use `supervisor-stop-now' instead."
              (when (process-live-p proc)
                (signal-process proc (supervisor--kill-signal-for-id name))))
            supervisor--processes)
-  ;; Stop all log writers (service processes are dying, no more output)
-  (supervisor--stop-all-writers)
   ;; Set up event-driven shutdown (sentinel-driven, no polling)
   (let ((live-count 0))
     (maphash (lambda (_name proc)
@@ -4557,6 +4562,7 @@ For `kill-emacs-hook', use `supervisor-stop-now' instead."
     (if (zerop live-count)
         ;; No live processes, cleanup immediately
         (progn
+          (supervisor--stop-all-writers)
           (clrhash supervisor--processes)
           (setq supervisor--shutdown-complete-flag t)
           (when callback (funcall callback)))
@@ -4578,6 +4584,7 @@ For `kill-emacs-hook', use `supervisor-stop-now' instead."
                               (signal-process proc 'SIGKILL))))
                         supervisor--processes)
                ;; Complete shutdown
+               (supervisor--stop-all-writers)
                (let ((cb supervisor--shutdown-callback))
                  (setq supervisor--shutdown-callback nil
                        supervisor--shutdown-remaining 0)
