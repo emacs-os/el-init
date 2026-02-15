@@ -12156,5 +12156,131 @@ No warning is emitted when there are simply no child processes."
         (should (eq 'enabled
                     (gethash "svc" supervisor--enabled-override)))))))
 
+;;; P5 Telemetry Presentation Tests
+
+(ert-deftest supervisor-test-telemetry-process-tree-no-children ()
+  "Process tree returns nil when PID has no children."
+  (let ((proc (start-process "tree-test" nil "sleep" "300")))
+    (unwind-protect
+        (let ((pid (process-id proc)))
+          ;; A bare sleep process has no children
+          (should-not (supervisor--telemetry-process-tree pid)))
+      (delete-process proc))))
+
+(ert-deftest supervisor-test-telemetry-process-tree-bogus-pid ()
+  "Process tree returns nil for non-existent PID."
+  (should-not (supervisor--telemetry-process-tree 999999999)))
+
+(ert-deftest supervisor-test-telemetry-process-metrics-thcount ()
+  "Process metrics includes :thcount when available."
+  (let ((proc (start-process "thcount-test" nil "sleep" "300")))
+    (unwind-protect
+        (let* ((pid (process-id proc))
+               (metrics (supervisor--telemetry-process-metrics pid)))
+          ;; We can only verify the plist structure, not the exact value,
+          ;; since not all OSes provide thcount
+          (when metrics
+            (should (plistp metrics))))
+      (delete-process proc))))
+
+(ert-deftest supervisor-test-cli-entry-info-log-tail ()
+  "Entry info includes log-tail field."
+  (let ((entry (supervisor--parse-entry '("cmd" :id "svc"))))
+    (let ((info (supervisor--cli-entry-info entry)))
+      (should (assq 'log-tail info)))))
+
+(ert-deftest supervisor-test-cli-entry-info-process-tree ()
+  "Entry info includes process-tree field."
+  (let ((entry (supervisor--parse-entry '("cmd" :id "svc"))))
+    (let ((info (supervisor--cli-entry-info entry)))
+      (should (assq 'process-tree info)))))
+
+(ert-deftest supervisor-test-cli-entry-info-authority-tier ()
+  "Entry info includes authority-tier field."
+  (let ((entry (supervisor--parse-entry '("cmd" :id "svc"))))
+    (let ((info (supervisor--cli-entry-info entry)))
+      (should (assq 'authority-tier info)))))
+
+(ert-deftest supervisor-test-cli-describe-human-log-tail ()
+  "Describe human output includes log tail when present."
+  (let ((info '((id . "svc") (type . simple) (stage . stage1)
+                (enabled . t) (enabled-config . t)
+                (restart . always) (restart-config . always)
+                (logging . t) (logging-config . t)
+                (delay . 0) (after . nil) (requires . nil)
+                (status . "running") (reason . nil)
+                (pid . nil) (start-time . nil) (ready-time . nil)
+                (duration . nil)
+                (log-tail . "line1\nline2\n"))))
+    (let ((output (supervisor--cli-describe-human info)))
+      (should (string-match-p "Recent log:" output))
+      (should (string-match-p "line1" output)))))
+
+(ert-deftest supervisor-test-cli-describe-human-process-tree ()
+  "Describe human output includes process tree when present."
+  (let ((info '((id . "svc") (type . simple) (stage . stage1)
+                (enabled . t) (enabled-config . t)
+                (restart . always) (restart-config . always)
+                (logging . t) (logging-config . t)
+                (delay . 0) (after . nil) (requires . nil)
+                (status . "running") (reason . nil)
+                (pid . 1234) (start-time . nil) (ready-time . nil)
+                (duration . nil)
+                (process-tree . (:count 3 :pids (5678 5679 5680))))))
+    (let ((output (supervisor--cli-describe-human info)))
+      (should (string-match-p "Process tree: 3 descendants" output))
+      (should (string-match-p "5678" output)))))
+
+(ert-deftest supervisor-test-cli-describe-human-authority-tier ()
+  "Describe human output shows tier when unit-file and tier are present."
+  (let ((info '((id . "svc") (type . simple) (stage . stage1)
+                (enabled . t) (enabled-config . t)
+                (restart . always) (restart-config . always)
+                (logging . t) (logging-config . t)
+                (delay . 0) (after . nil) (requires . nil)
+                (status . "running") (reason . nil)
+                (pid . nil) (start-time . nil) (ready-time . nil)
+                (duration . nil)
+                (unit-file . "/etc/supervisor/svc.sv")
+                (authority-tier . 2))))
+    (let ((output (supervisor--cli-describe-human info)))
+      (should (string-match-p "Unit file: /etc/supervisor/svc\\.sv (tier 2)" output)))))
+
+(ert-deftest supervisor-test-cli-json-includes-log-tail ()
+  "JSON output includes log_tail field."
+  (let ((info '((id . "svc") (type . simple) (stage . stage1)
+                (enabled . t) (status . "running")
+                (restart . always) (logging . t)
+                (pid . nil) (reason . nil) (delay . 0)
+                (after . nil) (requires . nil)
+                (log-tail . "hello\n"))))
+    (let ((json (supervisor--cli-entry-to-json-obj info)))
+      (should (equal "hello\n" (alist-get 'log_tail json))))))
+
+(ert-deftest supervisor-test-cli-json-includes-process-tree ()
+  "JSON output includes process_tree field."
+  (let ((info '((id . "svc") (type . simple) (stage . stage1)
+                (enabled . t) (status . "running")
+                (restart . always) (logging . t)
+                (pid . nil) (reason . nil) (delay . 0)
+                (after . nil) (requires . nil)
+                (process-tree . (:count 2 :pids (100 101))))))
+    (let ((json (supervisor--cli-entry-to-json-obj info)))
+      (let ((tree (alist-get 'process_tree json)))
+        (should tree)
+        (should (= 2 (alist-get 'count tree)))
+        (should (equal '(100 101) (alist-get 'pids tree)))))))
+
+(ert-deftest supervisor-test-cli-json-includes-authority-tier ()
+  "JSON output includes authority_tier field."
+  (let ((info '((id . "svc") (type . simple) (stage . stage1)
+                (enabled . t) (status . "running")
+                (restart . always) (logging . t)
+                (pid . nil) (reason . nil) (delay . 0)
+                (after . nil) (requires . nil)
+                (authority-tier . 1))))
+    (let ((json (supervisor--cli-entry-to-json-obj info)))
+      (should (= 1 (alist-get 'authority_tier json))))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

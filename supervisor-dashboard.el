@@ -826,7 +826,14 @@ With prefix argument, show status legend instead."
       (princ (format "   Status: %s%s\n" status
                      (if reason (format " (%s)" reason) "")))
       (when pid
-        (princ (format "      PID: %d\n" pid)))
+        (princ (format "      PID: %d\n" pid))
+        (when-let* ((tree (supervisor--telemetry-process-tree pid)))
+          (let ((count (plist-get tree :count))
+                (pids (plist-get tree :pids)))
+            (princ (format "     Tree: %d descendant%s [%s]\n"
+                           count (if (= count 1) "" "s")
+                           (mapconcat (lambda (p) (format "%d" p))
+                                      pids ", "))))))
       (when uptime
         (princ (format "   Uptime: %s\n"
                        (supervisor--describe-format-duration uptime))))
@@ -885,6 +892,12 @@ With prefix argument, show status legend instead."
               (push (format "CPU=%.1f%%" pcpu) parts))
             (when-let* ((pmem (plist-get metrics :pmem)))
               (push (format "MEM=%.1f%%" pmem) parts))
+            (when-let* ((etime (plist-get metrics :etime)))
+              (push (format "ETIME=%s"
+                            (supervisor--describe-format-duration etime))
+                    parts))
+            (when-let* ((thcount (plist-get metrics :thcount)))
+              (push (format "TASKS=%d" thcount) parts))
             (when parts
               (princ (format "  Metrics: %s\n"
                              (mapconcat #'identity
@@ -893,7 +906,10 @@ With prefix argument, show status legend instead."
       (when (or unit-file documentation)
         (princ "\n")
         (when unit-file
-          (princ (format "Unit file: %s\n" unit-file)))
+          (let ((tier (when (fboundp 'supervisor--authority-tier-for-id)
+                        (supervisor--authority-tier-for-id id))))
+            (princ (format "Unit file: %s%s\n" unit-file
+                           (if tier (format " (tier %d)" tier) "")))))
         (when documentation
           (princ (format "     Docs: %s\n"
                          (mapconcat #'identity documentation ", ")))))

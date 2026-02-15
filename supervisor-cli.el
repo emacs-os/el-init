@@ -287,7 +287,9 @@ Returns alist with all fields needed for status display."
          (last-exit (supervisor--telemetry-last-exit-info id snapshot))
          (next-eta (supervisor--telemetry-next-restart-eta id))
          (metrics (when actual-pid
-                    (supervisor--telemetry-process-metrics actual-pid))))
+                    (supervisor--telemetry-process-metrics actual-pid)))
+         (process-tree (when actual-pid
+                         (supervisor--telemetry-process-tree actual-pid))))
     `((id . ,id)
       (type . ,type)
       (stage . ,stage)
@@ -312,8 +314,11 @@ Returns alist with all fields needed for status display."
       (last-exit . ,last-exit)
       (next-restart-eta . ,next-eta)
       (metrics . ,metrics)
+      (process-tree . ,process-tree)
       (unit-file . ,(when (fboundp 'supervisor--unit-file-path)
                       (supervisor--unit-file-path id)))
+      (authority-tier . ,(when (fboundp 'supervisor--authority-tier-for-id)
+                           (supervisor--authority-tier-for-id id)))
       (working-directory . ,(supervisor-entry-working-directory entry))
       (environment . ,(supervisor-entry-environment entry))
       (environment-file . ,(supervisor-entry-environment-file entry))
@@ -321,7 +326,8 @@ Returns alist with all fields needed for status display."
       (exec-reload . ,(supervisor-entry-exec-reload entry))
       (restart-sec . ,(supervisor-entry-restart-sec entry))
       (description . ,(supervisor-entry-description entry))
-      (documentation . ,(supervisor-entry-documentation entry)))))
+      (documentation . ,(supervisor-entry-documentation entry))
+      (log-tail . ,(supervisor--telemetry-log-tail id 5)))))
 
 (defun supervisor--cli-all-entries-info (&optional snapshot)
   "Build info alists for all valid entries, using optional SNAPSHOT.
@@ -472,6 +478,14 @@ Includes both plan-level and unit-file-level invalid entries."
      (let ((rs (alist-get 'restart-sec info)))
        (when rs (format "Restart delay: %ss\n" rs)))
      (when pid (format "PID: %d\n" pid))
+     (let ((tree (alist-get 'process-tree info)))
+       (when tree
+         (let ((count (plist-get tree :count))
+               (pids (plist-get tree :pids)))
+           (format "Process tree: %d descendant%s [%s]\n"
+                   count (if (= count 1) "" "s")
+                   (mapconcat (lambda (p) (format "%d" p))
+                              pids ", ")))))
      (when start-time (format "Start time: %.3f\n" start-time))
      (when ready-time (format "Ready time: %.3f\n" ready-time))
      (when duration (format "Duration: %.3fs\n" duration))
@@ -509,12 +523,17 @@ Includes both plan-level and unit-file-level invalid entries."
                                              (format "%.1f" v)
                                            (format "%s" v))))
                   " "))))
-     (let ((uf (alist-get 'unit-file info)))
-       (when uf (format "Unit file: %s\n" uf)))
+     (let ((uf (alist-get 'unit-file info))
+           (tier (alist-get 'authority-tier info)))
+       (when uf (format "Unit file: %s%s\n" uf
+                        (if tier (format " (tier %d)" tier) ""))))
      (let ((docs (alist-get 'documentation info)))
        (when docs
          (format "Documentation: %s\n"
-                 (mapconcat #'identity docs ", ")))))))
+                 (mapconcat #'identity docs ", "))))
+     (let ((log-tail (alist-get 'log-tail info)))
+       (when log-tail
+         (format "\nRecent log:\n%s" log-tail))))))
 
 (defun supervisor--cli-describe-invalid-human (info)
   "Format invalid entry INFO as human-readable detail view."
@@ -546,6 +565,7 @@ Includes both plan-level and unit-file-level invalid entries."
     (ready_time . ,(alist-get 'ready-time info))
     (duration . ,(alist-get 'duration info))
     (unit_file . ,(alist-get 'unit-file info))
+    (authority_tier . ,(alist-get 'authority-tier info))
     (working_directory . ,(alist-get 'working-directory info))
     (environment . ,(let ((env (alist-get 'environment info)))
                       (if env
@@ -574,8 +594,14 @@ Includes both plan-level and unit-file-level invalid entries."
                                               (substring (symbol-name k) 1))
                                              v))
                     nil)))
+    (process_tree . ,(let ((tree (alist-get 'process-tree info)))
+                       (if tree
+                           `((count . ,(plist-get tree :count))
+                             (pids . ,(or (plist-get tree :pids) [])))
+                         nil)))
     (description . ,(alist-get 'description info))
-    (documentation . ,(or (alist-get 'documentation info) []))))
+    (documentation . ,(or (alist-get 'documentation info) []))
+    (log_tail . ,(alist-get 'log-tail info))))
 
 (defun supervisor--cli-invalid-to-json-obj (info)
   "Convert invalid entry INFO to JSON-compatible alist."

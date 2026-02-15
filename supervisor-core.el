@@ -2588,8 +2588,8 @@ Returns the time when the pending restart timer will fire."
 (defun supervisor--telemetry-process-metrics (pid)
   "Return best-effort process metrics for PID, or nil.
 Returns a plist with available keys: :rss (KB), :pcpu (percent),
-:pmem (percent), :etime (seconds).  Gracefully returns nil if
-process attributes are unavailable."
+:pmem (percent), :etime (seconds), :thcount (thread count).
+Gracefully returns nil if process attributes are unavailable."
   (condition-case nil
       (when-let* ((attrs (process-attributes pid)))
         (let ((result nil))
@@ -2601,6 +2601,8 @@ process attributes are unavailable."
             (setq result (plist-put result :pmem pmem)))
           (when-let* ((etime (alist-get 'etime attrs)))
             (setq result (plist-put result :etime etime)))
+          (when-let* ((thcount (alist-get 'thcount attrs)))
+            (setq result (plist-put result :thcount thcount)))
           result))
     (error nil)))
 
@@ -2617,6 +2619,15 @@ LINES defaults to 5.  Returns nil if no log file exists."
             (forward-line (- n))
             (buffer-substring-no-properties (point) (point-max)))
         (error nil)))))
+
+(defun supervisor--telemetry-process-tree (pid)
+  "Return process-tree summary for PID as a plist, or nil.
+Returns (:count N :pids (PID1 PID2 ...)) where :pids is bounded
+to the first 20 descendants.  Returns nil if PID has no children."
+  (when-let* ((descendants (supervisor--process-descendants pid)))
+    (let ((count (length descendants))
+          (bounded (cl-subseq descendants 0 (min 20 (length descendants)))))
+      (list :count count :pids bounded))))
 
 ;;; Staging and Dependency Resolution
 
