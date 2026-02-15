@@ -13719,6 +13719,67 @@ No warning is emitted when there are simply no child processes."
             (should (= (length files) 2))))
       (delete-directory dir t))))
 
+(ert-deftest supervisor-test-logrotate-dotted-id-not-misclassified ()
+  "Active log for a dotted ID is rotated, not skipped or pruned."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-logrotate" root))
+         (dir (make-temp-file "logrotate-" t)))
+    (unwind-protect
+        (progn
+          ;; Active log for dotted ID like svc.1
+          (write-region "data" nil
+                        (expand-file-name "log-svc.1.log" dir))
+          ;; Also a normal active log
+          (write-region "data" nil
+                        (expand-file-name "log-plain.log" dir))
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir)))
+            (should (= exit-code 0)))
+          ;; Both active files should be gone (rotated)
+          (should-not (file-exists-p
+                       (expand-file-name "log-svc.1.log" dir)))
+          (should-not (file-exists-p
+                       (expand-file-name "log-plain.log" dir)))
+          ;; Rotated versions should exist
+          (let ((files (directory-files dir nil "^log-svc\\.1\\." t)))
+            (should (= (length files) 1)))
+          (let ((files (directory-files dir nil "^log-plain\\." t)))
+            (should (= (length files) 1))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-logrotate-prune-spares-dotted-id-active ()
+  "Prune does not delete active log files for dotted IDs."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-logrotate" root))
+         (dir (make-temp-file "logrotate-" t)))
+    (unwind-protect
+        (progn
+          ;; Active log for dotted ID (current mtime, will be rotated)
+          (write-region "data" nil
+                        (expand-file-name "log-svc.1.log" dir))
+          ;; An actual rotated file that IS old and should be pruned
+          (let ((rotated (expand-file-name
+                          "log-svc.1.20250101-120000.log" dir)))
+            (write-region "old" nil rotated)
+            (set-file-times rotated
+                            (time-subtract (current-time)
+                                           (days-to-time 30))))
+          ;; Run rotation + prune (keep-days 14)
+          ;; The active file gets rotated (moved), the old rotated gets pruned
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--keep-days" "14")))
+            (should (= exit-code 0)))
+          ;; Old rotated file should be pruned
+          (should-not (file-exists-p
+                       (expand-file-name
+                        "log-svc.1.20250101-120000.log" dir)))
+          ;; The newly rotated file from the active log should still exist
+          ;; (its mtime is current, well within 14 days)
+          (let ((files (directory-files dir nil "^log-svc\\.1\\." t)))
+            (should (= (length files) 1))))
+      (delete-directory dir t))))
+
 (ert-deftest supervisor-test-logrotate-prune-removes-old-keeps-recent ()
   "Prune removes old rotated files but keeps active and recent rotated."
   (let* ((root (file-name-directory (locate-library "supervisor")))
