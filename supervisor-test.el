@@ -13983,6 +13983,11 @@ No warning is emitted when there are simply no child processes."
          (newest (expand-file-name "log-svc3.20250103-120000.log" dir)))
     (unwind-protect
         (progn
+          ;; Parent active logs must exist so the parent-exists guard
+          ;; confirms these as rotated children.
+          (write-region "" nil (expand-file-name "log-svc1.log" dir))
+          (write-region "" nil (expand-file-name "log-svc2.log" dir))
+          (write-region "" nil (expand-file-name "log-svc3.log" dir))
           ;; Create three rotated files with staggered mtimes.
           ;; Each is 4096 bytes; total ~12288 + dir overhead.
           (write-region (make-string 4096 ?a) nil oldest)
@@ -14034,6 +14039,8 @@ No warning is emitted when there are simply no child processes."
          (rotated (expand-file-name "log-svc1.20250101-120000.log" dir)))
     (unwind-protect
         (progn
+          ;; Parent active log confirms this is a rotated child.
+          (write-region "" nil (expand-file-name "log-svc1.log" dir))
           (write-region (make-string 8192 ?x) nil rotated)
           (with-temp-buffer
             (let ((exit-code (call-process script nil t nil
@@ -14146,8 +14153,10 @@ No warning is emitted when there are simply no child processes."
           (should-not (file-exists-p ts-child)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-single-orphan-deleted ()
-  "Single orphaned rotated file is deleted to reduce under cap."
+(ert-deftest supervisor-test-log-prune-orphan-without-parent-preserved ()
+  "Orphaned rotated file is preserved when its parent active log is absent.
+The parent-exists guard treats a file with no parent as potentially an
+active log for a timestamp-like service ID."
   (let* ((root (file-name-directory (locate-library "supervisor")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
@@ -14155,11 +14164,13 @@ No warning is emitted when there are simply no child processes."
     (unwind-protect
         (progn
           (write-region (make-string 8192 ?x) nil orphan)
+          ;; No log-oldsvc.log exists — parent is absent.
           (let ((exit-code (call-process script nil nil nil
                                         "--log-dir" dir
                                         "--max-total-bytes" "100")))
             (should (= exit-code 0)))
-          (should-not (file-exists-p orphan)))
+          ;; File must be preserved (could be an active log).
+          (should (file-exists-p orphan)))
       (delete-directory dir t))))
 
 (ert-deftest supervisor-test-log-prune-protect-id-preserves-file ()
@@ -14171,6 +14182,9 @@ No warning is emitted when there are simply no child processes."
          (deletable (expand-file-name "log-other.20240101-010101.log" dir)))
     (unwind-protect
         (progn
+          ;; Parent active logs confirm both as rotated children.
+          (write-region "" nil (expand-file-name "log-svc.log" dir))
+          (write-region "" nil (expand-file-name "log-other.log" dir))
           (write-region (make-string 4096 ?x) nil protected)
           (write-region (make-string 4096 ?y) nil deletable)
           (set-file-times deletable (encode-time 0 0 0 1 1 2024))
@@ -14180,10 +14194,55 @@ No warning is emitted when there are simply no child processes."
                                         "--protect-id"
                                         "svc.20250101-120000")))
             (should (= exit-code 0)))
-          ;; Protected file preserved
+          ;; Protected file preserved by --protect-id
           (should (file-exists-p protected))
           ;; Unprotected file deleted
           (should-not (file-exists-p deletable)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-log-prune-parent-confirms-rotated ()
+  "A rotated file whose parent active log exists is confirmed and deleted."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (parent (expand-file-name "log-svc1.log" dir))
+         (rotated (expand-file-name "log-svc1.20250101-120000.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region "" nil parent)
+          (write-region (make-string 8192 ?x) nil rotated)
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; Parent active log preserved (not rotated).
+          (should (file-exists-p parent))
+          ;; Rotated child deleted (parent confirms it as rotated).
+          (should-not (file-exists-p rotated)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-log-prune-no-fuser-timestamp-id-safe ()
+  "Active log for timestamp-like ID is safe even without fuser.
+Verifies the unconditional parent-exists guard by running with
+PATH set to exclude fuser."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         ;; Active log for service svc.20250101-120000 — no parent
+         ;; log-svc.log exists, so the parent-exists guard preserves it.
+         (active (expand-file-name "log-svc.20250101-120000.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil active)
+          ;; Run with a minimal PATH that excludes fuser.
+          (let ((process-environment
+                 (cons "PATH=/usr/bin:/bin" process-environment))
+                (exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; File must be preserved — parent-exists guard is sufficient.
+          (should (file-exists-p active)))
       (delete-directory dir t))))
 
 (ert-deftest supervisor-test-log-prune-fuser-protects-open-file ()
@@ -14230,6 +14289,8 @@ No warning is emitted when there are simply no child processes."
                        "log-oldsvc.20240101-010101.log" dir)))
     (unwind-protect
         (progn
+          ;; Parent active log confirms this is a rotated child.
+          (write-region "" nil (expand-file-name "log-oldsvc.log" dir))
           (write-region (make-string 8192 ?x) nil closed-file)
           ;; No process holds the file open.
           (let ((exit-code (call-process script nil nil nil

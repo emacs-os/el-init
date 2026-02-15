@@ -201,9 +201,20 @@ printf '%s\n' "${rotated_files}" | while IFS= read -r f; do
         continue
     fi
 
+    # Skip files whose parent active log is absent from the directory.
+    # A rotated file's parent (e.g. log-svc.log for
+    # log-svc.20250101-120000.log) must exist to confirm the file is a
+    # rotated child, not an active log for a service whose ID contains
+    # a timestamp pattern.  This guard is unconditional (no external
+    # tool dependency) and ensures active logs are never deleted.
+    parent_name="$(rotated_parent_name "${name}")"
+    [ -f "${log_dir}/${parent_name}" ] || continue
+
     # Skip files currently open by a process (active logd writer).
-    # This catches active logs for timestamp-like service IDs that
-    # have no rotated children yet (so the children guard misses them).
+    # Belt-and-suspenders: catches the rare case where two services
+    # exist such that one's rotated-child name collides with the
+    # other's active log name (e.g. services "svc" and
+    # "svc.20250101-120000" both running).
     [ "${has_fuser}" = "1" ] && fuser "${f}" >/dev/null 2>&1 && continue
 
     fsize="$(file_size_bytes "${f}")"

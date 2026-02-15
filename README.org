@@ -1531,16 +1531,25 @@ The script uses ~flock~ for exclusive locking.  If another prune instance
 is already running, the script exits 0 silently without taking action.
 
 Active logs whose service ID contains a timestamp pattern (e.g.
-~svc.20250101-120000~) are automatically protected by two mechanisms:
+~svc.20250101-120000~) are unconditionally protected.  A file matching
+the rotated-file naming pattern is only deleted when its parent active
+log exists in the directory (e.g. ~log-svc.log~ must exist for
+~log-svc.20250101-120000.log~ to be considered a rotated child of
+service ~svc~).  Three layers of protection ensure safety:
 
-1. *Children guard* --- once the log has been rotated at least once, the
+1. *Parent-exists guard* --- the parent active log must exist in the
+   directory.  Without it, the file could be an active log for a
+   timestamp-like service ID and is preserved.  This guard requires no
+   external tools and is always active.
+2. *Children guard* --- once the log has been rotated at least once, the
    rotated child confirms the parent as an active file.
-2. *Open-file guard* --- when ~fuser~ is available, files currently held
-   open by a process (e.g. the logd writer) are never deleted, even if
-   they have no rotated children yet.
+3. *Open-file guard* --- when ~fuser~ is available, files currently held
+   open by a process (e.g. the logd writer) are never deleted.
 
-If neither guard applies (service is stopped and has never been rotated),
-use ~--protect-id~ for explicit protection.
+Orphaned rotated files whose parent has been removed are conservatively
+preserved by the parent-exists guard; the complementary age-based
+pruning in ~supervisor-logrotate --keep-days~ cleans them up over time.
+The ~--protect-id~ flag provides additional explicit protection.
 
 A typical cron entry for periodic pruning (e.g. hourly):
 
