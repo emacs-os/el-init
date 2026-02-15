@@ -3677,6 +3677,28 @@ the wrong context."
             (supervisor--exec-command-chain
              exec-stop id dir env log-file supervisor-shutdown-timeout)))))))
 
+(defun supervisor--identity-source-trusted-p (id)
+  "Return non-nil if the unit source for ID is trusted for identity change.
+When supervisor runs as root and a unit requests identity change
+via `:user' or `:group', the unit must come from a verifiable,
+root-owned unit file that is not world-writable.  If the units
+module is not loaded (standalone core mode) or the file cannot be
+verified, return nil (fail closed).
+
+This enforces the PLAN-user-group-privdrop.md requirement that
+root-mode supervisor never runs identity-changing units from
+untrusted sources."
+  (when (fboundp 'supervisor--unit-file-path)
+    (when-let* ((path (supervisor--unit-file-path id)))
+      (when (file-exists-p path)
+        (let ((attrs (file-attributes path 'integer)))
+          (and attrs
+               ;; File must be owned by root (uid 0)
+               (zerop (file-attribute-user-id attrs))
+               ;; File must not be world-writable
+               (let ((mode (file-modes path)))
+                 (and mode (zerop (logand mode #o002))))))))))
+
 (defvar supervisor-runas-command
   (expand-file-name "libexec/supervisor-runas"
                     (file-name-directory (or load-file-name
@@ -3756,6 +3778,16 @@ as the specified identity.  Requires root privileges."
                      (supervisor--log
                       'warning
                       "%s: identity change requires root (user=%s group=%s)"
+                      id user group)
+                     t))
+              ;; Root supervisor requires trusted unit source for identity change
+              (and (or user group)
+                   (zerop (user-uid))
+                   (not (supervisor--identity-source-trusted-p id))
+                   (progn
+                     (supervisor--log
+                      'warning
+                      "%s: identity change blocked - unit source not trusted (user=%s group=%s)"
                       id user group)
                      t)))
     (let* ((default-directory
@@ -3932,6 +3964,11 @@ are blocked.  Manually started disabled units are tracked in
             (list :status 'error
                   :reason (format "identity change requires root (user=%s group=%s)"
                                   user group)))
+           ;; Root trust gate: identity change requires trusted unit source
+           ((and (or user group) (zerop (user-uid))
+                 (not (supervisor--identity-source-trusted-p id)))
+            (list :status 'error
+                  :reason "identity change blocked: unit source not trusted"))
            ;; Executable not found
            ((not (executable-find
                   (car (supervisor--build-launch-command cmd user group))))

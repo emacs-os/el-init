@@ -12915,8 +12915,10 @@ No warning is emitted when there are simply no child processes."
         (supervisor--enabled-override (make-hash-table :test 'equal))
         (supervisor--shutting-down nil)
         (proc nil))
-    ;; Mock user-uid to 0 so the non-root guard does not reject
+    ;; Mock user-uid to 0 and trust check so guards do not reject
     (cl-letf (((symbol-function 'user-uid) (lambda () 0))
+              ((symbol-function 'supervisor--identity-source-trusted-p)
+               (lambda (_id) t))
               ((symbol-function 'supervisor--build-launch-command)
                (lambda (cmd &optional user group)
                  (setq captured-user user)
@@ -12931,6 +12933,144 @@ No warning is emitted when there are simply no child processes."
             (should (equal captured-group "users")))
         (when (and proc (process-live-p proc))
           (delete-process proc))))))
+
+;;;; Phase 5 – Trust enforcement for identity-changing units
+
+(ert-deftest supervisor-test-identity-trust-no-units-module ()
+  "Trust check fails closed when units module is not loaded."
+  (cl-letf (((symbol-function 'supervisor--unit-file-path)
+             nil))
+    (should-not (supervisor--identity-source-trusted-p "svc1"))))
+
+(ert-deftest supervisor-test-identity-trust-no-unit-file ()
+  "Trust check fails closed when unit file path is nil."
+  (cl-letf (((symbol-function 'supervisor--unit-file-path)
+             (lambda (_id) nil)))
+    (should-not (supervisor--identity-source-trusted-p "svc1"))))
+
+(ert-deftest supervisor-test-identity-trust-file-not-found ()
+  "Trust check fails closed when unit file does not exist."
+  (cl-letf (((symbol-function 'supervisor--unit-file-path)
+             (lambda (_id) "/nonexistent/path/svc1.el")))
+    (should-not (supervisor--identity-source-trusted-p "svc1"))))
+
+(ert-deftest supervisor-test-identity-trust-non-root-owned ()
+  "Trust check rejects unit file not owned by root."
+  (skip-unless (not (zerop (user-uid))))
+  (let ((temp-file (make-temp-file "trust-test-" nil ".el")))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert "(:id \"svc1\" :command \"echo hi\" :user \"alice\")\n"))
+          (cl-letf (((symbol-function 'supervisor--unit-file-path)
+                     (lambda (_id) temp-file)))
+            ;; File is owned by current (non-root) user
+            (should-not (supervisor--identity-source-trusted-p "svc1"))))
+      (delete-file temp-file))))
+
+(ert-deftest supervisor-test-identity-trust-world-writable ()
+  "Trust check rejects world-writable unit file even if root-owned."
+  (skip-unless (= (user-uid) 0))
+  (skip-unless (getenv "SUPERVISOR_TEST_ROOT"))
+  (let ((temp-file (make-temp-file "trust-test-" nil ".el")))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert "(:id \"svc1\" :command \"echo hi\" :user \"alice\")\n"))
+          ;; Make world-writable
+          (set-file-modes temp-file #o666)
+          (cl-letf (((symbol-function 'supervisor--unit-file-path)
+                     (lambda (_id) temp-file)))
+            (should-not (supervisor--identity-source-trusted-p "svc1"))))
+      (delete-file temp-file))))
+
+(ert-deftest supervisor-test-identity-trust-root-owned-ok ()
+  "Trust check accepts root-owned, non-world-writable unit file."
+  (skip-unless (= (user-uid) 0))
+  (skip-unless (getenv "SUPERVISOR_TEST_ROOT"))
+  (let ((temp-file (make-temp-file "trust-test-" nil ".el")))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert "(:id \"svc1\" :command \"echo hi\" :user \"alice\")\n"))
+          ;; Ensure proper mode (root-owned by default in root context)
+          (set-file-modes temp-file #o644)
+          (cl-letf (((symbol-function 'supervisor--unit-file-path)
+                     (lambda (_id) temp-file)))
+            (should (supervisor--identity-source-trusted-p "svc1"))))
+      (delete-file temp-file))))
+
+(ert-deftest supervisor-test-manual-start-root-untrusted-source ()
+  "Manual start returns error when root but unit source is untrusted."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc1" :user "alice"))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--restart-timers (make-hash-table :test 'equal))
+           (supervisor--manually-stopped (make-hash-table :test 'equal))
+           (supervisor--manually-started (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--restart-times (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--remain-active (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+           (supervisor--computed-deps (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal)))
+      ;; Mock root euid, but trust check fails (file not root-owned)
+      (cl-letf (((symbol-function 'user-uid) (lambda () 0))
+                ((symbol-function 'supervisor--identity-source-trusted-p)
+                 (lambda (_id) nil)))
+        (let ((result (supervisor--manual-start "svc1")))
+          (should (eq (plist-get result :status) 'error))
+          (should (string-match-p "not trusted"
+                                  (plist-get result :reason))))))))
+
+(ert-deftest supervisor-test-manual-start-root-trusted-source ()
+  "Manual start succeeds when root and unit source is trusted."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc1" :user "alice"))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--restart-timers (make-hash-table :test 'equal))
+           (supervisor--manually-stopped (make-hash-table :test 'equal))
+           (supervisor--manually-started (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--restart-times (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--remain-active (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+           (supervisor--computed-deps (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal))
+           (proc nil))
+      ;; Mock root euid and trusted source
+      (cl-letf (((symbol-function 'user-uid) (lambda () 0))
+                ((symbol-function 'supervisor--identity-source-trusted-p)
+                 (lambda (_id) t)))
+        (unwind-protect
+            (let ((result (supervisor--manual-start "svc1")))
+              (should (eq (plist-get result :status) 'started))
+              (setq proc (gethash "svc1" supervisor--processes)))
+          (when (and proc (process-live-p proc))
+            (delete-process proc)))))))
+
+(ert-deftest supervisor-test-start-process-root-untrusted-blocked ()
+  "Start-process returns nil when root but source untrusted."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil))
+    (cl-letf (((symbol-function 'user-uid) (lambda () 0))
+              ((symbol-function 'supervisor--identity-source-trusted-p)
+               (lambda (_id) nil)))
+      (should-not (supervisor--start-process
+                   "svc" "sleep 300" nil 'simple 'yes nil
+                   nil nil nil nil nil "alice" nil)))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
