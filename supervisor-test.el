@@ -8413,7 +8413,7 @@ could incorrectly preserve a non-running disabled unit."
 (ert-deftest supervisor-test-parse-entry-new-fields-defaults ()
   "Parsed entry has nil defaults for P2 and PT3 fields."
   (let ((entry (supervisor--parse-entry "echo hello")))
-    (should (= (length entry) 27))
+    (should (= (length entry) 29))
     (should-not (supervisor-entry-working-directory entry))
     (should-not (supervisor-entry-environment entry))
     (should-not (supervisor-entry-environment-file entry))
@@ -8760,7 +8760,7 @@ could incorrectly preserve a non-running disabled unit."
                :kill-signal 'SIGTERM
                :kill-mode 'mixed))
          (entry (supervisor-service-to-entry svc)))
-    (should (= (length entry) 27))
+    (should (= (length entry) 29))
     (should (equal (supervisor-entry-working-directory entry) "/opt"))
     (should (equal (supervisor-entry-environment entry) '(("K" . "V"))))
     (should (equal (supervisor-entry-environment-file entry) '("/etc/env")))
@@ -8793,9 +8793,9 @@ could incorrectly preserve a non-running disabled unit."
                       :kill-signal SIGTERM)))
          (plan (supervisor--build-plan programs))
          (entries (supervisor-plan-entries plan)))
-    ;; Both entries must be 27 fields
+    ;; Both entries must be 29 fields
     (dolist (entry entries)
-      (should (= (length entry) 27)))
+      (should (= (length entry) 29)))
     ;; svc-a new fields preserved
     (let ((a (cl-find "svc-a" entries :key #'car :test #'equal)))
       (should (equal (supervisor-entry-working-directory a) "/opt"))
@@ -9773,9 +9773,9 @@ could incorrectly preserve a non-running disabled unit."
     (should-not (supervisor-entry-success-exit-status entry))))
 
 (ert-deftest supervisor-test-parse-entry-27-elements ()
-  "Parse entry returns 27 elements."
+  "Parse entry returns 29 elements."
   (let ((entry (supervisor--parse-entry "sleep 300")))
-    (should (= (length entry) 27))))
+    (should (= (length entry) 29))))
 
 ;; Validation tests for PT3 keys
 
@@ -12445,6 +12445,92 @@ No warning is emitted when there are simply no child processes."
               (should (string-match-p "2024-01-01 started" output))
               (should (string-match-p "2024-01-01 ready" output)))
           (when info-buf (kill-buffer info-buf)))))))
+
+;;; User/Group Schema Tests (Phase 1)
+
+(ert-deftest supervisor-test-parse-user-string ()
+  "Parse entry accepts :user as string."
+  (let ((entry (supervisor--parse-entry '("cmd" :id "svc" :user "postgres"))))
+    (should (equal (supervisor-entry-user entry) "postgres"))
+    (should-not (supervisor-entry-group entry))))
+
+(ert-deftest supervisor-test-parse-user-integer ()
+  "Parse entry accepts :user as integer."
+  (let ((entry (supervisor--parse-entry '("cmd" :id "svc" :user 1000))))
+    (should (= (supervisor-entry-user entry) 1000))))
+
+(ert-deftest supervisor-test-parse-group-string ()
+  "Parse entry accepts :group as string."
+  (let ((entry (supervisor--parse-entry '("cmd" :id "svc" :group "www-data"))))
+    (should (equal (supervisor-entry-group entry) "www-data"))
+    (should-not (supervisor-entry-user entry))))
+
+(ert-deftest supervisor-test-parse-group-integer ()
+  "Parse entry accepts :group as integer."
+  (let ((entry (supervisor--parse-entry '("cmd" :id "svc" :group 33))))
+    (should (= (supervisor-entry-group entry) 33))))
+
+(ert-deftest supervisor-test-parse-user-group-both ()
+  "Parse entry accepts both :user and :group."
+  (let ((entry (supervisor--parse-entry
+                '("cmd" :id "svc" :user "postgres" :group "postgres"))))
+    (should (equal (supervisor-entry-user entry) "postgres"))
+    (should (equal (supervisor-entry-group entry) "postgres"))))
+
+(ert-deftest supervisor-test-parse-user-nil-default ()
+  "Parse entry defaults :user to nil when absent."
+  (let ((entry (supervisor--parse-entry '("cmd" :id "svc"))))
+    (should-not (supervisor-entry-user entry))
+    (should-not (supervisor-entry-group entry))))
+
+(ert-deftest supervisor-test-validate-user-invalid-symbol ()
+  "Validation rejects :user as symbol."
+  (should (string-match-p ":user must be"
+                          (supervisor--validate-entry
+                           '("cmd" :user postgres)))))
+
+(ert-deftest supervisor-test-validate-user-invalid-list ()
+  "Validation rejects :user as list."
+  (should (string-match-p ":user must be"
+                          (supervisor--validate-entry
+                           '("cmd" :user ("a" "b"))))))
+
+(ert-deftest supervisor-test-validate-group-invalid-symbol ()
+  "Validation rejects :group as symbol."
+  (should (string-match-p ":group must be"
+                          (supervisor--validate-entry
+                           '("cmd" :group www-data)))))
+
+(ert-deftest supervisor-test-validate-group-invalid-list ()
+  "Validation rejects :group as list."
+  (should (string-match-p ":group must be"
+                          (supervisor--validate-entry
+                           '("cmd" :group (33 34))))))
+
+(ert-deftest supervisor-test-validate-user-string-valid ()
+  "Validation accepts :user as string."
+  (should-not (supervisor--validate-entry '("cmd" :user "postgres"))))
+
+(ert-deftest supervisor-test-validate-user-integer-valid ()
+  "Validation accepts :user as integer."
+  (should-not (supervisor--validate-entry '("cmd" :user 1000))))
+
+(ert-deftest supervisor-test-validate-group-string-valid ()
+  "Validation accepts :group as string."
+  (should-not (supervisor--validate-entry '("cmd" :group "www-data"))))
+
+(ert-deftest supervisor-test-validate-group-integer-valid ()
+  "Validation accepts :group as integer."
+  (should-not (supervisor--validate-entry '("cmd" :group 33))))
+
+(ert-deftest supervisor-test-service-roundtrip-user-group ()
+  "Service struct roundtrip preserves :user and :group."
+  (let* ((entry (supervisor--parse-entry
+                 '("cmd" :id "svc" :user "alice" :group 100)))
+         (svc (supervisor-entry-to-service entry))
+         (back (supervisor-service-to-entry svc)))
+    (should (equal (supervisor-entry-user back) "alice"))
+    (should (= (supervisor-entry-group back) 100))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

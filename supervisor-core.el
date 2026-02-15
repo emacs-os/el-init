@@ -343,7 +343,8 @@ Scan PLIST and collect any key that appears more than once."
     :working-directory :environment :environment-file
     :exec-stop :exec-reload :restart-sec
     :description :documentation :before :wants
-    :kill-signal :kill-mode :remain-after-exit :success-exit-status)
+    :kill-signal :kill-mode :remain-after-exit :success-exit-status
+    :user :group)
   "List of valid keywords for entry plists.")
 
 (defconst supervisor--valid-types '(simple oneshot)
@@ -778,6 +779,16 @@ Return nil if valid, or a reason string if invalid."
              (t
               (push (format ":success-exit-status item must be int or signal name, got %S" item)
                     errors))))))
+      ;; Check :user shape (string, integer, or nil)
+      (when (plist-member plist :user)
+        (let ((val (plist-get plist :user)))
+          (unless (or (null val) (stringp val) (integerp val))
+            (push ":user must be a string, integer, or nil" errors))))
+      ;; Check :group shape (string, integer, or nil)
+      (when (plist-member plist :group)
+        (let ((val (plist-get plist :group)))
+          (unless (or (null val) (stringp val) (integerp val))
+            (push ":group must be a string, integer, or nil" errors))))
           ;; Return nil if valid, or joined error string
           (when errors
             (mapconcat #'identity (nreverse errors) "; ")))))))))
@@ -1511,7 +1522,9 @@ Field documentation:
   (kill-signal nil :type (or null symbol) :documentation "Graceful stop signal")
   (kill-mode nil :type (or null symbol) :documentation "Kill mode: process or mixed")
   (remain-after-exit nil :type boolean :documentation "Oneshot active latch")
-  (success-exit-status nil :type list :documentation "Extra success criteria plist"))
+  (success-exit-status nil :type list :documentation "Extra success criteria plist")
+  (user nil :type (or null string integer) :documentation "Run-as user (root only)")
+  (group nil :type (or null string integer) :documentation "Run-as group (root only)"))
 
 (defconst supervisor-service-required-fields '(id command)
   "List of required fields in a service record.")
@@ -1541,7 +1554,9 @@ Field documentation:
     (kill-signal . nil)
     (kill-mode . nil)
     (remain-after-exit . nil)
-    (success-exit-status . nil))
+    (success-exit-status . nil)
+    (user . nil)
+    (group . nil))
   "Alist of optional fields with their default values.
 A value of :defer means the default is resolved at runtime.")
 
@@ -1555,7 +1570,8 @@ A value of :defer means the default is resolved at runtime.")
 ;;    working-directory environment environment-file
 ;;    exec-stop exec-reload restart-sec
 ;;    description documentation before wants
-;;    kill-signal kill-mode remain-after-exit success-exit-status)
+;;    kill-signal kill-mode remain-after-exit success-exit-status
+;;    user group)
 
 (defsubst supervisor-entry-id (entry)
   "Return the ID of parsed ENTRY."
@@ -1669,6 +1685,14 @@ Value is one of `always', `no', `on-success', or `on-failure'."
 (defsubst supervisor-entry-success-exit-status (entry)
   "Return the success-exit-status plist of parsed ENTRY, or nil."
   (nth 26 entry))
+
+(defsubst supervisor-entry-user (entry)
+  "Return the run-as user of parsed ENTRY, or nil."
+  (nth 27 entry))
+
+(defsubst supervisor-entry-group (entry)
+  "Return the run-as group of parsed ENTRY, or nil."
+  (nth 28 entry))
 
 ;; Forward declarations for timer state variables (defined in supervisor-timer.el)
 ;; These are only accessed when timer module is loaded.
@@ -2225,7 +2249,6 @@ Returns sorted entries list."
             (puthash id t cycle-fallback-ids)
             (puthash id nil deps)))
         ;; Return entries with :after, :requires, and :wants stripped
-        ;; (full 27-element entries from parse-entry)
         (mapcar (lambda (entry)
                   (append (cl-subseq entry 0 8)
                           (list nil)                ; clear :after (index 8)
@@ -2233,7 +2256,7 @@ Returns sorted entries list."
                           (list nil)                ; clear :requires (index 12)
                           (cl-subseq entry 13 22)
                           (list nil)                ; clear :wants (index 22)
-                          (cl-subseq entry 23 27))) ; preserve remaining
+                          (cl-subseq entry 23)))    ; preserve remaining
                 entries)))))
 
 ;;; Helpers
@@ -2310,11 +2333,12 @@ or nil if VAL is nil."
 
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
-Return a 27-element list: (id cmd delay enabled-p restart-policy
+Return a 29-element list: (id cmd delay enabled-p restart-policy
 logging-p type stage after oneshot-blocking oneshot-timeout tags
 requires working-directory environment environment-file exec-stop
 exec-reload restart-sec description documentation before wants
-kill-signal kill-mode remain-after-exit success-exit-status).
+kill-signal kill-mode remain-after-exit success-exit-status
+user group).
 
 Indices (schema v1):
   0  id                  - unique identifier string
@@ -2344,6 +2368,8 @@ Indices (schema v1):
   24 kill-mode           - `process' or `mixed' or nil
   25 remain-after-exit   - oneshot active latch boolean
   26 success-exit-status - plist (:codes :signals) or nil
+  27 user                - run-as user string/int or nil
+  28 group               - run-as group string/int or nil
 
 ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
@@ -2355,7 +2381,8 @@ Use accessor functions instead of direct indexing for new code."
         (list id entry 0 t 'always t 'simple 'stage3 nil
               supervisor-oneshot-default-blocking supervisor-oneshot-timeout nil nil
               nil nil nil nil nil nil
-              nil nil nil nil nil nil nil nil))
+              nil nil nil nil nil nil nil nil
+              nil nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
            (cmd-tokens (split-string-and-unquote cmd))
@@ -2442,13 +2469,17 @@ Use accessor functions instead of direct indexing for new code."
            (remain-after-exit (plist-get plist :remain-after-exit))
            (success-exit-status-raw (plist-get plist :success-exit-status))
            (success-exit-status
-            (supervisor--normalize-success-exit-status success-exit-status-raw)))
+            (supervisor--normalize-success-exit-status success-exit-status-raw))
+           ;; Identity fields (indices 27-28)
+           (user (plist-get plist :user))
+           (group (plist-get plist :group)))
       (list id cmd delay enabled restart logging type stage after
             oneshot-blocking oneshot-timeout tags requires
             working-directory environment environment-file
             exec-stop exec-reload restart-sec
             description documentation before wants
-            kill-signal kill-mode remain-after-exit success-exit-status))))
+            kill-signal kill-mode remain-after-exit success-exit-status
+            user group))))
 
 ;;; Entry/Service Conversion Functions
 
@@ -2481,7 +2512,9 @@ Use accessor functions instead of direct indexing for new code."
    :kill-signal (supervisor-entry-kill-signal entry)
    :kill-mode (supervisor-entry-kill-mode entry)
    :remain-after-exit (supervisor-entry-remain-after-exit entry)
-   :success-exit-status (supervisor-entry-success-exit-status entry)))
+   :success-exit-status (supervisor-entry-success-exit-status entry)
+   :user (supervisor-entry-user entry)
+   :group (supervisor-entry-group entry)))
 
 (defun supervisor-service-to-entry (service)
   "Convert SERVICE struct to a parsed entry tuple."
@@ -2511,7 +2544,9 @@ Use accessor functions instead of direct indexing for new code."
         (supervisor-service-kill-signal service)
         (supervisor-service-kill-mode service)
         (supervisor-service-remain-after-exit service)
-        (supervisor-service-success-exit-status service)))
+        (supervisor-service-success-exit-status service)
+        (supervisor-service-user service)
+        (supervisor-service-group service)))
 
 (defun supervisor--check-crash-loop (id)
   "Check if ID is crash-looping.  Return t if should NOT restart."
@@ -2769,11 +2804,11 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
             (puthash id t supervisor--cycle-fallback-ids)
             (puthash id nil supervisor--computed-deps)))
         ;; Return entries with :after, :requires, and :wants stripped
-        ;; Handle 27-element (current), 13-element, and 11-element entries
+        ;; Handle full (29-element), 13-element, and 11-element entries
         (mapcar (lambda (entry)
                   (let ((len (length entry)))
                     (cond
-                     ;; Full 27-element entry: clear :after (8), :requires (12),
+                     ;; Full entry: clear :after (8), :requires (12),
                      ;; and :wants (22)
                      ((>= len 23)
                       (append (cl-subseq entry 0 8)
