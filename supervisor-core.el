@@ -3105,7 +3105,7 @@ RESTART-SEC, and UNIT-FILE-DIRECTORY are passed through to
   (puthash id t supervisor--dag-started)
   (puthash id (float-time) supervisor--start-times)
   (cl-incf supervisor--dag-active-starts)
-  (let ((args (split-string-and-unquote cmd)))
+  (let ((args (supervisor--build-launch-command cmd)))
     (if (not (executable-find (car args)))
         (progn
           (supervisor--log 'warning "executable not found for %s: %s" id (car args))
@@ -3665,13 +3665,36 @@ the wrong context."
             (supervisor--exec-command-chain
              exec-stop id dir env log-file supervisor-shutdown-timeout)))))))
 
-(defun supervisor--build-launch-command (cmd)
+(defvar supervisor-runas-command
+  (expand-file-name "libexec/supervisor-runas"
+                    (file-name-directory (or load-file-name
+                                             buffer-file-name "")))
+  "Path to the supervisor-runas privilege-drop helper.
+Used when `:user' or `:group' is set on a unit entry.")
+
+(defun supervisor--build-launch-command (cmd &optional user group)
   "Build the command argument list for launching CMD.
-CMD is a shell command string.  Return a list suitable for the
-`make-process' :command keyword.  Currently returns the result of
-splitting CMD; future phases will support wrapper injection for
-privilege drop."
-  (split-string-and-unquote cmd))
+CMD is a shell command string.  USER and GROUP are optional
+identity parameters for privilege drop.  When either is non-nil,
+`supervisor-runas-command' is prepended with identity arguments.
+Return a list suitable for the `make-process' :command keyword."
+  (let ((args (split-string-and-unquote cmd)))
+    (if (or user group)
+        (let ((helper-args (list supervisor-runas-command)))
+          (when user
+            (setq helper-args
+                  (append helper-args
+                          (list "--user" (if (integerp user)
+                                            (number-to-string user)
+                                          user)))))
+          (when group
+            (setq helper-args
+                  (append helper-args
+                          (list "--group" (if (integerp group)
+                                             (number-to-string group)
+                                           group)))))
+          (append helper-args (list "--") args))
+      args)))
 
 (defun supervisor--start-process (id cmd default-logging type config-restart
                                      &optional is-restart
@@ -3791,7 +3814,7 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
         (progn
           (supervisor--log 'info "%s disabled (config or override), skipping" id)
           (when callback (funcall callback t)))
-      (let ((args (split-string-and-unquote cmd)))
+      (let ((args (supervisor--build-launch-command cmd)))
         (if (not (executable-find (car args)))
             (progn
               (supervisor--log 'warning "executable not found for %s: %s" id (car args))
@@ -3868,7 +3891,7 @@ are blocked.  Manually started disabled units are tracked in
            ((eq (gethash id supervisor--mask-override) 'masked)
             (list :status 'skipped :reason "masked"))
            ;; Executable not found
-           ((not (executable-find (car (split-string-and-unquote cmd))))
+           ((not (executable-find (car (supervisor--build-launch-command cmd))))
             (list :status 'error :reason "executable not found"))
            ;; All checks passed - start
            (t
@@ -4469,7 +4492,7 @@ Returns a plist with :stopped and :started counts."
                    (restart-sec (supervisor-entry-restart-sec entry))
                    (unit-file-directory (supervisor--unit-file-directory-for-id id)))
                (when (supervisor--get-effective-enabled id enabled-p)
-                 (let ((args (split-string-and-unquote cmd)))
+                 (let ((args (supervisor--build-launch-command cmd)))
                    (if (not (executable-find (car args)))
                        (progn
                          (supervisor--log 'warning "reconcile: executable not found for %s: %s"
@@ -4646,7 +4669,7 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
                    (environment-file (supervisor-entry-environment-file entry))
                    (restart-sec (supervisor-entry-restart-sec entry))
                    (unit-file-directory (supervisor--unit-file-directory-for-id id))
-                   (exe (car (split-string-and-unquote cmd))))
+                   (exe (car (supervisor--build-launch-command cmd))))
               (if (not (executable-find exe))
                   (list :id id :action "error: executable not found")
                 (let ((new-proc (supervisor--start-process

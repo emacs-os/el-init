@@ -12571,5 +12571,40 @@ No warning is emitted when there are simply no child processes."
   (should (equal (supervisor--build-launch-command "nginx")
                  '("nginx"))))
 
+(ert-deftest supervisor-test-build-launch-command-user-only ()
+  "Build launch command prepends helper with --user when user is set."
+  (let ((supervisor-runas-command "/usr/libexec/supervisor-runas"))
+    (should (equal (supervisor--build-launch-command "sleep 300" "alice" nil)
+                   '("/usr/libexec/supervisor-runas"
+                     "--user" "alice" "--" "sleep" "300")))))
+
+(ert-deftest supervisor-test-build-launch-command-group-only ()
+  "Build launch command prepends helper with --group when group is set."
+  (let ((supervisor-runas-command "/usr/libexec/supervisor-runas"))
+    (should (equal (supervisor--build-launch-command "sleep 300" nil "staff")
+                   '("/usr/libexec/supervisor-runas"
+                     "--group" "staff" "--" "sleep" "300")))))
+
+(ert-deftest supervisor-test-build-launch-command-user-and-group ()
+  "Build launch command prepends helper with both --user and --group."
+  (let ((supervisor-runas-command "/usr/libexec/supervisor-runas"))
+    (should (equal (supervisor--build-launch-command "echo hi" "postgres" "postgres")
+                   '("/usr/libexec/supervisor-runas"
+                     "--user" "postgres" "--group" "postgres"
+                     "--" "echo" "hi")))))
+
+(ert-deftest supervisor-test-build-launch-command-integer-uid ()
+  "Build launch command converts integer uid to string for helper."
+  (let ((supervisor-runas-command "/usr/libexec/supervisor-runas"))
+    (should (equal (supervisor--build-launch-command "cmd" 1000 33)
+                   '("/usr/libexec/supervisor-runas"
+                     "--user" "1000" "--group" "33"
+                     "--" "cmd")))))
+
+(ert-deftest supervisor-test-build-launch-command-no-wrapper-nil ()
+  "Build launch command returns plain args when user and group are nil."
+  (should (equal (supervisor--build-launch-command "sleep 300" nil nil)
+                 '("sleep" "300"))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
