@@ -154,18 +154,34 @@ rotated_files="$(find "${log_dir}" -maxdepth 1 -type f \
 
 [ -n "${rotated_files}" ] || exit 0
 
-# --- Build the set of confirmed-active basenames ---
-# A file is confirmed active if another rotated file in the directory
-# names it as its parent (via rotated_parent_name).  This protects
-# active logs whose service ID contains a timestamp pattern (e.g.,
-# svc.20250101-120000): once that service has been rotated at least
-# once, its active log appears as a parent of the rotated child and
-# is excluded from deletion.
-confirmed_active="$(printf '%s\n' "${rotated_files}" | while IFS= read -r cf; do
+# --- Build deletion-safety lookup tables ---
+# Three signals determine whether a rotated-pattern file is safe to
+# delete.  A file is confirmed ACTIVE (never delete) if another
+# rotated file names it as its parent — it has rotated children.
+# A file is confirmed ROTATED (safe to delete) if its parent active
+# file exists on disk, or if other rotated files share the same parent
+# base (siblings confirm the parent base is a real service).
+# Files matching none of these signals are ambiguous (could be an
+# active log for a timestamp-like service ID that hasn't been rotated
+# yet) and are skipped; logrotate --keep-days handles them by age.
+
+# parent_list: one parent basename per rotated file (with duplicates).
+parent_list="$(printf '%s\n' "${rotated_files}" | while IFS= read -r cf; do
     cname="${cf##*/}"
     is_rotated "${cname}" || continue
     printf '%s\n' "$(rotated_parent_name "${cname}")"
-done | sort -u)"
+done)"
+
+# confirmed_active: basenames that appear as parents of other rotated
+# files.  These are active logs whose service ID contains a timestamp
+# pattern (e.g. svc.20250101-120000).
+confirmed_active="$(printf '%s\n' "${parent_list}" | sort -u)"
+
+# multi_child_parents: parent basenames that appear two or more times.
+# When multiple rotated files share a parent, that parent base is a
+# real service (possibly stopped) and each file is safe to delete.
+multi_child_parents="$(printf '%s\n' "${parent_list}" | sort | uniq -c \
+    | awk '$1 >= 2 { print $2 }')"
 
 # --- Filter to only truly rotated files and delete oldest first ---
 excess=$((total - max_total_bytes))
@@ -174,12 +190,27 @@ printf '%s\n' "${rotated_files}" | while IFS= read -r f; do
     [ "${excess}" -gt 0 ] || break
     name="${f##*/}"
     is_rotated "${name}" || continue
-    # Guard: skip files confirmed as active parents (have rotated
+
+    # Guard 1: skip files confirmed as active parents (have rotated
     # children in the directory).
     if [ -n "${confirmed_active}" ] && \
        printf '%s\n' "${confirmed_active}" | grep -qxF "${name}"; then
         continue
     fi
+
+    # Guard 2: only delete if we can confirm the file is genuinely
+    # rotated — its parent active file exists on disk, or its parent
+    # base has sibling rotated files (multiple rotations confirm the
+    # parent is a real service).  Otherwise the file is ambiguous and
+    # might be an active log for a timestamp-like service ID.
+    parent="$(rotated_parent_name "${name}")"
+    if ! [ -f "${log_dir}/${parent}" ]; then
+        if [ -z "${multi_child_parents}" ] || \
+           ! printf '%s\n' "${multi_child_parents}" | grep -qxF "${parent}"; then
+            continue
+        fi
+    fi
+
     fsize="$(file_size_bytes "${f}")"
     case "${dry_run}" in
         1) printf 'prune: %s (%s bytes)\n' "${f}" "${fsize}" ;;

@@ -13983,6 +13983,10 @@ No warning is emitted when there are simply no child processes."
          (newest (expand-file-name "log-svc3.20250103-120000.log" dir)))
     (unwind-protect
         (progn
+          ;; Parent active files confirm rotated status.
+          (write-region "" nil (expand-file-name "log-svc1.log" dir))
+          (write-region "" nil (expand-file-name "log-svc2.log" dir))
+          (write-region "" nil (expand-file-name "log-svc3.log" dir))
           ;; Create three rotated files with staggered mtimes.
           ;; Each is 4096 bytes; total ~12288 + dir overhead.
           (write-region (make-string 4096 ?a) nil oldest)
@@ -14034,6 +14038,8 @@ No warning is emitted when there are simply no child processes."
          (rotated (expand-file-name "log-svc1.20250101-120000.log" dir)))
     (unwind-protect
         (progn
+          ;; Parent active file confirms rotated status.
+          (write-region "" nil (expand-file-name "log-svc1.log" dir))
           (write-region (make-string 8192 ?x) nil rotated)
           (with-temp-buffer
             (let ((exit-code (call-process script nil t nil
@@ -14146,22 +14152,48 @@ No warning is emitted when there are simply no child processes."
           (should-not (file-exists-p ts-child)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-orphaned-rotated-deleted ()
-  "Orphaned rotated file with no parent active file is still deleted."
+(ert-deftest supervisor-test-log-prune-orphaned-siblings-deleted ()
+  "Orphaned rotated files with sibling rotations are deleted."
   (let* ((root (file-name-directory (locate-library "supervisor")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
-         ;; Rotated file for a removed service (no log-oldsvc.log exists)
-         (orphan (expand-file-name "log-oldsvc.20240101-010101.log" dir)))
+         ;; Two rotated files for a removed service — siblings confirm
+         ;; the parent base is a real service, so both are deletable.
+         (older (expand-file-name "log-oldsvc.20240101-010101.log" dir))
+         (newer (expand-file-name "log-oldsvc.20240202-020202.log" dir)))
     (unwind-protect
         (progn
-          (write-region (make-string 8192 ?x) nil orphan)
+          (write-region (make-string 4096 ?x) nil older)
+          (set-file-times older (encode-time 0 0 0 1 1 2024))
+          (write-region (make-string 4096 ?y) nil newer)
+          (set-file-times newer (encode-time 0 0 0 2 2 2024))
           (let ((exit-code (call-process script nil nil nil
                                         "--log-dir" dir
                                         "--max-total-bytes" "100")))
             (should (= exit-code 0)))
-          ;; Orphaned rotated file must be deleted to reduce under cap
-          (should-not (file-exists-p orphan)))
+          ;; Both orphaned rotated files deleted
+          (should-not (file-exists-p older))
+          (should-not (file-exists-p newer)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-log-prune-nochild-active-preserved ()
+  "Active log for timestamp-like ID is preserved even without children."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         ;; Active log for brand-new service svc.20250101-120000 that
+         ;; has never been rotated (no children, no parent log-svc.log).
+         (active (expand-file-name "log-svc.20250101-120000.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil active)
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; File is ambiguous (no parent, no siblings, no children)
+          ;; so it must be preserved to avoid deleting an active log.
+          (should (file-exists-p active)))
       (delete-directory dir t))))
 
 (provide 'supervisor-test)
