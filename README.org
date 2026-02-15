@@ -1464,7 +1464,9 @@ This is optional. You can also check the dashboard or logs.
 - Per-process logs:
 - ~<supervisor-log-directory>/log-<id>.log~ (controlled per service logging policy)
 
-Existing ~log-*.log~ files are rotated on ~supervisor-start~.
+Log files are managed by external ~supervisor-logd~ writer processes.
+Each writer enforces a per-file size cap (~supervisor-logd-max-file-size~)
+and rotates locally when the limit is reached.
 
 ** Logging Semantics
 

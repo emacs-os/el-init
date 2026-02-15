@@ -2965,20 +2965,6 @@ Send SIGTERM if the writer is alive, then remove from `supervisor--writers'."
            supervisor--writers)
   (clrhash supervisor--writers))
 
-(defun supervisor--rotate-logs ()
-  "Rotate existing log files by adding timestamp suffix.
-Called once at supervisor startup."
-  (supervisor--ensure-log-directory)
-  (dolist (file (directory-files supervisor-log-directory t "^log-.*\\.log$"))
-    ;; Only rotate files without timestamp (current session logs)
-    (when (string-match "^log-\\([^.]+\\)\\.log$" (file-name-nondirectory file))
-      (let* ((timestamp (format-time-string "%Y%m%d-%H%M%S"))
-             (new-name (replace-regexp-in-string
-                        "\\.log$"
-                        (format ".%s.log" timestamp)
-                        file)))
-        (rename-file file new-name t)))))
-
 ;;; DAG Scheduler
 
 (defun supervisor--dag-init (entries)
@@ -4416,7 +4402,6 @@ Ready semantics (when dependents are unblocked):
   ;; Load persisted overrides (restores enabled/restart/logging overrides)
   (supervisor--load-overrides)
   (supervisor--dag-cleanup)
-  (supervisor--rotate-logs)
 
   ;; Refresh programs cache from disk before building plan
   (supervisor--refresh-programs)
