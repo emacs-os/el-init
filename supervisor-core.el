@@ -1018,8 +1018,8 @@ code or signal number, and TIME is the `float-time' of exit.")
 
 (defcustom supervisor-overrides-file
   (expand-file-name "supervisor/overrides.eld"
-                    (or (getenv "XDG_STATE_HOME")
-                        (expand-file-name ".local/state" (getenv "HOME"))))
+                    (or (getenv "XDG_CONFIG_HOME")
+                        (expand-file-name ".config" (getenv "HOME"))))
   "File path for persistent service overrides.
 Overrides are stored in Emacs Lisp Data format (eld).
 Set to nil to disable persistence (overrides only live in memory)."
