@@ -4396,6 +4396,66 @@ conflicting ID, proving precedence derives from list position."
           (should (file-exists-p temp-file)))
       (delete-file temp-file))))
 
+(ert-deftest supervisor-test-cli-disable-loads-overrides-before-save ()
+  "Disable CLI command preserves existing overrides on first save."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc1" :type simple)
+        ("sleep 300" :id "svc2" :type simple))
+    (let* ((temp-file (make-temp-file "supervisor-test-cli-load-" nil ".eld"))
+           (supervisor-overrides-file temp-file)
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--restart-override (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--overrides-loaded nil))
+      (unwind-protect
+          (progn
+            ;; Seed file with an existing override for svc1.
+            (with-temp-file temp-file
+              (insert ";; Supervisor overrides file - do not edit manually\n")
+              (insert ";; Schema version: 1\n")
+              (pp '((version . 1)
+                    (timestamp . "2026-02-15T00:00:00+0000")
+                    (overrides ("svc1" :enabled disabled)))
+                  (current-buffer)))
+            (let ((result (supervisor--cli-dispatch '("disable" "svc2"))))
+              (should (= supervisor-cli-exit-success
+                         (supervisor-cli-result-exitcode result))))
+            ;; Reload from disk and verify both overrides survive.
+            (clrhash supervisor--enabled-override)
+            (clrhash supervisor--restart-override)
+            (clrhash supervisor--logging)
+            (clrhash supervisor--mask-override)
+            (setq supervisor--overrides-loaded nil)
+            (should (supervisor--load-overrides))
+            (should (eq 'disabled (gethash "svc1" supervisor--enabled-override)))
+            (should (eq 'disabled (gethash "svc2" supervisor--enabled-override))))
+        (delete-file temp-file)))))
+
+(ert-deftest supervisor-test-cli-disable-does-not-overwrite-corrupt-overrides ()
+  "Disable CLI command refuses to overwrite a corrupt overrides file."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple))
+    (let* ((temp-file (make-temp-file "supervisor-test-cli-corrupt-" nil ".eld"))
+           (supervisor-overrides-file temp-file)
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--restart-override (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--overrides-loaded nil))
+      (unwind-protect
+          (progn
+            (with-temp-file temp-file
+              (insert "this is not valid lisp (((("))
+            (let ((result (supervisor--cli-dispatch '("disable" "svc"))))
+              (should (= supervisor-cli-exit-failure
+                         (supervisor-cli-result-exitcode result))))
+            (should-not (gethash "svc" supervisor--enabled-override))
+            (with-temp-buffer
+              (insert-file-contents temp-file)
+              (should (string-match-p "not valid lisp" (buffer-string)))))
+        (delete-file temp-file)))))
+
 ;;; Migration Tests
 
 (ert-deftest supervisor-test-migrate-string-entry ()
@@ -11680,6 +11740,7 @@ No warning is emitted when there are simply no child processes."
          (supervisor--enabled-override (make-hash-table :test 'equal))
          (supervisor--mask-override (make-hash-table :test 'equal))
          (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor-overrides-file nil)
          (msg nil))
     (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
               ((symbol-function 'supervisor--get-entry-for-id)
@@ -11735,6 +11796,7 @@ No warning is emitted when there are simply no child processes."
   (let* ((entry (supervisor--parse-entry '("cmd" :id "svc")))
          (supervisor--mask-override (make-hash-table :test 'equal))
          (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor-overrides-file nil)
          (msg nil))
     (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
               ((symbol-function 'supervisor--separator-row-p) (lambda (_) nil))
@@ -11793,6 +11855,7 @@ No warning is emitted when there are simply no child processes."
   (let* ((entry (supervisor--parse-entry '("cmd" :id "svc" :logging t)))
          (supervisor--logging (make-hash-table :test 'equal))
          (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor-overrides-file nil)
          (msg nil))
     (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
               ((symbol-function 'supervisor--get-entry-for-id)
@@ -11985,6 +12048,7 @@ No warning is emitted when there are simply no child processes."
          (supervisor--restart-timers (make-hash-table :test 'equal))
          (supervisor--logging (make-hash-table :test 'equal))
          (supervisor--logging-override (make-hash-table :test 'equal))
+         (supervisor-overrides-file nil)
          (saved nil)
          (entry (supervisor--parse-entry
                  '("cmd" :id "svc" :type simple :logging))))
@@ -12045,7 +12109,8 @@ No warning is emitted when there are simply no child processes."
       '(("sleep 300" :id "svc" :type simple :enabled nil))
     (let ((supervisor--enabled-override (make-hash-table :test 'equal))
           (supervisor--mask-override (make-hash-table :test 'equal))
-          (supervisor--invalid (make-hash-table :test 'equal)))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
       (let ((result (supervisor--policy-enable "svc")))
         (should (eq 'applied (plist-get result :status)))
         (should (eq 'enabled (gethash "svc" supervisor--enabled-override)))))))
@@ -12056,7 +12121,8 @@ No warning is emitted when there are simply no child processes."
       '(("sleep 300" :id "svc" :type simple))
     (let ((supervisor--enabled-override (make-hash-table :test 'equal))
           (supervisor--mask-override (make-hash-table :test 'equal))
-          (supervisor--invalid (make-hash-table :test 'equal)))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
       (let ((result (supervisor--policy-enable "svc")))
         (should (eq 'skipped (plist-get result :status)))))))
 
@@ -12066,7 +12132,8 @@ No warning is emitted when there are simply no child processes."
       '(("sleep 300" :id "svc" :type simple))
     (let ((supervisor--enabled-override (make-hash-table :test 'equal))
           (supervisor--mask-override (make-hash-table :test 'equal))
-          (supervisor--invalid (make-hash-table :test 'equal)))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
       ;; Disable via override, then re-enable
       (puthash "svc" 'disabled supervisor--enabled-override)
       (let ((result (supervisor--policy-enable "svc")))
@@ -12080,7 +12147,8 @@ No warning is emitted when there are simply no child processes."
       '(("sleep 300" :id "svc" :type simple :enabled nil))
     (let ((supervisor--enabled-override (make-hash-table :test 'equal))
           (supervisor--mask-override (make-hash-table :test 'equal))
-          (supervisor--invalid (make-hash-table :test 'equal)))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
       ;; Enable via override, then disable
       (puthash "svc" 'enabled supervisor--enabled-override)
       (let ((result (supervisor--policy-disable "svc")))
@@ -12094,7 +12162,8 @@ No warning is emitted when there are simply no child processes."
       '(("sleep 300" :id "svc" :type simple))
     (let ((supervisor--enabled-override (make-hash-table :test 'equal))
           (supervisor--mask-override (make-hash-table :test 'equal))
-          (supervisor--invalid (make-hash-table :test 'equal)))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
       (puthash "svc" "bad type" supervisor--invalid)
       (let ((result (supervisor--policy-enable "svc")))
         (should (eq 'error (plist-get result :status)))))))
@@ -12105,7 +12174,8 @@ No warning is emitted when there are simply no child processes."
       '(("sleep 300" :id "svc" :type simple))
     (let ((supervisor--enabled-override (make-hash-table :test 'equal))
           (supervisor--mask-override (make-hash-table :test 'equal))
-          (supervisor--invalid (make-hash-table :test 'equal)))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
       (let ((result (supervisor--policy-enable "nonexistent")))
         (should (eq 'error (plist-get result :status)))
         (should (string-match-p "Unknown" (plist-get result :message)))))))
@@ -12115,7 +12185,8 @@ No warning is emitted when there are simply no child processes."
   (supervisor-test-with-unit-files
       '(("sleep 300" :id "svc" :type simple))
     (let ((supervisor--mask-override (make-hash-table :test 'equal))
-          (supervisor--invalid (make-hash-table :test 'equal)))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
       (puthash "svc" 'masked supervisor--mask-override)
       (let ((result (supervisor--policy-mask "svc")))
         (should (eq 'skipped (plist-get result :status)))))))
@@ -12125,7 +12196,8 @@ No warning is emitted when there are simply no child processes."
   (supervisor-test-with-unit-files
       '(("sleep 300" :id "svc" :type simple))
     (let ((supervisor--mask-override (make-hash-table :test 'equal))
-          (supervisor--invalid (make-hash-table :test 'equal)))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
       (let ((result (supervisor--policy-unmask "svc")))
         (should (eq 'skipped (plist-get result :status)))))))
 
@@ -12134,7 +12206,8 @@ No warning is emitted when there are simply no child processes."
   (supervisor-test-with-unit-files
       '(("true" :id "svc" :type oneshot))
     (let ((supervisor--restart-override (make-hash-table :test 'equal))
-          (supervisor--invalid (make-hash-table :test 'equal)))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
       (let ((result (supervisor--policy-set-restart "svc" 'always)))
         (should (eq 'error (plist-get result :status)))
         (should (string-match-p "oneshot" (plist-get result :message)))))))
@@ -12145,7 +12218,8 @@ No warning is emitted when there are simply no child processes."
       '(("sleep 300" :id "svc" :type simple :restart t))
     (let ((supervisor--restart-override (make-hash-table :test 'equal))
           (supervisor--restart-timers (make-hash-table :test 'equal))
-          (supervisor--invalid (make-hash-table :test 'equal)))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
       ;; Setting to 'always matches config default (t normalizes to always)
       (let ((result (supervisor--policy-set-restart "svc" 'always)))
         (should (eq 'applied (plist-get result :status)))
@@ -12157,7 +12231,8 @@ No warning is emitted when there are simply no child processes."
   (supervisor-test-with-unit-files
       '(("sleep 300" :id "svc" :type simple))
     (let ((supervisor--logging (make-hash-table :test 'equal))
-          (supervisor--invalid (make-hash-table :test 'equal)))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
       ;; Config default is logging=t; setting on matches
       (let ((result (supervisor--policy-set-logging "svc" t)))
         (should (eq 'applied (plist-get result :status)))

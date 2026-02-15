@@ -1107,6 +1107,26 @@ Set to nil to disable persistence (overrides only live in memory)."
   "Return the overrides file path, or nil if persistence is disabled."
   supervisor-overrides-file)
 
+(defun supervisor--ensure-overrides-loaded ()
+  "Ensure in-memory overrides are initialized from persistent storage.
+Return t when overrides are safe to mutate and save.
+If persistence is disabled or file is absent, mark overrides as loaded.
+If the file exists but cannot be loaded, return nil."
+  (or supervisor--overrides-loaded
+      (let ((path (supervisor--overrides-file-path)))
+        (cond
+         ((null path)
+          (setq supervisor--overrides-loaded t)
+          t)
+         ((not (file-exists-p path))
+          (setq supervisor--overrides-loaded t)
+          t)
+         ((zerop (or (nth 7 (file-attributes path)) 0))
+          (setq supervisor--overrides-loaded t)
+          t)
+         (t
+          (supervisor--load-overrides))))))
+
 (defun supervisor--ensure-overrides-dir ()
   "Ensure the directory for the overrides file exists."
   (when-let* ((path (supervisor--overrides-file-path)))
@@ -1147,26 +1167,35 @@ Uses temp file + rename pattern for crash safety.
 Returns t on success, nil on failure."
   (let ((path (supervisor--overrides-file-path)))
     (when path
-      (supervisor--ensure-overrides-dir)
-      (let* ((overrides (supervisor--overrides-to-alist))
-             (data `((version . ,supervisor-overrides-schema-version)
-                     (timestamp . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
-                     (overrides . ,overrides)))
-             (temp-file (concat path ".tmp"))
-             (coding-system-for-write 'utf-8-unix))
-        (condition-case err
-            (progn
-              (with-temp-file temp-file
-                (insert ";; Supervisor overrides file - do not edit manually\n")
-                (insert ";; Schema version: " (number-to-string supervisor-overrides-schema-version) "\n")
-                (pp data (current-buffer)))
-              (rename-file temp-file path t)
-              t)
-          (error
-           (supervisor--log 'warning "Failed to save overrides: %s" (error-message-string err))
-           (when (file-exists-p temp-file)
-             (delete-file temp-file))
-           nil))))))
+      (if (not (supervisor--ensure-overrides-loaded))
+          (progn
+            (supervisor--log 'warning
+                             "Refusing to save overrides; load failed from %s"
+                             path)
+            nil)
+        (supervisor--ensure-overrides-dir)
+        (let* ((overrides (supervisor--overrides-to-alist))
+               (data `((version . ,supervisor-overrides-schema-version)
+                       (timestamp . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
+                       (overrides . ,overrides)))
+               (temp-file (concat path ".tmp"))
+               (coding-system-for-write 'utf-8-unix))
+          (condition-case err
+              (progn
+                (with-temp-file temp-file
+                  (insert ";; Supervisor overrides file - do not edit manually\n")
+                  (insert ";; Schema version: "
+                          (number-to-string supervisor-overrides-schema-version)
+                          "\n")
+                  (pp data (current-buffer)))
+                (rename-file temp-file path t)
+                t)
+            (error
+             (supervisor--log 'warning "Failed to save overrides: %s"
+                              (error-message-string err))
+             (when (file-exists-p temp-file)
+               (delete-file temp-file))
+             nil)))))))
 
 (defun supervisor--load-overrides ()
   "Load overrides from file into memory.
@@ -1221,15 +1250,21 @@ Clears existing in-memory overrides before loading to prevent stale state."
   "Set override KEY for ID to VALUE and save.
 KEY is one of :enabled, :restart, :logging, or :mask.
 VALUE is `enabled', `disabled', `masked', or nil (to clear)."
-  (let ((hash (pcase key
-                (:enabled supervisor--enabled-override)
-                (:restart supervisor--restart-override)
-                (:logging supervisor--logging)
-                (:mask supervisor--mask-override))))
-    (if (null value)
-        (remhash id hash)
-      (puthash id value hash)))
-  (supervisor--save-overrides))
+  (if (not (supervisor--ensure-overrides-loaded))
+      (progn
+        (supervisor--log 'warning
+                         "Cannot merge override for %s; load failed"
+                         id)
+        nil)
+    (let ((hash (pcase key
+                  (:enabled supervisor--enabled-override)
+                  (:restart supervisor--restart-override)
+                  (:logging supervisor--logging)
+                  (:mask supervisor--mask-override))))
+      (if (null value)
+          (remhash id hash)
+        (puthash id value hash)))
+    (supervisor--save-overrides)))
 
 (defun supervisor--clear-all-overrides ()
   "Clear all overrides from memory and file."
@@ -3325,6 +3360,9 @@ If the config default is already enabled, clear any stale override
 instead of writing a redundant one.
 Return a plist with `:status' and `:message'."
   (cond
+   ((not (supervisor--ensure-overrides-loaded))
+    (list :status 'error
+          :message "Cannot enable entry: failed to load overrides"))
    ((gethash id supervisor--invalid)
     (list :status 'error :message (format "Cannot enable invalid entry: %s" id)))
    (t
@@ -3346,6 +3384,9 @@ If the config default is already disabled, clear any stale override
 instead of writing a redundant one.
 Return a plist with `:status' and `:message'."
   (cond
+   ((not (supervisor--ensure-overrides-loaded))
+    (list :status 'error
+          :message "Cannot disable entry: failed to load overrides"))
    ((gethash id supervisor--invalid)
     (list :status 'error
           :message (format "Cannot disable invalid entry: %s" id)))
@@ -3368,6 +3409,9 @@ Return a plist with `:status' and `:message'."
   "Mask entry ID so it is always disabled.
 Return a plist with `:status' and `:message'."
   (cond
+   ((not (supervisor--ensure-overrides-loaded))
+    (list :status 'error
+          :message "Cannot mask entry: failed to load overrides"))
    ((gethash id supervisor--invalid)
     (list :status 'error
           :message (format "Cannot mask invalid entry: %s" id)))
@@ -3385,6 +3429,9 @@ Return a plist with `:status' and `:message'."
   "Unmask entry ID so the enabled state takes effect again.
 Return a plist with `:status' and `:message'."
   (cond
+   ((not (supervisor--ensure-overrides-loaded))
+    (list :status 'error
+          :message "Cannot unmask entry: failed to load overrides"))
    ((gethash id supervisor--invalid)
     (list :status 'error
           :message (format "Cannot unmask invalid entry: %s" id)))
@@ -3405,6 +3452,9 @@ If POLICY matches the config default, clear the override instead.
 When POLICY is `no', cancel any pending restart timer.
 Return a plist with `:status' and `:message'."
   (cond
+   ((not (supervisor--ensure-overrides-loaded))
+    (list :status 'error
+          :message "Cannot set restart policy: failed to load overrides"))
    ((not (memq policy supervisor--valid-restart-policies))
     (list :status 'error
           :message (format "Invalid restart policy: %s" policy)))
@@ -3438,6 +3488,9 @@ Return a plist with `:status' and `:message'."
 If ENABLED-P matches the config default, clear the override instead.
 Return a plist with `:status' and `:message'."
   (cond
+   ((not (supervisor--ensure-overrides-loaded))
+    (list :status 'error
+          :message "Cannot set logging: failed to load overrides"))
    ((gethash id supervisor--invalid)
     (list :status 'error
           :message (format "Cannot set logging for invalid entry: %s" id)))
@@ -4365,6 +4418,7 @@ Ready semantics (when dependents are unblocked):
   (when (fboundp 'supervisor-timer-scheduler-stop)
     (supervisor-timer-scheduler-stop))
   ;; Reset runtime state for clean session
+  (setq supervisor--overrides-loaded nil)
   (clrhash supervisor--restart-override)
   (clrhash supervisor--enabled-override)
   (clrhash supervisor--mask-override)
