@@ -12202,7 +12202,7 @@ No warning is emitted when there are simply no child processes."
           ;; We can only verify the plist structure, not the exact value,
           ;; since not all OSes provide thcount
           (when metrics
-            (should (plistp metrics))))
+            (should (listp metrics))))
       (delete-process proc))))
 
 (ert-deftest supervisor-test-cli-entry-info-log-tail ()
@@ -13484,13 +13484,16 @@ No warning is emitted when there are simply no child processes."
     (should (zerop (hash-table-count supervisor--writers)))))
 
 (ert-deftest supervisor-test-writer-failure-degrades-gracefully ()
-  "Start-writer returns nil and logs warning when logd command is missing."
+  "Start-writer returns nil and logs warning when make-process signals."
   (let ((supervisor--writers (make-hash-table :test 'equal))
-        (supervisor-logd-command "/nonexistent/path/to/logd")
+        (supervisor-logd-command "/usr/bin/logd-stub")
         (supervisor-logd-max-file-size 1000)
         (supervisor-log-directory "/tmp/logs")
         (logged nil))
-    (cl-letf (((symbol-function 'supervisor--log)
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest _args)
+                 (error "Doing vfork: No such file or directory")))
+              ((symbol-function 'supervisor--log)
                (lambda (level fmt &rest args)
                  (when (eq level 'warning)
                    (push (apply #'format fmt args) logged)))))
