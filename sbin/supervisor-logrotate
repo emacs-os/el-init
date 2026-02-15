@@ -1,0 +1,192 @@
+#!/bin/sh
+# Stay POSIX shell; GNU coreutils assumptions are fine.
+# No bashisms.
+# CRITICAL: Must pass ShellCheck.
+# Maintainer shell style:
+# - Only environment variables should be uppercase.
+# - Use set -eu by default; use pipefail only where supported and needed.
+# - Use ${...} form for variable expansion.
+# - Prefer short-circuit guards (for example: [ "${foo}" = "bar" ] && { ...; })
+#   instead of if/then/fi when behavior is equivalent.
+# - Prefer case/esac when there is more than one branch.
+# - Prefer shell parameter expansion over sed/cut/awk when simple.
+# - Use printf for messages and output (avoid echo for non-trivial output).
+# - Check external dependencies early with command -v.
+# - For temp files, use mktemp and cleanup with trap.
+# - Use if/then/fi only when required for correctness or clarity.
+# supervisor-logrotate - rotate and prune supervisor.el log files
+#
+# Rotates active log files by renaming them with a timestamp suffix,
+# optionally signals logd writers to reopen, and prunes old rotated files.
+#
+# Usage: supervisor-logrotate [OPTIONS]
+#
+# Options:
+#   --log-dir DIR       Log directory to operate on (required)
+#   --keep-days N       Prune rotated files older than N days (default: 14)
+#   --signal-reopen     Send SIGHUP to logd writers after rotation
+#   --pid-dir DIR       Directory for writer PID files (default: same as --log-dir)
+#   --dry-run           Print actions without executing
+#   --help              Show this help message
+#
+
+set -eu
+
+warn() {
+    printf 'Warning: %s\n' "${1}" >&2
+}
+
+die() {
+    code="${1}"
+    shift
+    printf 'Error: %s\n' "${*}" >&2
+    exit "${code}"
+}
+
+show_help() {
+    sed -n '/^# Usage:/,/^$/p' "${0}" | sed 's/^# *//'
+    exit 0
+}
+
+# --- Defaults ---
+log_dir=""
+keep_days=14
+signal_reopen=0
+pid_dir=""
+dry_run=0
+
+# --- Parse arguments ---
+while [ "${#}" -gt 0 ]; do
+    case "${1}" in
+        --help|-h)
+            show_help
+            ;;
+        --log-dir)
+            [ -n "${2-}" ] || die 1 "--log-dir requires a directory argument"
+            log_dir="${2}"
+            shift 2
+            ;;
+        --keep-days)
+            [ -n "${2-}" ] || die 1 "--keep-days requires a number"
+            keep_days="${2}"
+            shift 2
+            ;;
+        --signal-reopen)
+            signal_reopen=1
+            shift
+            ;;
+        --pid-dir)
+            [ -n "${2-}" ] || die 1 "--pid-dir requires a directory argument"
+            pid_dir="${2}"
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=1
+            shift
+            ;;
+        *)
+            die 1 "Unknown option: ${1}"
+            ;;
+    esac
+done
+
+# --- Validate ---
+[ -n "${log_dir}" ] || die 1 "--log-dir is required"
+[ -d "${log_dir}" ] || die 1 "--log-dir is not a directory: ${log_dir}"
+
+# Validate keep_days is a positive integer
+case "${keep_days}" in
+    ''|*[!0-9]*) die 1 "--keep-days must be a positive integer: ${keep_days}" ;;
+esac
+
+# Default pid-dir to log-dir
+[ -n "${pid_dir}" ] || pid_dir="${log_dir}"
+
+# --- Dependencies ---
+command -v find >/dev/null 2>&1 || die 1 "Required command not found: find"
+command -v date >/dev/null 2>&1 || die 1 "Required command not found: date"
+
+# --- Generate timestamp ---
+stamp="$(date +%Y%m%d-%H%M%S)"
+
+# --- Rotate active files ---
+# Active files: log-*.log where * contains no dot, plus supervisor.log exactly.
+rotate_file() {
+    src="${1}"
+    base="${src%.log}"
+    dest="${base}.${stamp}.log"
+    # Handle collision: append .1, .2, etc.
+    if [ -e "${dest}" ]; then
+        seq=1
+        while [ -e "${base}.${stamp}.${seq}.log" ]; do
+            seq=$((seq + 1))
+        done
+        dest="${base}.${stamp}.${seq}.log"
+    fi
+    case "${dry_run}" in
+        1) printf 'rotate: %s -> %s\n' "${src}" "${dest}" ;;
+        *) mv "${src}" "${dest}" ;;
+    esac
+}
+
+# Rotate supervisor.log if it exists
+[ -f "${log_dir}/supervisor.log" ] && rotate_file "${log_dir}/supervisor.log"
+
+# Rotate log-*.log files (active only: no dot in the wildcard portion)
+for f in "${log_dir}"/log-*.log; do
+    [ -f "${f}" ] || continue
+    # Extract the part between "log-" and ".log"
+    name="${f##*/}"          # e.g. log-myapp.log
+    middle="${name#log-}"    # e.g. myapp.log
+    middle="${middle%.log}"  # e.g. myapp
+    # Active files have no dot in the middle portion
+    case "${middle}" in
+        *.*) continue ;;  # rotated file, skip
+    esac
+    rotate_file "${f}"
+done
+
+# --- Signal reopen ---
+case "${signal_reopen}" in
+    1)
+        for pidfile in "${pid_dir}"/logd-*.pid; do
+            [ -f "${pidfile}" ] || continue
+            pid="$(cat "${pidfile}" 2>/dev/null)" || continue
+            # Validate PID is numeric
+            case "${pid}" in
+                ''|*[!0-9]*) continue ;;
+            esac
+            # Check if process is alive before signaling
+            if kill -0 "${pid}" 2>/dev/null; then
+                case "${dry_run}" in
+                    1) printf 'signal: SIGHUP -> PID %s (%s)\n' "${pid}" "${pidfile}" ;;
+                    *) kill -HUP "${pid}" 2>/dev/null || warn "Failed to send SIGHUP to PID ${pid}" ;;
+                esac
+            fi
+        done
+        ;;
+esac
+
+# --- Prune old rotated files ---
+# Rotated files match: log-*.[0-9]*.log and supervisor.[0-9]*.log
+# Use find with -mtime +N for age-based pruning.
+prune_rotated() {
+    dir="${1}"
+    days="${2}"
+    # Find rotated supervisor logs
+    find "${dir}" -maxdepth 1 -name 'supervisor.[0-9]*.log' -mtime +"${days}" -type f | while IFS= read -r f; do
+        case "${dry_run}" in
+            1) printf 'prune: %s\n' "${f}" ;;
+            *) rm -f "${f}" ;;
+        esac
+    done
+    # Find rotated per-service logs
+    find "${dir}" -maxdepth 1 -name 'log-*.[0-9]*.log' -mtime +"${days}" -type f | while IFS= read -r f; do
+        case "${dry_run}" in
+            1) printf 'prune: %s\n' "${f}" ;;
+            *) rm -f "${f}" ;;
+        esac
+    done
+}
+
+prune_rotated "${log_dir}" "${keep_days}"

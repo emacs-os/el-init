@@ -1468,6 +1468,31 @@ Log files are managed by external ~supervisor-logd~ writer processes.
 Each writer enforces a per-file size cap (~supervisor-logd-max-file-size~)
 and rotates locally when the limit is reached.
 
+*** Scheduled Rotation
+
+The ~sbin/supervisor-logrotate~ script provides scheduled rotation and
+pruning of log files.  It rotates active log files by renaming them with
+a timestamp suffix (~YYYYMMDD-HHMMSS~), optionally signals logd writers
+to reopen their files, and prunes old rotated files by age.
+
+#+begin_example
+sbin/supervisor-logrotate --log-dir /path/to/logs --keep-days 14
+#+end_example
+
+Options:
+- ~--log-dir DIR~ (required) --- the log directory to operate on
+- ~--keep-days N~ (default: 14) --- prune rotated files older than N days
+- ~--signal-reopen~ --- send SIGHUP to logd writers after rotation
+- ~--pid-dir DIR~ (default: same as ~--log-dir~) --- directory for writer
+  PID file discovery
+- ~--dry-run~ --- print actions without executing
+
+A typical cron entry for daily rotation:
+
+#+begin_example
+0 3 * * * /path/to/supervisor-logrotate --log-dir ~/.local/state/supervisor/log --signal-reopen
+#+end_example
+
 ** Logging Semantics
 
 ~supervisor--log~ emits levels:

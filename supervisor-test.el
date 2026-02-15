@@ -13050,11 +13050,13 @@ No warning is emitted when there are simply no child processes."
            (fake-proc (start-process "svc1" nil "sleep" "300"))
            (proc nil))
       (unwind-protect
-          ;; Mock root euid, trusted source, and make-process (runas binary
-          ;; is gitignored and absent in CI)
+          ;; Mock root euid, trusted source, executable-find, and
+          ;; make-process (runas binary is gitignored and absent in CI)
           (cl-letf (((symbol-function 'user-uid) (lambda () 0))
                     ((symbol-function 'supervisor--identity-source-trusted-p)
                      (lambda (_id) t))
+                    ((symbol-function 'executable-find)
+                     (lambda (_cmd) "/usr/bin/sleep"))
                     ((symbol-function 'make-process)
                      (lambda (&rest _args) fake-proc)))
             (let ((result (supervisor--manual-start "svc1")))
@@ -13640,6 +13642,159 @@ No warning is emitted when there are simply no child processes."
             (should (gethash "svc-fail" supervisor--spawn-failure-reason))))
       (when (process-live-p fake-writer)
         (delete-process fake-writer)))))
+
+;;;; supervisor-logrotate script tests
+
+(ert-deftest supervisor-test-logrotate-help-exits-zero ()
+  "The --help flag exits 0 and prints usage."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-logrotate" root)))
+    (with-temp-buffer
+      (let ((exit-code (call-process script nil t nil "--help")))
+        (should (= exit-code 0))
+        (should (string-match-p "Usage:" (buffer-string)))))))
+
+(ert-deftest supervisor-test-logrotate-missing-log-dir-exits-nonzero ()
+  "Missing --log-dir exits non-zero with an error message."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-logrotate" root)))
+    (with-temp-buffer
+      (let ((exit-code (call-process script nil t nil)))
+        (should-not (= exit-code 0))
+        (should (string-match-p "--log-dir" (buffer-string)))))))
+
+(ert-deftest supervisor-test-logrotate-dry-run-no-modification ()
+  "Dry-run mode prints actions without modifying files."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-logrotate" root))
+         (dir (make-temp-file "logrotate-" t)))
+    (unwind-protect
+        (progn
+          ;; Create active log files
+          (write-region "data" nil (expand-file-name "supervisor.log" dir))
+          (write-region "data" nil (expand-file-name "log-svc1.log" dir))
+          (with-temp-buffer
+            (let ((exit-code (call-process script nil t nil
+                                          "--log-dir" dir "--dry-run")))
+              (should (= exit-code 0))
+              (let ((output (buffer-string)))
+                (should (string-match-p "rotate:" output)))))
+          ;; Files should still exist (not moved)
+          (should (file-exists-p (expand-file-name "supervisor.log" dir)))
+          (should (file-exists-p (expand-file-name "log-svc1.log" dir))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-logrotate-rotation-renames-active-files ()
+  "Rotation renames active files with a timestamp suffix."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-logrotate" root))
+         (dir (make-temp-file "logrotate-" t)))
+    (unwind-protect
+        (progn
+          (write-region "supervisor-data" nil
+                        (expand-file-name "supervisor.log" dir))
+          (write-region "svc-data" nil
+                        (expand-file-name "log-myapp.log" dir))
+          ;; Also create a rotated file that should NOT be re-rotated
+          (write-region "old" nil
+                        (expand-file-name "log-myapp.20250101-120000.log" dir))
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir)))
+            (should (= exit-code 0)))
+          ;; Active files should be gone
+          (should-not (file-exists-p
+                       (expand-file-name "supervisor.log" dir)))
+          (should-not (file-exists-p
+                       (expand-file-name "log-myapp.log" dir)))
+          ;; The old rotated file should still exist (not re-rotated)
+          (should (file-exists-p
+                   (expand-file-name "log-myapp.20250101-120000.log" dir)))
+          ;; New rotated files should exist with timestamp pattern
+          (let ((files (directory-files dir nil
+                                       "^supervisor\\.[0-9].*\\.log$")))
+            (should (= (length files) 1)))
+          (let ((files (directory-files dir nil
+                                       "^log-myapp\\.[0-9].*\\.log$")))
+            ;; Should be 2: the pre-existing rotated + the newly rotated
+            (should (= (length files) 2))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-logrotate-prune-removes-old-keeps-recent ()
+  "Prune removes old rotated files but keeps active and recent rotated."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-logrotate" root))
+         (dir (make-temp-file "logrotate-" t)))
+    (unwind-protect
+        (progn
+          ;; Create a rotated file and backdate its mtime to 30 days ago
+          (let ((old-file (expand-file-name
+                           "log-svc1.20250101-120000.log" dir)))
+            (write-region "old-data" nil old-file)
+            (set-file-times old-file
+                            (time-subtract (current-time)
+                                           (days-to-time 30))))
+          ;; Create a recent rotated file (mtime is now)
+          (write-region "recent-data" nil
+                        (expand-file-name
+                         "log-svc1.20250201-120000.log" dir))
+          ;; Create an active file that should never be pruned
+          (write-region "active" nil
+                        (expand-file-name "log-svc1.log" dir))
+          ;; Run with --keep-days 14
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--keep-days" "14")))
+            (should (= exit-code 0)))
+          ;; Old rotated file should be gone
+          (should-not (file-exists-p
+                       (expand-file-name
+                        "log-svc1.20250101-120000.log" dir)))
+          ;; Recent rotated file should remain (mtime is now, within 14 days)
+          ;; Note: rotation also renamed the active file, so we check that
+          ;; the recent rotated file we created is still there
+          (should (file-exists-p
+                   (expand-file-name
+                    "log-svc1.20250201-120000.log" dir)))
+          ;; Active file was rotated (moved), but that's the rotation step
+          ;; The important thing is the old file was pruned
+          )
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-logrotate-signal-reopen-sends-hup ()
+  "Signal-reopen sends SIGHUP to PIDs found in pid files."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-logrotate" root))
+         (dir (make-temp-file "logrotate-" t))
+         (pid-dir (make-temp-file "logrotate-pid-" t))
+         (proc (start-process "logrotate-test-target" nil "sleep" "300"))
+         (pid (number-to-string (process-id proc))))
+    (unwind-protect
+        (progn
+          ;; Write a PID file
+          (write-region pid nil
+                        (expand-file-name "logd-svc1.pid" pid-dir))
+          ;; Also write a stale PID file with a bogus PID
+          (write-region "999999999" nil
+                        (expand-file-name "logd-stale.pid" pid-dir))
+          ;; Create an active log so rotation has something to do
+          (write-region "data" nil
+                        (expand-file-name "log-svc1.log" dir))
+          ;; Run with --signal-reopen and --dry-run to verify output
+          (with-temp-buffer
+            (let ((exit-code (call-process script nil t nil
+                                          "--log-dir" dir
+                                          "--pid-dir" pid-dir
+                                          "--signal-reopen"
+                                          "--dry-run")))
+              (should (= exit-code 0))
+              (let ((output (buffer-string)))
+                ;; Should mention the valid PID
+                (should (string-match-p (regexp-quote pid) output))
+                (should (string-match-p "signal:" output))))))
+      (when (process-live-p proc)
+        (delete-process proc))
+      (delete-directory dir t)
+      (delete-directory pid-dir t))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
