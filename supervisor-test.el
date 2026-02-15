@@ -13335,6 +13335,11 @@ No warning is emitted when there are simply no child processes."
   (should (stringp supervisor-logd-command))
   (should (string-match "libexec/supervisor-logd\\'" supervisor-logd-command)))
 
+(ert-deftest supervisor-test-libexec-build-on-startup-default ()
+  "Libexec helper build policy defaults to prompt."
+  (should (eq 'prompt
+              (default-value 'supervisor-libexec-build-on-startup))))
+
 (ert-deftest supervisor-test-logrotate-command-path ()
   "Logrotate script path points to sbin/supervisor-logrotate."
   (should (stringp supervisor-logrotate-command))
@@ -13364,6 +13369,140 @@ No warning is emitted when there are simply no child processes."
 (ert-deftest supervisor-test-logd-pid-directory-default-nil ()
   "Log writer PID directory defaults to nil (falls back to log-directory)."
   (should-not (default-value 'supervisor-logd-pid-directory)))
+
+(ert-deftest supervisor-test-libexec-pending-build-targets-missing-binary ()
+  "Pending helper detection includes targets missing compiled binaries."
+  (let* ((tmp (make-temp-file "sv-libexec-" t))
+         (logd-bin (expand-file-name "supervisor-logd" tmp))
+         (runas-bin (expand-file-name "supervisor-runas" tmp))
+         (logd-src (concat logd-bin ".c"))
+         (runas-src (concat runas-bin ".c")))
+    (unwind-protect
+        (progn
+          (with-temp-file logd-src (insert "int main(void){return 0;}\n"))
+          (with-temp-file runas-src (insert "int main(void){return 0;}\n"))
+          (with-temp-file runas-bin (insert "binary"))
+          (set-file-modes runas-bin #o755)
+          ;; runas binary is newer than source, so only logd should be pending.
+          (set-file-times runas-src
+                          (time-subtract (current-time) (seconds-to-time 60)))
+          (set-file-times runas-bin (current-time))
+          (let ((supervisor-logd-command logd-bin)
+                (supervisor-runas-command runas-bin))
+            (let ((pending (supervisor--libexec-pending-build-targets)))
+              (should (= 1 (length pending)))
+              (should (equal "supervisor-logd"
+                             (plist-get (car pending) :name))))))
+      (delete-directory tmp t))))
+
+(ert-deftest supervisor-test-libexec-pending-build-targets-missing-source ()
+  "Pending helper detection includes missing binaries without sources."
+  (let* ((tmp (make-temp-file "sv-libexec-" t))
+         (logd-bin (expand-file-name "supervisor-logd" tmp))
+         (runas-bin (expand-file-name "supervisor-runas" tmp)))
+    (unwind-protect
+        (let ((supervisor-logd-command logd-bin)
+              (supervisor-runas-command runas-bin))
+          (let ((pending (supervisor--libexec-pending-build-targets)))
+            (should (= 2 (length pending)))
+            (should (equal '("supervisor-logd" "supervisor-runas")
+                           (mapcar (lambda (target)
+                                     (plist-get target :name))
+                                   pending)))))
+      (delete-directory tmp t))))
+
+(ert-deftest supervisor-test-build-libexec-helpers-invokes-compiler ()
+  "Helper build path invokes the compiler for each pending source."
+  (let* ((tmp (make-temp-file "sv-libexec-" t))
+         (logd-bin (expand-file-name "supervisor-logd" tmp))
+         (runas-bin (expand-file-name "supervisor-runas" tmp))
+         (logd-src (concat logd-bin ".c"))
+         (runas-src (concat runas-bin ".c"))
+         (calls nil))
+    (unwind-protect
+        (progn
+          (with-temp-file logd-src (insert "int main(void){return 0;}\n"))
+          (with-temp-file runas-src (insert "int main(void){return 0;}\n"))
+          (let ((supervisor-logd-command logd-bin)
+                (supervisor-runas-command runas-bin))
+            (cl-letf (((symbol-function 'supervisor--find-libexec-compiler)
+                       (lambda () "cc-test"))
+                      ((symbol-function 'call-process)
+                       (lambda (program _infile destination _display &rest args)
+                         (push (list :program program
+                                     :destination destination
+                                     :args args)
+                               calls)
+                         0)))
+              (let ((result (supervisor-build-libexec-helpers)))
+                (should (= 2 (plist-get result :attempted)))
+                (should (= 2 (plist-get result :built)))
+                (should-not (plist-get result :failed))
+                (should (= 2 (length calls)))
+                (dolist (call calls)
+                  (should (equal "cc-test" (plist-get call :program)))
+                  (should (eq t (plist-get call :destination))))))))
+      (delete-directory tmp t))))
+
+(ert-deftest supervisor-test-build-libexec-helpers-fails-without-compiler ()
+  "Helper build returns failure when no compiler is available."
+  (let* ((tmp (make-temp-file "sv-libexec-" t))
+         (logd-bin (expand-file-name "supervisor-logd" tmp))
+         (runas-bin (expand-file-name "supervisor-runas" tmp))
+         (logd-src (concat logd-bin ".c"))
+         (runas-src (concat runas-bin ".c")))
+    (unwind-protect
+        (progn
+          (with-temp-file logd-src (insert "int main(void){return 0;}\n"))
+          (with-temp-file runas-src (insert "int main(void){return 0;}\n"))
+          (let ((supervisor-logd-command logd-bin)
+                (supervisor-runas-command runas-bin))
+            (cl-letf (((symbol-function 'supervisor--find-libexec-compiler)
+                       (lambda () nil)))
+              (let ((result (supervisor-build-libexec-helpers)))
+                (should (= 2 (plist-get result :attempted)))
+                (should (= 0 (plist-get result :built)))
+                (should (= 1 (length (plist-get result :failed))))
+                (should (string-match-p "No C compiler found"
+                                        (car (plist-get result :failed))))))))
+      (delete-directory tmp t))))
+
+(ert-deftest supervisor-test-maybe-build-libexec-helpers-prompt ()
+  "Prompt policy builds helpers when startup is interactive and confirmed."
+  (let ((supervisor-libexec-build-on-startup 'prompt)
+        (noninteractive nil)
+        (asked nil)
+        (built nil))
+    (cl-letf (((symbol-function 'supervisor--libexec-pending-build-targets)
+               (lambda ()
+                 (list (list :name "supervisor-logd"))))
+              ((symbol-function 'y-or-n-p)
+               (lambda (_prompt)
+                 (setq asked t)
+                 t))
+              ((symbol-function 'supervisor-build-libexec-helpers)
+               (lambda ()
+                 (setq built t)
+                 (list :built 1 :attempted 1 :failed nil :missing-source nil)))
+              ((symbol-function 'supervisor--log-libexec-build-result) #'ignore))
+      (supervisor--maybe-build-libexec-helpers t)
+      (should asked)
+      (should built))))
+
+(ert-deftest supervisor-test-maybe-build-libexec-helpers-automatic ()
+  "Automatic policy builds helpers without prompting."
+  (let ((supervisor-libexec-build-on-startup 'automatic)
+        (built nil))
+    (cl-letf (((symbol-function 'supervisor--libexec-pending-build-targets)
+               (lambda ()
+                 (list (list :name "supervisor-logd"))))
+              ((symbol-function 'supervisor-build-libexec-helpers)
+               (lambda ()
+                 (setq built t)
+                 (list :built 1 :attempted 1 :failed nil :missing-source nil)))
+              ((symbol-function 'supervisor--log-libexec-build-result) #'ignore))
+      (supervisor--maybe-build-libexec-helpers nil)
+      (should built))))
 
 ;;;; Log writer lifecycle tests
 

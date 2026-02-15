@@ -4,16 +4,12 @@
 
 *A real service supervisor for Emacs.*
 
-~supervisor.el~ is a service supervisor in Emacs Lisp, with small C helpers for
-privilege dropping and log management.  It follows a familiar systemd-like
-interface --- service types, dependencies, restart policies --- adapted for
-Emacs.  ~M-x supervisor~ is the main interface: start, stop, inspect, and
-manage everything from inside Emacs.
+~supervisor.el~ is an Emacs Lisp-based service supervisor.  It follows a
+familiar systemd-like interface --- service types, dependencies, restart
+policies --- adapted for Emacs.  ~M-x supervisor~ is the main interface:
+start, stop, inspect, and manage everything from inside Emacs.
 
-Define your service units in Elisp, organize them into startup stages (like
-runit), declare dependencies, and let supervisor handle the rest.
-
-** Features
+** Features (at a glance)
 
 - *Dashboard*: ~M-x supervisor~ --- live view with lifecycle actions, policy
   changes, dependency inspection, and log viewing.
