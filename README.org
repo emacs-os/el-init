@@ -1493,6 +1493,34 @@ A typical cron entry for daily rotation:
 0 3 * * * /path/to/supervisor-logrotate --log-dir ~/.local/state/supervisor/log --signal-reopen
 #+end_example
 
+*** Global Pruning
+
+The ~sbin/supervisor-log-prune~ script enforces a hard cap on the total
+size of the log directory.  It deletes the oldest rotated files first
+until the directory is at or below the cap.  Active log files
+(~log-<id>.log~, ~supervisor.log~) are never deleted.
+
+#+begin_example
+sbin/supervisor-log-prune --log-dir /path/to/logs --max-total-bytes 1073741824
+#+end_example
+
+Options:
+- ~--log-dir DIR~ (required) --- the log directory to operate on
+- ~--max-total-bytes N~ (default: 1073741824, i.e. 1 GiB) --- hard cap on
+  total directory size in bytes
+- ~--lock-file PATH~ (default: ~<log-dir>/.prune.lock~) --- exclusive lock
+  file path to prevent concurrent prune races
+- ~--dry-run~ --- print actions without executing
+
+The script uses ~flock~ for exclusive locking.  If another prune instance
+is already running, the script exits 0 silently without taking action.
+
+A typical cron entry for periodic pruning (e.g. hourly):
+
+#+begin_example
+0 * * * * /path/to/supervisor-log-prune --log-dir ~/.local/state/supervisor/log --max-total-bytes 1073741824
+#+end_example
+
 ** Logging Semantics
 
 ~supervisor--log~ emits levels:

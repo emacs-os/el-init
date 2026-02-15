@@ -13932,5 +13932,237 @@ No warning is emitted when there are simply no child processes."
       (delete-directory dir t)
       (delete-directory pid-dir t))))
 
+;;;; Log-prune script tests
+
+(ert-deftest supervisor-test-log-prune-help-exits-zero ()
+  "The --help flag exits 0 and prints usage."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root)))
+    (with-temp-buffer
+      (let ((exit-code (call-process script nil t nil "--help")))
+        (should (= exit-code 0))
+        (should (string-match-p "Usage:" (buffer-string)))))))
+
+(ert-deftest supervisor-test-log-prune-missing-log-dir-exits-nonzero ()
+  "Missing --log-dir exits non-zero with an error message."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root)))
+    (with-temp-buffer
+      (let ((exit-code (call-process script nil t nil)))
+        (should-not (= exit-code 0))
+        (should (string-match-p "--log-dir" (buffer-string)))))))
+
+(ert-deftest supervisor-test-log-prune-under-cap-no-delete ()
+  "When total size is under cap, no files are deleted."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t)))
+    (unwind-protect
+        (progn
+          ;; Create a small rotated file (well under the default 1GiB cap)
+          (write-region (make-string 1024 ?x) nil
+                        (expand-file-name
+                         "log-svc1.20250101-120000.log" dir))
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "1000000")))
+            (should (= exit-code 0)))
+          ;; File should still exist
+          (should (file-exists-p
+                   (expand-file-name
+                    "log-svc1.20250101-120000.log" dir))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-log-prune-over-cap-deletes-oldest-rotated ()
+  "Over cap deletes oldest rotated files first, keeping newest."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (oldest (expand-file-name "log-svc1.20250101-120000.log" dir))
+         (middle (expand-file-name "log-svc2.20250102-120000.log" dir))
+         (newest (expand-file-name "log-svc3.20250103-120000.log" dir)))
+    (unwind-protect
+        (progn
+          ;; Create three rotated files with staggered mtimes.
+          ;; Each is 4096 bytes; total ~12288 + dir overhead.
+          (write-region (make-string 4096 ?a) nil oldest)
+          ;; Set mtime to oldest
+          (set-file-times oldest (encode-time 0 0 0 1 1 2025))
+          (write-region (make-string 4096 ?b) nil middle)
+          (set-file-times middle (encode-time 0 0 0 2 1 2025))
+          (write-region (make-string 4096 ?c) nil newest)
+          (set-file-times newest (encode-time 0 0 0 3 1 2025))
+          ;; Set cap so that only one rotated file can remain (4096 + dir)
+          ;; Use a cap of 8192 so the newest file fits but not all three.
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "8192")))
+            (should (= exit-code 0)))
+          ;; Oldest should be deleted first
+          (should-not (file-exists-p oldest))
+          ;; Middle may also be deleted depending on dir overhead
+          ;; Newest should be kept
+          (should (file-exists-p newest)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-log-prune-active-files-never-deleted ()
+  "Active files are preserved even when over cap."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (active1 (expand-file-name "log-svc1.log" dir))
+         (active2 (expand-file-name "supervisor.log" dir)))
+    (unwind-protect
+        (progn
+          ;; Create only active files, no rotated files
+          (write-region (make-string 8192 ?x) nil active1)
+          (write-region (make-string 8192 ?y) nil active2)
+          ;; Set a very low cap — should still not delete active files
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          (should (file-exists-p active1))
+          (should (file-exists-p active2)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-log-prune-dry-run-no-modification ()
+  "Dry-run prints actions without deleting files."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (rotated (expand-file-name "log-svc1.20250101-120000.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil rotated)
+          (with-temp-buffer
+            (let ((exit-code (call-process script nil t nil
+                                          "--log-dir" dir
+                                          "--max-total-bytes" "100"
+                                          "--dry-run")))
+              (should (= exit-code 0))
+              (let ((output (buffer-string)))
+                (should (string-match-p "prune:" output))
+                (should (string-match-p "log-svc1\\.20250101-120000\\.log"
+                                        output)))))
+          ;; File must still exist
+          (should (file-exists-p rotated)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-log-prune-lock-prevents-concurrent ()
+  "A held lock causes prune to exit 0 without deleting."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (lock-file (expand-file-name ".prune.lock" dir))
+         (rotated (expand-file-name "log-svc1.20250101-120000.log" dir))
+         (holder nil))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil rotated)
+          ;; Hold an exclusive flock on the lock file via a background
+          ;; process that keeps fd open for 30 seconds.
+          (setq holder
+                (start-process "flock-holder" nil
+                               "sh" "-c"
+                               (format "exec 9>%s; flock -n 9; sleep 30"
+                                       (shell-quote-argument lock-file))))
+          ;; Give the holder time to acquire the lock
+          (sleep-for 0.5)
+          ;; Run prune with the same lock file — should exit 0 silently
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100"
+                                        "--lock-file" lock-file)))
+            (should (= exit-code 0)))
+          ;; File must still exist because prune couldn't acquire lock
+          (should (file-exists-p rotated)))
+      (when (and holder (process-live-p holder))
+        (delete-process holder))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-log-prune-timestamp-id-not-deleted ()
+  "Active log for a timestamp-like ID is protected when it has rotated children."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         ;; Active log for service ID "svc.20250101-120000"
+         (active (expand-file-name "log-svc.20250101-120000.log" dir))
+         ;; A rotated child of that active log (proves it is a parent)
+         (child (expand-file-name
+                 "log-svc.20250101-120000.20260101-120000.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil active)
+          (write-region (make-string 2048 ?y) nil child)
+          (set-file-times child (encode-time 0 0 0 1 1 2026))
+          ;; Very low cap — the child should be deleted but the active
+          ;; log (confirmed as a parent by the child's presence) must
+          ;; be preserved.
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          (should (file-exists-p active))
+          (should-not (file-exists-p child)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-log-prune-timestamp-id-coexists-with-rotated ()
+  "Rotated files are pruned while timestamp-like active logs are kept."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         ;; Active log for service ID "svc.20250101-120000"
+         (ts-active (expand-file-name "log-svc.20250101-120000.log" dir))
+         ;; Rotated child of the timestamp-like active log (confirms it
+         ;; as a parent that must be protected).
+         (ts-child (expand-file-name
+                    "log-svc.20250101-120000.20260101-120000.log" dir))
+         ;; Active log for plain service "plain"
+         (plain-active (expand-file-name "log-plain.log" dir))
+         ;; Rotated file for service "plain"
+         (plain-rotated (expand-file-name
+                         "log-plain.20250101-120000.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region (make-string 4096 ?a) nil ts-active)
+          (write-region (make-string 1024 ?d) nil ts-child)
+          (set-file-times ts-child (encode-time 0 0 0 1 1 2026))
+          (write-region (make-string 100 ?b) nil plain-active)
+          (write-region (make-string 8192 ?c) nil plain-rotated)
+          (set-file-times plain-rotated (encode-time 0 0 0 1 1 2025))
+          ;; Cap is low — rotated files should be deleted.
+          ;; The timestamp-like active log must be preserved.
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "4096")))
+            (should (= exit-code 0)))
+          ;; Timestamp-like active log preserved (has rotated child)
+          (should (file-exists-p ts-active))
+          ;; Plain active log preserved (not rotated pattern)
+          (should (file-exists-p plain-active))
+          ;; Rotated files deleted
+          (should-not (file-exists-p plain-rotated))
+          (should-not (file-exists-p ts-child)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-log-prune-orphaned-rotated-deleted ()
+  "Orphaned rotated file with no parent active file is still deleted."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         ;; Rotated file for a removed service (no log-oldsvc.log exists)
+         (orphan (expand-file-name "log-oldsvc.20240101-010101.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil orphan)
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; Orphaned rotated file must be deleted to reduce under cap
+          (should-not (file-exists-p orphan)))
+      (delete-directory dir t))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

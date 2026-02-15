@@ -1,0 +1,189 @@
+#!/bin/sh
+# Stay POSIX shell; GNU coreutils assumptions are fine.
+# No bashisms.
+# CRITICAL: Must pass ShellCheck.
+# Maintainer shell style:
+# - Only environment variables should be uppercase.
+# - Use set -eu by default; use pipefail only where supported and needed.
+# - Use ${...} form for variable expansion.
+# - Prefer short-circuit guards (for example: [ "${foo}" = "bar" ] && { ...; })
+#   instead of if/then/fi when behavior is equivalent.
+# - Prefer case/esac when there is more than one branch.
+# - Prefer shell parameter expansion over sed/cut/awk when simple.
+# - Use printf for messages and output (avoid echo for non-trivial output).
+# - Check external dependencies early with command -v.
+# - For temp files, use mktemp and cleanup with trap.
+# - Use if/then/fi only when required for correctness or clarity.
+# supervisor-log-prune - enforce a hard cap on total log directory size
+#
+# Deletes oldest rotated log files first until the directory is at or
+# below the cap.  Active log files are never deleted.  Uses an exclusive
+# lock file to prevent concurrent prune races.
+#
+# Usage: supervisor-log-prune [OPTIONS]
+#
+# Options:
+#   --log-dir DIR          Log directory to operate on (required)
+#   --max-total-bytes N    Hard cap on total directory size (default: 1073741824)
+#   --lock-file PATH       Exclusive lock file path (default: <log-dir>/.prune.lock)
+#   --dry-run              Print actions without executing
+#   --help                 Show this help message
+#
+
+set -eu
+
+warn() {
+    printf 'Warning: %s\n' "${1}" >&2
+}
+
+die() {
+    code="${1}"
+    shift
+    printf 'Error: %s\n' "${*}" >&2
+    exit "${code}"
+}
+
+show_help() {
+    sed -n '/^# Usage:/,/^$/p' "${0}" | sed 's/^# *//'
+    exit 0
+}
+
+# --- Defaults ---
+log_dir=""
+max_total_bytes=1073741824
+lock_file=""
+dry_run=0
+
+# --- Parse arguments ---
+while [ "${#}" -gt 0 ]; do
+    case "${1}" in
+        --help|-h)
+            show_help
+            ;;
+        --log-dir)
+            [ -n "${2-}" ] || die 1 "--log-dir requires a directory argument"
+            log_dir="${2}"
+            shift 2
+            ;;
+        --max-total-bytes)
+            [ -n "${2-}" ] || die 1 "--max-total-bytes requires a number"
+            max_total_bytes="${2}"
+            shift 2
+            ;;
+        --lock-file)
+            [ -n "${2-}" ] || die 1 "--lock-file requires a path argument"
+            lock_file="${2}"
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=1
+            shift
+            ;;
+        *)
+            die 1 "Unknown option: ${1}"
+            ;;
+    esac
+done
+
+# --- Validate ---
+[ -n "${log_dir}" ] || die 1 "--log-dir is required"
+[ -d "${log_dir}" ] || die 1 "--log-dir is not a directory: ${log_dir}"
+
+# Validate max_total_bytes is a positive integer
+case "${max_total_bytes}" in
+    ''|*[!0-9]*) die 1 "--max-total-bytes must be a positive integer: ${max_total_bytes}" ;;
+esac
+
+# Default lock-file to <log-dir>/.prune.lock
+[ -n "${lock_file}" ] || lock_file="${log_dir}/.prune.lock"
+
+# --- Dependencies ---
+command -v flock >/dev/null 2>&1 || die 1 "Required command not found: flock"
+command -v find  >/dev/null 2>&1 || die 1 "Required command not found: find"
+command -v sort  >/dev/null 2>&1 || die 1 "Required command not found: sort"
+command -v awk   >/dev/null 2>&1 || die 1 "Required command not found: awk"
+command -v stat  >/dev/null 2>&1 || die 1 "Required command not found: stat"
+
+# --- Acquire exclusive lock (non-blocking) ---
+# Open the lock file on fd 9 for flock
+exec 9>"${lock_file}"
+flock -n 9 || exit 0
+
+# --- Active vs rotated file detection ---
+# Reuse the exact is_rotated() pattern from sbin/supervisor-logrotate.
+is_rotated() {
+    case "${1}" in
+        # With sequence suffix: base.YYYYMMDD-HHMMSS.N.log
+        *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].[0-9]*.log) return 0 ;;
+        # Without sequence suffix: base.YYYYMMDD-HHMMSS.log
+        *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].log) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# --- Recover parent active filename from a rotated filename ---
+# Strips the rightmost .YYYYMMDD-HHMMSS[.N].log suffix and appends .log.
+# e.g., log-svc.20250101-120000.log   -> log-svc.log
+#       log-svc.20250101-120000.3.log -> log-svc.log
+#       log-svc.1.20250101-120000.log -> log-svc.1.log
+rotated_parent_name() {
+    printf '%s' "${1}" | sed 's/\.[0-9]\{8\}-[0-9]\{6\}\(\.[0-9]\{1,\}\)\{0,1\}\.log$/.log/'
+}
+
+# --- Compute total directory size ---
+# Use du -sb for total bytes (GNU coreutils).
+dir_total_bytes() {
+    du -sb "${1}" | awk '{ print $1 }'
+}
+
+# --- File size in bytes ---
+file_size_bytes() {
+    stat --format='%s' "${1}" 2>/dev/null || wc -c < "${1}"
+}
+
+# --- Compute total and check cap ---
+total="$(dir_total_bytes "${log_dir}")"
+[ "${total}" -gt "${max_total_bytes}" ] || exit 0
+
+# --- Collect rotated files sorted by mtime oldest-first ---
+# find -printf '%T@ %p\n' gives epoch.frac path; sort -n gives oldest first.
+rotated_files=""
+rotated_files="$(find "${log_dir}" -maxdepth 1 -type f \
+    \( -name 'supervisor.*.log' -o -name 'log-*.*.log' \) \
+    -printf '%T@ %p\n' | sort -n | awk '{ print $2 }')"
+
+[ -n "${rotated_files}" ] || exit 0
+
+# --- Build the set of confirmed-active basenames ---
+# A file is confirmed active if another rotated file in the directory
+# names it as its parent (via rotated_parent_name).  This protects
+# active logs whose service ID contains a timestamp pattern (e.g.,
+# svc.20250101-120000): once that service has been rotated at least
+# once, its active log appears as a parent of the rotated child and
+# is excluded from deletion.
+confirmed_active="$(printf '%s\n' "${rotated_files}" | while IFS= read -r cf; do
+    cname="${cf##*/}"
+    is_rotated "${cname}" || continue
+    printf '%s\n' "$(rotated_parent_name "${cname}")"
+done | sort -u)"
+
+# --- Filter to only truly rotated files and delete oldest first ---
+excess=$((total - max_total_bytes))
+
+printf '%s\n' "${rotated_files}" | while IFS= read -r f; do
+    [ "${excess}" -gt 0 ] || break
+    name="${f##*/}"
+    is_rotated "${name}" || continue
+    # Guard: skip files confirmed as active parents (have rotated
+    # children in the directory).
+    if [ -n "${confirmed_active}" ] && \
+       printf '%s\n' "${confirmed_active}" | grep -qxF "${name}"; then
+        continue
+    fi
+    fsize="$(file_size_bytes "${f}")"
+    case "${dry_run}" in
+        1) printf 'prune: %s (%s bytes)\n' "${f}" "${fsize}" ;;
+        *) rm -f "${f}" ;;
+    esac
+    excess=$((excess - fsize))
+done
