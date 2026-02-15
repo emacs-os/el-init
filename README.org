@@ -1736,8 +1736,8 @@ handle fine-grained ordering where needed.
 | Status | ~supervisorctl status ID~ | ~systemctl status ID~ | ~sv status ID~ |
 | List all | ~supervisorctl status~ | ~systemctl list-units~ | ~sv status /var/service/*~ |
 | Reset failed | ~supervisorctl reset-failed ID~ | ~systemctl reset-failed ID~ | (no equivalent) |
-| Set policy | ~supervisorctl restart-policy ID always~ | (edit unit file) | (no equivalent) |
-| Set logging | ~supervisorctl logging ID on~ | (edit unit file) | Logging is automatic |
+| Set policy | ~supervisorctl restart-policy always ID~ | (edit unit file) | (no equivalent) |
+| Set logging | ~supervisorctl logging on ID~ | (edit unit file) | Logging is automatic |
 
 ** Feature Support Matrix
 
