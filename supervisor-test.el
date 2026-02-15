@@ -13047,17 +13047,21 @@ No warning is emitted when there are simply no child processes."
            (supervisor--logging (make-hash-table :test 'equal))
            (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
            (supervisor--writers (make-hash-table :test 'equal))
+           (fake-proc (start-process "svc1" nil "sleep" "300"))
            (proc nil))
-      ;; Mock root euid and trusted source
-      (cl-letf (((symbol-function 'user-uid) (lambda () 0))
-                ((symbol-function 'supervisor--identity-source-trusted-p)
-                 (lambda (_id) t)))
-        (unwind-protect
+      (unwind-protect
+          ;; Mock root euid, trusted source, and make-process (runas binary
+          ;; is gitignored and absent in CI)
+          (cl-letf (((symbol-function 'user-uid) (lambda () 0))
+                    ((symbol-function 'supervisor--identity-source-trusted-p)
+                     (lambda (_id) t))
+                    ((symbol-function 'make-process)
+                     (lambda (&rest _args) fake-proc)))
             (let ((result (supervisor--manual-start "svc1")))
               (should (eq (plist-get result :status) 'started))
-              (setq proc (gethash "svc1" supervisor--processes)))
-          (when (and proc (process-live-p proc))
-            (delete-process proc)))))))
+              (setq proc (gethash "svc1" supervisor--processes))))
+        (when (process-live-p fake-proc)
+          (delete-process fake-proc))))))
 
 (ert-deftest supervisor-test-start-process-root-untrusted-blocked ()
   "Start-process returns nil when root but source untrusted."
