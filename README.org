@@ -10,11 +10,11 @@ under window managers like EXWM, or running inside
 long-lived daemonized Emacs instances that need to manage child processes or
 automate tasks with timers.
 
-Its core advantage is the interactive ~M-x supervisor~ dashboard: a fast,
-Emacs-native control plane for lifecycle actions, policy changes, and live
-status/log inspection in one place. If you only need CLI service control,
-~systemctl --user~ may already be enough; ~supervisor.el~ is for an
-interactive Emacs-first workflow.
+~supervisor.el~ is a mostly Emacs Lisp process supervisor. The core runtime and
+UI are in Elisp, with small ~libexec~ helpers for logging and user/group
+execution robustness. ~M-x supervisor~ is the main interface for day-to-day
+management: start/stop, policy changes, dependency visibility, and log
+inspection.
 
 Define your services in Elisp, organize them into startup stages, declare
 dependencies between them, and let supervisor handle the rest. When something
@@ -22,33 +22,29 @@ crashes, it restarts. When you log out, everything stops cleanly.
 
 ** Features
 
-- *Interactive control plane first*: ~M-x supervisor~ is the core experience:
-  a live dashboard for lifecycle actions, policy changes, dependency
-  inspection, logs, and status in one Emacs buffer.
+- *Dashboard*: ~M-x supervisor~ provides a live view for lifecycle actions,
+  policy changes, dependency inspection, and log viewing.
 
-- *Systemd-style service model, in Elisp*: Unit-style definitions with
-  ~:after~, ~:requires~, explicit stages, ~simple~/~oneshot~, and restart
-  policies (~always~, ~on-success~, ~on-failure~, ~no~).
+- *Staged startup and dependencies*: Four startup stages plus ordering
+  (~:after~) and pull-in requirements (~:requires~).
 
-- *Persistent runtime policy overrides*: Enable/disable, mask/unmask,
-  restart-policy, and logging overrides are available from dashboard and CLI
-  and persist across restarts.
+- *Service types and restart policies*: Long-running ~simple~ services and
+  run-once ~oneshot~ tasks, with explicit restart policy selection.
 
-- *Robust lifecycle behavior*: Crash recovery, crash-loop protection,
-  manual-stop restart suppression, and reconcile-based convergence keep service
-  state predictable.
+- *Persistent runtime overrides*: Enable/disable, mask/unmask, restart-policy,
+  and logging overrides persist across restarts.
 
-- *Authority-tier unit files*: Vendor/base defaults can be cleanly overridden by
+- *Authority-tier unit files*: Shipped defaults can be overridden by
   higher-precedence user tiers, with daemon-reload support.
 
-- *CLI parity for remote/automation workflows*: ~sbin/supervisorctl~ provides
-  scriptable control with human and JSON output for terminal and SSH usage.
+- *CLI*: ~sbin/supervisorctl~ supports scripting and remote use (human and JSON
+  output).
 
-- *Timer subsystem (experimental)*: Cron-like calendar timers and relative
-  timers for oneshot services, including persistent catch-up semantics.
+- *Timer subsystem (experimental)*: Calendar and relative timers for oneshot
+  services, including persistent catch-up semantics.
 
-- *Disk-safe logging pipeline*: External log writers, bounded file growth,
-  rotate/prune maintenance tooling, and dashboard/CLI log access.
+- *Logging maintenance*: External log writers plus rotate/prune tooling for
+  bounded log growth.
 
 ** Requirements
 
