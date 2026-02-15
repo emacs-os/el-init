@@ -193,8 +193,8 @@ main(int argc, char **argv)
         }
     }
 
-    /* Step 4: exec the target command */
-    execvp(argv[cmd_start], &argv[cmd_start]);
+    /* Step 4: exec the target command (direct execv, no PATH search) */
+    execv(argv[cmd_start], &argv[cmd_start]);
 
     /* If we get here, exec failed */
     fprintf(stderr, "supervisor-runas: exec %s: %s\n",

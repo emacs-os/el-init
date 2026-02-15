@@ -3676,11 +3676,17 @@ Used when `:user' or `:group' is set on a unit entry.")
   "Build the command argument list for launching CMD.
 CMD is a shell command string.  USER and GROUP are optional
 identity parameters for privilege drop.  When either is non-nil,
-`supervisor-runas-command' is prepended with identity arguments.
+`supervisor-runas-command' is prepended with identity arguments
+and the target program is resolved to an absolute path (the helper
+uses direct execv without PATH search).
 Return a list suitable for the `make-process' :command keyword."
   (let ((args (split-string-and-unquote cmd)))
     (if (or user group)
-        (let ((helper-args (list supervisor-runas-command)))
+        (let ((helper-args (list supervisor-runas-command))
+              (resolved (executable-find (car args))))
+          ;; Resolve program to absolute path for execv
+          (when resolved
+            (setcar args resolved))
           (when user
             (setq helper-args
                   (append helper-args

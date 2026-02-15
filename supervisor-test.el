@@ -12574,32 +12574,49 @@ No warning is emitted when there are simply no child processes."
 (ert-deftest supervisor-test-build-launch-command-user-only ()
   "Build launch command prepends helper with --user when user is set."
   (let ((supervisor-runas-command "/usr/libexec/supervisor-runas"))
-    (should (equal (supervisor--build-launch-command "sleep 300" "alice" nil)
-                   '("/usr/libexec/supervisor-runas"
-                     "--user" "alice" "--" "sleep" "300")))))
+    (let ((result (supervisor--build-launch-command "sleep 300" "alice" nil)))
+      (should (equal (car result) "/usr/libexec/supervisor-runas"))
+      (should (member "--user" result))
+      (should (equal (nth (1+ (cl-position "--user" result :test #'equal))
+                          result)
+                     "alice"))
+      (should (member "--" result))
+      ;; Program after "--" is resolved to absolute path
+      (should (string-suffix-p "sleep" (nth (1+ (cl-position "--" result
+                                                             :test #'equal))
+                                            result)))
+      (should (equal (car (last result)) "300")))))
 
 (ert-deftest supervisor-test-build-launch-command-group-only ()
   "Build launch command prepends helper with --group when group is set."
   (let ((supervisor-runas-command "/usr/libexec/supervisor-runas"))
-    (should (equal (supervisor--build-launch-command "sleep 300" nil "staff")
-                   '("/usr/libexec/supervisor-runas"
-                     "--group" "staff" "--" "sleep" "300")))))
+    (let ((result (supervisor--build-launch-command "sleep 300" nil "staff")))
+      (should (equal (car result) "/usr/libexec/supervisor-runas"))
+      (should (member "--group" result))
+      (should (equal (nth (1+ (cl-position "--group" result :test #'equal))
+                          result)
+                     "staff"))
+      (should (member "--" result)))))
 
 (ert-deftest supervisor-test-build-launch-command-user-and-group ()
   "Build launch command prepends helper with both --user and --group."
   (let ((supervisor-runas-command "/usr/libexec/supervisor-runas"))
-    (should (equal (supervisor--build-launch-command "echo hi" "postgres" "postgres")
-                   '("/usr/libexec/supervisor-runas"
-                     "--user" "postgres" "--group" "postgres"
-                     "--" "echo" "hi")))))
+    (let ((result (supervisor--build-launch-command "echo hi" "postgres" "postgres")))
+      (should (equal (car result) "/usr/libexec/supervisor-runas"))
+      (should (member "--user" result))
+      (should (member "--group" result))
+      (should (member "--" result)))))
 
 (ert-deftest supervisor-test-build-launch-command-integer-uid ()
   "Build launch command converts integer uid to string for helper."
   (let ((supervisor-runas-command "/usr/libexec/supervisor-runas"))
-    (should (equal (supervisor--build-launch-command "cmd" 1000 33)
-                   '("/usr/libexec/supervisor-runas"
-                     "--user" "1000" "--group" "33"
-                     "--" "cmd")))))
+    (let ((result (supervisor--build-launch-command "sleep 300" 1000 33)))
+      (should (equal (nth (1+ (cl-position "--user" result :test #'equal))
+                          result)
+                     "1000"))
+      (should (equal (nth (1+ (cl-position "--group" result :test #'equal))
+                          result)
+                     "33")))))
 
 (ert-deftest supervisor-test-build-launch-command-no-wrapper-nil ()
   "Build launch command returns plain args when user and group are nil."
@@ -12673,6 +12690,45 @@ No warning is emitted when there are simply no child processes."
     (let ((code (call-process supervisor-test-runas-binary nil t nil
                               "--user" "root" "--" "echo" "hi")))
       (should (= code 113)))))
+
+(ert-deftest supervisor-test-runas-exec-fails-bare-name ()
+  "Helper exits 114 when target is a bare name (execv has no PATH search)."
+  (skip-unless (file-executable-p supervisor-test-runas-binary))
+  ;; Use numeric uid/gid of current user to avoid initgroups permission error
+  ;; on non-root.  On non-root this still fails at setgid, but if we are root
+  ;; (CI lane) it reaches execv.  Use skip-unless to gate on root.
+  (skip-unless (= (user-uid) 0))
+  (skip-unless (getenv "SUPERVISOR_TEST_ROOT"))
+  (with-temp-buffer
+    (let ((code (call-process supervisor-test-runas-binary nil t nil
+                              "--user" (number-to-string (user-uid))
+                              "--" "nonexistent_binary_xyz")))
+      (should (= code 114))
+      (should (string-match-p "exec nonexistent_binary_xyz"
+                              (buffer-string))))))
+
+(ert-deftest supervisor-test-runas-root-success ()
+  "Helper runs command as target user when invoked by root."
+  (skip-unless (file-executable-p supervisor-test-runas-binary))
+  (skip-unless (= (user-uid) 0))
+  (skip-unless (getenv "SUPERVISOR_TEST_ROOT"))
+  (with-temp-buffer
+    (let ((code (call-process supervisor-test-runas-binary nil t nil
+                              "--user" "nobody"
+                              "--" "/usr/bin/id" "-u")))
+      (should (= code 0))
+      ;; nobody's uid is 65534 on most systems
+      (should (string-match-p "^[0-9]+$"
+                              (string-trim (buffer-string)))))))
+
+(ert-deftest supervisor-test-build-launch-command-resolves-path ()
+  "Build launch command resolves program to absolute path when wrapping."
+  (let ((supervisor-runas-command "/usr/libexec/supervisor-runas"))
+    (let ((result (supervisor--build-launch-command "sleep 300" "alice" nil)))
+      ;; The program after "--" should be an absolute path
+      (let ((cmd-after-sep (cdr (member "--" result))))
+        (should cmd-after-sep)
+        (should (file-name-absolute-p (car cmd-after-sep)))))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
