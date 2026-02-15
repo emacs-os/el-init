@@ -14186,5 +14186,59 @@ No warning is emitted when there are simply no child processes."
           (should-not (file-exists-p deletable)))
       (delete-directory dir t))))
 
+(ert-deftest supervisor-test-log-prune-fuser-protects-open-file ()
+  "Files currently open by a process are not deleted (fuser guard)."
+  (skip-unless (= 0 (call-process "sh" nil nil nil
+                                   "-c" "command -v fuser")))
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         ;; A timestamp-like active log with no rotated children --
+         ;; exactly the case the children guard cannot protect.
+         (open-file (expand-file-name
+                     "log-svc.20250101-120000.log" dir))
+         (holder nil))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil open-file)
+          ;; Hold the file open on fd 3 so fuser detects it.
+          (setq holder
+                (start-process "file-holder" nil
+                               "sh" "-c"
+                               (format "exec 3<%s; sleep 300"
+                                       (shell-quote-argument open-file))))
+          (sleep-for 0.3)
+          ;; Run prune with a very low cap.
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; File must still exist -- fuser detected it as open.
+          (should (file-exists-p open-file)))
+      (when (and holder (process-live-p holder))
+        (delete-process holder))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-log-prune-fuser-allows-closed-file ()
+  "Closed files are deleted normally even when fuser is available."
+  (skip-unless (= 0 (call-process "sh" nil nil nil
+                                   "-c" "command -v fuser")))
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (closed-file (expand-file-name
+                       "log-oldsvc.20240101-010101.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil closed-file)
+          ;; No process holds the file open.
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; File should be deleted normally.
+          (should-not (file-exists-p closed-file)))
+      (delete-directory dir t))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

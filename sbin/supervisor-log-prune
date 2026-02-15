@@ -112,6 +112,14 @@ command -v sort  >/dev/null 2>&1 || die 1 "Required command not found: sort"
 command -v awk   >/dev/null 2>&1 || die 1 "Required command not found: awk"
 command -v stat  >/dev/null 2>&1 || die 1 "Required command not found: stat"
 
+# --- Optional: fuser for runtime active-file detection ---
+# When available, fuser detects files currently held open by a process
+# (e.g. a logd writer), protecting active logs whose service ID happens
+# to contain a timestamp pattern.  Soft dependency: falls back to the
+# children-based guard and --protect-id when fuser is absent.
+has_fuser=0
+command -v fuser >/dev/null 2>&1 && has_fuser=1
+
 # --- Acquire exclusive lock (non-blocking) ---
 # Open the lock file on fd 9 for flock
 exec 9>"${lock_file}"
@@ -192,6 +200,11 @@ printf '%s\n' "${rotated_files}" | while IFS= read -r f; do
        printf '%s\n' "${protected_set}" | grep -qxF "${name}"; then
         continue
     fi
+
+    # Skip files currently open by a process (active logd writer).
+    # This catches active logs for timestamp-like service IDs that
+    # have no rotated children yet (so the children guard misses them).
+    [ "${has_fuser}" = "1" ] && fuser "${f}" >/dev/null 2>&1 && continue
 
     fsize="$(file_size_bytes "${f}")"
     case "${dry_run}" in
