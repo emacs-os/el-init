@@ -2,54 +2,40 @@
 
 * supervisor.el Handbook
 
-*A process supervisor for Emacs.*
+*A real service supervisor for Emacs.*
 
-~supervisor.el~ aims to be robust enough to serve as PID 2, but not
-init. In practice, it is best suited for userland: managing desktop sessions
-under window managers like EXWM, or running inside
-long-lived daemonized Emacs instances that need to manage child processes or
-automate tasks with timers.
+~supervisor.el~ is a service supervisor in Emacs Lisp, with small C helpers for
+privilege dropping and log management.  It follows a familiar systemd-like
+interface --- service types, dependencies, restart policies --- adapted for
+Emacs.  ~M-x supervisor~ is the main interface: start, stop, inspect, and
+manage everything from inside Emacs.
 
-~supervisor.el~ is a mostly Emacs Lisp process supervisor. The core runtime and
-UI are in Elisp, with small ~libexec~ helpers for logging and user/group
-execution robustness. ~M-x supervisor~ is the main interface for day-to-day
-management: start/stop, policy changes, dependency visibility, and log
-inspection.
-
-Define your services in Elisp, organize them into startup stages, declare
-dependencies between them, and let supervisor handle the rest. When something
-crashes, it restarts. When you log out, everything stops cleanly.
+Define your service units in Elisp, organize them into startup stages (like
+runit), declare dependencies, and let supervisor handle the rest.
 
 ** Features
 
-- *Dashboard*: ~M-x supervisor~ provides a live view for lifecycle actions,
-  policy changes, dependency inspection, and log viewing.
-
-- *Staged startup and dependencies*: Four startup stages plus ordering
-  (~:after~) and pull-in requirements (~:requires~).
-
-- *Service types and restart policies*: Long-running ~simple~ services and
-  run-once ~oneshot~ tasks, with explicit restart policy selection.
-
-- *Persistent runtime overrides*: Enable/disable, mask/unmask, restart-policy,
-  and logging overrides persist across restarts.
-
-- *Authority-tier unit files*: Shipped defaults can be overridden by
-  higher-precedence user tiers, with daemon-reload support.
-
-- *CLI*: ~sbin/supervisorctl~ supports scripting and remote use (human and JSON
-  output).
-
-- *Timer subsystem (experimental)*: Calendar and relative timers for oneshot
-  services, including persistent catch-up semantics.
-
-- *Logging maintenance*: External log writers plus rotate/prune tooling for
-  bounded log growth.
+- *Dashboard*: ~M-x supervisor~ --- live view with lifecycle actions, policy
+  changes, dependency inspection, and log viewing.
+- *Staged startup and dependencies*: four startup stages with ordering
+  (~:after~, ~:before~) and pull-in (~:requires~, ~:wants~).
+- *Service types*: long-running ~simple~ services and run-once ~oneshot~ tasks
+  with configurable restart policies.
+- *Persistent overrides*: enable/disable, mask/unmask, restart-policy, and
+  logging overrides persist across restarts.
+- *Authority-tier unit files*: shipped defaults overridden by higher-precedence
+  user tiers, with daemon-reload support.
+- *CLI*: ~sbin/supervisorctl~ for scripting and remote use (human and JSON).
+- *Timers*: calendar and relative timers for oneshot services with persistent
+  catch-up semantics.
+- *Logging*: external log writers plus rotate/prune tooling for bounded growth.
 
 ** Requirements
 
 - Emacs 28.1 or later
 - For CLI: ~emacsclient~, ~base64~, and ~sed~ in your ~PATH~
+- For bundled ~libexec~ helpers: a C compiler in ~PATH~ (typically ~cc~,
+  ~clang~, or ~gcc~)
 
 ** Handbook Overview
 
@@ -63,7 +49,7 @@ provides detailed reference material:
 - [[#unit-files-modular-configuration][Unit Files]] - authority roots, precedence, and unit-file management
 - [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] - how stages, dependencies, and restarts work
 - [[#runtime-overrides-and-reconciliation][Runtime Overrides]] - enabling, disabling, and policy changes at runtime
-- [[#timer-subsystem-handbook-experimental][Timer Subsystem]] - scheduled oneshot execution (experimental)
+- [[#timer-subsystem-handbook][Timer Subsystem]] - scheduled oneshot execution
 - [[#dashboard-handbook-m-x-supervisor][Dashboard]] - the interactive UI
 - [[#cli-handbook-sbinsupervisorctl][CLI]] - terminal control with ~supervisorctl~
 - [[#events-and-hooks][Events and Hooks]] - programmatic integration
@@ -857,9 +843,9 @@ All dashboard policy commands (~enable~, ~disable~, ~mask~, ~unmask~,
 ~set-restart-policy~, ~set-logging~) persist overrides immediately via
 ~supervisor--save-overrides~, matching the CLI behaviour.
 
-* Timer Subsystem (Experimental)
+* Timer Subsystem
 :PROPERTIES:
-:CUSTOM_ID: timer-subsystem-handbook-experimental
+:CUSTOM_ID: timer-subsystem-handbook
 :END:
 
 Timer subsystem lives in ~supervisor-timer.el~ and is disabled by default.
@@ -1157,8 +1143,8 @@ All inspect actions are read-only.
 
 - ~supervisor-mode~ is the parent global mode; enabling it runs
   ~supervisor-start~, disabling it runs ~supervisor-stop~.
-- ~supervisor-timer-subsystem-mode~ is an experimental global gate and only
-  becomes active when ~supervisor-mode~ is also enabled.
+- ~supervisor-timer-subsystem-mode~ is a global gate for the timer subsystem
+  and only becomes active when ~supervisor-mode~ is also enabled.
 - ~supervisor-dashboard-mode~ is the major mode for ~*supervisor*~ and can be
   opened independently of whether supervision is currently running.
 - Dashboard filters are buffer-local:
@@ -1475,6 +1461,10 @@ Log files are managed by external ~supervisor-logd~ writer processes.
 Each writer enforces a per-file size cap (~supervisor-logd-max-file-size~)
 and rotates locally when the limit is reached.
 
+Bundled helpers can be built from Emacs with
+~M-x supervisor-build-libexec-helpers~.  Startup can prompt or auto-build
+missing/stale helpers via ~supervisor-libexec-build-on-startup~.
+
 *** Scheduled Rotation
 
 The ~sbin/supervisor-logrotate~ script provides scheduled rotation and
@@ -1608,6 +1598,9 @@ All user options (defcustom) are listed below.
 | ~supervisor-log-prune-max-total-bytes~ | ~1073741824~ (1 GiB) | Total log directory size cap |
 | ~supervisor-logd-prune-min-interval~ | ~60~ | Throttle interval for logd-triggered prune (seconds) |
 | ~supervisor-logd-pid-directory~ | ~nil~ (falls back to ~supervisor-log-directory~) | Writer PID file directory |
+| ~supervisor-libexec-build-on-startup~ | ~prompt~ | Build bundled helper binaries on startup (~prompt~/~automatic~/~never~) |
+| ~supervisor-libexec-compiler-candidates~ | ~("cc" "clang" "gcc")~ | Candidate compiler commands, checked in order |
+| ~supervisor-libexec-cflags~ | ~("-Wall" "-Wextra" "-Werror" "-pedantic" "-std=c99" "-O2")~ | C flags used when building bundled helpers |
 
 ** Unit-File Options
 
@@ -1640,10 +1633,11 @@ All user options (defcustom) are listed below.
 
 | Command | Purpose |
 | ~M-x supervisor-mode~ | Global supervisor mode (start/stop + file watch) |
-| ~M-x supervisor-timer-subsystem-mode~ | Toggle experimental timer subsystem gate |
+| ~M-x supervisor-timer-subsystem-mode~ | Toggle timer subsystem gate |
 | ~M-x supervisor-start~ | Build plan and start staged scheduler |
 | ~M-x supervisor-stop~ | Async graceful stop |
 | ~M-x supervisor-stop-now~ | Sync hard stop |
+| ~M-x supervisor-build-libexec-helpers~ | Compile missing/stale bundled libexec helpers |
 | ~M-x supervisor-verify~ | Verify config without start |
 | ~M-x supervisor-dry-run~ | Show execution plan without start |
 | ~M-x supervisor-migrate-config~ | Emit canonical schema v1 config |
@@ -1737,11 +1731,11 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Systemd example conversions (unit file to supervisor config): [[#service-management-comparison][Service Management Systems Comparison]]
 - Systemd feature support matrix: [[#service-management-comparison][Service Management Systems Comparison]]
 - Systemd oneshot comparison (~:oneshot-blocking~, ~:oneshot-timeout~ mapping): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Timer catch-up window (~supervisor-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#customization-reference][Customization Reference]]
-- Timer disabled/gated behavior (~supervisor-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#command-reference][Command Reference]]
-- Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
-- Timer retry policy (~supervisor-timer-retry-intervals~, signal non-retry): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#customization-reference][Customization Reference]]
-- Timer state persistence and schema compatibility (~supervisor-timer-state-file~): [[#timer-subsystem-handbook-experimental][Timer Subsystem (Experimental)]], [[#persistence-and-files][Persistence and Files]]
+- Timer catch-up window (~supervisor-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
+- Timer disabled/gated behavior (~supervisor-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook][Timer Subsystem]], [[#command-reference][Command Reference]]
+- Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Timer retry policy (~supervisor-timer-retry-intervals~, signal non-retry): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
+- Timer state persistence and schema compatibility (~supervisor-timer-state-file~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#persistence-and-files][Persistence and Files]]
 - Unit file scaffold template (created by ~edit~ on missing file): [[#unit-files-modular-configuration][Unit Files]]
 - Unit file validate-on-save (after-save-hook in edited buffers): [[#unit-files-modular-configuration][Unit Files]]
 
