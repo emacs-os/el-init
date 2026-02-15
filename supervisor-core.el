@@ -3279,16 +3279,22 @@ Return a plist with `:status' and `:message'."
   "Set logging for entry ID.  ENABLED-P is t for on, nil for off.
 If ENABLED-P matches the config default, clear the override instead.
 Return a plist with `:status' and `:message'."
-  (let ((entry (supervisor--get-entry-for-id id))
-        (config-logging t))
-    (when entry
-      (setq config-logging (supervisor-entry-logging-p entry)))
-    (if (eq enabled-p config-logging)
-        (remhash id supervisor--logging)
-      (puthash id (if enabled-p 'enabled 'disabled) supervisor--logging))
-    (list :status 'applied
-          :message (format "Logging for %s: %s"
-                           id (if enabled-p "on" "off")))))
+  (cond
+   ((gethash id supervisor--invalid)
+    (list :status 'error
+          :message (format "Cannot set logging for invalid entry: %s" id)))
+   (t
+    (let ((entry (supervisor--get-entry-for-id id)))
+      (if (null entry)
+          (list :status 'error :message (format "Unknown entry: %s" id))
+        (let ((config-logging (supervisor-entry-logging-p entry)))
+          (if (eq enabled-p config-logging)
+              (remhash id supervisor--logging)
+            (puthash id (if enabled-p 'enabled 'disabled)
+                     supervisor--logging))
+          (list :status 'applied
+                :message (format "Logging for %s: %s"
+                                 id (if enabled-p "on" "off")))))))))
 
 (defun supervisor--handle-oneshot-exit (name proc-status exit-code)
   "Handle exit of oneshot process NAME.

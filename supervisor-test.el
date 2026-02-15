@@ -6420,10 +6420,12 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-logging-off ()
   "Logging off sets override."
-  (let ((supervisor--logging (make-hash-table :test 'equal))
-        (supervisor-overrides-file nil))
-    (supervisor--cli-dispatch '("logging" "off" "test-id"))
-    (should (eq 'disabled (gethash "test-id" supervisor--logging)))))
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "test-id" :type simple))
+    (let ((supervisor--logging (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil))
+      (supervisor--cli-dispatch '("logging" "off" "test-id"))
+      (should (eq 'disabled (gethash "test-id" supervisor--logging))))))
 
 (ert-deftest supervisor-test-cli-stop-uses-manually-stopped ()
   "CLI stop sets manually-stopped flag, not restart-override."
