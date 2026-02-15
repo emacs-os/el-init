@@ -1539,6 +1539,38 @@ A typical cron entry for periodic pruning (e.g. hourly):
 0 * * * * /path/to/supervisor-log-prune --log-dir ~/.local/state/supervisor/log --max-total-bytes 1073741824
 #+end_example
 
+*** Integrated Maintenance
+
+Two paths keep log growth bounded end-to-end:
+
+1. *logd path* --- each logd writer rotates its own file when the
+   per-file size cap is reached, then triggers the prune script
+   (throttled by ~supervisor-logd-prune-min-interval~ seconds) to keep
+   the directory within the total size cap.
+
+2. *Scheduled path* --- ~M-x supervisor-run-log-maintenance~ runs the
+   full maintenance sequence asynchronously: rotate all active logs,
+   signal writers to reopen, then prune.
+
+The ~supervisor-run-log-maintenance~ command is suitable for periodic
+invocation via a timer or manual use:
+
+#+begin_example
+M-x supervisor-run-log-maintenance
+#+end_example
+
+Both paths use the same lock file (~<log-dir>/.prune.lock~) for prune
+coordination, so concurrent invocations are safe.
+
+Relevant customization variables:
+
+| Variable | Default | Purpose |
+|----------+---------+---------|
+| ~supervisor-logd-max-file-size~ | 50 MiB | Per-file size cap before logd rotates locally |
+| ~supervisor-log-prune-max-total-bytes~ | 1 GiB | Hard cap on total log directory size |
+| ~supervisor-logd-prune-min-interval~ | 60 s | Minimum seconds between logd-triggered prune calls |
+| ~supervisor-logrotate-keep-days~ | 14 | Days to keep rotated files (scheduled path) |
+
 ** Logging Semantics
 
 ~supervisor--log~ emits levels:

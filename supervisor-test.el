@@ -14466,5 +14466,119 @@ PATH set to exclude fuser."
           (should-not (file-exists-p closed-file)))
       (delete-directory dir t))))
 
+;;;; Phase 7 — rotate/prune integration
+
+(ert-deftest supervisor-test-start-writer-passes-prune-flags ()
+  "Start-writer includes --prune-cmd and --prune-min-interval-sec."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor-logd-command "/usr/bin/logd-stub")
+        (supervisor-logd-max-file-size 1000)
+        (supervisor-log-directory "/tmp/logs")
+        (supervisor-log-prune-command "/usr/bin/prune-stub")
+        (supervisor-log-prune-max-total-bytes 5000)
+        (supervisor-logd-prune-min-interval 30)
+        (spawned-args nil)
+        (fake-proc (start-process "fake" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (setq spawned-args args)
+                     fake-proc)))
+          (supervisor--start-writer "svc1" "/tmp/logs/log-svc1.log")
+          (let ((cmd (plist-get spawned-args :command)))
+            (should (member "--prune-cmd" cmd))
+            (should (member "--prune-min-interval-sec" cmd))
+            ;; Verify values follow flags
+            (let ((prune-pos (cl-position "--prune-cmd" cmd :test #'equal))
+                  (interval-pos (cl-position "--prune-min-interval-sec"
+                                             cmd :test #'equal)))
+              (should (string-match-p "prune-stub"
+                                      (nth (1+ prune-pos) cmd)))
+              (should (equal "30" (nth (1+ interval-pos) cmd))))))
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+(ert-deftest supervisor-test-build-prune-command-format ()
+  "Build-prune-command returns a properly formatted command string."
+  (let ((supervisor-log-prune-command "/opt/prune")
+        (supervisor-log-directory "/var/log/sv")
+        (supervisor-log-prune-max-total-bytes 2048))
+    (let ((cmd (supervisor--build-prune-command)))
+      (should (stringp cmd))
+      (should (string-match-p (regexp-quote "/opt/prune") cmd))
+      (should (string-match-p "--log-dir" cmd))
+      (should (string-match-p (regexp-quote "/var/log/sv") cmd))
+      (should (string-match-p "--max-total-bytes" cmd))
+      (should (string-match-p "2048" cmd)))))
+
+(ert-deftest supervisor-test-signal-writers-reopen ()
+  "Signal-writers-reopen sends SIGHUP to live writers."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (signals-sent nil)
+        (fake-proc (start-process "fake-writer" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'signal-process)
+                   (lambda (proc sig)
+                     (push (cons proc sig) signals-sent)
+                     0)))
+          (puthash "svc1" fake-proc supervisor--writers)
+          (should (process-live-p fake-proc))
+          (supervisor--signal-writers-reopen)
+          (should (= 1 (length signals-sent)))
+          (should (eq (caar signals-sent) fake-proc))
+          (should (eq (cdar signals-sent) 'SIGHUP)))
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+(ert-deftest supervisor-test-run-log-maintenance-chains ()
+  "Log maintenance chains rotate, writer reopen, then prune."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor-log-directory "/tmp/test-logs")
+        (supervisor-logrotate-command "/usr/bin/rotate-stub")
+        (supervisor-logrotate-keep-days 7)
+        (supervisor-log-prune-command "/usr/bin/prune-stub")
+        (supervisor-log-prune-max-total-bytes 4096)
+        (supervisor-verbose nil)
+        (calls nil)
+        (captured-sentinel nil))
+    (cl-letf (((symbol-function 'start-process)
+               (lambda (name _buf cmd &rest args)
+                 (let ((entry (cons cmd args)))
+                   (push (cons name entry) calls))
+                 ;; Return a fake process object
+                 (let ((proc (generate-new-buffer " *fake*")))
+                   ;; start-process sentinel will be set externally
+                   proc)))
+              ((symbol-function 'set-process-sentinel)
+               (lambda (_proc sentinel)
+                 (setq captured-sentinel sentinel)))
+              ((symbol-function 'supervisor--signal-writers-reopen)
+               (lambda ()
+                 (push (cons "reopen" nil) calls)))
+              ((symbol-function 'supervisor--log)
+               #'ignore))
+      (supervisor-run-log-maintenance)
+      ;; First call should be logrotate
+      (should (= 1 (length calls)))
+      (let ((first (car calls)))
+        (should (equal (car first) "supervisor-logrotate"))
+        (should (equal (cadr first) "/usr/bin/rotate-stub"))
+        (should (member "--log-dir" (cdr first)))
+        (should (member "--keep-days" (cdr first))))
+      ;; Fire the sentinel with "finished"
+      (should captured-sentinel)
+      (funcall captured-sentinel nil "finished\n")
+      ;; Should now have reopen + prune calls
+      (should (= 3 (length calls)))
+      ;; Most recent is prune (pushed last)
+      (let ((prune-call (car calls)))
+        (should (equal (car prune-call) "supervisor-log-prune"))
+        (should (equal (cadr prune-call) "/usr/bin/prune-stub"))
+        (should (member "--log-dir" (cdr prune-call)))
+        (should (member "--max-total-bytes" (cdr prune-call))))
+      ;; Reopen was called between rotate and prune
+      (let ((reopen-call (cadr calls)))
+        (should (equal (car reopen-call) "reopen"))))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

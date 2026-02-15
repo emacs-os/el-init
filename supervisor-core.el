@@ -2973,7 +2973,12 @@ Store it in `supervisor--writers' on success."
                         "--file" log-file
                         "--max-file-size-bytes"
                         (number-to-string supervisor-logd-max-file-size)
-                        "--log-dir" supervisor-log-directory))
+                        "--log-dir" supervisor-log-directory
+                        "--prune-cmd"
+                        (supervisor--build-prune-command)
+                        "--prune-min-interval-sec"
+                        (number-to-string
+                         supervisor-logd-prune-min-interval)))
              (proc (make-process
                     :name (format "logd-%s" id)
                     :command cmd
@@ -3002,6 +3007,52 @@ Send SIGTERM if the writer is alive, then remove from `supervisor--writers'."
                (signal-process writer 'SIGTERM)))
            supervisor--writers)
   (clrhash supervisor--writers))
+
+(defun supervisor--build-prune-command ()
+  "Build the shell command string for logd's --prune-cmd flag.
+Return a string suitable for passing to logd as the value of its
+`--prune-cmd' argument.  The command invokes the prune script with
+the current `supervisor-log-directory' and
+`supervisor-log-prune-max-total-bytes'."
+  (format "%s --log-dir %s --max-total-bytes %d"
+          (shell-quote-argument supervisor-log-prune-command)
+          (shell-quote-argument supervisor-log-directory)
+          supervisor-log-prune-max-total-bytes))
+
+(defun supervisor--signal-writers-reopen ()
+  "Send SIGHUP to all live log writers to trigger file reopen.
+After external rotation renames the active log file, each logd
+writer must reopen its file descriptor.  logd handles SIGHUP by
+closing and reopening the configured log file."
+  (maphash (lambda (_id writer)
+             (when (process-live-p writer)
+               (signal-process writer 'SIGHUP)))
+           supervisor--writers))
+
+(defun supervisor-run-log-maintenance ()
+  "Run log maintenance: rotate, signal writers to reopen, then prune.
+Execute the scheduled maintenance path asynchronously:
+1. Run `supervisor-logrotate-command' to rotate active logs.
+2. Signal all live writers to reopen their files.
+3. Run `supervisor-log-prune-command' to enforce the directory size cap."
+  (interactive)
+  (let ((log-dir supervisor-log-directory)
+        (keep-days (number-to-string supervisor-logrotate-keep-days))
+        (max-bytes (number-to-string supervisor-log-prune-max-total-bytes)))
+    (supervisor--log 'info "log maintenance: rotating")
+    (set-process-sentinel
+     (start-process "supervisor-logrotate" nil
+                    supervisor-logrotate-command
+                    "--log-dir" log-dir
+                    "--keep-days" keep-days)
+     (lambda (_proc event)
+       (when (string-match-p "finished" event)
+         (supervisor--signal-writers-reopen)
+         (supervisor--log 'info "log maintenance: pruning")
+         (start-process "supervisor-log-prune" nil
+                        supervisor-log-prune-command
+                        "--log-dir" log-dir
+                        "--max-total-bytes" max-bytes))))))
 
 ;;; DAG Scheduler
 
