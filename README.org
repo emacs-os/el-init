@@ -228,10 +228,9 @@ Validation is performed by unit-file validation
 - ~:remain-after-exit~ must be boolean; rejected for ~simple~ type.
 - ~:success-exit-status~ items must be integers (0--255) or recognized signal
   names; rejected for ~oneshot~ type.
-- ~:user~ and ~:group~ must be a string, integer, or ~nil~.  At startup the
-  manager must be running as root (euid 0) when either key is set; non-root
-  managers reject the unit as invalid.  The unit file must also pass the trust
-  gate: it must exist on disk, be owned by root, and not be world-writable.
+- ~:user~ and ~:group~ must be a string, integer, or ~nil~.  Identity
+  requirements (root privileges, trust gate) are enforced at launch time, not
+  during validation.  See [[#security][Security]] for details.
 
 Invalid entries are skipped at start and shown as ~invalid~ in dashboard
 and CLI status/validate output.
@@ -1633,6 +1632,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Reset failed state (~reset-failed~, ~F~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Manager targeting (caller identity, ~emacsclient~ discovery): [[#security][Security]]
 - Privilege-drop trust gate (~:user~, ~:group~, root-owned unit files): [[#security][Security]]
+- Privilege-drop troubleshooting (identity errors, trust gate failures): [[#privilege-drop-troubleshooting][Privilege-Drop Troubleshooting]]
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
@@ -1698,16 +1698,24 @@ Practical guidance:
 
 ** Privilege-Drop Trust Gate
 
-When the manager runs as root and a unit specifies ~:user~ or ~:group~, the
-unit file must pass a trust gate before the process is launched:
+When a unit specifies ~:user~ or ~:group~, two runtime checks are enforced at
+launch time (both initial startup and reload/restart):
 
-- The unit must originate from a file on disk (not inline legacy config).
-- The file must be owned by root (uid 0).
-- The file must not be world-writable.
+1. *Root requirement.*  The manager must be running as root (euid 0).  A
+   non-root manager that encounters ~:user~ or ~:group~ will fail the spawn
+   with reason ~identity change requires root (user=... group=...)~.
 
-Units that fail the trust gate are rejected at startup with an ~invalid~
-status and a diagnostic reason.  This prevents unprivileged users from
-escalating through writable unit files.
+2. *Trust gate.*  When running as root, the unit file must pass ownership and
+   permission checks before identity change is allowed:
+   - The unit must originate from a file on disk (not inline legacy config).
+   - The file must be owned by root (uid 0).
+   - The file must not be world-writable.
+   Failure produces reason ~unit source not trusted (user=... group=...)~.
+
+These are runtime spawn rejections, not validation errors.  The unit passes
+validation normally; the service appears with status ~stopped~ and a
+~failed-to-spawn~ reason containing identity context.  This prevents
+unprivileged users from escalating through writable unit files.
 
 * Service Management Systems Comparison
 :PROPERTIES:
@@ -1936,6 +1944,73 @@ supervisor unit file (~webapp.el~):
  :kill-signal SIGTERM)
 ;; Command: /usr/bin/node /opt/webapp/server.js
 #+end_src
+
+*** Example 4: Service with Privilege Drop
+
+systemd unit:
+
+#+begin_example
+[Unit]
+Description=Web server
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/nginx -g "daemon off;"
+User=www-data
+Group=www-data
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+#+end_example
+
+supervisor unit file (~nginx.el~), placed in a root-owned unit directory:
+
+#+begin_src emacs-lisp
+(:id "nginx"
+ :description "Web server"
+ :type simple
+ :stage stage3
+ :restart on-failure
+ :user "www-data"
+ :group "www-data")
+;; Command: /usr/bin/nginx -g "daemon off;"
+#+end_src
+
+Requirements: the Emacs manager must run as root, and the unit file must be
+owned by root and not world-writable.
+
+** Privilege-Drop Troubleshooting
+:PROPERTIES:
+:CUSTOM_ID: privilege-drop-troubleshooting
+:END:
+
+*** "identity change requires root (user=... group=...)"
+
+The manager is not running as root.  ~:user~ and ~:group~ require the Emacs
+process to have euid 0 so that the ~supervisor-runas~ helper can call
+~setuid~/~setgid~.
+
+Resolution: start Emacs (and its server) as root, or remove the ~:user~ /
+~:group~ keys from the unit file.
+
+*** "unit source not trusted (user=... group=...)"
+
+The manager is root but the unit file failed the trust gate.  Common causes:
+
+- The unit file is not owned by root.  Fix: ~sudo chown root:root unit.el~.
+- The unit file is world-writable.  Fix: ~sudo chmod o-w unit.el~.
+- The unit was defined inline in ~supervisor-programs~ rather than in a unit
+  file.  Inline definitions have no verifiable file ownership; move the
+  definition to a root-owned unit file.
+
+*** "executable not found"
+
+When ~:user~ or ~:group~ is set, the command is launched through the
+~supervisor-runas~ helper (at ~libexec/supervisor-runas~).  This error means
+either the helper itself or the target executable could not be found.  Verify
+that ~supervisor-runas-command~ points to the compiled helper and that the
+target program path is absolute (the helper uses ~execv~ without PATH search).
 
 ** Mutator Inventory and Classification
 
