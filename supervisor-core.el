@@ -115,30 +115,36 @@ Example:
 
 ;;;; Log writer and maintenance paths
 
-(defvar supervisor-logd-command
+(defcustom supervisor-logd-command
   (expand-file-name "libexec/supervisor-logd"
                     (file-name-directory (or load-file-name
                                              buffer-file-name "")))
   "Path to the per-service log writer helper.
 The helper reads service output from stdin and writes to a log file
 with append semantics, enforcing a per-file size cap.  See
-`supervisor-logd-max-file-size' for the default cap.")
+`supervisor-logd-max-file-size' for the default cap."
+  :type 'string
+  :group 'supervisor)
 
-(defvar supervisor-logrotate-command
+(defcustom supervisor-logrotate-command
   (expand-file-name "sbin/supervisor-logrotate"
                     (file-name-directory (or load-file-name
                                              buffer-file-name "")))
   "Path to the log rotation script.
 Rotates active service logs and prunes rotated files older than
-`supervisor-logrotate-keep-days'.")
+`supervisor-logrotate-keep-days'."
+  :type 'string
+  :group 'supervisor)
 
-(defvar supervisor-log-prune-command
+(defcustom supervisor-log-prune-command
   (expand-file-name "sbin/supervisor-log-prune"
                     (file-name-directory (or load-file-name
                                              buffer-file-name "")))
   "Path to the global log prune script.
 Enforces a hard cap on total bytes in the log directory.
-See `supervisor-log-prune-max-total-bytes'.")
+See `supervisor-log-prune-max-total-bytes'."
+  :type 'string
+  :group 'supervisor)
 
 (defcustom supervisor-logrotate-keep-days 14
   "Number of days to keep rotated log files.

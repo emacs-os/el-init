@@ -1512,7 +1512,15 @@ All user options (defcustom) are listed below.
 | ~supervisor-verbose~ | ~nil~ | Show info-level messages |
 | ~supervisor-log-to-file~ | ~nil~ | Write supervisor events to file |
 | ~supervisor-watch-config~ | ~nil~ | Config file watch and auto-reload |
-| ~supervisor-overrides-file~ | ~(XDG_STATE_HOME or ~/.local/state)/supervisor/overrides.eld~ | Override persistence path |
+| ~supervisor-overrides-file~ | ~(XDG_CONFIG_HOME or ~/.config)/supervisor/overrides.eld~ | Override persistence path |
+| ~supervisor-logd-command~ | ~libexec/supervisor-logd~ (relative to package) | Per-service log writer helper path |
+| ~supervisor-logrotate-command~ | ~sbin/supervisor-logrotate~ (relative to package) | Log rotation script path |
+| ~supervisor-log-prune-command~ | ~sbin/supervisor-log-prune~ (relative to package) | Global log prune script path |
+| ~supervisor-logrotate-keep-days~ | ~14~ | Days to keep rotated log files |
+| ~supervisor-logd-max-file-size~ | ~52428800~ (50 MiB) | Per-file size cap for log writer |
+| ~supervisor-log-prune-max-total-bytes~ | ~1073741824~ (1 GiB) | Total log directory size cap |
+| ~supervisor-logd-prune-min-interval~ | ~60~ | Throttle interval for logd-triggered prune (seconds) |
+| ~supervisor-logd-pid-directory~ | ~nil~ (falls back to ~supervisor-log-directory~) | Writer PID file directory |
 
 ** Unit-File Options
 
