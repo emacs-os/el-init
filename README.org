@@ -176,6 +176,8 @@ Each unit file is a single plist expression with ~:id~ and ~:command~ required.
 | ~:kill-mode~ | symbol or string | ~process~ | ~process~ or ~mixed~, see Stop Semantics |
 | ~:remain-after-exit~ | boolean | ~nil~ | ~oneshot~ only: latch active on success |
 | ~:success-exit-status~ | int, signal symbol/string, or list | ~nil~ | ~simple~ only: extra clean exit criteria |
+| ~:user~ | string, integer, or ~nil~ | ~nil~ | Run-as user (requires root, trusted unit source) |
+| ~:group~ | string, integer, or ~nil~ | ~nil~ | Run-as group (requires root, trusted unit source) |
 
 ** Validation Rules
 
@@ -226,6 +228,10 @@ Validation is performed by unit-file validation
 - ~:remain-after-exit~ must be boolean; rejected for ~simple~ type.
 - ~:success-exit-status~ items must be integers (0--255) or recognized signal
   names; rejected for ~oneshot~ type.
+- ~:user~ and ~:group~ must be a string, integer, or ~nil~.  At startup the
+  manager must be running as root (euid 0) when either key is set; non-root
+  managers reject the unit as invalid.  The unit file must also pass the trust
+  gate: it must exist on disk, be owned by root, and not be world-writable.
 
 Invalid entries are skipped at start and shown as ~invalid~ in dashboard
 and CLI status/validate output.
@@ -1625,6 +1631,8 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Override persistence (~supervisor-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
 - Reload unit (~reload~, ~u~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Reset failed state (~reset-failed~, ~F~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Manager targeting (caller identity, ~emacsclient~ discovery): [[#security][Security]]
+- Privilege-drop trust gate (~:user~, ~:group~, root-owned unit files): [[#security][Security]]
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
@@ -1647,7 +1655,37 @@ This is a topical index for targeted lookup of less-obvious behavior.
 :CUSTOM_ID: security
 :END:
 
-~supervisorctl~ uses ~emacsclient --eval~. Any principal that can connect to
+** Manager Targeting
+
+~supervisorctl~ uses ~emacsclient --eval~.  Which manager instance it reaches
+is determined entirely by the standard ~emacsclient~ server-discovery
+mechanism, which in turn depends on the caller's OS identity:
+
+- Each user's Emacs server listens on a socket in that user's runtime
+  directory (e.g., ~/run/user/UID/emacs~).
+- ~emacsclient~ finds the socket belonging to the *caller's* uid.
+- There is no supervisor-level routing: manager selection = caller identity.
+
+Operational patterns:
+
+| Goal | Invocation |
+| Manage your own services | ~supervisorctl status~ |
+| Manage a root-owned manager | ~sudo supervisorctl status~ |
+| Manage another user's manager | ~sudo -u alice supervisorctl status~ |
+
+The ~--socket~ and ~--server-file~ wrapper options override discovery when
+multiple servers coexist under one uid.
+
+~:user~ and ~:group~ on a unit affect the *spawned process* identity, not
+which manager is targeted.
+
+Explicit ~--system~ / ~--user~ scope flags (analogous to ~systemctl --user~)
+are deferred to future planning; the current model relies on caller identity
+for manager selection.
+
+** Transport Security
+
+~supervisorctl~ uses ~emacsclient --eval~.  Any principal that can connect to
 your Emacs server can execute code as your Emacs user.
 
 Security boundary: your Emacs server socket/server-file access controls.
@@ -1657,6 +1695,19 @@ Practical guidance:
 - Prefer local socket transport.
 - Use ~--server-file~ only when you intentionally operate server-file/TCP mode.
 - Keep server auth/socket directories private (owner-only permissions).
+
+** Privilege-Drop Trust Gate
+
+When the manager runs as root and a unit specifies ~:user~ or ~:group~, the
+unit file must pass a trust gate before the process is launched:
+
+- The unit must originate from a file on disk (not inline legacy config).
+- The file must be owned by root (uid 0).
+- The file must not be world-writable.
+
+Units that fail the trust gate are rejected at startup with an ~invalid~
+status and a diagnostic reason.  This prevents unprivileged users from
+escalating through writable unit files.
 
 * Service Management Systems Comparison
 :PROPERTIES:
