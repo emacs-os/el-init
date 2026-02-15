@@ -113,6 +113,65 @@ Example:
   :type 'directory
   :group 'supervisor)
 
+;;;; Log writer and maintenance paths
+
+(defvar supervisor-logd-command
+  (expand-file-name "libexec/supervisor-logd"
+                    (file-name-directory (or load-file-name
+                                             buffer-file-name "")))
+  "Path to the per-service log writer helper.
+The helper reads service output from stdin and writes to a log file
+with append semantics, enforcing a per-file size cap.  See
+`supervisor-logd-max-file-size' for the default cap.")
+
+(defvar supervisor-logrotate-command
+  (expand-file-name "sbin/supervisor-logrotate"
+                    (file-name-directory (or load-file-name
+                                             buffer-file-name "")))
+  "Path to the log rotation script.
+Rotates active service logs and prunes rotated files older than
+`supervisor-logrotate-keep-days'.")
+
+(defvar supervisor-log-prune-command
+  (expand-file-name "sbin/supervisor-log-prune"
+                    (file-name-directory (or load-file-name
+                                             buffer-file-name "")))
+  "Path to the global log prune script.
+Enforces a hard cap on total bytes in the log directory.
+See `supervisor-log-prune-max-total-bytes'.")
+
+(defcustom supervisor-logrotate-keep-days 14
+  "Number of days to keep rotated log files.
+Rotated files older than this are pruned by the logrotate script."
+  :type 'integer
+  :group 'supervisor)
+
+(defcustom supervisor-logd-max-file-size 52428800
+  "Maximum size in bytes for a single log file (default 50 MiB).
+The log writer rotates the file locally when this limit is reached."
+  :type 'integer
+  :group 'supervisor)
+
+(defcustom supervisor-log-prune-max-total-bytes 1073741824
+  "Maximum total bytes allowed in the log directory (default 1 GiB).
+The prune script deletes oldest rotated files first until the
+directory is at or below this cap."
+  :type 'integer
+  :group 'supervisor)
+
+(defcustom supervisor-logd-prune-min-interval 60
+  "Minimum seconds between logd-triggered prune invocations.
+Throttles prune calls from the log writer to avoid excessive I/O."
+  :type 'integer
+  :group 'supervisor)
+
+(defcustom supervisor-logd-pid-directory nil
+  "Directory for log writer PID files.
+Used by the rotation script to discover writer processes for
+reopen signaling.  When nil, defaults to `supervisor-log-directory'."
+  :type '(choice directory (const nil))
+  :group 'supervisor)
+
 (defcustom supervisor-restart-delay 2
   "Seconds to wait before restarting a crashed process."
   :type 'integer

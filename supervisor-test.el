@@ -13243,5 +13243,42 @@ No warning is emitted when there are simply no child processes."
       (when (process-live-p proc)
         (delete-process proc)))))
 
+;;; Logging config contract (PLAN-logging.md Phase 1)
+
+(ert-deftest supervisor-test-logd-command-path ()
+  "Log writer command path points to libexec/supervisor-logd."
+  (should (stringp supervisor-logd-command))
+  (should (string-match "libexec/supervisor-logd\\'" supervisor-logd-command)))
+
+(ert-deftest supervisor-test-logrotate-command-path ()
+  "Logrotate script path points to sbin/supervisor-logrotate."
+  (should (stringp supervisor-logrotate-command))
+  (should (string-match "sbin/supervisor-logrotate\\'" supervisor-logrotate-command)))
+
+(ert-deftest supervisor-test-log-prune-command-path ()
+  "Log prune script path points to sbin/supervisor-log-prune."
+  (should (stringp supervisor-log-prune-command))
+  (should (string-match "sbin/supervisor-log-prune\\'" supervisor-log-prune-command)))
+
+(ert-deftest supervisor-test-logrotate-keep-days-default ()
+  "Logrotate keep-days defaults to 14."
+  (should (= 14 (default-value 'supervisor-logrotate-keep-days))))
+
+(ert-deftest supervisor-test-logd-max-file-size-default ()
+  "Log writer max file size defaults to 50 MiB."
+  (should (= 52428800 (default-value 'supervisor-logd-max-file-size))))
+
+(ert-deftest supervisor-test-log-prune-max-total-default ()
+  "Log prune max total bytes defaults to 1 GiB."
+  (should (= 1073741824 (default-value 'supervisor-log-prune-max-total-bytes))))
+
+(ert-deftest supervisor-test-logd-prune-min-interval-default ()
+  "Log writer prune throttle defaults to 60 seconds."
+  (should (= 60 (default-value 'supervisor-logd-prune-min-interval))))
+
+(ert-deftest supervisor-test-logd-pid-directory-default-nil ()
+  "Log writer PID directory defaults to nil (falls back to log-directory)."
+  (should-not (default-value 'supervisor-logd-pid-directory)))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
