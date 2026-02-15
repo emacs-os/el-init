@@ -68,6 +68,15 @@ handle_term(int sig)
     got_term = 1;
 }
 
+static void
+handle_chld(int sig)
+{
+    (void)sig;
+    /* Reap all finished children to prevent zombies. */
+    while (waitpid(-1, NULL, WNOHANG) > 0)
+        ;
+}
+
 /* Build a unique rotated file name.
  * Format: <base>.YYYYMMDD-HHMMSS[.N].log
  * If the candidate already exists, appends .1, .2, ... until unique.
@@ -132,7 +141,8 @@ open_log(const char *path)
     return open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
 }
 
-/* Run prune command in background (fire-and-forget). */
+/* Run prune command in background (fire-and-forget).
+ * The SIGCHLD handler reaps the child when it exits. */
 static void
 run_prune(const char *cmd)
 {
@@ -142,9 +152,8 @@ run_prune(const char *cmd)
         execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
         _exit(127);
     }
-    /* Parent: reap immediately if possible, don't block */
-    if (pid > 0)
-        waitpid(pid, NULL, WNOHANG);
+    /* Parent: child reaped by handle_chld via SIGCHLD */
+    (void)pid;
 }
 
 static void
@@ -238,6 +247,10 @@ main(int argc, char **argv)
         sa.sa_handler = handle_term;
         sigaction(SIGTERM, &sa, NULL);
         sigaction(SIGINT, &sa, NULL);
+
+        sa.sa_handler = handle_chld;
+        sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+        sigaction(SIGCHLD, &sa, NULL);
     }
 
     /* Open log file */
