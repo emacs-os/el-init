@@ -1062,6 +1062,11 @@ Masked entries are always disabled regardless of enable overrides.")
 (defvar supervisor--logging (make-hash-table :test 'equal)
   "Hash table tracking logging state per process (runtime override).")
 
+(defvar supervisor--writers (make-hash-table :test 'equal)
+  "Hash table mapping service ID to writer process for per-service log writers.
+Each writer is a `supervisor-logd' subprocess that receives service output
+on stdin and handles all disk I/O.")
+
 (defvar supervisor--manually-stopped (make-hash-table :test 'equal)
   "Hash table tracking entries manually stopped via CLI or dashboard.
 Entries in this table should not auto-restart until explicitly started again.
@@ -2918,6 +2923,42 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
   "Return the log file path for PROG."
   (expand-file-name (format "log-%s.log" prog) supervisor-log-directory))
 
+;;;; Log writer lifecycle
+
+(defun supervisor--start-writer (id log-file)
+  "Start a log writer process for service ID writing to LOG-FILE.
+Spawn `supervisor-logd' with the configured size cap and log directory.
+Return the writer process.  Store it in `supervisor--writers'."
+  (let* ((cmd (list supervisor-logd-command
+                    "--file" log-file
+                    "--max-file-size-bytes"
+                    (number-to-string supervisor-logd-max-file-size)
+                    "--log-dir" supervisor-log-directory))
+         (proc (make-process
+                :name (format "logd-%s" id)
+                :command cmd
+                :connection-type 'pipe
+                :noquery t)))
+    (set-process-query-on-exit-flag proc nil)
+    (puthash id proc supervisor--writers)
+    proc))
+
+(defun supervisor--stop-writer (id)
+  "Stop the log writer process for service ID.
+Send SIGTERM if the writer is alive, then remove from `supervisor--writers'."
+  (when-let* ((writer (gethash id supervisor--writers)))
+    (when (process-live-p writer)
+      (signal-process writer 'SIGTERM))
+    (remhash id supervisor--writers)))
+
+(defun supervisor--stop-all-writers ()
+  "Stop all log writer processes and clear `supervisor--writers'."
+  (maphash (lambda (_id writer)
+             (when (process-live-p writer)
+               (signal-process writer 'SIGTERM)))
+           supervisor--writers)
+  (clrhash supervisor--writers))
+
 (defun supervisor--rotate-logs ()
   "Rotate existing log files by adding timestamp suffix.
 Called once at supervisor startup."
@@ -3523,6 +3564,8 @@ USER and GROUP are identity parameters preserved for restart."
                             ('exit 'exited)
                             (_ 'unknown))))
         (remhash name supervisor--processes)
+        ;; Stop the log writer for this service
+        (supervisor--stop-writer name)
         ;; Record last exit info for telemetry
         (puthash name (list :status exit-status :code exit-code
                             :timestamp (float-time))
@@ -3895,15 +3938,18 @@ as the specified identity.  Requires root privileges."
                (log-file (when logging
                            (supervisor--ensure-log-directory)
                            (supervisor--log-file id)))
+               (writer (when log-file
+                         (supervisor--start-writer id log-file)))
                (proc (make-process
                       :name id
                       :command args
                       :connection-type 'pipe
                       ;; Merge stderr into stdout - both captured by filter
                       :stderr nil
-                      :filter (when logging
+                      :filter (when writer
                                 (lambda (_proc output)
-                                  (write-region output nil log-file t 'silent)))
+                                  (when (process-live-p writer)
+                                    (process-send-string writer output))))
                       :sentinel (supervisor--make-process-sentinel
                                  id cmd default-logging type config-restart
                                  working-directory environment
@@ -4326,6 +4372,7 @@ Ready semantics (when dependents are unblocked):
   (when (boundp 'supervisor--invalid-timers)
     (clrhash supervisor--invalid-timers))
   (clrhash supervisor--logging)
+  (clrhash supervisor--writers)
   (clrhash supervisor--restart-times)
   (clrhash supervisor--restart-timers)
   (clrhash supervisor--last-exit-info)
@@ -4440,6 +4487,7 @@ briefly for processes to terminate, ensuring a clean exit."
                          (hash-table-values supervisor--processes)))
       (sleep-for 0.05)))
   ;; Clean up state
+  (supervisor--stop-all-writers)
   (clrhash supervisor--processes)
   (setq supervisor--shutdown-complete-flag t
         supervisor--shutting-down nil))
@@ -4498,6 +4546,8 @@ For `kill-emacs-hook', use `supervisor-stop-now' instead."
              (when (process-live-p proc)
                (signal-process proc (supervisor--kill-signal-for-id name))))
            supervisor--processes)
+  ;; Stop all log writers (service processes are dying, no more output)
+  (supervisor--stop-all-writers)
   ;; Set up event-driven shutdown (sentinel-driven, no polling)
   (let ((live-count 0))
     (maphash (lambda (_name proc)
