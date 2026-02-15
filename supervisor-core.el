@@ -3947,24 +3947,34 @@ as the specified identity.  Requires root privileges."
                            (supervisor--log-file id)))
                (writer (when log-file
                          (supervisor--start-writer id log-file)))
-               (proc (make-process
-                      :name id
-                      :command args
-                      :connection-type 'pipe
-                      ;; Merge stderr into stdout - both captured by filter
-                      :stderr nil
-                      :filter (when writer
-                                (lambda (_proc output)
-                                  (when (process-live-p writer)
-                                    (process-send-string writer output))))
-                      :sentinel (supervisor--make-process-sentinel
-                                 id cmd default-logging type config-restart
-                                 working-directory environment
-                                 environment-file restart-sec
-                                 unit-file-directory
-                                 user group))))
-          (set-process-query-on-exit-flag proc nil)
-          (puthash id proc supervisor--processes)
+               (proc (condition-case err
+                         (make-process
+                          :name id
+                          :command args
+                          :connection-type 'pipe
+                          ;; Merge stderr into stdout - both captured by filter
+                          :stderr nil
+                          :filter (when writer
+                                    (lambda (_proc output)
+                                      (when (process-live-p writer)
+                                        (process-send-string writer output))))
+                          :sentinel (supervisor--make-process-sentinel
+                                     id cmd default-logging type config-restart
+                                     working-directory environment
+                                     environment-file restart-sec
+                                     unit-file-directory
+                                     user group))
+                       (error
+                        (when writer
+                          (supervisor--stop-writer id))
+                        (puthash id (error-message-string err)
+                                 supervisor--spawn-failure-reason)
+                        (supervisor--log 'warning "%s: %s"
+                                         id (error-message-string err))
+                        nil))))
+          (when proc
+            (set-process-query-on-exit-flag proc nil)
+            (puthash id proc supervisor--processes))
           proc)))))
 
 (defun supervisor--wait-for-oneshot (id &optional timeout callback)

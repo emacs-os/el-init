@@ -13579,5 +13579,56 @@ No warning is emitted when there are simply no child processes."
         (when (process-live-p svc) (delete-process svc))
         (when (process-live-p writer) (delete-process writer))))))
 
+(ert-deftest supervisor-test-writer-cleaned-up-on-service-spawn-failure ()
+  "Writer is stopped and removed when service make-process fails."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (writer-stopped nil)
+        (fake-writer (start-process "fake-writer" nil "sleep" "300"))
+        (call-count 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+                   (lambda (_id _default) t))
+                  ((symbol-function 'supervisor--ensure-log-directory) #'ignore)
+                  ((symbol-function 'supervisor--log-file)
+                   (lambda (_id) "/tmp/test.log"))
+                  ((symbol-function 'supervisor--start-writer)
+                   (lambda (id _file)
+                     (puthash id fake-writer supervisor--writers)
+                     fake-writer))
+                  ((symbol-function 'supervisor--stop-writer)
+                   (lambda (id)
+                     (setq writer-stopped id)
+                     (remhash id supervisor--writers)))
+                  ((symbol-function 'make-process)
+                   (lambda (&rest _args)
+                     (cl-incf call-count)
+                     ;; First call is from start-writer (mocked above),
+                     ;; second call is the service spawn which fails
+                     (error "Doing vfork: No such file or directory")))
+                  ((symbol-function 'supervisor--make-process-sentinel)
+                   (lambda (&rest _args) #'ignore))
+                  ((symbol-function 'supervisor--build-launch-command)
+                   (lambda (_cmd _user _group) (list "/nonexistent/cmd")))
+                  ((symbol-function 'supervisor--log) #'ignore))
+          (let ((proc (supervisor--start-process
+                       "svc-fail" "/nonexistent/cmd" t 'simple 'always)))
+            ;; Service should return nil (spawn failed)
+            (should-not proc)
+            ;; Writer should have been cleaned up
+            (should (equal writer-stopped "svc-fail"))
+            (should (zerop (hash-table-count supervisor--writers)))
+            ;; Spawn failure reason should be recorded
+            (should (gethash "svc-fail" supervisor--spawn-failure-reason))))
+      (when (process-live-p fake-writer)
+        (delete-process fake-writer)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
