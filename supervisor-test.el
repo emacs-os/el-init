@@ -12606,5 +12606,73 @@ No warning is emitted when there are simply no child processes."
   (should (equal (supervisor--build-launch-command "sleep 300" nil nil)
                  '("sleep" "300"))))
 
+;;; supervisor-runas Helper Tests (Phase 3)
+;;
+;; These tests exercise the helper binary's error paths.
+;; Full privilege-drop tests require root and are gated by
+;; SUPERVISOR_TEST_ROOT env var (not run in normal CI).
+
+(defvar supervisor-test-runas-binary
+  (expand-file-name "libexec/supervisor-runas"
+                    (file-name-directory (or load-file-name
+                                             buffer-file-name
+                                             default-directory)))
+  "Path to compiled supervisor-runas binary for testing.")
+
+(ert-deftest supervisor-test-runas-missing-command ()
+  "Helper exits 111 when no command is given after \"--\"."
+  (skip-unless (file-executable-p supervisor-test-runas-binary))
+  (with-temp-buffer
+    (let ((code (call-process supervisor-test-runas-binary nil t nil
+                              "--user" "nobody")))
+      (should (= code 111)))))
+
+(ert-deftest supervisor-test-runas-no-identity ()
+  "Helper exits 111 when neither --user nor --group is specified."
+  (skip-unless (file-executable-p supervisor-test-runas-binary))
+  (with-temp-buffer
+    (let ((code (call-process supervisor-test-runas-binary nil t nil
+                              "--" "echo" "hi")))
+      (should (= code 111)))))
+
+(ert-deftest supervisor-test-runas-unknown-user ()
+  "Helper exits 112 for unknown user name."
+  (skip-unless (file-executable-p supervisor-test-runas-binary))
+  (with-temp-buffer
+    (let ((code (call-process supervisor-test-runas-binary nil t nil
+                              "--user" "nonexistent_user_xyz_sv"
+                              "--" "echo" "hi")))
+      (should (= code 112))
+      (should (string-match-p "unknown user"
+                              (buffer-string))))))
+
+(ert-deftest supervisor-test-runas-unknown-group ()
+  "Helper exits 112 for unknown group name."
+  (skip-unless (file-executable-p supervisor-test-runas-binary))
+  (with-temp-buffer
+    (let ((code (call-process supervisor-test-runas-binary nil t nil
+                              "--group" "nonexistent_group_xyz_sv"
+                              "--" "echo" "hi")))
+      (should (= code 112))
+      (should (string-match-p "unknown group"
+                              (buffer-string))))))
+
+(ert-deftest supervisor-test-runas-unknown-option ()
+  "Helper exits 111 for unknown option."
+  (skip-unless (file-executable-p supervisor-test-runas-binary))
+  (with-temp-buffer
+    (let ((code (call-process supervisor-test-runas-binary nil t nil
+                              "--bogus" "--" "echo" "hi")))
+      (should (= code 111)))))
+
+(ert-deftest supervisor-test-runas-privdrop-fails-non-root ()
+  "Helper exits 113 when non-root tries to drop to another user."
+  (skip-unless (file-executable-p supervisor-test-runas-binary))
+  (skip-unless (not (= (user-uid) 0)))
+  (with-temp-buffer
+    (let ((code (call-process supervisor-test-runas-binary nil t nil
+                              "--user" "root" "--" "echo" "hi")))
+      (should (= code 113)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
