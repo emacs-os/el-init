@@ -1261,6 +1261,12 @@ all cleared for the affected entries.")
 States: waiting-on-deps, delayed, disabled, stage-not-started,
 failed-to-spawn, stage-timeout, started.")
 
+(defvar supervisor--spawn-failure-reason (make-hash-table :test 'equal)
+  "Hash table of ID -> string with specific spawn failure reason.
+Populated when `supervisor--start-process' rejects a launch due to
+identity or other precondition failures.  Consulted by
+`supervisor--compute-entry-reason' for richer diagnostics.")
+
 ;;; Entry Lifecycle FSM (Phase 5)
 
 (defconst supervisor--valid-states
@@ -1798,7 +1804,9 @@ If SNAPSHOT is provided, read from it; otherwise read from globals."
      ((eq entry-state 'delayed) "delayed")
      ((eq entry-state 'waiting-on-deps) "waiting-on-deps")
      ((eq entry-state 'stage-not-started) "stage-not-started")
-     ((eq entry-state 'failed-to-spawn) "failed-to-spawn")
+     ((eq entry-state 'failed-to-spawn)
+      (or (gethash id supervisor--spawn-failure-reason)
+          "failed-to-spawn"))
      ((eq entry-state 'stage-timeout) "stage-timeout")
      (failed "crash-loop")
      (t nil))))
@@ -3775,6 +3783,10 @@ as the specified identity.  Requires root privileges."
               (and (or user group)
                    (not (zerop (user-uid)))
                    (progn
+                     (puthash id
+                              (format "identity change requires root (user=%s group=%s)"
+                                      user group)
+                              supervisor--spawn-failure-reason)
                      (supervisor--log
                       'warning
                       "%s: identity change requires root (user=%s group=%s)"
@@ -3785,6 +3797,10 @@ as the specified identity.  Requires root privileges."
                    (zerop (user-uid))
                    (not (supervisor--identity-source-trusted-p id))
                    (progn
+                     (puthash id
+                              (format "unit source not trusted (user=%s group=%s)"
+                                      user group)
+                              supervisor--spawn-failure-reason)
                      (supervisor--log
                       'warning
                       "%s: identity change blocked - unit source not trusted (user=%s group=%s)"
@@ -3968,7 +3984,8 @@ are blocked.  Manually started disabled units are tracked in
            ((and (or user group) (zerop (user-uid))
                  (not (supervisor--identity-source-trusted-p id)))
             (list :status 'error
-                  :reason "identity change blocked: unit source not trusted"))
+                  :reason (format "unit source not trusted (user=%s group=%s)"
+                                  user group)))
            ;; Executable not found
            ((not (executable-find
                   (car (supervisor--build-launch-command cmd user group))))
@@ -3980,6 +3997,7 @@ are blocked.  Manually started disabled units are tracked in
             (remhash id supervisor--restart-times)
             (remhash id supervisor--oneshot-completed)
             (remhash id supervisor--remain-active)
+            (remhash id supervisor--spawn-failure-reason)
             ;; Clear manually-stopped so restart works again
             (remhash id supervisor--manually-stopped)
             (let ((proc (supervisor--start-process
@@ -4135,6 +4153,7 @@ so the entry can be restarted."
       (list :status 'skipped :reason "not failed")
     (remhash id supervisor--failed)
     (remhash id supervisor--restart-times)
+    (remhash id supervisor--spawn-failure-reason)
     ;; Clear failed oneshot completion (non-zero or signal exit).
     (let ((oneshot-exit (gethash id supervisor--oneshot-completed)))
       (when (and oneshot-exit (not (eql oneshot-exit 0)))
@@ -4252,6 +4271,7 @@ Ready semantics (when dependents are unblocked):
   (clrhash supervisor--cycle-fallback-ids)
   (clrhash supervisor--computed-deps)
   (clrhash supervisor--entry-state)
+  (clrhash supervisor--spawn-failure-reason)
   ;; Reset timer state (if timer module loaded)
   (when (boundp 'supervisor--timer-state)
     (clrhash supervisor--timer-state))

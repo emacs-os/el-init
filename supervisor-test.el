@@ -13072,5 +13072,132 @@ No warning is emitted when there are simply no child processes."
                    "svc" "sleep 300" nil 'simple 'yes nil
                    nil nil nil nil nil "alice" nil)))))
 
+;;; Phase 7: Identity fields in CLI/dashboard detail surfaces
+
+(ert-deftest supervisor-test-cli-entry-info-includes-user-group ()
+  "Entry info alist includes user and group fields."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple :user "alice" :group "staff"))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (plan (supervisor--build-plan (supervisor--effective-programs)))
+           (entry (car (supervisor-plan-entries plan)))
+           (info (supervisor--cli-entry-info entry)))
+      (should (equal "alice" (alist-get 'user info)))
+      (should (equal "staff" (alist-get 'group info))))))
+
+(ert-deftest supervisor-test-cli-entry-info-nil-user-group ()
+  "Entry info alist has nil user and group when not set."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (plan (supervisor--build-plan (supervisor--effective-programs)))
+           (entry (car (supervisor-plan-entries plan)))
+           (info (supervisor--cli-entry-info entry)))
+      (should-not (alist-get 'user info))
+      (should-not (alist-get 'group info)))))
+
+(ert-deftest supervisor-test-cli-describe-human-shows-user-group ()
+  "Human describe output includes User and Group lines."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple :user "alice" :group "staff"))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (plan (supervisor--build-plan (supervisor--effective-programs)))
+           (entry (car (supervisor-plan-entries plan)))
+           (info (supervisor--cli-entry-info entry))
+           (output (supervisor--cli-describe-human info)))
+      (should (string-match "User: alice" output))
+      (should (string-match "Group: staff" output)))))
+
+(ert-deftest supervisor-test-cli-describe-human-omits-user-when-nil ()
+  "Human describe output omits User and Group lines when not set."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (plan (supervisor--build-plan (supervisor--effective-programs)))
+           (entry (car (supervisor-plan-entries plan)))
+           (info (supervisor--cli-entry-info entry))
+           (output (supervisor--cli-describe-human info)))
+      (should-not (string-match "User:" output))
+      (should-not (string-match "Group:" output)))))
+
+(ert-deftest supervisor-test-cli-json-includes-user-group ()
+  "JSON output includes user and group fields."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple :user "bob" :group "wheel"))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (plan (supervisor--build-plan (supervisor--effective-programs)))
+           (entry (car (supervisor-plan-entries plan)))
+           (info (supervisor--cli-entry-info entry))
+           (json-obj (supervisor--cli-entry-to-json-obj info)))
+      (should (equal "bob" (alist-get 'user json-obj)))
+      (should (equal "wheel" (alist-get 'group json-obj))))))
+
+(ert-deftest supervisor-test-spawn-failure-reason-identity-non-root ()
+  "Spawn failure reason records identity context for non-root."
+  (let ((supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal))
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--start-times (make-hash-table :test 'equal))
+        (supervisor--ready-times (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil))
+    ;; Non-root check: user-uid returns non-zero for test runner
+    (unless (zerop (user-uid))
+      (supervisor--start-process
+       "svc" "sleep 300" nil 'simple 'yes nil
+       nil nil nil nil nil "alice" "staff")
+      (let ((reason (gethash "svc" supervisor--spawn-failure-reason)))
+        (should reason)
+        (should (string-match "identity change requires root" reason))
+        (should (string-match "user=alice" reason))
+        (should (string-match "group=staff" reason))))))
+
+(ert-deftest supervisor-test-compute-entry-reason-identity-context ()
+  "Entry reason returns specific identity context instead of generic."
+  (let ((supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+    (puthash "svc" 'failed-to-spawn supervisor--entry-state)
+    (puthash "svc" "identity change requires root (user=alice group=staff)"
+             supervisor--spawn-failure-reason)
+    (let ((reason (supervisor--compute-entry-reason "svc" 'simple)))
+      (should (string-match "identity change requires root" reason))
+      (should (string-match "user=alice" reason)))))
+
+(ert-deftest supervisor-test-compute-entry-reason-generic-spawn-failure ()
+  "Entry reason returns generic message when no specific reason stored."
+  (let ((supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+    (puthash "svc" 'failed-to-spawn supervisor--entry-state)
+    (should (equal "failed-to-spawn"
+                   (supervisor--compute-entry-reason "svc" 'simple)))))
+
+(ert-deftest supervisor-test-reset-failed-clears-spawn-failure-reason ()
+  "Reset-failed clears specific spawn failure reason."
+  (let ((supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--restart-times (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+    (puthash "svc" t supervisor--failed)
+    (puthash "svc" "identity change requires root (user=alice group=nil)"
+             supervisor--spawn-failure-reason)
+    (supervisor--reset-failed "svc")
+    (should-not (gethash "svc" supervisor--spawn-failure-reason))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

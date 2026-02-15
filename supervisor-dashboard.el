@@ -868,6 +868,12 @@ With prefix argument, show status legend instead."
         (let ((timeout (supervisor-entry-oneshot-timeout entry)))
           (when timeout
             (princ (format "  Timeout: %ss\n" timeout)))))
+      ;; Identity (privilege drop)
+      (let ((u (supervisor-entry-user entry))
+            (g (supervisor-entry-group entry)))
+        (when (or u g)
+          (when u (princ (format "     User: %s\n" u)))
+          (when g (princ (format "    Group: %s\n" g)))))
       ;; Runtime telemetry
       (when (or last-exit (> restart-count 0) next-eta metrics)
         (princ "\n")
