@@ -170,21 +170,25 @@ rotated_files="$(find "${log_dir}" -maxdepth 1 -type f \
 
 [ -n "${rotated_files}" ] || exit 0
 
-# --- Build protected-file set ---
-# A file is protected from deletion if:
-#  - It has rotated children in the directory (confirmed active log
-#    for a service whose ID contains a timestamp pattern), or
-#  - Its service ID was passed via --protect-id.
-# All other is_rotated() files are eligible for deletion.
-
-# confirmed_active: basenames that are parents of other rotated files.
-confirmed_active="$(printf '%s\n' "${rotated_files}" | while IFS= read -r cf; do
+# --- Build protection metadata ---
+# Compute parent names for all rotated files (shared by three guards).
+parent_names="$(printf '%s\n' "${rotated_files}" | while IFS= read -r cf; do
     cname="${cf##*/}"
     is_rotated "${cname}" || continue
     printf '%s\n' "$(rotated_parent_name "${cname}")"
-done | sort -u)"
+done)"
 
-# Merge --protect-id entries into the protected set.
+# confirmed_active: parent basenames that have at least one rotated
+# child (confirms the parent as an active log, not a rotated file).
+confirmed_active="$(printf '%s\n' "${parent_names}" | sort -u)"
+
+# multi_child_parents: parent basenames with 2+ rotated children.
+# When the parent active log has been removed (service deleted), the
+# presence of siblings still confirms these are rotated children of
+# the same (now-removed) service.
+multi_child_parents="$(printf '%s\n' "${parent_names}" | sort | uniq -d)"
+
+# Merge confirmed_active + --protect-id into the protected set.
 protected_set="${confirmed_active}${protected_ids}"
 
 # --- Delete oldest rotated files until under cap ---
@@ -201,14 +205,21 @@ printf '%s\n' "${rotated_files}" | while IFS= read -r f; do
         continue
     fi
 
-    # Skip files whose parent active log is absent from the directory.
-    # A rotated file's parent (e.g. log-svc.log for
-    # log-svc.20250101-120000.log) must exist to confirm the file is a
-    # rotated child, not an active log for a service whose ID contains
-    # a timestamp pattern.  This guard is unconditional (no external
-    # tool dependency) and ensures active logs are never deleted.
+    # Confirm this file is genuinely rotated before deleting.
+    # A file is confirmed rotated when:
+    #  (a) Its parent active log exists (e.g. log-svc.log for
+    #      log-svc.20250101-120000.log), OR
+    #  (b) It has sibling rotated files with the same parent
+    #      (confirms a now-removed service once existed).
+    # Without either signal, the file may be an active log for a
+    # service whose ID contains a timestamp pattern — preserve it.
     parent_name="$(rotated_parent_name "${name}")"
-    [ -f "${log_dir}/${parent_name}" ] || continue
+    if ! [ -f "${log_dir}/${parent_name}" ]; then
+        if [ -z "${multi_child_parents}" ] || \
+           ! printf '%s\n' "${multi_child_parents}" | grep -qxF "${parent_name}"; then
+            continue
+        fi
+    fi
 
     # Skip files currently open by a process (active logd writer).
     # Belt-and-suspenders: catches the rare case where two services

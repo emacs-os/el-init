@@ -1528,23 +1528,23 @@ is already running, the script exits 0 silently without taking action.
 
 Active logs whose service ID contains a timestamp pattern (e.g.
 ~svc.20250101-120000~) are unconditionally protected.  A file matching
-the rotated-file naming pattern is only deleted when its parent active
-log exists in the directory (e.g. ~log-svc.log~ must exist for
-~log-svc.20250101-120000.log~ to be considered a rotated child of
-service ~svc~).  Three layers of protection ensure safety:
+the rotated-file naming pattern is only deleted when the script can
+confirm it is genuinely rotated.  Confirmation requires at least one of:
 
-1. *Parent-exists guard* --- the parent active log must exist in the
-   directory.  Without it, the file could be an active log for a
-   timestamp-like service ID and is preserved.  This guard requires no
-   external tools and is always active.
-2. *Children guard* --- once the log has been rotated at least once, the
-   rotated child confirms the parent as an active file.
-3. *Open-file guard* --- when ~fuser~ is available, files currently held
+1. *Parent-exists guard* --- the parent active log exists in the
+   directory (e.g. ~log-svc.log~ confirms ~log-svc.20250101-120000.log~
+   is a rotated child of service ~svc~).
+2. *Sibling guard* --- multiple rotated files share the same parent name,
+   confirming they are rotated children of a now-removed service (e.g.
+   ~log-svc.20240101-120000.log~ and ~log-svc.20240201-120000.log~ both
+   map to parent ~log-svc.log~, confirming each other).
+3. *Children guard* --- the file has its own rotated children, confirming
+   it as an active parent (protects the file from deletion).
+4. *Open-file guard* --- when ~fuser~ is available, files currently held
    open by a process (e.g. the logd writer) are never deleted.
 
-Orphaned rotated files whose parent has been removed are conservatively
-preserved by the parent-exists guard; the complementary age-based
-pruning in ~supervisor-logrotate --keep-days~ cleans them up over time.
+A lone file with no parent, no siblings, and no children is preserved
+because it could be an active log for a timestamp-like service ID.
 The ~--protect-id~ flag provides additional explicit protection.
 
 A typical cron entry for periodic pruning (e.g. hourly):

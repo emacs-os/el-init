@@ -14153,10 +14153,10 @@ No warning is emitted when there are simply no child processes."
           (should-not (file-exists-p ts-child)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-orphan-without-parent-preserved ()
-  "Orphaned rotated file is preserved when its parent active log is absent.
-The parent-exists guard treats a file with no parent as potentially an
-active log for a timestamp-like service ID."
+(ert-deftest supervisor-test-log-prune-lone-orphan-preserved ()
+  "A single orphaned rotated file with no parent and no siblings is preserved.
+Without parent or sibling confirmation, the file could be an active log
+for a service whose ID contains a timestamp pattern."
   (let* ((root (file-name-directory (locate-library "supervisor")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
@@ -14164,13 +14164,39 @@ active log for a timestamp-like service ID."
     (unwind-protect
         (progn
           (write-region (make-string 8192 ?x) nil orphan)
-          ;; No log-oldsvc.log exists — parent is absent.
+          ;; No log-oldsvc.log and no sibling rotated files.
           (let ((exit-code (call-process script nil nil nil
                                         "--log-dir" dir
                                         "--max-total-bytes" "100")))
             (should (= exit-code 0)))
-          ;; File must be preserved (could be an active log).
+          ;; File preserved (no evidence it is rotated vs active).
           (should (file-exists-p orphan)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-log-prune-orphan-siblings-deleted ()
+  "Orphaned rotated siblings are deleted even when parent is absent.
+Multiple rotated files sharing the same parent name confirm each other
+as rotated children of a now-removed service."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (orphan1 (expand-file-name "log-oldsvc.20240101-010101.log" dir))
+         (orphan2 (expand-file-name "log-oldsvc.20240201-010101.log" dir)))
+    (unwind-protect
+        (progn
+          ;; No log-oldsvc.log exists, but two siblings with the same
+          ;; parent confirm these are rotated children.
+          (write-region (make-string 4096 ?x) nil orphan1)
+          (set-file-times orphan1 (encode-time 0 0 0 1 1 2024))
+          (write-region (make-string 4096 ?y) nil orphan2)
+          (set-file-times orphan2 (encode-time 0 0 0 1 2 2024))
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; Both orphans deleted (siblings confirmed rotated).
+          (should-not (file-exists-p orphan1))
+          (should-not (file-exists-p orphan2)))
       (delete-directory dir t))))
 
 (ert-deftest supervisor-test-log-prune-protect-id-preserves-file ()
