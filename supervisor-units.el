@@ -207,7 +207,8 @@ Return a plist with keys:
     :working-directory :environment :environment-file
     :exec-stop :exec-reload :restart-sec
     :description :documentation :before :wants
-    :kill-signal :kill-mode :remain-after-exit :success-exit-status)
+    :kill-signal :kill-mode :remain-after-exit :success-exit-status
+    :user :group)
   "Valid keywords in a unit-file plist.
 Includes `:command' which is unit-file specific.")
 

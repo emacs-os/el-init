@@ -9956,6 +9956,28 @@ could incorrectly preserve a non-running disabled unit."
                 :kill-signal :kill-mode :remain-after-exit :success-exit-status))
     (should (memq kw supervisor--valid-keywords))))
 
+;; Unit-file and core keyword whitelists include :user/:group
+
+(ert-deftest supervisor-test-unit-file-keywords-user-group ()
+  "Unit-file keywords include :user and :group."
+  (should (memq :user supervisor--unit-file-keywords))
+  (should (memq :group supervisor--unit-file-keywords)))
+
+(ert-deftest supervisor-test-valid-keywords-user-group ()
+  "Core valid keywords include :user and :group."
+  (should (memq :user supervisor--valid-keywords))
+  (should (memq :group supervisor--valid-keywords)))
+
+(ert-deftest supervisor-test-unit-file-user-group-accepted ()
+  "Unit file with :user/:group passes validation."
+  (supervisor-test-with-unit-files
+      '(("echo hi" :id "svc" :user "alice" :group "staff"))
+    (let* ((entries (supervisor--all-parsed-entries)))
+      (should (= 1 (length entries)))
+      (let ((entry (car entries)))
+        (should (equal (supervisor-entry-user entry) "alice"))
+        (should (equal (supervisor-entry-group entry) "staff"))))))
+
 ;; Type-gating
 
 (ert-deftest supervisor-test-remain-after-exit-oneshot-only ()
