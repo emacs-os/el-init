@@ -12554,5 +12554,22 @@ No warning is emitted when there are simply no child processes."
     (should (equal (supervisor-entry-user back) "alice"))
     (should (= (supervisor-entry-group back) 100))))
 
+;;; Spawn Abstraction Tests (Phase 2)
+
+(ert-deftest supervisor-test-build-launch-command-simple ()
+  "Build launch command splits command string into args."
+  (should (equal (supervisor--build-launch-command "sleep 300")
+                 '("sleep" "300"))))
+
+(ert-deftest supervisor-test-build-launch-command-quoted ()
+  "Build launch command handles quoted arguments."
+  (should (equal (supervisor--build-launch-command "echo \"hello world\"")
+                 '("echo" "hello world"))))
+
+(ert-deftest supervisor-test-build-launch-command-single ()
+  "Build launch command handles single-word command."
+  (should (equal (supervisor--build-launch-command "nginx")
+                 '("nginx"))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

@@ -3665,6 +3665,14 @@ the wrong context."
             (supervisor--exec-command-chain
              exec-stop id dir env log-file supervisor-shutdown-timeout)))))))
 
+(defun supervisor--build-launch-command (cmd)
+  "Build the command argument list for launching CMD.
+CMD is a shell command string.  Return a list suitable for the
+`make-process' :command keyword.  Currently returns the result of
+splitting CMD; future phases will support wrapper injection for
+privilege drop."
+  (split-string-and-unquote cmd))
+
 (defun supervisor--start-process (id cmd default-logging type config-restart
                                      &optional is-restart
                                      working-directory environment
@@ -3715,7 +3723,7 @@ captured at plan time for deterministic relative-path resolution."
                    nil))
               process-environment)))
       (when (and default-directory process-environment)
-        (let* ((args (split-string-and-unquote cmd))
+        (let* ((args (supervisor--build-launch-command cmd))
                (logging (supervisor--get-effective-logging id default-logging))
                (log-file (when logging
                            (supervisor--ensure-log-directory)
