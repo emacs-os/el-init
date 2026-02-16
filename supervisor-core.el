@@ -5168,11 +5168,16 @@ Ready semantics (when dependents are unblocked):
              (supervisor-plan-cycle-fallback-ids plan))
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
              (supervisor-plan-deps plan))
-    ;; Validate default-target resolution when plan has entries (Phase 3
-    ;; will use the result to filter the plan; for now we validate
-    ;; configuration is sane).  Skip when plan is empty (standalone core).
+    ;; Validate default-target resolution when plan has entries.
+    ;; Phase 3 (transaction expansion) will use the resolved root to
+    ;; filter the plan to the root closure; here we only validate that
+    ;; the configured target exists among valid entries.
+    ;; Skip when plan is empty (standalone core mode).
     (when (supervisor-plan-entries plan)
-      (supervisor--resolve-startup-root (supervisor-plan-order-index plan)))
+      (let ((valid-ids (make-hash-table :test 'equal)))
+        (dolist (entry (supervisor-plan-entries plan))
+          (puthash (supervisor-entry-id entry) t valid-ids))
+        (supervisor--resolve-startup-root valid-ids)))
     ;; Validate timers only when timer subsystem is active (and timer module loaded)
     (when (and (fboundp 'supervisor-timer-subsystem-active-p)
                (supervisor-timer-subsystem-active-p)

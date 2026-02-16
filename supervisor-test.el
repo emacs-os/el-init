@@ -16028,6 +16028,31 @@ PATH set to exclude fuser."
                     :description "Rotate logs"))))
     (should-not (string-match-p ":stage" content))))
 
+(ert-deftest supervisor-test-resolve-rejects-invalid-entry-id ()
+  "Startup root resolution uses valid entries only, not raw order-index.
+An invalid entry ID that happens to end in .target must not pass."
+  (let* ((programs '(("invalid-entry" :id "bad.target" :type target
+                      :unknown-keyword t)
+                     ("true" :id "svc")))
+         (plan (supervisor--build-plan programs)))
+    ;; bad.target is in order-index (raw) but not in valid entries
+    (should (gethash "bad.target" (supervisor-plan-order-index plan)))
+    (should-not (cl-find "bad.target" (supervisor-plan-entries plan)
+                         :key #'supervisor-entry-id :test #'equal))
+    ;; Validation with valid-only set should reject it
+    (let ((valid-ids (make-hash-table :test 'equal)))
+      (dolist (entry (supervisor-plan-entries plan))
+        (puthash (supervisor-entry-id entry) t valid-ids))
+      (let ((supervisor-default-target "bad.target")
+            (supervisor--default-target-link-override nil))
+        (should-error (supervisor--resolve-startup-root valid-ids)
+                      :type 'user-error)))))
+
+(ert-deftest supervisor-test-scaffold-no-stage ()
+  "Unit-file scaffold does not contain :stage."
+  (let ((content (supervisor--unit-file-scaffold "my-svc")))
+    (should-not (string-match-p ":stage" content))))
+
 ;;; Phase 2 Commit B: Hard cutover tests
 
 (ert-deftest supervisor-test-plan-version-2 ()
