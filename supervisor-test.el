@@ -7585,6 +7585,81 @@ Stale retry state from a prior failure must be cleared."
         (should (= 1 (plist-get state :retry-attempt)))
         (should (plist-get state :retry-next-at))))))
 
+(ert-deftest supervisor-test-timer-oneshot-complete-success ()
+  "Oneshot completion callback records success with exit 0.
+Exercises supervisor-timer--on-target-complete success branch end-to-end:
+sets last-success-at, last-exit, last-result, clears retry state."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--timer-list nil))
+    ;; Seed with stale retry state
+    (puthash "t1" '(:retry-attempt 2 :retry-next-at 33333.0)
+             supervisor--timer-state)
+    ;; Oneshot exited with code 0
+    (puthash "svc" 0 supervisor--oneshot-completed)
+    (cl-letf (((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor-timer--update-next-run) #'ignore)
+              ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore))
+      (supervisor-timer--on-target-complete "t1" "svc" t)
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'success (plist-get state :last-result)))
+        (should-not (plist-get state :last-result-reason))
+        (should (= 0 (plist-get state :last-exit)))
+        (should (plist-get state :last-success-at))
+        ;; Retry state cleared
+        (should (= 0 (plist-get state :retry-attempt)))
+        (should-not (plist-get state :retry-next-at))))))
+
+(ert-deftest supervisor-test-timer-oneshot-complete-failure-retries ()
+  "Oneshot completion callback records failure with non-zero exit and schedules retry."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--timer-list nil)
+         (supervisor-timer-retry-intervals '(30 120 600)))
+    (puthash "t1" nil supervisor--timer-state)
+    ;; Oneshot exited with code 1 (retryable)
+    (puthash "svc" 1 supervisor--oneshot-completed)
+    (cl-letf (((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor-timer--update-next-run) #'ignore)
+              ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore))
+      (supervisor-timer--on-target-complete "t1" "svc" nil)
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'failure (plist-get state :last-result)))
+        (should (= 1 (plist-get state :last-exit)))
+        (should (plist-get state :last-failure-at))
+        ;; Retry scheduled
+        (should (= 1 (plist-get state :retry-attempt)))
+        (should (plist-get state :retry-next-at))))))
+
+(ert-deftest supervisor-test-timer-oneshot-complete-signal-no-retry ()
+  "Oneshot killed by signal records failure but does not schedule retry."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--timer-list nil)
+         (supervisor-timer-retry-intervals '(30 120 600)))
+    (puthash "t1" nil supervisor--timer-state)
+    ;; Signal death encoded as negative exit code
+    (puthash "svc" -9 supervisor--oneshot-completed)
+    (cl-letf (((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor-timer--update-next-run) #'ignore)
+              ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore))
+      (supervisor-timer--on-target-complete "t1" "svc" nil)
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'failure (plist-get state :last-result)))
+        (should (= -9 (plist-get state :last-exit)))
+        ;; Signal deaths are NOT retryable
+        (should (= 0 (or (plist-get state :retry-attempt) 0)))
+        (should-not (plist-get state :retry-next-at))))))
+
 (ert-deftest supervisor-test-timer-trigger-target-reached ()
   "Timer trigger for target records success on reached convergence.
 Stale retry state from a prior failure must be cleared."
