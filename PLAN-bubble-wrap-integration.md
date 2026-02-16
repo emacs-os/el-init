@@ -24,6 +24,9 @@ The feature model is profile-first:
 2. constrained safe customization knobs,
 3. explicitly gated expert raw-argument mode.
 
+Bubblewrap is an optional dependency. If bubblewrap is not installed, existing
+non-sandbox units must continue to work with unchanged behavior.
+
 ## Locked Decisions
 1. Bubblewrap integration is Linux-only.
 2. Sandbox is opt-in and disabled by default.
@@ -45,9 +48,15 @@ The feature model is profile-first:
 12. With `:user` or `:group`, launch order is fixed:
     `supervisor-runas` -> `bwrap` -> service executable.
 13. Non-Linux hosts reject sandbox-enabled units with explicit invalid reason.
-14. Missing `bwrap` binary rejects sandbox-enabled units with explicit reason.
-15. Validation failures exclude only affected units; unrelated units continue.
-16. `make check` is required at each phase gate.
+14. Missing `bwrap` binary invalidates only sandbox-requesting units.
+15. Units that do not request sandbox must continue to launch normally when
+    `bwrap` is missing.
+16. Sandbox-requesting units MUST NOT fall back to unsandboxed execution when
+    `bwrap` is missing.
+17. Missing-`bwrap` rejection MUST surface as explicit warning plus stable
+    invalid reason text in verify/dashboard.
+18. Validation failures exclude only affected units; unrelated units continue.
+19. `make check` is required at each phase gate.
 
 ## Canonical Data Model
 
@@ -62,6 +71,11 @@ Supported sandbox keys for service units:
 - `:sandbox-raw-args` list of strings (expert mode only)
 
 Target and timer definitions do not accept sandbox keys.
+
+A unit is sandbox-requesting when at least one of these is true:
+
+1. `:sandbox-profile` is set to anything other than `none`.
+2. Any sandbox key other than `:sandbox-profile` is present.
 
 ### 2) Profile Contract
 Profiles are deterministic argument templates.
@@ -102,13 +116,25 @@ Sandbox setup failures are deterministic and user-visible.
 - Validation-time failures: invalid unit state with reason in verify/dashboard.
 - Launch-time failures: spawn failure reason recorded and surfaced in status.
 
-### 3) Network Override Rules
+### 3) Optional Dependency Semantics
+Missing bubblewrap must not degrade security or unrelated service behavior.
+
+1. If `bwrap` is absent, units that are not sandbox-requesting behave exactly as
+   they do today.
+2. If `bwrap` is absent, each sandbox-requesting unit is invalid and must not be
+   spawned.
+3. No implicit fallback to unsandboxed execution is allowed for
+   sandbox-requesting units.
+4. Rejection of sandbox-requesting units due to missing `bwrap` must emit a
+   warning and a stable invalid reason string.
+
+### 4) Network Override Rules
 
 1. Profile default network mode applies when `:sandbox-network` is omitted.
 2. `:sandbox-network shared` forces shared network for that unit.
 3. `:sandbox-network isolated` forces isolated network for that unit.
 
-### 4) Expert Raw Mode Rules
+### 5) Expert Raw Mode Rules
 
 1. `:sandbox-raw-args` is ignored and invalid unless global gate is enabled.
 2. Even with global gate enabled, dangerous or conflicting combinations are
@@ -127,6 +153,8 @@ Sandbox setup failures are deterministic and user-visible.
 8. `:sandbox-raw-args` without global gate is invalid.
 9. `:sandbox-raw-args` must be a list of strings when allowed.
 10. Validation reasons MUST be explicit and stable for test assertions.
+11. Missing-`bwrap` warnings and invalid reasons MUST be emitted without
+    affecting unrelated non-sandbox units.
 
 ## CLI and Dashboard Contract
 
@@ -144,13 +172,18 @@ Deliverables:
 2. Implement validation contract for profiles, enums, path lists, and OS/binary
    prerequisites.
 3. Add deterministic invalid-reason messages.
+4. Implement explicit sandbox-request detection (`profile != none` or any
+   sandbox key present) for gating behavior.
+5. Implement missing-`bwrap` warning emission for sandbox-requesting units.
 
 Acceptance:
 
 1. Valid profile units parse and validate.
 2. Invalid profile or key shapes are rejected with explicit reasons.
 3. Non-Linux and missing-binary gates are enforced.
-4. `make check` passes.
+4. With missing `bwrap`, non-sandbox units still validate and run normally.
+5. With missing `bwrap`, sandbox-requesting units are rejected and do not run.
+6. `make check` passes.
 
 ### Phase 2: Profile Registry and Command Builder
 Deliverables:
@@ -283,6 +316,7 @@ All items MUST be true:
 5. runas + bwrap ordering is implemented as specified.
 6. Expert mode gate is enforced and validated.
 7. CLI/dashboard sandbox visibility is present and accurate.
-8. Full test suite passes with no regressions.
-9. README manual is synchronized with behavior.
-10. `make check` passes at release gate.
+8. Missing `bwrap` never causes sandbox fallback to unsandboxed execution.
+9. Full test suite passes with no regressions.
+10. README manual is synchronized with behavior.
+11. `make check` passes at release gate.
