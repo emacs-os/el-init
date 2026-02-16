@@ -73,8 +73,11 @@ provides detailed reference material:
 ;; Don't ask about running processes on exit - supervisor handles cleanup
 (setq confirm-kill-processes nil)
 
-;; Start supervisor
-(supervisor-start)
+;; Ensure timer subsystem is enabled (default is enabled)
+(supervisor-timer-subsystem-mode 1)
+
+;; Start supervisor and config watcher
+(supervisor-mode 1)
 #+end_src
 
 Services are defined as individual unit files in your authority roots (default
@@ -1298,7 +1301,8 @@ IDs.
 
 ~list-timers~:
 
-- explicit disabled response when timer subsystem is gated off
+- explicit disabled response when ~supervisor-timer-subsystem-mode~ is off
+- works even when ~supervisor-mode~ is off (shows configured timer definitions)
 
 ~cat~:
 

@@ -30,7 +30,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 
-;;; Timer Subsystem Gate (Experimental)
+;;; Timer Subsystem Gate
 ;;
 ;; The timer subsystem is gated behind this mode variable.
 ;; The full mode definition is in supervisor-timer.el.

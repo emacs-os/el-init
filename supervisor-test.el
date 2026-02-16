@@ -619,6 +619,50 @@ restart-timer cancellation on `no'."
       ;; Restart column (index 5) should say "no" from snapshot, not "yes" from global
       (should (equal "no" (aref vec 5))))))
 
+(ert-deftest supervisor-test-dashboard-oneshot-restart-renders-na ()
+  "Dashboard renders oneshot restart column as n/a."
+  (let* ((snapshot (supervisor-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :timestamp (float-time)))
+         (vec (supervisor--make-dashboard-entry
+               "svc" 'oneshot 'stage3 t 'always t snapshot)))
+    (should (equal "n/a" (aref vec 5)))))
+
+(ert-deftest supervisor-test-dashboard-oneshot-done-pid-renders-dash ()
+  "Dashboard hides oneshot exit-code pseudo-PIDs in the PID column."
+  (let* ((oneshot-exit (make-hash-table :test 'equal))
+         (snapshot nil)
+         (vec nil))
+    (puthash "svc" 0 oneshot-exit)
+    (setq snapshot
+          (supervisor-snapshot--create
+           :process-alive (make-hash-table :test 'equal)
+           :process-pids (make-hash-table :test 'equal)
+           :failed (make-hash-table :test 'equal)
+           :oneshot-exit oneshot-exit
+           :entry-state (make-hash-table :test 'equal)
+           :invalid (make-hash-table :test 'equal)
+           :enabled-override (make-hash-table :test 'equal)
+           :restart-override (make-hash-table :test 'equal)
+           :logging-override (make-hash-table :test 'equal)
+           :mask-override (make-hash-table :test 'equal)
+           :manually-started (make-hash-table :test 'equal)
+           :timestamp (float-time)))
+    (setq vec (supervisor--make-dashboard-entry
+               "svc" 'oneshot 'stage3 t 'always t snapshot))
+    (should (equal "done" (substring-no-properties (aref vec 4))))
+    (should (equal "-" (aref vec 7)))))
+
 ;;; Stage conversion tests
 
 (ert-deftest supervisor-test-stage-to-int ()
@@ -1469,6 +1513,7 @@ Only auto-started (not manually-started) disabled units are stopped."
   "Separator rows are correctly identified."
   (should (supervisor--separator-row-p '--stage1--))
   (should (supervisor--separator-row-p '--stage4--))
+  (should (supervisor--separator-row-p '--health--))
   (should-not (supervisor--separator-row-p "nm-applet"))
   (should-not (supervisor--separator-row-p nil))
   (should-not (supervisor--separator-row-p 'some-symbol)))
@@ -2002,6 +2047,48 @@ Regression test: M-x supervisor must use shared snapshot like refresh does."
           ;; Cleanup
           (when-let* ((buf (get-buffer "*supervisor*")))
             (kill-buffer buf)))))))
+
+(ert-deftest supervisor-test-dashboard-header-and-summary-row ()
+  "Dashboard keeps columns in header and moves health into a row."
+  (supervisor-test-with-unit-files
+      '(("true" :id "svc" :type oneshot))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal)))
+      (unwind-protect
+          (progn
+            (supervisor)
+            (with-current-buffer "*supervisor*"
+              (let* ((raw header-line-format)
+                     (header (if (stringp raw)
+                                 (substring-no-properties raw)
+                               (format "%s" raw))))
+                (should (string-match-p "ID" header))
+                (should (string-match-p "RESTART" header))
+                (should-not (string-match-p "run" header)))
+              (let* ((summary-row
+                      (cl-find-if (lambda (row)
+                                    (eq '--health-- (car row)))
+                                  tabulated-list-entries))
+                     (summary-vec (cadr summary-row)))
+                (should summary-row)
+                (should (string-match-p "run" (substring-no-properties
+                                               (aref summary-vec 1))))
+                (should (string-match-p "done" (substring-no-properties
+                                                (aref summary-vec 2))))
+                (should (string-match-p "pend" (substring-no-properties
+                                                (aref summary-vec 3))))
+                (should (string-match-p "fail" (substring-no-properties
+                                                (aref summary-vec 4))))
+                (should (string-match-p "inv" (substring-no-properties
+                                               (aref summary-vec 5)))))))
+        (when-let* ((buf (get-buffer "*supervisor*")))
+          (kill-buffer buf))))))
 
 ;;; Phase 4: Declarative Reconciler Tests
 
@@ -7121,15 +7208,51 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-list-timers-no-timers ()
   "The `list-timers' command with no timers configured."
-  (let ((supervisor-timer-subsystem-mode t)
+  (supervisor-test-without-builtins
+    (let ((supervisor-timer-subsystem-mode t)
+          (supervisor-mode t)
+          (supervisor-timers nil)
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal)))
+      (let ((result (supervisor--cli-dispatch '("list-timers"))))
+        (should (supervisor-cli-result-p result))
+        (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+        (should (string-match "No timers" (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-list-timers-builds-from-config-when-mode-off ()
+  "The `list-timers' command works when `supervisor-mode' is off."
+  (supervisor-test-with-unit-files
+      '(("true" :id "s1" :type oneshot))
+    (let ((supervisor-timer-subsystem-mode t)
+          (supervisor-mode nil)
+          (supervisor-timers '((:id "t1" :target "s1" :on-startup-sec 60)))
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal)))
+      (let ((result (supervisor--cli-dispatch '("list-timers"))))
+        (should (supervisor-cli-result-p result))
+        (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+        (should (string-match-p "t1" (supervisor-cli-result-output result)))
+        (should (string-match-p "s1" (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-list-timers-disabled-message-no-experimental ()
+  "The `list-timers' disabled response has no experimental wording."
+  (let ((supervisor-timer-subsystem-mode nil)
         (supervisor-mode t)
         (supervisor--timer-list nil)
         (supervisor--timer-state (make-hash-table :test 'equal))
         (supervisor--invalid-timers (make-hash-table :test 'equal)))
-    (let ((result (supervisor--cli-dispatch '("list-timers"))))
-      (should (supervisor-cli-result-p result))
-      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
-      (should (string-match "No timers" (supervisor-cli-result-output result))))))
+    (let ((human (supervisor--cli-dispatch '("list-timers")))
+          (json (supervisor--cli-dispatch '("--json" "list-timers"))))
+      (should (supervisor-cli-result-p human))
+      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode human)))
+      (should (string-match-p "Timer subsystem is disabled\\." (supervisor-cli-result-output human)))
+      (should-not (string-match-p "experimental" (supervisor-cli-result-output human)))
+      (let* ((json-object-type 'alist)
+             (data (json-read-from-string (supervisor-cli-result-output json))))
+        (should (equal "disabled" (alist-get 'status data)))
+        (should (equal "Timer subsystem is disabled" (alist-get 'message data)))))))
 
 (ert-deftest supervisor-test-cli-list-timers-shows-state ()
   "The `list-timers' command shows timer state."
@@ -7163,42 +7286,45 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-cli-list-timers-invalid-human-format ()
   "The `list-timers' command shows invalid timers with correct id and reason."
-  (let ((supervisor-timer-subsystem-mode t)
-        (supervisor-mode t)
-        (supervisor--timer-list nil)
-        (supervisor--timer-state (make-hash-table :test 'equal))
-        (supervisor--invalid-timers (make-hash-table :test 'equal)))
-    ;; Add invalid timer with known id and reason
-    (puthash "bad-timer" ":target 'missing' not found" supervisor--invalid-timers)
-    (let ((result (supervisor--cli-dispatch '("list-timers"))))
-      (should (supervisor-cli-result-p result))
-      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
-      ;; Should show id and reason correctly
-      (should (string-match-p "bad-timer" (supervisor-cli-result-output result)))
-      (should (string-match-p ":target 'missing' not found"
-                              (supervisor-cli-result-output result))))))
+  (supervisor-test-with-unit-files nil
+    (let ((supervisor-timer-subsystem-mode t)
+          (supervisor-mode t)
+          (supervisor-timers '((:id "bad-timer"
+                               :target "missing"
+                               :on-startup-sec 60)))
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal)))
+      (let ((result (supervisor--cli-dispatch '("list-timers"))))
+        (should (supervisor-cli-result-p result))
+        (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+        ;; Should show id and validation reason
+        (should (string-match-p "bad-timer" (supervisor-cli-result-output result)))
+        (should (string-match-p "target" (supervisor-cli-result-output result)))))))
 
 (ert-deftest supervisor-test-cli-list-timers-invalid-json-format ()
   "The `list-timers --json' outputs invalid timers with correct structure."
-  (let ((supervisor-timer-subsystem-mode t)
-        (supervisor-mode t)
-        (supervisor--timer-list nil)
-        (supervisor--timer-state (make-hash-table :test 'equal))
-        (supervisor--invalid-timers (make-hash-table :test 'equal)))
-    ;; Add invalid timer
-    (puthash "bad-timer" "test reason" supervisor--invalid-timers)
-    (let ((result (supervisor--cli-dispatch '("--json" "list-timers"))))
-      (should (supervisor-cli-result-p result))
-      (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
-      ;; Parse JSON and check invalid array structure
-      (let* ((json-object-type 'alist)
-             (json-array-type 'list)
-             (data (json-read-from-string (supervisor-cli-result-output result)))
-             (invalid (alist-get 'invalid data))
-             (entry (car invalid)))
-        (should invalid)
-        (should (equal "bad-timer" (alist-get 'id entry)))
-        (should (equal "test reason" (alist-get 'reason entry)))))))
+  (supervisor-test-with-unit-files nil
+    (let ((supervisor-timer-subsystem-mode t)
+          (supervisor-mode t)
+          (supervisor-timers '((:id "bad-timer"
+                               :target "missing"
+                               :on-startup-sec 60)))
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal)))
+      (let ((result (supervisor--cli-dispatch '("--json" "list-timers"))))
+        (should (supervisor-cli-result-p result))
+        (should (= supervisor-cli-exit-success (supervisor-cli-result-exitcode result)))
+        ;; Parse JSON and check invalid array structure
+        (let* ((json-object-type 'alist)
+               (json-array-type 'list)
+               (data (json-read-from-string (supervisor-cli-result-output result)))
+               (invalid (alist-get 'invalid data))
+               (entry (car invalid)))
+          (should invalid)
+          (should (equal "bad-timer" (alist-get 'id entry)))
+          (should (string-match-p "target" (alist-get 'reason entry))))))))
 
 (ert-deftest supervisor-test-dashboard-timer-signal-exit-is-failed ()
   "Dashboard timer status classifies signal exits as failed."

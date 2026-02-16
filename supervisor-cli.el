@@ -32,7 +32,6 @@
 (require 'supervisor-core)
 
 ;; Forward declarations for timer subsystem (defined in supervisor-timer.el)
-(declare-function supervisor-timer-subsystem-active-p "supervisor-timer" ())
 (declare-function supervisor-timer-build-list "supervisor-timer" (plan))
 (declare-function supervisor-timer-id "supervisor-timer" (timer))
 (declare-function supervisor-timer-target "supervisor-timer" (timer))
@@ -1725,11 +1724,12 @@ Options must come before --.  Use -- before IDs that start with hyphen."
 
 ;;; Timer Status Output
 
-(defun supervisor--cli-gather-timer-info ()
+(defun supervisor--cli-gather-timer-info (&optional timers)
   "Gather timer info from supervisor state.
-Returns a list of alists, one per timer."
+TIMERS defaults to `supervisor--timer-list' when nil.
+Return a list of alists, one per timer."
   (let ((result nil))
-    (dolist (timer supervisor--timer-list)
+    (dolist (timer (or timers supervisor--timer-list))
       (let* ((id (supervisor-timer-id timer))
              (target (supervisor-timer-target timer))
              (enabled (supervisor-timer-enabled timer))
@@ -1757,6 +1757,14 @@ Returns a list of alists, one per timer."
                 (retry-at . ,retry-at))
               result)))
     (nreverse result)))
+
+(defun supervisor--cli-build-timer-list ()
+  "Build timer list from current effective config."
+  (if (fboundp 'supervisor-timer-build-list)
+      (let* ((programs (supervisor--effective-programs))
+             (plan (supervisor--build-plan programs)))
+        (supervisor-timer-build-list plan))
+    nil))
 
 (defun supervisor--cli-format-relative-time (timestamp)
   "Format TIMESTAMP as relative time string like \"5m ago\" or \"in 5m\"."
@@ -1850,19 +1858,24 @@ Returns a list of alists, one per timer."
       (supervisor--cli-error supervisor-cli-exit-invalid-args
                              "list-timers command does not accept arguments"
                              (if json-p 'json 'human)))
-     ;; Check if timer subsystem is enabled
-     ((not (supervisor-timer-subsystem-active-p))
-      (let ((msg "Timer subsystem is disabled (experimental feature).\nEnable with: (supervisor-timer-subsystem-mode 1)"))
+     ;; Check if timer subsystem gate is enabled.
+     ;; Listing timers does not require `supervisor-mode' to be active.
+     ((not (bound-and-true-p supervisor-timer-subsystem-mode))
+      (let ((msg "Timer subsystem is disabled.\nEnable with: (supervisor-timer-subsystem-mode 1)"))
         (supervisor--cli-success
          (if json-p
              (json-encode `((status . "disabled")
-                            (message . "Timer subsystem is disabled (experimental feature)")))
+                            (message . "Timer subsystem is disabled")))
            (concat msg "\n"))
          (if json-p 'json 'human))))
      (t
-      (let* ((timers (supervisor--cli-gather-timer-info))
-               ;; Convert hash table entries (id -> reason) to plists
-               (invalid (let (result)
+      (let* ((built-timers (supervisor--cli-build-timer-list))
+             ;; Prefer scheduler runtime list when present; otherwise build
+             ;; from current config so listing works even when mode is off.
+             (timer-list (or supervisor--timer-list built-timers))
+             (timers (supervisor--cli-gather-timer-info timer-list))
+             ;; Convert hash table entries (id -> reason) to plists
+             (invalid (let (result)
                           (maphash (lambda (id reason)
                                      (push (list :id id :reason reason) result))
                                    supervisor--invalid-timers)

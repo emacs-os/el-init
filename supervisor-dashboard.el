@@ -55,6 +55,8 @@
 (defvar supervisor--timer-state)
 (defvar supervisor--timer-list)
 (defvar supervisor--invalid-timers)
+;; Forward declaration for tabulated-list internals
+(defvar tabulated-list-header-string nil)
 
 ;;; Dashboard Faces
 
@@ -166,7 +168,7 @@ Used in dashboard stage separators for better readability."
 
 (defcustom supervisor-dashboard-show-header-hints nil
   "When non-nil, show key hints in dashboard header line.
-When nil (default), the header shows only the health summary.
+When nil (default), the header shows columns only.
 Press \\`h' in the dashboard for full keybinding help."
   :type 'boolean
   :group 'supervisor)
@@ -312,15 +314,15 @@ Requires the `transient' package to be installed."
 
 (define-derived-mode supervisor-dashboard-mode tabulated-list-mode "Supervisor"
   "Major mode for the supervisor dashboard."
-  (setq tabulated-list-format [("ID" 15 t)
-                               ("Type" 7 t)
-                               ("Stage" 8 t)
-                               ("Enabled" 7 t)
-                               ("Status" 8 t)
-                               ("Restart" 10 t)
-                               ("Log" 3 t)
+  (setq tabulated-list-format [("ID" 16 t)
+                               ("TYPE" 8 t)
+                               ("STAGE" 8 t)
+                               ("ENABLED" 8 t)
+                               ("STATUS" 10 t)
+                               ("RESTART" 11 t)
+                               ("LOG" 5 t)
                                ("PID" 7 t)
-                               ("Reason" 30 t)])
+                               ("REASON" 30 t)])
   (setq tabulated-list-padding 1)
   (tabulated-list-init-header)
   ;; Echo full ID in minibuffer when point moves between rows
@@ -358,6 +360,42 @@ Requires the `transient' package to be installed."
     (list (intern (format "--%s--" stage))  ; Use symbol for separator ID
           (vector label "" "" "" "" "" "" "" ""))))
 
+(defun supervisor--make-health-summary-row (&optional snapshot programs)
+  "Return a non-interactive row that summarizes dashboard health.
+SNAPSHOT and PROGRAMS are forwarded to `supervisor--health-counts'."
+  (let* ((counts (supervisor--health-counts snapshot programs))
+         (running (plist-get counts :running))
+         (active (plist-get counts :active))
+         (done (plist-get counts :done))
+         (pending (plist-get counts :pending))
+         (failed (plist-get counts :failed))
+         (invalid (plist-get counts :invalid))
+         (active-text (if (> active 0)
+                          (concat (propertize (format "%d" active)
+                                              'face 'supervisor-status-running)
+                                  " active")
+                        "-")))
+    (list '--health--
+          (vector (propertize "status" 'face 'supervisor-stage-separator)
+                  (concat (propertize (format "%d" running)
+                                      'face 'supervisor-status-running)
+                          " run")
+                  (concat (propertize (format "%d" done)
+                                      'face 'supervisor-status-done)
+                          " done")
+                  (concat (propertize (format "%d" pending)
+                                      'face 'supervisor-status-pending)
+                          " pend")
+                  (concat (propertize (format "%d" failed)
+                                      'face 'supervisor-status-failed)
+                          " fail")
+                  (concat (propertize (format "%d" invalid)
+                                      'face 'supervisor-status-invalid)
+                          " inv")
+                  "-"
+                  "-"
+                  active-text))))
+
 (defun supervisor--separator-row-p (id)
   "Return non-nil if ID represents a stage separator row."
   (and id (symbolp id) (string-prefix-p "--" (symbol-name id))))
@@ -376,7 +414,11 @@ TYPE, STAGE, ENABLED-P, RESTART-POLICY, LOGGING-P are parsed entry fields.
 If SNAPSHOT is provided, read runtime state from it."
   (let* ((status-pid (supervisor--compute-entry-status id type snapshot))
          (status (car status-pid))
-         (pid (cdr status-pid))
+         (pid-raw (cdr status-pid))
+         (pid (if (and (eq type 'oneshot)
+                       (string-prefix-p "exit:" pid-raw))
+                  "-"
+                pid-raw))
          (reason (supervisor--compute-entry-reason id type snapshot))
          ;; For overrides, use snapshot if provided, otherwise globals
          (mask-hash (if snapshot
@@ -403,7 +445,7 @@ If SNAPSHOT is provided, read runtime state from it."
                                   (t (supervisor--normalize-restart-policy
                                       restart-policy))))
          (restart-str (if (eq type 'oneshot)
-                          "-"
+                          "n/a"
                         (symbol-name effective-restart)))
          (log-override (if snapshot
                            (gethash id (supervisor-snapshot-logging-override snapshot))
@@ -487,8 +529,8 @@ If SNAPSHOT is provided, read runtime state from it."
                                   'supervisor-enabled-yes
                                 'supervisor-enabled-no))
             (supervisor--propertize-status status)
-            "-"  ; restart (N/A for timers)
-            "-"  ; logging (N/A for timers)
+            "n/a"  ; restart (N/A for timers)
+            "n/a"  ; logging (N/A for timers)
             "-"  ; PID (N/A for timers)
             (if (string-empty-p reason)
                 ""
@@ -609,10 +651,11 @@ If PROGRAMS is provided, use it instead of calling
               (append final-entries
                       (list (supervisor--make-timer-separator))
                       (supervisor--get-timer-entries))))
-      final-entries)))
+      (cons (supervisor--make-health-summary-row snapshot programs)
+            final-entries))))
 
-(defun supervisor--health-summary (&optional snapshot programs)
-  "Return compact health summary string.
+(defun supervisor--health-counts (&optional snapshot programs)
+  "Return dashboard health counters as a plist.
 If SNAPSHOT is provided, read state from it; otherwise read from globals.
 If PROGRAMS is provided, use it instead of calling
 `supervisor--effective-programs'."
@@ -669,6 +712,25 @@ If PROGRAMS is provided, use it instead of calling
                    (puthash id t seen)
                    (cl-incf invalid)))
                (symbol-value 'supervisor--unit-file-invalid)))
+    (list :running running
+          :active active
+          :done done
+          :pending pending
+          :failed failed
+          :invalid invalid)))
+
+(defun supervisor--health-summary (&optional snapshot programs)
+  "Return compact health summary string.
+If SNAPSHOT is provided, read state from it; otherwise read from globals.
+If PROGRAMS is provided, use it instead of calling
+`supervisor--effective-programs'."
+  (let* ((counts (supervisor--health-counts snapshot programs))
+         (running (plist-get counts :running))
+         (active (plist-get counts :active))
+         (done (plist-get counts :done))
+         (pending (plist-get counts :pending))
+         (failed (plist-get counts :failed))
+         (invalid (plist-get counts :invalid)))
     (concat (propertize (format "%d" running) 'face 'supervisor-status-running)
             " run | "
             (when (> active 0)
@@ -688,6 +750,39 @@ If PROGRAMS is provided, use it instead of calling
           "[l]ifecycle [p]olicy [i]nspect [?]menu [h]elp [q]uit")
   "Key hints displayed in dashboard header.")
 
+(defun supervisor--dashboard-column-header ()
+  "Return dashboard column header text.
+Use `tabulated-list-header-string' when available.  Fall back to
+rendering from `tabulated-list-format' when running in batch or
+other contexts where the tabulated header string is empty."
+  (let ((header (and (boundp 'tabulated-list-header-string)
+                     tabulated-list-header-string)))
+    (if (and (stringp header) (> (length header) 0))
+        header
+      (let ((format-spec (and (boundp 'tabulated-list-format)
+                              tabulated-list-format)))
+        (if (vectorp format-spec)
+            (mapconcat
+             (lambda (column)
+               (let* ((name (nth 0 column))
+                      (width (max 1 (or (nth 1 column) 1)))
+                      (text (format "%s" name)))
+                 (truncate-string-to-width
+                  (format (format "%%-%ds" width) text)
+                  width nil ?\s)))
+             (append format-spec nil)
+             " ")
+          "")))))
+
+(defun supervisor--dashboard-header-line (&optional snapshot programs)
+  "Return dashboard header line text.
+The header always includes the tabulated-list column labels.
+SNAPSHOT and PROGRAMS are ignored."
+  (ignore snapshot programs)
+  (concat (supervisor--dashboard-column-header)
+          (when supervisor-dashboard-show-header-hints
+            (concat "  " supervisor--help-text))))
+
 (defun supervisor--refresh-dashboard ()
   "Refresh the dashboard buffer if it exists.
 Loads programs once and builds a single runtime snapshot, passing both
@@ -701,9 +796,7 @@ to entries and health summary for consistency within a single refresh."
               (supervisor--get-entries snapshot programs))
         (tabulated-list-print t)
         (setq header-line-format
-              (concat (supervisor--health-summary snapshot programs)
-                      (when supervisor-dashboard-show-header-hints
-                        (concat "  " supervisor--help-text))))
+              (supervisor--dashboard-header-line snapshot programs))
         (goto-char (min pos (point-max)))))))
 
 (defun supervisor-dashboard-refresh ()
@@ -1510,9 +1603,7 @@ Builds a single snapshot for both entries and header to ensure consistency."
         (setq tabulated-list-entries (supervisor--get-entries snapshot))
         (tabulated-list-print)
         (setq-local header-line-format
-                    (concat (supervisor--health-summary snapshot)
-                            (when supervisor-dashboard-show-header-hints
-                              (concat "  " supervisor--help-text))))))
+                    (supervisor--dashboard-header-line snapshot))))
     (pop-to-buffer buf)))
 
 
