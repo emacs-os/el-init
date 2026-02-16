@@ -5073,11 +5073,14 @@ Mark all unstarted entries as timed out and invoke the callback."
 (defun supervisor--resolve-startup-root (valid-id-set)
   "Resolve the startup root target from configuration.
 VALID-ID-SET is a hash of valid entry IDs.
-Signal `user-error' if resolved target does not exist."
+Signal `user-error' if resolved target does not exist or is not a target."
   (let* ((root supervisor-default-target)
          (resolved (if (equal root "default.target")
                        (supervisor--resolve-default-target-link)
                      root)))
+    (unless (string-suffix-p ".target" resolved)
+      (user-error "Supervisor: startup root `%s' is not a target (must end in .target)"
+                  resolved))
     (unless (gethash resolved valid-id-set)
       (user-error "Supervisor: startup root target `%s' does not exist"
                   resolved))
@@ -5165,6 +5168,11 @@ Ready semantics (when dependents are unblocked):
              (supervisor-plan-cycle-fallback-ids plan))
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
              (supervisor-plan-deps plan))
+    ;; Validate default-target resolution when plan has entries (Phase 3
+    ;; will use the result to filter the plan; for now we validate
+    ;; configuration is sane).  Skip when plan is empty (standalone core).
+    (when (supervisor-plan-entries plan)
+      (supervisor--resolve-startup-root (supervisor-plan-order-index plan)))
     ;; Validate timers only when timer subsystem is active (and timer module loaded)
     (when (and (fboundp 'supervisor-timer-subsystem-active-p)
                (supervisor-timer-subsystem-active-p)

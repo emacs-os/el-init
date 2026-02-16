@@ -491,7 +491,6 @@ the highest configured root from `supervisor-unit-authority-path'."
     (concat "(:id " (prin1-to-string id) "\n"
             " :command " (prin1-to-string command) "\n"
             " :type oneshot\n"
-            " :stage stage4\n"
             (if after
                 (format " :after %S\n" after)
               "")

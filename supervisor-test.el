@@ -16001,6 +16001,33 @@ PATH set to exclude fuser."
     (should-error (supervisor--resolve-startup-root valid-id-set)
                   :type 'user-error)))
 
+(ert-deftest supervisor-test-resolve-non-target-errors ()
+  "Resolved root that is not a .target signals user-error."
+  (let ((supervisor-default-target "my-service")
+        (supervisor--default-target-link-override nil)
+        (valid-id-set (make-hash-table :test 'equal)))
+    (puthash "my-service" 0 valid-id-set)
+    (should-error (supervisor--resolve-startup-root valid-id-set)
+                  :type 'user-error)))
+
+(ert-deftest supervisor-test-resolve-non-target-link-errors ()
+  "Link that resolves to non-.target signals user-error."
+  (let ((supervisor-default-target "default.target")
+        (supervisor-default-target-link "my-service")
+        (supervisor--default-target-link-override nil)
+        (valid-id-set (make-hash-table :test 'equal)))
+    (puthash "my-service" 0 valid-id-set)
+    (should-error (supervisor--resolve-startup-root valid-id-set)
+                  :type 'user-error)))
+
+(ert-deftest supervisor-test-maintenance-unit-content-no-stage ()
+  "Seeded maintenance unit content does not contain :stage."
+  (let ((content (supervisor--maintenance-unit-content
+                  '(:id "logrotate"
+                    :command "/usr/bin/logrotate"
+                    :description "Rotate logs"))))
+    (should-not (string-match-p ":stage" content))))
+
 ;;; Phase 2 Commit B: Hard cutover tests
 
 (ert-deftest supervisor-test-plan-version-2 ()
