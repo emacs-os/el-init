@@ -23,8 +23,8 @@ start, stop, inspect, and manage everything from inside Emacs.
 - *Authority-tier unit files*: shipped defaults overridden by higher-precedence
   user tiers, with daemon-reload support.
 - *CLI*: ~sbin/supervisorctl~ for scripting and remote use (human and JSON).
-- *Timers*: calendar and relative timers for oneshot services with persistent
-  catch-up semantics.
+- *Timers*: calendar and relative timers for oneshot, simple, and target units
+  with persistent catch-up semantics.
 - *Logging*: external log writers plus rotate/prune tooling for bounded growth.
 
 ** Requirements
@@ -941,8 +941,12 @@ Semantics:
 ~:on-unit-active-sec~:
 
 - positive integer seconds after last successful target execution
-- anchored on ~:last-success-at~ uniformly for all target types (oneshot,
-  simple, target)
+- anchor is type-specific:
+  - ~oneshot~: anchored at last successful completion timestamp
+  - ~simple~: anchored at last successful activation timestamp (spawn
+    success or ~already-active~ no-op)
+  - ~target~: anchored at last successful convergence timestamp
+    (~reached~ or ~already-reached~ no-op)
 
 Combined timers:
 
@@ -955,7 +959,7 @@ When due:
 - Disabled timer -> skipped, miss reason ~disabled~
 - Active target oneshot -> skipped, miss reason ~overlap~
 - Already-running simple service -> success no-op, reason ~already-active~
-- Converging target unit -> skipped, miss reason ~overlap~
+- Converging target unit -> skipped, miss reason ~target-converging~
 - Disabled target unit -> skipped, miss reason ~disabled-target~
 - Masked target unit -> skipped, miss reason ~masked-target~
 - Missing target entry -> failure recorded, reason ~target-not-found~
@@ -1001,9 +1005,11 @@ Persisted keys include:
 - ~:last-missed-at~
 - ~:last-miss-reason~
 - ~:last-result~ (~success~, ~failure~, or ~skip~)
-- ~:last-result-reason~ (type-specific reason symbol, e.g. ~exit-ok~,
-  ~spawn-failed~, ~target-degraded~, ~already-active~, ~overlap~,
-  ~disabled~, ~masked-target~, ~target-converging~)
+- ~:last-result-reason~ (type-specific reason symbol or nil; e.g.
+  ~already-active~, ~already-reached~, ~overlap~, ~spawn-failed~,
+  ~target-reached~, ~target-degraded~, ~target-not-converged~,
+  ~convergence-unknown~, ~target-converging~, ~target-not-found~,
+  ~disabled~, ~disabled-target~, ~masked-target~)
 - ~:last-target-type~ (~oneshot~, ~simple~, or ~target~)
 
 Transient keys (for example ~:next-run-at~, retry bookkeeping, startup-consumed
@@ -1084,8 +1090,8 @@ latched active until explicitly stopped.
 ** Timer Rows in Dashboard
 
 Timer rows appear in a dedicated section below services with their own
-column layout: ~ID~, ~TARGET~, ~ENABLED~, ~TYPE~, ~LAST-RUN~, ~NEXT-RUN~,
-~EXIT~, ~RESULT~, ~MISS~.  This matches the columns of ~supervisorctl list-timers~.
+column layout: ~ID~, ~TARGET~, ~ENABLED~, ~LAST-RUN~, ~NEXT-RUN~,
+~EXIT~, ~REASON~, ~TYPE~, ~RESULT~.  This matches the columns of ~supervisorctl list-timers~.
 
 Timer rows support interactive timer actions via the ~y~ submenu.
 Service-only commands (lifecycle, policy, inspect) reject timer rows
@@ -1102,12 +1108,12 @@ header line.  These counters are service-only and do not include timer rows.
 Timer rows do not use service ~STATUS~/~REASON~ semantics.  They show
 timer-specific runtime fields:
 
-- ~TYPE~: target type (~oneshot~, ~simple~, ~target~, or ~-~)
 - ~LAST-RUN~: relative time since the most recent trigger (or ~-~)
 - ~NEXT-RUN~: relative time until next scheduled trigger (or ~-~)
 - ~EXIT~: last target exit code (or ~-~)
-- ~RESULT~: last execution result (~success~, ~failure~, or ~-~)
-- ~MISS~: last miss reason (or ~-~)
+- ~REASON~: last result reason symbol (or ~-~)
+- ~TYPE~: target type (~oneshot~, ~simple~, ~target~, or ~-~)
+- ~RESULT~: last execution result (~success~, ~failure~, ~skip~, or ~-~)
 
 ** Dashboard Keymap
 
@@ -1435,6 +1441,17 @@ Timer JSON top-level keys:
 
 - ~timers~ (array)
 - ~invalid~ (array)
+
+Per-timer JSON object keys:
+
+- ~id~, ~target~, ~enabled~, ~persistent~
+- ~on_calendar~, ~on_startup_sec~, ~on_unit_active_sec~
+- ~last_run_at~, ~last_success_at~, ~last_failure_at~
+- ~last_exit~, ~next_run_at~, ~retry_at~
+- ~last_miss_at~, ~miss_reason~
+- ~last_result~ (~"success"~, ~"failure"~, ~"skip"~, or ~null~)
+- ~last_result_reason~ (reason symbol string or ~null~)
+- ~target_type~ (~"oneshot"~, ~"simple"~, ~"target"~, or ~null~)
 
 Validation JSON top-level keys:
 
