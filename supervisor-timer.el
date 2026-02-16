@@ -954,7 +954,11 @@ RESULT-REASON is a symbol like already-active, overlap, etc."
     (setq state (plist-put state :last-result result))
     (setq state (plist-put state :last-result-reason result-reason))
     (when (eq result 'success)
-      (setq state (plist-put state :last-success-at now))
+      (setq state (plist-put state :last-success-at now)))
+    ;; Clear retry state on success or skip (not failure).
+    ;; Skip outcomes (disabled, overlap, target-converging) must not
+    ;; preserve stale retry-next-at from a prior failure.
+    (when (memq result '(success skip))
       (setq state (plist-put state :retry-attempt 0))
       (setq state (plist-put state :retry-next-at nil)))
     (puthash timer-id state supervisor--timer-state)

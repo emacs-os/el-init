@@ -7490,7 +7490,9 @@ at minute boundaries."
                       nil nil nil nil nil nil nil nil nil nil)))
     ;; Target is converging
     (puthash "app.target" t supervisor--target-converging)
-    (puthash "t1" nil supervisor--timer-state)
+    ;; Seed with stale retry state from a prior failure
+    (puthash "t1" '(:retry-attempt 1 :retry-next-at 77777.0)
+             supervisor--timer-state)
     (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'supervisor--get-effective-enabled)
@@ -7505,7 +7507,10 @@ at minute boundaries."
                       (plist-get state :last-miss-reason)))
           (should (eq 'skip (plist-get state :last-result)))
           (should (eq 'target-converging
-                      (plist-get state :last-result-reason))))))))
+                      (plist-get state :last-result-reason)))
+          ;; Stale retry state must be cleared
+          (should (= 0 (plist-get state :retry-attempt)))
+          (should-not (plist-get state :retry-next-at)))))))
 
 (ert-deftest supervisor-test-timer-target-degraded-retries ()
   "Timer target convergence to degraded schedules retry."
@@ -7547,7 +7552,7 @@ at minute boundaries."
       (should (= 2600.0 next)))))
 
 (ert-deftest supervisor-test-timer-overlap-no-retry ()
-  "Overlap skip does not schedule retry."
+  "Overlap skip clears stale retry state from prior failure."
   (let* ((supervisor-timer-subsystem-mode t)
          (supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
@@ -7560,7 +7565,9 @@ at minute boundaries."
     (unwind-protect
         (progn
           (puthash "svc" mock-proc supervisor--processes)
-          (puthash "t1" '(:retry-attempt 0) supervisor--timer-state)
+          ;; Seed with stale retry state from a prior failure
+          (puthash "t1" '(:retry-attempt 1 :retry-next-at 99999.0)
+                   supervisor--timer-state)
           (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
                      (lambda (_id) entry))
                     ((symbol-function 'supervisor--get-effective-enabled)
@@ -7569,10 +7576,12 @@ at minute boundaries."
                     ((symbol-function 'supervisor--emit-event) #'ignore))
             (supervisor-timer--trigger timer 'scheduled)
             (let ((state (gethash "t1" supervisor--timer-state)))
-              ;; Overlap recorded as miss and skip result, no retry scheduled
+              ;; Overlap recorded as miss and skip result
               (should (eq 'overlap (plist-get state :last-miss-reason)))
               (should (eq 'skip (plist-get state :last-result)))
               (should (eq 'overlap (plist-get state :last-result-reason)))
+              ;; Stale retry state must be cleared
+              (should (= 0 (plist-get state :retry-attempt)))
               (should-not (plist-get state :retry-next-at)))))
       (delete-process mock-proc))))
 
@@ -7606,7 +7615,8 @@ at minute boundaries."
                       nil nil nil nil nil nil nil nil nil nil nil nil
                       nil nil nil nil nil nil nil nil nil nil)))
     (puthash "svc" 'masked supervisor--mask-override)
-    (puthash "t1" nil supervisor--timer-state)
+    (puthash "t1" '(:retry-attempt 1 :retry-next-at 66666.0)
+             supervisor--timer-state)
     (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'supervisor-timer--save-state) #'ignore)
@@ -7618,7 +7628,9 @@ at minute boundaries."
                     (plist-get state :last-miss-reason)))
         (should (eq 'skip (plist-get state :last-result)))
         (should (eq 'masked-target
-                    (plist-get state :last-result-reason)))))))
+                    (plist-get state :last-result-reason)))
+        (should (eq 0 (plist-get state :retry-attempt)))
+        (should-not (plist-get state :retry-next-at))))))
 
 (ert-deftest supervisor-test-timer-convergence-nil-is-failure ()
   "Nil convergence state is classified as failure, not success."
@@ -7753,13 +7765,15 @@ at minute boundaries."
                     (plist-get state :last-result-reason)))))))
 
 (ert-deftest supervisor-test-timer-disabled-timer-records-skip-result ()
-  "Disabled timer records skip result alongside miss metadata."
+  "Disabled timer records skip and clears stale retry state."
   (let* ((supervisor-timer-subsystem-mode t)
          (supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc"
                                           :enabled nil))
          (supervisor--timer-state (make-hash-table :test 'equal)))
-    (puthash "t1" nil supervisor--timer-state)
+    ;; Seed with stale retry state from a prior failure
+    (puthash "t1" '(:retry-attempt 2 :retry-next-at 88888.0)
+             supervisor--timer-state)
     (cl-letf (((symbol-function 'supervisor-timer--save-state) #'ignore)
               ((symbol-function 'supervisor--emit-event) #'ignore)
               ((symbol-function 'supervisor--log) #'ignore))
@@ -7767,7 +7781,10 @@ at minute boundaries."
       (let ((state (gethash "t1" supervisor--timer-state)))
         (should (eq 'disabled (plist-get state :last-miss-reason)))
         (should (eq 'skip (plist-get state :last-result)))
-        (should (eq 'disabled (plist-get state :last-result-reason)))))))
+        (should (eq 'disabled (plist-get state :last-result-reason)))
+        ;; Stale retry state must be cleared
+        (should (= 0 (plist-get state :retry-attempt)))
+        (should-not (plist-get state :retry-next-at))))))
 
 (ert-deftest supervisor-test-cli-list-timers-json-v2-fields ()
   "CLI list-timers JSON includes v2 fields: target_type, last_result."
