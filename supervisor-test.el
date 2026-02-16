@@ -14736,5 +14736,126 @@ PATH set to exclude fuser."
           (clrhash supervisor--processes)
           (clrhash supervisor--enabled-override))))))
 
+;;;; Phase 9: Test Coverage Expansion
+
+(ert-deftest supervisor-test-logging-toggle-deferred-until-restart ()
+  "Policy toggle changes the override hash but does not affect running writer."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple))
+    (let ((supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--writers (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor-overrides-file nil)
+          (fake-writer (start-process "fake-writer" nil "sleep" "300")))
+      (unwind-protect
+          (progn
+            ;; Simulate a running writer for "svc"
+            (puthash "svc" fake-writer supervisor--writers)
+            ;; Toggle logging off via policy mutator
+            (let ((result (supervisor--policy-set-logging "svc" nil)))
+              (should (eq 'applied (plist-get result :status)))
+              ;; Override hash should record disabled
+              (should (eq 'disabled (gethash "svc" supervisor--logging)))
+              ;; Writer should still be in the hash (not stopped mid-flight)
+              (should (eq fake-writer (gethash "svc" supervisor--writers)))
+              ;; Writer process should still be live
+              (should (process-live-p fake-writer))))
+        (when (process-live-p fake-writer)
+          (delete-process fake-writer))))))
+
+(ert-deftest supervisor-test-logging-enabled-on-restart-spawns-writer ()
+  "Start-process spawns a writer when effective logging is enabled."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (supervisor-log-directory "/tmp/test-logs")
+        (writer-started nil)
+        (fake-proc (start-process "fake-svc" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+                   (lambda (_id _default) t))
+                  ((symbol-function 'supervisor--ensure-log-directory)
+                   #'ignore)
+                  ((symbol-function 'supervisor--log-file)
+                   (lambda (id) (format "/tmp/test-logs/log-%s.log" id)))
+                  ((symbol-function 'supervisor--start-writer)
+                   (lambda (_id _file)
+                     (setq writer-started t)
+                     fake-proc))
+                  ((symbol-function 'make-process)
+                   (lambda (&rest _args) fake-proc))
+                  ((symbol-function 'supervisor--make-process-sentinel)
+                   (lambda (&rest _args) #'ignore))
+                  ((symbol-function 'supervisor--build-launch-command)
+                   (lambda (_cmd _user _group) (list "sleep" "300"))))
+          (let ((proc (supervisor--start-process
+                       "svc" "sleep 300" nil 'simple 'always)))
+            (should proc)
+            (should writer-started)))
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+(ert-deftest supervisor-test-writer-reopen-sighup-real-process ()
+  "Signal-writers-reopen sends SIGHUP to live writer processes."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (proc (start-process "test-sleep" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "svc1" proc supervisor--writers)
+          (should (process-live-p proc))
+          (supervisor--signal-writers-reopen)
+          ;; sleep does not handle SIGHUP, so it dies
+          (sleep-for 0.1)
+          (should-not (process-live-p proc)))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest supervisor-test-builtin-timer-schedule-is-03-00 ()
+  "Built-in logrotate-daily timer has on-calendar at 03:00."
+  (let ((timer (cl-find "logrotate-daily" supervisor--builtin-timers
+                         :key (lambda (t) (plist-get t :id))
+                         :test #'equal)))
+    (should timer)
+    (let ((cal (plist-get timer :on-calendar)))
+      (should (equal 3 (plist-get cal :hour)))
+      (should (equal 0 (plist-get cal :minute))))))
+
+(ert-deftest supervisor-test-logrotate-daily-not-scheduled-when-timer-off ()
+  "Scheduler does not process timers when subsystem is off."
+  (let ((supervisor-timer-subsystem-mode nil)
+        (supervisor-mode nil)
+        (build-list-called nil))
+    (cl-letf (((symbol-function 'supervisor--log) #'ignore))
+      ;; supervisor-timer-scheduler-start guards on subsystem-active-p
+      ;; and returns early without building or processing any timers
+      (cl-letf (((symbol-function 'supervisor-timer-build-list)
+                 (lambda (_plan)
+                   (setq build-list-called t)
+                   nil)))
+        (supervisor-timer-scheduler-start)
+        ;; build-list should not have been called
+        (should-not build-list-called)))))
+
+(ert-deftest supervisor-test-scheduler-not-started-when-timer-off ()
+  "Timer scheduler is a no-op when subsystem is not active."
+  (let ((supervisor-timer-subsystem-mode nil)
+        (supervisor-mode nil)
+        (build-list-called nil))
+    (cl-letf (((symbol-function 'supervisor--log) #'ignore)
+              ((symbol-function 'supervisor-timer-build-list)
+               (lambda (_plan)
+                 (setq build-list-called t)
+                 nil)))
+      ;; Call the real scheduler-start with subsystem off
+      (supervisor-timer-scheduler-start)
+      ;; The guard should have returned early without building timers
+      (should-not build-list-called))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
