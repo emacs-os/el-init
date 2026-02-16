@@ -2583,17 +2583,18 @@ The plan includes:
                                   valid-wants))
                              combined-deps)
                     ;; Return entry with validated deps
+                    ;; :after is at index 10, :requires at index 14
                     (let ((new-entry entry))
                       (unless (equal after valid-after)
                         (setq new-entry
-                              (append (cl-subseq new-entry 0 8)
+                              (append (cl-subseq new-entry 0 10)
                                       (list valid-after)
-                                      (cl-subseq new-entry 9))))
+                                      (cl-subseq new-entry 11))))
                       (unless (equal requires valid-requires)
                         (setq new-entry
-                              (append (cl-subseq new-entry 0 12)
+                              (append (cl-subseq new-entry 0 14)
                                       (list valid-requires)
-                                      (cl-subseq new-entry 13))))
+                                      (cl-subseq new-entry 15))))
                       new-entry)))
                 valid-entries)))
           ;; Filter out entries marked invalid during validation

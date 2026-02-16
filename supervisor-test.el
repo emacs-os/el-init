@@ -17162,10 +17162,19 @@ An invalid entry ID that happens to end in .target must not pass."
                           :requires ("basic.target" "svc-a"))))
          (plan (supervisor--build-plan programs))
          (after-deps (gethash "multi.target"
-                              (supervisor-plan-deps plan))))
+                              (supervisor-plan-deps plan)))
+         (multi-entry (cl-find "multi.target"
+                               (supervisor-plan-entries plan)
+                               :key #'supervisor-entry-id :test #'equal)))
     ;; Target's :requires should appear in :after deps
     (should (member "basic.target" after-deps))
-    (should (member "svc-a" after-deps))))
+    (should (member "svc-a" after-deps))
+    ;; Structural integrity: :type preserved, :requires preserved
+    (should (eq 'target (supervisor-entry-type multi-entry)))
+    (should (member "basic.target" (supervisor-entry-requires multi-entry)))
+    (should (member "svc-a" (supervisor-entry-requires multi-entry)))
+    ;; Tuple length unchanged
+    (should (= 33 (length multi-entry)))))
 
 (ert-deftest supervisor-test-target-auto-ordering-wants-implies-after ()
   "Target :wants automatically implies :after ordering edge."
@@ -17175,10 +17184,19 @@ An invalid entry ID that happens to end in .target must not pass."
                           :wants ("basic.target" "svc-opt"))))
          (plan (supervisor--build-plan programs))
          (after-deps (gethash "multi.target"
-                              (supervisor-plan-deps plan))))
+                              (supervisor-plan-deps plan)))
+         (multi-entry (cl-find "multi.target"
+                               (supervisor-plan-entries plan)
+                               :key #'supervisor-entry-id :test #'equal)))
     ;; Target's :wants should appear in :after deps
     (should (member "basic.target" after-deps))
-    (should (member "svc-opt" after-deps))))
+    (should (member "svc-opt" after-deps))
+    ;; Structural integrity: :type preserved, :wants preserved
+    (should (eq 'target (supervisor-entry-type multi-entry)))
+    (should (member "basic.target" (supervisor-entry-wants multi-entry)))
+    (should (member "svc-opt" (supervisor-entry-wants multi-entry)))
+    ;; Tuple length unchanged
+    (should (= 33 (length multi-entry)))))
 
 (ert-deftest supervisor-test-service-requires-no-auto-after ()
   "Service :requires does NOT auto-inject :after (only targets do)."
@@ -17186,9 +17204,15 @@ An invalid entry ID that happens to end in .target must not pass."
                      ("true" :id "svc-b" :requires ("svc-a"))))
          (plan (supervisor--build-plan programs))
          (after-deps (gethash "svc-b"
-                              (supervisor-plan-deps plan))))
+                              (supervisor-plan-deps plan)))
+         (svc-b (cl-find "svc-b" (supervisor-plan-entries plan)
+                         :key #'supervisor-entry-id :test #'equal)))
     ;; Service :requires should NOT appear in :after deps
-    (should-not (member "svc-a" after-deps))))
+    (should-not (member "svc-a" after-deps))
+    ;; Structural integrity: :type and :requires preserved
+    (should (eq 'simple (supervisor-entry-type svc-b)))
+    (should (equal '("svc-a") (supervisor-entry-requires svc-b)))
+    (should (= 33 (length svc-b)))))
 
 (ert-deftest supervisor-test-builtin-targets-no-redundant-after ()
   "Built-in targets rely on auto-ordering, no explicit :after."
@@ -17251,6 +17275,62 @@ An invalid entry ID that happens to end in .target must not pass."
       (should (gethash "svc-b" closure))
       ;; Orphan service not in any target's closure
       (should-not (gethash "svc-orphan" closure)))))
+
+(ert-deftest supervisor-test-dep-normalization-preserves-tuple-integrity ()
+  "Dep normalization in build-plan preserves all tuple fields."
+  (let* ((programs '(("true" :id "svc-a")
+                     ("true" :id "svc-b" :after ("svc-a" "nonexistent")
+                             :requires ("svc-a" "also-missing"))))
+         (plan (supervisor--build-plan programs))
+         ;; by-target has the dep-normalized entries
+         (svc-b (cl-find "svc-b" (supervisor-plan-by-target plan)
+                         :key #'supervisor-entry-id :test #'equal)))
+    ;; After invalid dep removal, entry must retain correct structure
+    (should (= 33 (length svc-b)))
+    (should (equal "svc-b" (supervisor-entry-id svc-b)))
+    (should (equal "true" (supervisor-entry-command svc-b)))
+    (should (eq 'simple (supervisor-entry-type svc-b)))
+    ;; :after normalized to only valid dep
+    (should (equal '("svc-a") (supervisor-entry-after svc-b)))
+    ;; :requires normalized to only valid dep
+    (should (equal '("svc-a") (supervisor-entry-requires svc-b)))))
+
+(ert-deftest supervisor-test-target-dep-normalization-preserves-type ()
+  "Target auto-ordering does not corrupt :type during entry rewrite."
+  (let* ((programs '((nil :id "base.target" :type target)
+                     ("true" :id "svc-x")
+                     (nil :id "upper.target" :type target
+                          :requires ("base.target")
+                          :after ("nonexistent"))))
+         (plan (supervisor--build-plan programs))
+         ;; by-target has the dep-normalized entries
+         (upper (cl-find "upper.target" (supervisor-plan-by-target plan)
+                         :key #'supervisor-entry-id :test #'equal)))
+    ;; After removing invalid :after "nonexistent", auto-ordering
+    ;; injects :requires into :after.  :type must survive.
+    (should (eq 'target (supervisor-entry-type upper)))
+    (should (member "base.target" (supervisor-entry-after upper)))
+    (should (equal '("base.target") (supervisor-entry-requires upper)))
+    (should (= 33 (length upper)))))
+
+(ert-deftest supervisor-test-mixed-target-service-cycle-fallback ()
+  "Cycle involving both target and service entries triggers fallback."
+  (let* ((programs '((nil :id "app.target" :type target
+                          :requires ("svc-a"))
+                     ("true" :id "svc-a" :after ("app.target"))))
+         (plan (supervisor--build-plan programs)))
+    ;; Both should be in cycle-fallback (target's auto-ordering creates
+    ;; app.target -> svc-a edge, plus svc-a -> app.target explicit edge)
+    (should (gethash "app.target" (supervisor-plan-cycle-fallback-ids plan)))
+    (should (gethash "svc-a" (supervisor-plan-cycle-fallback-ids plan)))
+    ;; Deps cleared after fallback
+    (should (null (gethash "app.target" (supervisor-plan-deps plan))))
+    (should (null (gethash "svc-a" (supervisor-plan-deps plan))))
+    ;; Both entries still present and structurally intact
+    (should (= 2 (length (supervisor-plan-by-target plan))))
+    (let ((app (cl-find "app.target" (supervisor-plan-by-target plan)
+                        :key #'supervisor-entry-id :test #'equal)))
+      (should (eq 'target (supervisor-entry-type app))))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
