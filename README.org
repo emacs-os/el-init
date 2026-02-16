@@ -13,8 +13,9 @@ start, stop, inspect, and manage everything from inside Emacs.
 
 - *Dashboard*: ~M-x supervisor~ -- live view with lifecycle actions, policy
   changes, dependency inspection, and log viewing.
-- *Staged startup and dependencies*: four startup stages with ordering
-  (~:after~, ~:before~) and pull-in (~:requires~, ~:wants~).
+- *Target-based startup*: systemd-style targets with DAG ordering
+  (~:after~, ~:before~), pull-in (~:requires~, ~:wants~), and membership
+  (~:wanted-by~, ~:required-by~).
 - *Service types*: long-running ~simple~ services and run-once ~oneshot~ tasks
   with configurable restart policies.
 - *Persistent overrides*: enable/disable, mask/unmask, restart-policy, and
@@ -43,7 +44,7 @@ provides detailed reference material:
 
 - [[#service-definition][Service Definition]] - all unit-file keywords for defining services
 - [[#unit-files-modular-configuration][Unit Files]] - authority roots, precedence, and unit-file management
-- [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] - how stages, dependencies, and restarts work
+- [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] - targets, dependencies, and restarts
 - [[#runtime-overrides-and-reconciliation][Runtime Overrides]] - enabling, disabling, and policy changes at runtime
 - [[#timer-subsystem-handbook][Timer Subsystem]] - scheduled oneshot execution
 - [[#dashboard-handbook-m-x-supervisor][Dashboard]] - the interactive UI
@@ -83,7 +84,7 @@ Services are defined as individual unit files in your authority roots (default
 (:id "xhost"
  :command "xhost +SI:localuser:$USER"
  :type oneshot
- :stage stage1
+ :required-by ("basic.target")
  :tags (x-setup))
 #+end_src
 
@@ -92,7 +93,7 @@ Services are defined as individual unit files in your authority roots (default
 (:id "nm-applet"
  :command "nm-applet"
  :type simple
- :stage stage3
+ :wanted-by ("graphical.target")
  :delay 3
  :restart t
  :tags (applet tray))
