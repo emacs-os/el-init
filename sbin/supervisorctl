@@ -234,5 +234,9 @@ final_output="$(printf '%s' "${base64_output}" | base64 -d 2>/dev/null)" || {
 }
 
 # Print output and exit
-printf '%s' "${final_output}"
+# Add trailing newline for human-readable output; JSON is already complete.
+case "${json_flag}" in
+    "") [ -n "${final_output}" ] && printf '%s\n' "${final_output}" ;;
+    *)  printf '%s' "${final_output}" ;;
+esac
 exit "${exit_code}"
