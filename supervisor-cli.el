@@ -41,6 +41,7 @@
 
 ;; Forward declarations for unit-file module (optional)
 (declare-function supervisor--unit-file-path "supervisor-units" (id))
+(declare-function supervisor--unit-file-existing-path "supervisor-units" (id))
 (declare-function supervisor--unit-file-scaffold "supervisor-units" (id))
 (declare-function supervisor--authority-root-for-id "supervisor-units" (id))
 (declare-function supervisor--authority-tier-for-id "supervisor-units" (id))
@@ -316,8 +317,13 @@ Returns alist with all fields needed for status display."
       (next-restart-eta . ,next-eta)
       (metrics . ,metrics)
       (process-tree . ,process-tree)
-      (unit-file . ,(when (fboundp 'supervisor--unit-file-path)
-                      (supervisor--unit-file-path id)))
+      (unit-file . ,(cond
+                     ((fboundp 'supervisor--unit-file-existing-path)
+                      (supervisor--unit-file-existing-path id))
+                     ((fboundp 'supervisor--unit-file-path)
+                      (when-let* ((path (supervisor--unit-file-path id)))
+                        (when (file-exists-p path)
+                          path)))))
       (authority-tier . ,(when (fboundp 'supervisor--authority-tier-for-id)
                            (supervisor--authority-tier-for-id id)))
       (working-directory . ,(supervisor-entry-working-directory entry))
@@ -1907,10 +1913,16 @@ Output literal raw content of a unit file."
                                 (content . ,content)))
                  'json)
               (supervisor--cli-success content 'human)))
-        (supervisor--cli-error supervisor-cli-exit-failure
-                               (format "Unit file not found: %s"
-                                       (or path id))
-                               (if json-p 'json 'human)))))))
+        (if (and path (supervisor--get-entry-for-id id))
+            (supervisor--cli-error
+             supervisor-cli-exit-failure
+             (format "No unit file on disk for '%s' (use 'edit %s' to create an override)"
+                     id id)
+             (if json-p 'json 'human))
+          (supervisor--cli-error supervisor-cli-exit-failure
+                                 (format "Unit file not found: %s"
+                                         (or path id))
+                                 (if json-p 'json 'human))))))))
 
 (defun supervisor--cli-edit-launch-editor (editor path)
   "Launch EDITOR on PATH synchronously.

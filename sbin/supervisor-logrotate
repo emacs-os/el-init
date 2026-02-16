@@ -36,6 +36,10 @@ warn() {
     printf 'Warning: %s\n' "${1}" >&2
 }
 
+info() {
+    printf '%s\n' "${1}"
+}
+
 die() {
     code="${1}"
     shift
@@ -108,6 +112,7 @@ command -v date >/dev/null 2>&1 || die 1 "Required command not found: date"
 
 # --- Generate timestamp ---
 stamp="$(date +%Y%m%d-%H%M%S)"
+info "logrotate: start log_dir=${log_dir} keep_days=${keep_days} signal_reopen=${signal_reopen} dry_run=${dry_run}"
 
 # --- Rotate active files ---
 # Active files: log-<id>.log and supervisor.log.
@@ -141,7 +146,10 @@ rotate_file() {
     fi
     case "${dry_run}" in
         1) printf 'rotate: %s -> %s\n' "${src}" "${dest}" ;;
-        *) mv "${src}" "${dest}" ;;
+        *)
+            mv "${src}" "${dest}"
+            printf 'rotate: %s -> %s\n' "${src}" "${dest}"
+            ;;
     esac
 }
 
@@ -170,7 +178,13 @@ case "${signal_reopen}" in
             if kill -0 "${pid}" 2>/dev/null; then
                 case "${dry_run}" in
                     1) printf 'signal: SIGHUP -> PID %s (%s)\n' "${pid}" "${pidfile}" ;;
-                    *) kill -HUP "${pid}" 2>/dev/null || warn "Failed to send SIGHUP to PID ${pid}" ;;
+                    *)
+                        if kill -HUP "${pid}" 2>/dev/null; then
+                            printf 'signal: SIGHUP -> PID %s (%s)\n' "${pid}" "${pidfile}"
+                        else
+                            warn "Failed to send SIGHUP to PID ${pid}"
+                        fi
+                        ;;
                 esac
             fi
         done
@@ -189,9 +203,13 @@ prune_rotated() {
         is_rotated "${name}" || continue
         case "${dry_run}" in
             1) printf 'prune: %s\n' "${f}" ;;
-            *) rm -f "${f}" ;;
+            *)
+                rm -f "${f}"
+                printf 'prune: %s\n' "${f}"
+                ;;
         esac
     done
 }
 
 prune_rotated "${log_dir}" "${keep_days}"
+info "logrotate: complete"

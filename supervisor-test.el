@@ -20,7 +20,8 @@
 (defmacro supervisor-test-without-builtins (&rest body)
   "Execute BODY with built-in programs and timers suppressed."
   (declare (indent 0) (debug (body)))
-  `(let ((supervisor--builtin-timers nil))
+  `(let ((supervisor--builtin-timers nil)
+         (supervisor-seed-default-maintenance-units nil))
      (cl-letf (((symbol-function 'supervisor--builtin-programs)
                 (lambda () nil)))
        ,@body)))
@@ -183,37 +184,39 @@ core symbols exist without dashboard/cli-specific dependencies."
 (ert-deftest supervisor-test-parse-string-entry ()
   "Parse a simple string entry."
   (let ((parsed (supervisor--parse-entry "nm-applet")))
-    (should (equal (nth 0 parsed) "nm-applet"))  ; id
-    (should (equal (nth 1 parsed) "nm-applet"))  ; cmd
-    (should (= (nth 2 parsed) 0))                ; delay
-    (should (eq (nth 3 parsed) t))               ; enabled-p
-    (should (eq (nth 4 parsed) 'always))          ; restart-policy
-    (should (eq (nth 5 parsed) t))               ; logging-p
-    (should (eq (nth 6 parsed) 'simple))         ; type
-    (should (eq (nth 7 parsed) 'stage3))))      ; stage (default)
+    (should (equal (supervisor-entry-id parsed) "nm-applet"))
+    (should (equal (supervisor-entry-command parsed) "nm-applet"))
+    (should (= (supervisor-entry-delay parsed) 0))
+    (should (eq (supervisor-entry-enabled-p parsed) t))
+    (should (eq (supervisor-entry-restart-policy parsed) 'always))
+    (should (eq (supervisor-entry-logging-p parsed) t))
+    (should-not (supervisor-entry-stdout-log-file parsed))
+    (should-not (supervisor-entry-stderr-log-file parsed))
+    (should (eq (supervisor-entry-type parsed) 'simple))
+    (should (eq (supervisor-entry-stage parsed) 'stage3))))
 
 (ert-deftest supervisor-test-parse-plist-entry ()
   "Parse a plist-style entry with options."
   (let ((parsed (supervisor--parse-entry
                  '("nm-applet" :type simple :stage stage2 :delay 3 :restart nil))))
-    (should (equal (nth 0 parsed) "nm-applet"))
-    (should (= (nth 2 parsed) 3))                ; delay
-    (should (eq (nth 4 parsed) 'no))              ; restart-policy
-    (should (eq (nth 6 parsed) 'simple))
-    (should (eq (nth 7 parsed) 'stage2))))
+    (should (equal (supervisor-entry-id parsed) "nm-applet"))
+    (should (= (supervisor-entry-delay parsed) 3))
+    (should (eq (supervisor-entry-restart-policy parsed) 'no))
+    (should (eq (supervisor-entry-type parsed) 'simple))
+    (should (eq (supervisor-entry-stage parsed) 'stage2))))
 
 (ert-deftest supervisor-test-parse-explicit-id ()
   "Parse entry with explicit :id."
   (let ((parsed (supervisor--parse-entry
                  '("/usr/bin/nm-applet" :id "network"))))
-    (should (equal (nth 0 parsed) "network"))))
+    (should (equal (supervisor-entry-id parsed) "network"))))
 
 (ert-deftest supervisor-test-parse-oneshot ()
   "Parse oneshot entry."
   (let ((parsed (supervisor--parse-entry
                  '("xrdb ~/.Xresources" :type oneshot :stage stage1))))
-    (should (eq (nth 6 parsed) 'oneshot))
-    (should (eq (nth 7 parsed) 'stage1))))
+    (should (eq (supervisor-entry-type parsed) 'oneshot))
+    (should (eq (supervisor-entry-stage parsed) 'stage1))))
 
 (ert-deftest supervisor-test-parse-enabled-disabled ()
   "Parse :enabled and :disabled flags."
@@ -236,12 +239,36 @@ core symbols exist without dashboard/cli-specific dependencies."
 (ert-deftest supervisor-test-parse-after-string ()
   "Parse :after as string."
   (let ((parsed (supervisor--parse-entry '("bar" :after "foo"))))
-    (should (equal (nth 8 parsed) '("foo")))))
+    (should (equal (supervisor-entry-after parsed) '("foo")))))
 
 (ert-deftest supervisor-test-parse-after-list ()
   "Parse :after as list."
   (let ((parsed (supervisor--parse-entry '("baz" :after ("foo" "bar")))))
-    (should (equal (nth 8 parsed) '("foo" "bar")))))
+    (should (equal (supervisor-entry-after parsed) '("foo" "bar")))))
+
+(ert-deftest supervisor-test-parse-stream-log-files ()
+  "Parse per-stream log file options."
+  (let ((parsed (supervisor--parse-entry
+                 '("svc-cmd"
+                   :stdout-log-file "/tmp/svc.out.log"
+                   :stderr-log-file "/tmp/svc.err.log"))))
+    (should (equal (supervisor-entry-stdout-log-file parsed)
+                   "/tmp/svc.out.log"))
+    (should (equal (supervisor-entry-stderr-log-file parsed)
+                   "/tmp/svc.err.log"))))
+
+(ert-deftest supervisor-test-validate-stream-log-files ()
+  "Validate per-stream log file options."
+  (should-not (supervisor--validate-entry
+               '("svc-cmd"
+                 :stdout-log-file "/tmp/svc.out.log"
+                 :stderr-log-file "/tmp/svc.err.log")))
+  (should (string-match-p ":stdout-log-file"
+                          (supervisor--validate-entry
+                           '("svc-cmd" :stdout-log-file ""))))
+  (should (string-match-p ":stderr-log-file"
+                          (supervisor--validate-entry
+                           '("svc-cmd" :stderr-log-file 123)))))
 
 ;;; Restart policy tests
 
@@ -1367,19 +1394,18 @@ Only auto-started (not manually-started) disabled units are stopped."
 (ert-deftest supervisor-test-parse-tags ()
   "Parse :tags keyword."
   (let ((parsed (supervisor--parse-entry '("foo" :tags (x-setup network)))))
-    ;; tags is the 12th field (index 11)
-    (should (equal (nth 11 parsed) '(x-setup network)))))
+    (should (equal (supervisor-entry-tags parsed) '(x-setup network)))))
 
 (ert-deftest supervisor-test-parse-tags-default-nil ()
   "Tags default to nil when not specified."
   (let ((parsed (supervisor--parse-entry "foo")))
-    (should (null (nth 11 parsed)))))
+    (should-not (supervisor-entry-tags parsed))))
 
 (ert-deftest supervisor-test-parse-tags-single ()
   "Parse single tag (not in list)."
   (let ((parsed (supervisor--parse-entry '("foo" :tags myapp))))
     ;; Single symbol should be wrapped in list
-    (should (equal (nth 11 parsed) '(myapp)))))
+    (should (equal (supervisor-entry-tags parsed) '(myapp)))))
 
 ;;; Dry-run tests
 
@@ -1564,8 +1590,28 @@ Unit-file loader already deduplicates, so only one entry is loaded."
           (supervisor--start-process "test" "/bin/true" nil 'oneshot nil)
           ;; Log directory should not have been created
           (should-not (file-directory-p nonexistent-subdir)))
-      ;; Cleanup
-      (delete-directory temp-dir t))))
+	      ;; Cleanup
+	      (delete-directory temp-dir t))))
+
+(ert-deftest supervisor-test-start-process-logging-unavailable-does-not-fail ()
+  "Unwritable log directory does not block process startup."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--writers (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--shutting-down nil))
+    (cl-letf (((symbol-function 'supervisor--effective-log-directory)
+               (lambda () nil))
+              ((symbol-function 'supervisor--warn-log-directory)
+               #'ignore))
+      (let ((proc (supervisor--start-process "test" "/bin/true" t 'oneshot nil)))
+        (should (processp proc))
+        (while (process-live-p proc)
+          (accept-process-output nil 0.01))
+        (should-not (gethash "test" supervisor--writers))))))
 
 (ert-deftest supervisor-test-shutdown-complete-flag-without-callback ()
   "Shutdown sets complete flag even when no callback is provided."
@@ -3815,6 +3861,54 @@ conflicting ID, proving precedence derives from list position."
         (should (equal "test-svc" (plist-get form :id)))
         (should (equal "echo hello" (plist-get form :command)))))))
 
+(ert-deftest supervisor-test-seed-default-maintenance-units-creates-files ()
+  "Default maintenance seeding creates logrotate and log-prune units."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-logrotate-command "/usr/bin/rotate-stub")
+         (supervisor-log-prune-command "/usr/bin/prune-stub")
+         (supervisor-log-directory "/tmp/sv-test-logs")
+         (supervisor-logrotate-keep-days 9)
+         (supervisor-log-prune-max-total-bytes 12345))
+    (unwind-protect
+        (progn
+          (supervisor--ensure-default-maintenance-units)
+          (let ((rotate-file (expand-file-name "logrotate.el" dir))
+                (prune-file (expand-file-name "log-prune.el" dir)))
+            (should (file-exists-p rotate-file))
+            (should (file-exists-p prune-file))
+            (with-temp-buffer
+              (insert-file-contents rotate-file)
+              (should (string-match-p ":id \"logrotate\"" (buffer-string)))
+              (should (string-match-p "rotate-stub" (buffer-string)))
+              (should (string-match-p "--signal-reopen" (buffer-string))))
+            (with-temp-buffer
+              (insert-file-contents prune-file)
+              (should (string-match-p ":id \"log-prune\"" (buffer-string)))
+              (should (string-match-p "prune-stub" (buffer-string)))
+              (should (string-match-p ":requires (\"logrotate\")" (buffer-string))))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-seed-default-maintenance-units-does-not-overwrite-existing ()
+  "Maintenance seeding preserves existing units while seeding missing ones."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-logrotate-command "/usr/bin/rotate-stub")
+         (supervisor-log-prune-command "/usr/bin/prune-stub")
+         (supervisor-log-directory "/tmp/sv-test-logs")
+         (supervisor-logrotate-keep-days 14)
+         (supervisor-log-prune-max-total-bytes 999))
+    (unwind-protect
+        (let ((rotate-file (expand-file-name "logrotate.el" dir)))
+          (write-region "(:id \"logrotate\" :command \"echo custom\")\n"
+                        nil rotate-file nil 'silent)
+          (supervisor--ensure-default-maintenance-units)
+          (with-temp-buffer
+            (insert-file-contents rotate-file)
+            (should (string-match-p "echo custom" (buffer-string))))
+          (should (file-exists-p (expand-file-name "log-prune.el" dir))))
+      (delete-directory dir t))))
+
 (ert-deftest supervisor-test-cli-cat-existing-unit-file ()
   "CLI cat outputs raw content of existing unit file."
   (let* ((dir (make-temp-file "units-" t))
@@ -3842,6 +3936,25 @@ conflicting ID, proving precedence derives from list position."
                   (supervisor-cli-result-exitcode result)))
       (should (string-match "not found"
                             (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-cat-builtin-no-unit-file ()
+  "CLI cat explains built-in entries without a backing unit file."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--authority-snapshot nil)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
+         (supervisor-timer-subsystem-mode t))
+    (unwind-protect
+        (let ((result (supervisor--cli-dispatch '("cat" "logrotate"))))
+          (should (supervisor-cli-result-p result))
+          (should (= supervisor-cli-exit-failure
+                     (supervisor-cli-result-exitcode result)))
+          (should (string-match
+                   "No unit file on disk for 'logrotate'"
+                   (supervisor-cli-result-output result))))
+      (delete-directory dir t))))
 
 (ert-deftest supervisor-test-cli-cat-no-args ()
   "CLI cat requires an ID argument."
@@ -3982,6 +4095,57 @@ conflicting ID, proving precedence derives from list position."
       (should (assoc 'unit_file first-entry))
       (should (stringp (cdr (assoc 'unit_file first-entry)))))))
 
+(ert-deftest supervisor-test-cli-status-builtin-omits-unit-file-line ()
+  "CLI status omits unit-file line for built-ins without disk units."
+  (let* ((dir (make-temp-file "units-" t))
+         (logs (make-temp-file "logs-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor-log-directory logs)
+         (supervisor--authority-snapshot nil)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
+         (supervisor-timer-subsystem-mode t)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("status" "logrotate"))))
+    (unwind-protect
+        (progn
+          (should (= supervisor-cli-exit-success
+                     (supervisor-cli-result-exitcode result)))
+          (should-not (string-match "Unit file:"
+                                    (supervisor-cli-result-output result))))
+      (delete-directory logs t)
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-cli-status-json-builtin-unit-file-null ()
+  "CLI status --json sets unit_file to null for fileless built-ins."
+  (let* ((dir (make-temp-file "units-" t))
+         (logs (make-temp-file "logs-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor-log-directory logs)
+         (supervisor--authority-snapshot nil)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
+         (supervisor-timer-subsystem-mode t)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (result (supervisor--cli-dispatch '("status" "logrotate" "--json"))))
+    (unwind-protect
+        (let* ((parsed (json-read-from-string
+                        (supervisor-cli-result-output result)))
+               (entries (cdr (assoc 'entries parsed)))
+               (first-entry (and (> (length entries) 0)
+                                 (aref entries 0))))
+          (should (= supervisor-cli-exit-success
+                     (supervisor-cli-result-exitcode result)))
+          (should first-entry)
+          (should (assoc 'unit_file first-entry))
+          (should-not (cdr (assoc 'unit_file first-entry))))
+      (delete-directory logs t)
+      (delete-directory dir t))))
+
 (ert-deftest supervisor-test-cli-edit-no-args ()
   "CLI edit requires an ID argument."
   (let ((result (supervisor--cli-dispatch '("edit"))))
@@ -4030,6 +4194,31 @@ conflicting ID, proving precedence derives from list position."
       (goto-char (point-min))
       (should-error (supervisor-dashboard-cat)
                     :type 'user-error))))
+
+(ert-deftest supervisor-test-dashboard-cat-builtin-no-unit-file ()
+  "Dashboard cat explains fileless built-in entries."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--authority-snapshot nil)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
+         (supervisor-timer-subsystem-mode t))
+    (unwind-protect
+        (with-temp-buffer
+          (supervisor-dashboard-mode)
+          (let ((tabulated-list-entries
+                 (list (list "logrotate"
+                             (vector "logrotate" "oneshot" "stage4"
+                                     "yes" "pending" "n/a" "yes" "-" "-")))))
+            (tabulated-list-init-header)
+            (tabulated-list-print)
+            (goto-char (point-min))
+            (let ((err (should-error (supervisor-dashboard-cat) :type 'user-error)))
+              (should (string-match-p
+                       "No unit file on disk for logrotate"
+                       (error-message-string err))))))
+      (delete-directory dir t))))
 
 (ert-deftest supervisor-test-dashboard-edit-rejects-separator ()
   "Dashboard edit rejects separator rows."
@@ -8500,7 +8689,7 @@ could incorrectly preserve a non-running disabled unit."
 (ert-deftest supervisor-test-parse-entry-new-fields-defaults ()
   "Parsed entry has nil defaults for P2 and PT3 fields."
   (let ((entry (supervisor--parse-entry "echo hello")))
-    (should (= (length entry) 29))
+    (should (= (length entry) 31))
     (should-not (supervisor-entry-working-directory entry))
     (should-not (supervisor-entry-environment entry))
     (should-not (supervisor-entry-environment-file entry))
@@ -8847,7 +9036,7 @@ could incorrectly preserve a non-running disabled unit."
                :kill-signal 'SIGTERM
                :kill-mode 'mixed))
          (entry (supervisor-service-to-entry svc)))
-    (should (= (length entry) 29))
+    (should (= (length entry) 31))
     (should (equal (supervisor-entry-working-directory entry) "/opt"))
     (should (equal (supervisor-entry-environment entry) '(("K" . "V"))))
     (should (equal (supervisor-entry-environment-file entry) '("/etc/env")))
@@ -8880,9 +9069,9 @@ could incorrectly preserve a non-running disabled unit."
                       :kill-signal SIGTERM)))
          (plan (supervisor--build-plan programs))
          (entries (supervisor-plan-entries plan)))
-    ;; Both entries must be 29 fields
+    ;; Both entries must be full parsed tuples.
     (dolist (entry entries)
-      (should (= (length entry) 29)))
+      (should (= (length entry) 31)))
     ;; svc-a new fields preserved
     (let ((a (cl-find "svc-a" entries :key #'car :test #'equal)))
       (should (equal (supervisor-entry-working-directory a) "/opt"))
@@ -9859,10 +10048,10 @@ could incorrectly preserve a non-running disabled unit."
     (should-not (supervisor-entry-remain-after-exit entry))
     (should-not (supervisor-entry-success-exit-status entry))))
 
-(ert-deftest supervisor-test-parse-entry-27-elements ()
-  "Parse entry returns 29 elements."
+(ert-deftest supervisor-test-parse-entry-31-elements ()
+  "Parse entry returns 31 elements."
   (let ((entry (supervisor--parse-entry "sleep 300")))
-    (should (= (length entry) 29))))
+    (should (= (length entry) 31))))
 
 ;; Validation tests for PT3 keys
 
@@ -12518,7 +12707,7 @@ No warning is emitted when there are simply no child processes."
          (supervisor--restart-timers (make-hash-table :test 'equal))
          (supervisor--logging (make-hash-table :test 'equal))
          (supervisor--logging-override (make-hash-table :test 'equal)))
-    (cl-letf (((symbol-function 'supervisor--unit-file-path)
+    (cl-letf (((symbol-function 'supervisor--unit-file-existing-path)
                (lambda (_id) "/etc/supervisor/svc.sv"))
               ((symbol-function 'supervisor--authority-tier-for-id)
                (lambda (_id) 2))
@@ -12958,6 +13147,8 @@ No warning is emitted when there are simply no child processes."
        (supervisor-entry-id entry)
        (supervisor-entry-command entry)
        (supervisor-entry-logging-p entry)
+       (supervisor-entry-stdout-log-file entry)
+       (supervisor-entry-stderr-log-file entry)
        (supervisor-entry-type entry)
        (supervisor-entry-restart-policy entry)
        (supervisor-entry-oneshot-blocking entry)
@@ -13357,7 +13548,7 @@ No warning is emitted when there are simply no child processes."
     (unwind-protect
         (progn
           (puthash "test-reload-id" proc supervisor--processes)
-          ;; 29-element entry with :user="webuser" at 27, :group="webgrp" at 28
+          ;; Legacy entry with :user / :group at trailing positions.
           (cl-letf (((symbol-function 'supervisor--reload-find-entry)
                      (lambda (_id)
                        (list "test-reload-id" "sleep 300" 0 t 'always t
@@ -13371,7 +13562,7 @@ No warning is emitted when there are simply no child processes."
                     ((symbol-function 'supervisor--start-process)
                      (lambda (_id _cmd _logging _type _restart
                               &optional _is-restart _wd _env _ef _rs _ufd
-                              user group)
+                              user group _stdout-log-file _stderr-log-file)
                        (setq captured-user user)
                        (setq captured-group group)
                        t))
@@ -14622,20 +14813,59 @@ PATH set to exclude fuser."
 
 (ert-deftest supervisor-test-build-prune-command-format ()
   "Build-prune-command returns a properly formatted command string."
-  (let ((supervisor-log-prune-command "/opt/prune")
-        (supervisor-log-directory "/var/log/sv")
-        (supervisor-log-prune-max-total-bytes 2048))
-    (let ((cmd (supervisor--build-prune-command)))
-      (should (stringp cmd))
-      (should (string-match-p (regexp-quote "/opt/prune") cmd))
-      (should (string-match-p "--log-dir" cmd))
-      (should (string-match-p (regexp-quote "/var/log/sv") cmd))
-      (should (string-match-p "--max-total-bytes" cmd))
-      (should (string-match-p "2048" cmd)))))
+  (let ((log-directory (make-temp-file "logs-" t)))
+    (unwind-protect
+        (let ((supervisor-log-prune-command "/opt/prune")
+              (supervisor-log-directory log-directory)
+              (supervisor-log-prune-max-total-bytes 2048))
+          (let ((cmd (supervisor--build-prune-command)))
+            (should (stringp cmd))
+            (should (string-match-p (regexp-quote "/opt/prune") cmd))
+            (should (string-match-p "--log-dir" cmd))
+            (should (string-match-p (regexp-quote log-directory) cmd))
+            (should (string-match-p "--max-total-bytes" cmd))
+            (should (string-match-p "2048" cmd))))
+      (delete-directory log-directory t))))
+
+(ert-deftest supervisor-test-effective-log-directory-falls-back ()
+  "Unwritable configured log directory falls back to user-local default."
+  (let ((supervisor-log-directory "/root/locked-supervisor")
+        (user-emacs-directory "/tmp/emacs-user/")
+        (warnings nil))
+    (cl-letf (((symbol-function 'supervisor--ensure-directory-writable)
+               (lambda (directory)
+                 (cond
+                  ((equal directory "/root/locked-supervisor") nil)
+                  ((equal directory "/tmp/emacs-user/supervisor")
+                   directory)
+                  (t nil))))
+              ((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) warnings))))
+      (should (equal "/tmp/emacs-user/supervisor"
+                     (supervisor--effective-log-directory)))
+      (should (car warnings))
+      (should (string-match-p "using /tmp/emacs-user/supervisor"
+                              (car warnings))))))
+
+(ert-deftest supervisor-test-effective-log-directory-unavailable ()
+  "No writable log directory returns nil and emits a warning."
+  (let ((supervisor-log-directory "/root/locked-supervisor")
+        (user-emacs-directory "/tmp/emacs-user/")
+        (warnings nil))
+    (cl-letf (((symbol-function 'supervisor--ensure-directory-writable)
+               (lambda (_directory) nil))
+              ((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) warnings))))
+      (should-not (supervisor--effective-log-directory))
+      (should (car warnings))
+      (should (string-match-p "file logging disabled" (car warnings))))))
 
 (ert-deftest supervisor-test-signal-writers-reopen ()
   "Signal-writers-reopen sends SIGHUP to live writers."
   (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
         (signals-sent nil)
         (fake-proc (start-process "fake-writer" nil "sleep" "300")))
     (unwind-protect
@@ -14704,21 +14934,25 @@ PATH set to exclude fuser."
 
 ;;;; Phase 8: Default Daily Unit + Timer Wiring
 
-(ert-deftest supervisor-test-builtin-programs-logrotate ()
-  "Built-in programs include a logrotate oneshot in stage4."
-  (let ((supervisor-timer-subsystem-mode t))
-    (let ((builtins (supervisor--builtin-programs)))
-      (should (= 1 (length builtins)))
-      (let ((entry (car builtins)))
-        (should (stringp (car entry)))
-        (should (equal "logrotate" (plist-get (cdr entry) :id)))
-        (should (eq 'oneshot (plist-get (cdr entry) :type)))
-        (should (eq 'stage4 (plist-get (cdr entry) :stage)))))))
-
-(ert-deftest supervisor-test-builtin-programs-nil-when-timer-off ()
-  "Built-in programs returns nil when timer subsystem is disabled."
-  (let ((supervisor-timer-subsystem-mode nil))
-    (should (null (supervisor--builtin-programs)))))
+(ert-deftest supervisor-test-builtin-programs-log-maintenance-pair ()
+  "Built-in programs include logrotate and log-prune oneshots."
+  (let ((builtins (supervisor--builtin-programs)))
+    (should (= 2 (length builtins)))
+    (let* ((ids (mapcar (lambda (e) (plist-get (cdr e) :id)) builtins))
+           (rotate (cl-find "logrotate" builtins
+                            :key (lambda (e) (plist-get (cdr e) :id))
+                            :test #'equal))
+           (prune (cl-find "log-prune" builtins
+                           :key (lambda (e) (plist-get (cdr e) :id))
+                           :test #'equal)))
+      (should (member "logrotate" ids))
+      (should (member "log-prune" ids))
+      (should (eq 'oneshot (plist-get (cdr rotate) :type)))
+      (should (eq 'stage4 (plist-get (cdr rotate) :stage)))
+      (should (eq 'oneshot (plist-get (cdr prune) :type)))
+      (should (eq 'stage4 (plist-get (cdr prune) :stage)))
+      (should (equal '("logrotate") (plist-get (cdr prune) :after)))
+      (should (equal '("logrotate") (plist-get (cdr prune) :requires))))))
 
 (ert-deftest supervisor-test-builtin-programs-overridden-by-disk ()
   "Disk unit file with same ID overrides the built-in entry."
@@ -14758,6 +14992,9 @@ PATH set to exclude fuser."
                (timers (supervisor-timer-build-list plan)))
           (should (cl-find "logrotate-daily" timers
                            :key #'supervisor-timer-id
+                           :test #'equal))
+          (should (cl-find "log-prune-daily" timers
+                           :key #'supervisor-timer-id
                            :test #'equal)))
       (delete-directory dir t))))
 
@@ -14786,7 +15023,11 @@ PATH set to exclude fuser."
           (let ((timer (cl-find "logrotate-daily" timers
                                 :key #'supervisor-timer-id
                                 :test #'equal)))
-            (should (= 300 (supervisor-timer-on-startup-sec timer)))))
+            (should (= 300 (supervisor-timer-on-startup-sec timer))))
+          ;; Other built-in timer remains present.
+          (should (cl-find "log-prune-daily" timers
+                           :key #'supervisor-timer-id
+                           :test #'equal)))
       (delete-directory dir t))))
 
 (ert-deftest supervisor-test-timer-subsystem-default-enabled ()
@@ -14794,8 +15035,8 @@ PATH set to exclude fuser."
   ;; init-value is t, so the variable should be t by default
   (should (eq t (default-value 'supervisor-timer-subsystem-mode))))
 
-(ert-deftest supervisor-test-timer-completion-signals-writers ()
-  "Timer trigger callback calls `supervisor--signal-writers-reopen' on success."
+(ert-deftest supervisor-test-timer-completion-does-not-signal-writers ()
+  "Timer completion does not send reopen signals implicitly."
   (supervisor-test-with-unit-files
       '(("true" :id "s1" :type oneshot))
     (let* ((supervisor-timer-subsystem-mode t)
@@ -14819,11 +15060,8 @@ PATH set to exclude fuser."
               (supervisor-timer--trigger timer 'scheduled)
               ;; Callback should have been captured
               (should captured-callback)
-              ;; Call with success=t, should trigger reopen
+              ;; Completion callback should run without signaling writers.
               (funcall captured-callback t)
-              (should reopen-called)
-              ;; Reset and call with success=nil, should not trigger reopen
-              (setq reopen-called nil)
               (funcall captured-callback nil)
               (should-not reopen-called))
           (clrhash supervisor--invalid)
@@ -14896,9 +15134,110 @@ PATH set to exclude fuser."
       (when (process-live-p fake-proc)
         (delete-process fake-proc)))))
 
+(ert-deftest supervisor-test-start-process-split-stderr-wiring ()
+  "Start-process uses split stderr wiring when stream targets differ."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--stderr-pipes (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (stdout-file nil)
+        (stderr-file nil)
+        (captured-stderr nil)
+        (captured-filter nil)
+        (fake-stdout (start-process "fake-stdout-writer" nil "sleep" "300"))
+        (fake-stderr (start-process "fake-stderr-writer" nil "sleep" "300"))
+        (fake-proc (start-process "fake-svc" nil "sleep" "300"))
+        (fake-stderr-pipe 'fake-stderr-pipe))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+                   (lambda (_id _default) t))
+                  ((symbol-function 'supervisor--start-writer)
+                   (lambda (_id file)
+                     (setq stdout-file file)
+                     fake-stdout))
+                  ((symbol-function 'supervisor--start-stderr-writer)
+                   (lambda (_id file)
+                     (setq stderr-file file)
+                     fake-stderr))
+                  ((symbol-function 'supervisor--start-stderr-pipe)
+                   (lambda (_id _writer) fake-stderr-pipe))
+                  ((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (setq captured-stderr (plist-get args :stderr))
+                     (setq captured-filter (plist-get args :filter))
+                     fake-proc))
+                  ((symbol-function 'supervisor--make-process-sentinel)
+                   (lambda (&rest _args) #'ignore))
+                  ((symbol-function 'supervisor--build-launch-command)
+                   (lambda (_cmd _user _group) (list "sleep" "300"))))
+          (let ((proc (supervisor--start-process
+                       "svc" "sleep 300" t 'simple 'always
+                       nil nil nil nil nil nil nil nil
+                       "/tmp/svc.out.log" "/tmp/svc.err.log")))
+            (should proc)
+            (should (equal stdout-file "/tmp/svc.out.log"))
+            (should (equal stderr-file "/tmp/svc.err.log"))
+            (should (eq captured-stderr fake-stderr-pipe))
+            (should captured-filter)))
+      (when (process-live-p fake-proc) (delete-process fake-proc))
+      (when (process-live-p fake-stdout) (delete-process fake-stdout))
+      (when (process-live-p fake-stderr) (delete-process fake-stderr)))))
+
+(ert-deftest supervisor-test-start-process-merged-stderr-when-targets-equal ()
+  "Start-process keeps merged stderr when stream targets are the same."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--stderr-pipes (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (stderr-writer-called nil)
+        (captured-stderr 'unset)
+        (fake-writer (start-process "fake-writer" nil "sleep" "300"))
+        (fake-proc (start-process "fake-svc" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+                   (lambda (_id _default) t))
+                  ((symbol-function 'supervisor--start-writer)
+                   (lambda (_id _file) fake-writer))
+                  ((symbol-function 'supervisor--start-stderr-writer)
+                   (lambda (&rest _args)
+                     (setq stderr-writer-called t)
+                     nil))
+                  ((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (setq captured-stderr (plist-get args :stderr))
+                     fake-proc))
+                  ((symbol-function 'supervisor--make-process-sentinel)
+                   (lambda (&rest _args) #'ignore))
+                  ((symbol-function 'supervisor--build-launch-command)
+                   (lambda (_cmd _user _group) (list "sleep" "300"))))
+          (let ((proc (supervisor--start-process
+                       "svc" "sleep 300" t 'simple 'always
+                       nil nil nil nil nil nil nil nil
+                       "/tmp/svc.shared.log" "/tmp/svc.shared.log")))
+            (should proc)
+            (should-not stderr-writer-called)
+            (should-not captured-stderr)))
+      (when (process-live-p fake-proc) (delete-process fake-proc))
+      (when (process-live-p fake-writer) (delete-process fake-writer)))))
+
 (ert-deftest supervisor-test-writer-reopen-sighup-real-process ()
   "Signal-writers-reopen sends SIGHUP to live writer processes."
   (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
         (proc (start-process "test-sleep" nil "sleep" "300")))
     (unwind-protect
         (progn
@@ -14920,6 +15259,16 @@ PATH set to exclude fuser."
     (let ((cal (plist-get timer :on-calendar)))
       (should (equal 3 (plist-get cal :hour)))
       (should (equal 0 (plist-get cal :minute))))))
+
+(ert-deftest supervisor-test-builtin-log-prune-timer-schedule-is-03-05 ()
+  "Built-in log-prune-daily timer has on-calendar at 03:05."
+  (let ((timer (cl-find "log-prune-daily" supervisor--builtin-timers
+                        :key (lambda (t) (plist-get t :id))
+                        :test #'equal)))
+    (should timer)
+    (let ((cal (plist-get timer :on-calendar)))
+      (should (equal 3 (plist-get cal :hour)))
+      (should (equal 5 (plist-get cal :minute))))))
 
 (ert-deftest supervisor-test-logrotate-daily-not-scheduled-when-timer-off ()
   "Scheduler does not process timers when subsystem is off."

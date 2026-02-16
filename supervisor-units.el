@@ -35,6 +35,15 @@
 (declare-function supervisor--plist-duplicate-keys "supervisor-core" (plist))
 (declare-function supervisor--validate-entry "supervisor-core" (entry))
 (declare-function supervisor--builtin-programs "supervisor-core")
+(declare-function supervisor--logd-pid-dir "supervisor-core" ())
+(declare-function supervisor--effective-log-directory "supervisor-core" ())
+
+;; Forward declarations for supervisor-core variables used in default seeding.
+(defvar supervisor-logrotate-command)
+(defvar supervisor-log-prune-command)
+(defvar supervisor-log-directory)
+(defvar supervisor-logrotate-keep-days)
+(defvar supervisor-log-prune-max-total-bytes)
 ;;; Customization
 
 (defcustom supervisor-unit-authority-path
@@ -67,6 +76,14 @@ Default tiers (low to high):
 Each unit is a single `.el' file with a plist expression.
 Deprecated: use `supervisor-unit-authority-path' instead."
   :type 'directory
+  :group 'supervisor)
+
+(defcustom supervisor-seed-default-maintenance-units t
+  "Non-nil means seed default log maintenance units when missing.
+When enabled, `supervisor-start' and `supervisor-daemon-reload'
+create default `logrotate' and `log-prune' unit files if no
+authoritative unit definitions exist for those IDs."
+  :type 'boolean
   :group 'supervisor)
 
 ;;; Authority Root Resolution
@@ -204,7 +221,8 @@ Return a plist with keys:
 
 (defconst supervisor--unit-file-keywords
   '(:id :command :type :stage :delay :after :requires :enabled :disabled
-    :restart :no-restart :logging :oneshot-blocking :oneshot-async :oneshot-timeout :tags
+    :restart :no-restart :logging :stdout-log-file :stderr-log-file
+    :oneshot-blocking :oneshot-async :oneshot-timeout :tags
     :working-directory :environment :environment-file
     :exec-stop :exec-reload :restart-sec
     :description :documentation :before :wants
@@ -231,6 +249,14 @@ active root).  Return nil when no active roots exist."
         (when active
           (expand-file-name (concat id ".el")
                             (car (last active))))))))
+
+(defun supervisor--unit-file-existing-path (id)
+  "Return existing authoritative unit file path for ID, or nil.
+Unlike `supervisor--unit-file-path', this returns nil when ID has no
+backing unit file on disk."
+  (when-let* ((path (supervisor--unit-file-path id)))
+    (when (file-exists-p path)
+      path)))
 
 ;;; Authority Snapshot
 
@@ -405,6 +431,96 @@ need to separate publication from reading, use
 `supervisor--read-authority-snapshot' directly."
   (supervisor--publish-authority-snapshot)
   (supervisor--read-authority-snapshot))
+
+(defun supervisor--maintenance-seed-root ()
+  "Return authority root to seed default maintenance units into.
+Prefer the highest-precedence active root.  If none are active, use
+the highest configured root from `supervisor-unit-authority-path'."
+  (or (car (last (supervisor--active-authority-roots)))
+      (car (last supervisor-unit-authority-path))))
+
+(defun supervisor--maintenance-unit-specs ()
+  "Return default maintenance unit specs as plists."
+  (let* ((effective-log-dir
+          (if (fboundp 'supervisor--effective-log-directory)
+              (or (supervisor--effective-log-directory)
+                  supervisor-log-directory)
+            supervisor-log-directory))
+         (log-dir (shell-quote-argument effective-log-dir))
+         (pid-dir (shell-quote-argument
+                   (if (fboundp 'supervisor--logd-pid-dir)
+                       (supervisor--logd-pid-dir)
+                     effective-log-dir)))
+         (rotate-cmd
+          (format "%s --log-dir %s --keep-days %d --signal-reopen --pid-dir %s"
+                  (shell-quote-argument supervisor-logrotate-command)
+                  log-dir
+                  supervisor-logrotate-keep-days
+                  pid-dir))
+         (prune-cmd
+          (format "%s --log-dir %s --max-total-bytes %d"
+                  (shell-quote-argument supervisor-log-prune-command)
+                  log-dir
+                  supervisor-log-prune-max-total-bytes)))
+    (list
+     (list :id "logrotate"
+           :command rotate-cmd
+           :description "Rotate supervisor log files")
+     (list :id "log-prune"
+           :command prune-cmd
+           :after '("logrotate")
+           :requires '("logrotate")
+           :description "Prune supervisor log files"))))
+
+(defun supervisor--maintenance-unit-content (spec)
+  "Return unit-file content string for maintenance SPEC."
+  (let ((id (plist-get spec :id))
+        (command (plist-get spec :command))
+        (after (plist-get spec :after))
+        (requires (plist-get spec :requires))
+        (description (plist-get spec :description)))
+    (concat "(:id " (prin1-to-string id) "\n"
+            " :command " (prin1-to-string command) "\n"
+            " :type oneshot\n"
+            " :stage stage4\n"
+            (if after
+                (format " :after %S\n" after)
+              "")
+            (if requires
+                (format " :requires %S\n" requires)
+              "")
+            " :description " (prin1-to-string description) ")\n")))
+
+(defun supervisor--ensure-default-maintenance-units ()
+  "Ensure default log maintenance unit files exist in authority roots.
+If `logrotate' and `log-prune' are not present in authority winners,
+seed default unit files into the highest-precedence root."
+  (when supervisor-seed-default-maintenance-units
+    (when-let* ((root (supervisor--maintenance-seed-root)))
+      (condition-case err
+          (make-directory root t)
+        (error
+         (supervisor--log
+          'warning
+          "cannot create unit authority root %s for maintenance seeding: %s"
+          root (error-message-string err))
+         (setq root nil)))
+      (when root
+        (let* ((resolved (supervisor--resolve-authority))
+               (winners (plist-get resolved :winners)))
+          (dolist (spec (supervisor--maintenance-unit-specs))
+            (let* ((id (plist-get spec :id))
+                   (path (expand-file-name (concat id ".el") root)))
+              (unless (gethash id winners)
+                (unless (file-exists-p path)
+                  (condition-case err
+                      (write-region (supervisor--maintenance-unit-content spec)
+                                    nil path nil 'silent)
+                    (error
+                     (supervisor--log
+                      'warning
+                      "cannot seed default maintenance unit %s at %s: %s"
+                      id path (error-message-string err)))))))))))))
 
 (defun supervisor--load-programs ()
   "Reload programs from disk and update the cache.

@@ -757,8 +757,6 @@ Returns t if triggered, nil if skipped."
       (supervisor--start-entry-async
        entry
        (lambda (success)
-         (when (and success (fboundp 'supervisor--signal-writers-reopen))
-           (supervisor--signal-writers-reopen))
          (supervisor-timer--on-target-complete id target-id success)))
       t)))
 

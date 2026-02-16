@@ -9,6 +9,11 @@ familiar systemd-like interface --- service types, dependencies, restart
 policies --- adapted for Emacs.  ~M-x supervisor~ is the main interface:
 start, stop, inspect, and manage everything from inside Emacs.
 
+Core orchestration is in Emacs Lisp.  Two bundled ~libexec~ helpers are used
+for OS-level operations where direct process primitives are required:
+~supervisor-logd~ (high-frequency log writing/rotation path) and
+~supervisor-runas~ (privilege drop via ~setuid~/~setgid~).
+
 ** Features (at a glance)
 
 - *Dashboard*: ~M-x supervisor~ --- live view with lifecycle actions, policy
@@ -146,6 +151,8 @@ Each unit file is a single plist expression with ~:id~ and ~:command~ required.
 | ~:restart~ | boolean or policy symbol | ~always~ | For ~simple~ only; accepts ~t~/~nil~ or ~always~/~no~/~on-success~/~on-failure~ |
 | ~:no-restart~ | boolean | ~nil~ | Inverse form of ~:restart~ (~t~ means policy ~no~) |
 | ~:logging~ | boolean | ~t~ | Per-process log capture |
+| ~:stdout-log-file~ | string or ~nil~ | ~nil~ | Optional stdout log path override |
+| ~:stderr-log-file~ | string or ~nil~ | ~nil~ | Optional stderr log path override; defaults to stdout target |
 | ~:oneshot-blocking~ | boolean | ~supervisor-oneshot-default-blocking~ | For ~oneshot~ only |
 | ~:oneshot-async~ | boolean | ~nil~ | Inverse of ~:oneshot-blocking~ |
 | ~:oneshot-timeout~ | number or ~nil~ | ~supervisor-oneshot-timeout~ | For ~oneshot~ only |
@@ -189,6 +196,7 @@ Validation is performed by unit-file validation
 - ~:oneshot-timeout~ must be a positive number or ~nil~.
 - Boolean flag keys (~:enabled~, ~:disabled~, ~:logging~, ~:no-restart~,
   ~:oneshot-blocking~, ~:oneshot-async~) must be exactly ~t~ or ~nil~.
+- ~:stdout-log-file~ and ~:stderr-log-file~ must be non-empty strings or ~nil~.
 - Mutually exclusive pairs are rejected: ~:enabled~ with ~:disabled~, ~:restart~
   with ~:no-restart~, and ~:oneshot-blocking~ with ~:oneshot-async~.
 - ~:restart-sec~ with a disabled restart policy (~:no-restart t~, ~:restart no~,
@@ -397,7 +405,9 @@ highest-precedence root wins completely---no per-key merge is performed.
   warning.
 - Cross-root, same ID: highest-precedence root wins, lower-precedence entries
   are shadowed.
-- ID absent from all roots: not loaded (use ~edit ID~ to create a new unit).
+- ID absent from all roots: not loaded (use ~edit ID~ to create a new unit),
+  except default log maintenance IDs (~logrotate~, ~log-prune~) when
+  ~supervisor-seed-default-maintenance-units~ is enabled.
 
 *** Override Example
 
@@ -854,7 +864,8 @@ To disable:
 #+end_src
 
 Disabling the timer subsystem disables all timer-driven scheduling,
-including the built-in daily log maintenance.
+including ~logrotate-daily~ and ~log-prune-daily~.  It does not disable
+stage-based startup units.
 
 ** Timer Configuration (~supervisor-timers~)
 
@@ -1454,13 +1465,33 @@ This is optional. You can also check the dashboard or logs.
 - Per-process logs:
 - ~<supervisor-log-directory>/log-<id>.log~ (controlled per service logging policy)
 
+By default, each unit merges stdout and stderr into the same per-process
+log file.  Units can override stream targets with ~:stdout-log-file~ and
+~:stderr-log-file~.  If both resolve to the same path, streams remain merged.
+If they differ, supervisor writes stdout and stderr via separate logd writers.
+
 Log files are managed by external ~supervisor-logd~ writer processes.
 Each writer enforces a per-file size cap (~supervisor-logd-max-file-size~)
 and rotates locally when the limit is reached.
 
+The default ~supervisor-log-directory~ is user-local
+(~(expand-file-name "supervisor" user-emacs-directory)~), so userland setups
+work without write access to ~/ and /var/log.
+
+If ~supervisor-log-directory~ is configured to an unwritable location,
+supervisor automatically falls back to the same user-local default path.
+If neither location is writable, file logging is skipped and services
+still run.
+
 Bundled helpers can be built from Emacs with
 ~M-x supervisor-build-libexec-helpers~.  Startup can prompt or auto-build
 missing/stale helpers via ~supervisor-libexec-build-on-startup~.
+
+~supervisor-logd~ and ~supervisor-runas~ are deliberately narrow helper
+executables.  ~supervisor-logd~ handles continuous append/rotate I/O outside
+the Emacs Lisp scheduler loop, and ~supervisor-runas~ performs privileged
+identity transitions (~setuid~/~setgid~/~initgroups~) when units request
+~:user~ / ~:group~.
 
 *** Scheduled Rotation
 
@@ -1550,20 +1581,23 @@ Three paths keep log growth bounded end-to-end:
    the directory within the total size cap.
 
 2. *Daily automatic path* --- a built-in ~logrotate~ oneshot unit and
-   ~logrotate-daily~ timer run log rotation and pruning every day at
-   03:00.  This runs automatically when the timer subsystem is enabled
-   (the default).  After rotation completes, all log writers receive
-   SIGHUP to reopen their files.
+   a built-in ~log-prune~ oneshot unit are scheduled by separate timers:
+   ~logrotate-daily~ at 03:00 and ~log-prune-daily~ at 03:05.
+   This runs automatically when the timer subsystem is enabled
+   (the default).  The rotate unit uses ~--signal-reopen~, so log writers
+   reopen after rotation.
 
 3. *Manual path* --- ~M-x supervisor-run-log-maintenance~ runs the
    full maintenance sequence asynchronously: rotate all active logs,
    signal writers to reopen, then prune.
 
 When the timer subsystem is enabled (the default), the built-in
-~logrotate~ unit appears in stage4 as a oneshot service.
+~logrotate~ and ~log-prune~ units appear in stage4 as oneshot services.
 A user-created unit file with ~:id "logrotate"~ overrides the built-in
-entry.  Similarly, a user timer with ~:id "logrotate-daily"~ in
-~supervisor-timers~ overrides the built-in timer schedule.
+entry, and a user-created unit file with ~:id "log-prune"~ overrides
+that built-in entry.  Similarly, user timers with IDs
+~logrotate-daily~ or ~log-prune-daily~ in ~supervisor-timers~ override
+the built-in timer schedules.
 
 To disable automatic daily maintenance, either disable the timer
 subsystem entirely:
@@ -1577,7 +1611,9 @@ Or override the built-in timer with a disabled one:
 #+begin_src emacs-lisp
 (setq supervisor-timers
       '((:id "logrotate-daily" :target "logrotate"
-         :on-calendar (:hour 3 :minute 0) :enabled nil)))
+         :on-calendar (:hour 3 :minute 0) :enabled nil)
+        (:id "log-prune-daily" :target "log-prune"
+         :on-calendar (:hour 3 :minute 5) :enabled nil)))
 #+end_src
 
 All paths use the same lock file (~<log-dir>/.prune.lock~) for prune
@@ -1656,6 +1692,7 @@ All user options (defcustom) are listed below.
 | Variable | Default | Purpose |
 | ~supervisor-unit-authority-path~ | ~'("/usr/lib/supervisor.el/" "/etc/supervisor.el/" "~/.config/supervisor.el/")~ | Authority roots (low to high precedence) |
 | ~supervisor-unit-directory~ | ~(XDG_CONFIG_HOME or ~/.config)/supervisor/units/~ | Legacy unit directory (deprecated; use ~supervisor-unit-authority-path~) |
+| ~supervisor-seed-default-maintenance-units~ | ~t~ | Auto-seed default ~logrotate~ / ~log-prune~ unit files when missing |
 
 ** Timer Options
 

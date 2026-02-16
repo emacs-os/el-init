@@ -45,6 +45,7 @@
 
 ;; Forward declarations for unit-file module (optional)
 (declare-function supervisor--unit-file-path "supervisor-units" (id))
+(declare-function supervisor--unit-file-existing-path "supervisor-units" (id))
 (declare-function supervisor--unit-file-scaffold "supervisor-units" (id))
 (declare-function supervisor--validate-unit-file-buffer "supervisor-units" ())
 (declare-function supervisor--authority-root-for-id "supervisor-units" (id))
@@ -564,9 +565,14 @@ If PROGRAMS is provided, use it instead of calling
                                     invalid-reason)
                             nil)
                       entries))
-            (pcase-let ((`(,id ,_cmd ,_delay ,enabled-p ,restart-policy ,logging-p
-                               ,type ,stage ,_after ,_owait ,_otimeout ,tags)
-                         (supervisor--parse-entry entry)))
+            (let* ((parsed (supervisor--parse-entry entry))
+                   (id (supervisor-entry-id parsed))
+                   (enabled-p (supervisor-entry-enabled-p parsed))
+                   (restart-policy (supervisor-entry-restart-policy parsed))
+                   (logging-p (supervisor-entry-logging-p parsed))
+                   (type (supervisor-entry-type parsed))
+                   (stage (supervisor-entry-stage parsed))
+                   (tags (supervisor-entry-tags parsed)))
               (when (and (or (null stage-filter) (eq stage stage-filter))
                          (or (null tag-filter) (member tag-filter tags)))
                 (push (list id
@@ -640,7 +646,7 @@ If PROGRAMS is provided, use it instead of calling
               (if (null parsed)
                   (cl-incf invalid)
                 (let* ((id (car parsed))
-                       (type (nth 6 parsed))
+                       (type (supervisor-entry-type parsed))
                        (alive (if snapshot
                                   (gethash id process-alive)
                                 (let ((proc (gethash id supervisor--processes)))
@@ -812,8 +818,14 @@ With prefix argument, show status legend instead."
          (last-exit-info (supervisor--telemetry-last-exit-info id))
          (next-eta (supervisor--telemetry-next-restart-eta id))
          (metrics (when pid (supervisor--telemetry-process-metrics pid)))
-         (unit-file (when (fboundp 'supervisor--unit-file-path)
-                      (supervisor--unit-file-path id)))
+         (unit-file
+          (cond
+           ((fboundp 'supervisor--unit-file-existing-path)
+            (supervisor--unit-file-existing-path id))
+           ((fboundp 'supervisor--unit-file-path)
+            (when-let* ((path (supervisor--unit-file-path id)))
+              (when (file-exists-p path)
+                path)))))
          (log-tail (supervisor--telemetry-log-tail id 5)))
     (with-help-window "*supervisor-info*"
       ;; Header
@@ -1237,6 +1249,8 @@ Opens the unit file with `view-mode' so `q' returns to the dashboard."
         (user-error "No active authority roots configured"))
        ((file-exists-p path)
         (view-file path))
+       ((supervisor--get-entry-for-id id)
+        (user-error "No unit file on disk for %s; use edit to create an override" id))
        (t
         (user-error "Unit file not found: %s" path))))))
 
@@ -1383,13 +1397,13 @@ Run `supervisor-start' first to populate computed dependency data."
         (message "Cannot show dependencies for invalid entry: %s" id)
       (let ((entry (supervisor--get-entry-for-id id)))
         (if entry
-            (let* ((my-stage (nth 7 entry))
+            (let* ((my-stage (supervisor-entry-stage entry))
                    (cycle-fallback (gethash id supervisor--cycle-fallback-ids))
                    ;; Use computed deps if available, else show raw (pre-start)
                    (computed (gethash id supervisor--computed-deps))
                    (effective-deps (if cycle-fallback
                                        nil  ; cycle fallback clears all deps
-                                     (or computed (nth 8 entry))))
+                                     (or computed (supervisor-entry-after entry))))
                    ;; Find entries that depend on this one (computed)
                    (dependents nil))
               ;; Scan computed-deps for entries that list this ID
@@ -1461,7 +1475,7 @@ Displays computed dependencies after validation and cycle fallback."
                 (cl-incf idx)
                 (unless (gethash id supervisor--invalid)
                   (let ((parsed (supervisor--parse-entry entry)))
-                    (when (eq (nth 7 parsed) stage-name)
+                    (when (eq (supervisor-entry-stage parsed) stage-name)
                       (push id stage-entries)))))))
           (when stage-entries
             (princ (format "=== %s ===\n" (upcase (symbol-name stage-name))))

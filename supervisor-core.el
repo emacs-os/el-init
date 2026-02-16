@@ -52,6 +52,7 @@ See supervisor-timer.el for the full mode definition.")
 
 ;; Forward declarations for unit-file module
 (declare-function supervisor--load-programs "supervisor-units" ())
+(declare-function supervisor--ensure-default-maintenance-units "supervisor-units" ())
 (declare-function supervisor--publish-authority-snapshot "supervisor-units" ())
 (declare-function supervisor--read-authority-snapshot "supervisor-units" ())
 (declare-function supervisor--active-authority-roots "supervisor-units" ())
@@ -111,6 +112,11 @@ Example:
   '((:id "logrotate-daily"
      :target "logrotate"
      :on-calendar (:hour 3 :minute 0)
+     :enabled t
+     :persistent t)
+    (:id "log-prune-daily"
+     :target "log-prune"
+     :on-calendar (:hour 3 :minute 5)
      :enabled t
      :persistent t))
   "Built-in timer definitions merged with `supervisor-timers'.
@@ -268,7 +274,9 @@ dependency unlocks, and restarts."
 
 (defcustom supervisor-log-to-file nil
   "When non-nil, write supervisor events to a log file.
-The log file is `supervisor.log' in `supervisor-log-directory'.
+The log file is `supervisor.log' in the effective log directory.
+If `supervisor-log-directory' is not writable, supervisor falls back
+to the default user-local log directory.
 This is independent of `supervisor-verbose' - all events are logged
 to file when enabled, regardless of verbose setting."
   :type 'boolean
@@ -336,8 +344,9 @@ invalid hash so they appear in the dashboard and CLI."
 ;;; Logging
 
 (defun supervisor--supervisor-log-file ()
-  "Return path to the supervisor-level log file."
-  (expand-file-name "supervisor.log" supervisor-log-directory))
+  "Return path to the supervisor-level log file, or nil."
+  (when-let* ((log-directory (supervisor--effective-log-directory)))
+    (expand-file-name "supervisor.log" log-directory)))
 
 (defun supervisor--log (level format-string &rest args)
   "Log a message at LEVEL with FORMAT-STRING and ARGS.
@@ -354,10 +363,14 @@ written to the supervisor log file."
          (msg (format "Supervisor: %s%s" prefix (apply #'format format-string args))))
     ;; Write to log file if enabled (all levels)
     (when supervisor-log-to-file
-      (supervisor--ensure-log-directory)
-      (let ((timestamp (format-time-string "[%Y-%m-%d %H:%M:%S] ")))
-        (write-region (concat timestamp msg "\n") nil
-                      (supervisor--supervisor-log-file) t 'silent)))
+      (when-let* ((log-file (supervisor--supervisor-log-file)))
+        (let ((timestamp (format-time-string "[%Y-%m-%d %H:%M:%S] ")))
+          (condition-case err
+              (write-region (concat timestamp msg "\n") nil log-file t 'silent)
+            (error
+             (supervisor--warn-log-directory
+              "cannot write supervisor log file %s: %s"
+              log-file (error-message-string err)))))))
     ;; Display message based on level and verbose setting
     (when (or supervisor-verbose
               (memq level '(error warning)))
@@ -437,6 +450,7 @@ Scan PLIST and collect any key that appears more than once."
 (defconst supervisor--valid-keywords
   '(:id :type :stage :delay :after :requires :enabled :disabled
     :restart :no-restart :logging :oneshot-blocking :oneshot-async :oneshot-timeout :tags
+    :stdout-log-file :stderr-log-file
     :working-directory :environment :environment-file
     :exec-stop :exec-reload :restart-sec
     :description :documentation :before :wants
@@ -628,6 +642,17 @@ Return nil if valid, or a reason string if invalid."
           (let ((val (plist-get plist key)))
             (unless (or (eq val t) (eq val nil))
               (push (format "%s must be t or nil, got %S" key val) errors)))))
+      ;; Check stream log target file options
+      (dolist (spec '((:stdout-log-file . ":stdout-log-file")
+                      (:stderr-log-file . ":stderr-log-file")))
+        (when (plist-member plist (car spec))
+          (let ((val (plist-get plist (car spec))))
+            (unless (or (null val)
+                        (and (stringp val)
+                             (not (string-empty-p (string-trim val)))))
+              (push (format "%s must be a non-empty string or nil"
+                            (cdr spec))
+                    errors)))))
       ;; Mutually exclusive: :enabled and :disabled
       (when (and (plist-member plist :enabled)
                  (plist-member plist :disabled))
@@ -1039,10 +1064,10 @@ cycle fallback behavior.  Uses the pure plan builder internally."
                            stage-name (length sorted-entries)))
             (let ((order 1))
               (dolist (entry sorted-entries)
-                (let* ((id (nth 0 entry))
-                       (type (nth 6 entry))
-                       (delay (nth 2 entry))
-                       (enabled-p (nth 3 entry))
+                (let* ((id (supervisor-entry-id entry))
+                       (type (supervisor-entry-type entry))
+                       (delay (supervisor-entry-delay entry))
+                       (enabled-p (supervisor-entry-enabled-p entry))
                        (deps (gethash id (supervisor-plan-deps plan)))
                        (cycle (gethash id (supervisor-plan-cycle-fallback-ids plan))))
                   (princ (format "  %d. %s [%s]%s%s%s\n"
@@ -1098,6 +1123,15 @@ Masked entries are always disabled regardless of enable overrides.")
   "Hash table mapping service ID to writer process for per-service log writers.
 Each writer is a `supervisor-logd' subprocess that receives service output
 on stdin and handles all disk I/O.")
+
+(defvar supervisor--stderr-writers (make-hash-table :test 'equal)
+  "Hash table mapping service ID to dedicated stderr writer processes.
+Entries are present only when a unit uses split stdout/stderr log files.")
+
+(defvar supervisor--stderr-pipes (make-hash-table :test 'equal)
+  "Hash table mapping service ID to stderr pipe process objects.
+These pipe processes receive stderr output from service processes and
+forward it to `supervisor--stderr-writers'.")
 
 (defvar supervisor--manually-stopped (make-hash-table :test 'equal)
   "Hash table tracking entries manually stopped via CLI or dashboard.
@@ -1576,6 +1610,12 @@ Field documentation:
                    Default: t
   logging        - Whether to log stdout/stderr to file (boolean)
                    Default: t
+  stdout-log-file - Optional stdout log file path (string or nil)
+                   When nil, stdout uses the default per-service log file.
+                   Default: nil
+  stderr-log-file - Optional stderr log file path (string or nil)
+                   When nil, stderr follows stdout target (merged by default).
+                   Default: nil
   after          - Ordering dependencies: list of service IDs (same stage only)
                    These control start ORDER but do not pull in services.
                    Default: nil
@@ -1627,6 +1667,10 @@ Field documentation:
   (enabled t :type boolean :documentation "Whether to start this service")
   (restart 'always :type symbol :documentation "Restart policy: always, no, on-success, on-failure")
   (logging t :type boolean :documentation "Log stdout/stderr to file")
+  (stdout-log-file nil :type (or null string)
+                   :documentation "Optional stdout log file path")
+  (stderr-log-file nil :type (or null string)
+                   :documentation "Optional stderr log file path")
   (after nil :type list :documentation "Ordering dependencies (same stage)")
   (requires nil :type list :documentation "Requirement dependencies")
   (oneshot-blocking nil :type boolean :documentation "Block stage for oneshot exit")
@@ -1659,6 +1703,8 @@ Field documentation:
     (enabled . t)
     (restart . always)
     (logging . t)
+    (stdout-log-file . nil)
+    (stderr-log-file . nil)
     (after . nil)
     (requires . nil)
     (oneshot-blocking . :defer)  ; resolved at runtime from global default
@@ -1688,7 +1734,9 @@ A value of :defer means the default is resolved at runtime.")
 ;; These functions abstract the internal tuple representation.
 ;; Use these instead of direct (nth N entry) indexing for maintainability.
 ;; The tuple format is:
-;;   (id cmd delay enabled-p restart-policy logging-p type stage after
+;;   (id cmd delay enabled-p restart-policy logging-p
+;;    stdout-log-file stderr-log-file
+;;    type stage after
 ;;    oneshot-blocking oneshot-timeout tags requires
 ;;    working-directory environment environment-file
 ;;    exec-stop exec-reload restart-sec
@@ -1696,126 +1744,136 @@ A value of :defer means the default is resolved at runtime.")
 ;;    kill-signal kill-mode remain-after-exit success-exit-status
 ;;    user group)
 
-(defsubst supervisor-entry-id (entry)
+(defun supervisor-entry-id (entry)
   "Return the ID of parsed ENTRY."
   (nth 0 entry))
 
-(defsubst supervisor-entry-command (entry)
+(defun supervisor-entry-command (entry)
   "Return the command of parsed ENTRY."
   (nth 1 entry))
 
-(defsubst supervisor-entry-delay (entry)
+(defun supervisor-entry-delay (entry)
   "Return the delay in seconds of parsed ENTRY."
   (nth 2 entry))
 
-(defsubst supervisor-entry-enabled-p (entry)
+(defun supervisor-entry-enabled-p (entry)
   "Return non-nil if parsed ENTRY is enabled."
   (nth 3 entry))
 
-(defsubst supervisor-entry-restart-p (entry)
+(defun supervisor-entry-restart-p (entry)
   "Return non-nil if parsed ENTRY has any restart policy other than `no'."
   (not (eq (nth 4 entry) 'no)))
 
-(defsubst supervisor-entry-restart-policy (entry)
+(defun supervisor-entry-restart-policy (entry)
   "Return the restart policy symbol of parsed ENTRY.
 Value is one of `always', `no', `on-success', or `on-failure'."
   (nth 4 entry))
 
-(defsubst supervisor-entry-logging-p (entry)
+(defun supervisor-entry-logging-p (entry)
   "Return non-nil if parsed ENTRY should log to file."
   (nth 5 entry))
 
-(defsubst supervisor-entry-type (entry)
+(defun supervisor-entry-stdout-log-file (entry)
+  "Return the stdout log file path for parsed ENTRY, or nil."
+  (and (>= (length entry) 31)
+       (nth 6 entry)))
+
+(defun supervisor-entry-stderr-log-file (entry)
+  "Return the stderr log file path for parsed ENTRY, or nil."
+  (and (>= (length entry) 31)
+       (nth 7 entry)))
+
+(defun supervisor-entry-type (entry)
   "Return the type (`simple' or `oneshot') of parsed ENTRY."
-  (nth 6 entry))
+  (nth (if (>= (length entry) 31) 8 6) entry))
 
-(defsubst supervisor-entry-stage (entry)
+(defun supervisor-entry-stage (entry)
   "Return the stage symbol of parsed ENTRY."
-  (nth 7 entry))
+  (nth (if (>= (length entry) 31) 9 7) entry))
 
-(defsubst supervisor-entry-after (entry)
+(defun supervisor-entry-after (entry)
   "Return the ordering dependencies (after) of parsed ENTRY."
-  (nth 8 entry))
+  (nth (if (>= (length entry) 31) 10 8) entry))
 
-(defsubst supervisor-entry-oneshot-blocking (entry)
+(defun supervisor-entry-oneshot-blocking (entry)
   "Return non-nil if oneshot ENTRY blocks stage completion."
-  (nth 9 entry))
+  (nth (if (>= (length entry) 31) 11 9) entry))
 
-(defsubst supervisor-entry-oneshot-timeout (entry)
+(defun supervisor-entry-oneshot-timeout (entry)
   "Return the timeout in seconds for oneshot ENTRY, or nil."
-  (nth 10 entry))
+  (nth (if (>= (length entry) 31) 12 10) entry))
 
-(defsubst supervisor-entry-tags (entry)
+(defun supervisor-entry-tags (entry)
   "Return the tags list of parsed ENTRY."
-  (nth 11 entry))
+  (nth (if (>= (length entry) 31) 13 11) entry))
 
-(defsubst supervisor-entry-requires (entry)
+(defun supervisor-entry-requires (entry)
   "Return the requirement dependencies of parsed ENTRY."
-  (nth 12 entry))
+  (nth (if (>= (length entry) 31) 14 12) entry))
 
-(defsubst supervisor-entry-working-directory (entry)
+(defun supervisor-entry-working-directory (entry)
   "Return the working directory of parsed ENTRY, or nil."
-  (nth 13 entry))
+  (nth (if (>= (length entry) 31) 15 13) entry))
 
-(defsubst supervisor-entry-environment (entry)
+(defun supervisor-entry-environment (entry)
   "Return the environment alist of parsed ENTRY, or nil."
-  (nth 14 entry))
+  (nth (if (>= (length entry) 31) 16 14) entry))
 
-(defsubst supervisor-entry-environment-file (entry)
+(defun supervisor-entry-environment-file (entry)
   "Return the environment file list of parsed ENTRY, or nil."
-  (nth 15 entry))
+  (nth (if (>= (length entry) 31) 17 15) entry))
 
-(defsubst supervisor-entry-exec-stop (entry)
+(defun supervisor-entry-exec-stop (entry)
   "Return the stop command list of parsed ENTRY, or nil."
-  (nth 16 entry))
+  (nth (if (>= (length entry) 31) 18 16) entry))
 
-(defsubst supervisor-entry-exec-reload (entry)
+(defun supervisor-entry-exec-reload (entry)
   "Return the reload command list of parsed ENTRY, or nil."
-  (nth 17 entry))
+  (nth (if (>= (length entry) 31) 19 17) entry))
 
-(defsubst supervisor-entry-restart-sec (entry)
+(defun supervisor-entry-restart-sec (entry)
   "Return the per-unit restart delay of parsed ENTRY, or nil."
-  (nth 18 entry))
+  (nth (if (>= (length entry) 31) 20 18) entry))
 
-(defsubst supervisor-entry-description (entry)
+(defun supervisor-entry-description (entry)
   "Return the description string of parsed ENTRY, or nil."
-  (nth 19 entry))
+  (nth (if (>= (length entry) 31) 21 19) entry))
 
-(defsubst supervisor-entry-documentation (entry)
+(defun supervisor-entry-documentation (entry)
   "Return the documentation list of parsed ENTRY, or nil."
-  (nth 20 entry))
+  (nth (if (>= (length entry) 31) 22 20) entry))
 
-(defsubst supervisor-entry-before (entry)
+(defun supervisor-entry-before (entry)
   "Return the before-ordering dependencies of parsed ENTRY."
-  (nth 21 entry))
+  (nth (if (>= (length entry) 31) 23 21) entry))
 
-(defsubst supervisor-entry-wants (entry)
+(defun supervisor-entry-wants (entry)
   "Return the soft dependencies of parsed ENTRY."
-  (nth 22 entry))
+  (nth (if (>= (length entry) 31) 24 22) entry))
 
-(defsubst supervisor-entry-kill-signal (entry)
+(defun supervisor-entry-kill-signal (entry)
   "Return the kill signal symbol of parsed ENTRY, or nil."
-  (nth 23 entry))
+  (nth (if (>= (length entry) 31) 25 23) entry))
 
-(defsubst supervisor-entry-kill-mode (entry)
+(defun supervisor-entry-kill-mode (entry)
   "Return the kill mode symbol of parsed ENTRY, or nil."
-  (nth 24 entry))
+  (nth (if (>= (length entry) 31) 26 24) entry))
 
-(defsubst supervisor-entry-remain-after-exit (entry)
+(defun supervisor-entry-remain-after-exit (entry)
   "Return non-nil if oneshot ENTRY latches active on success."
-  (nth 25 entry))
+  (nth (if (>= (length entry) 31) 27 25) entry))
 
-(defsubst supervisor-entry-success-exit-status (entry)
+(defun supervisor-entry-success-exit-status (entry)
   "Return the success-exit-status plist of parsed ENTRY, or nil."
-  (nth 26 entry))
+  (nth (if (>= (length entry) 31) 28 26) entry))
 
-(defsubst supervisor-entry-user (entry)
+(defun supervisor-entry-user (entry)
   "Return the run-as user of parsed ENTRY, or nil."
-  (nth 27 entry))
+  (nth (if (>= (length entry) 31) 29 27) entry))
 
-(defsubst supervisor-entry-group (entry)
+(defun supervisor-entry-group (entry)
   "Return the run-as group of parsed ENTRY, or nil."
-  (nth 28 entry))
+  (nth (if (>= (length entry) 31) 30 28) entry))
 
 ;; Forward declarations for timer state variables (defined in supervisor-timer.el)
 ;; These are only accessed when timer module is loaded.
@@ -1946,6 +2004,8 @@ This normalizes short-form entries to their explicit form."
          (enabled (supervisor-entry-enabled-p parsed))
          (restart (supervisor-entry-restart-policy parsed))
          (logging (supervisor-entry-logging-p parsed))
+         (stdout-log-file (supervisor-entry-stdout-log-file parsed))
+         (stderr-log-file (supervisor-entry-stderr-log-file parsed))
          (after (supervisor-entry-after parsed))
          (requires (supervisor-entry-requires parsed))
          (oneshot-blocking (supervisor-entry-oneshot-blocking parsed))
@@ -1966,6 +2026,10 @@ This normalizes short-form entries to their explicit form."
         (setq plist (plist-put plist :oneshot-timeout oneshot-timeout))))
     (when (not logging)
       (setq plist (plist-put plist :logging nil)))
+    (when stdout-log-file
+      (setq plist (plist-put plist :stdout-log-file stdout-log-file)))
+    (when stderr-log-file
+      (setq plist (plist-put plist :stderr-log-file stderr-log-file)))
     (when (and (eq type 'simple) (not (eq restart 'always)))
       (setq plist (plist-put plist :restart restart)))
     (when (not enabled)
@@ -2155,7 +2219,7 @@ The plan includes:
     (let ((by-stage-hash (make-hash-table))
           (all-ids (mapcar #'car valid-entries)))
       (dolist (entry valid-entries)
-        (let* ((stage (nth 7 entry))
+        (let* ((stage (supervisor-entry-stage entry))
                (stage-int (supervisor--stage-to-int stage)))
           (puthash stage-int (cons entry (gethash stage-int by-stage-hash))
                    by-stage-hash)))
@@ -2373,16 +2437,43 @@ Returns sorted entries list."
           (let ((id (supervisor-entry-id entry)))
             (puthash id t cycle-fallback-ids)
             (puthash id nil deps)))
-        ;; Return entries with :after, :requires, and :wants stripped
-        (mapcar (lambda (entry)
-                  (append (cl-subseq entry 0 8)
-                          (list nil)                ; clear :after (index 8)
-                          (cl-subseq entry 9 12)
-                          (list nil)                ; clear :requires (index 12)
-                          (cl-subseq entry 13 22)
-                          (list nil)                ; clear :wants (index 22)
-                          (cl-subseq entry 23)))    ; preserve remaining
-                entries)))))
+        ;; Return entries with :after, :requires, and :wants stripped.
+        (mapcar
+         (lambda (entry)
+           (let ((len (length entry)))
+             (cond
+              ;; Current schema entry.
+              ((>= len 31)
+               (append (cl-subseq entry 0 10)
+                       (list nil)                ; clear :after (index 10)
+                       (cl-subseq entry 11 14)
+                       (list nil)                ; clear :requires (index 14)
+                       (cl-subseq entry 15 24)
+                       (list nil)                ; clear :wants (index 24)
+                       (cl-subseq entry 25)))
+              ;; Legacy full entry.
+              ((>= len 23)
+               (append (cl-subseq entry 0 8)
+                       (list nil)                ; clear :after (index 8)
+                       (cl-subseq entry 9 12)
+                       (list nil)                ; clear :requires (index 12)
+                       (cl-subseq entry 13 22)
+                       (list nil)                ; clear :wants (index 22)
+                       (cl-subseq entry 23)))
+              ;; Legacy 13+ entry.
+              ((>= len 13)
+               (append (cl-subseq entry 0 8)
+                       (list nil)                ; clear :after
+                       (cl-subseq entry 9 12)
+                       (list nil)                ; clear :requires
+                       (cl-subseq entry 13)))
+              ;; Legacy 11+ entry.
+              ((>= len 11)
+               (append (cl-subseq entry 0 8)
+                       (list nil)                ; clear :after
+                       (cl-subseq entry 9)))
+              (t entry))))
+         entries)))))
 
 ;;; Helpers
 
@@ -2458,12 +2549,12 @@ or nil if VAL is nil."
 
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
-Return a 29-element list: (id cmd delay enabled-p restart-policy
-logging-p type stage after oneshot-blocking oneshot-timeout tags
-requires working-directory environment environment-file exec-stop
-exec-reload restart-sec description documentation before wants
-kill-signal kill-mode remain-after-exit success-exit-status
-user group).
+Return a 31-element list: (id cmd delay enabled-p restart-policy
+logging-p stdout-log-file stderr-log-file type stage after
+oneshot-blocking oneshot-timeout tags requires working-directory
+environment environment-file exec-stop exec-reload restart-sec
+description documentation before wants kill-signal kill-mode
+remain-after-exit success-exit-status user group).
 
 Indices (schema v1):
   0  id                  - unique identifier string
@@ -2472,29 +2563,31 @@ Indices (schema v1):
   3  enabled-p           - whether to start this service
   4  restart-policy      - restart policy symbol
   5  logging-p           - whether to log stdout/stderr
-  6  type                - `simple' or `oneshot'
-  7  stage               - startup stage symbol
-  8  after               - ordering dependencies (same stage)
-  9  oneshot-blocking    - block stage for oneshot exit
-  10 oneshot-timeout     - timeout for blocking oneshots
-  11 tags                - list of filter tags
-  12 requires            - requirement dependencies
-  13 working-directory   - process working directory or nil
-  14 environment         - environment alist or nil
-  15 environment-file    - list of env-file paths or nil
-  16 exec-stop           - list of stop commands or nil
-  17 exec-reload         - list of reload commands or nil
-  18 restart-sec         - per-unit restart delay or nil
-  19 description         - human-readable description or nil
-  20 documentation       - list of doc URIs/paths or nil
-  21 before              - before-ordering deps or nil
-  22 wants               - soft deps or nil
-  23 kill-signal         - canonical signal symbol or nil
-  24 kill-mode           - `process' or `mixed' or nil
-  25 remain-after-exit   - oneshot active latch boolean
-  26 success-exit-status - plist (:codes :signals) or nil
-  27 user                - run-as user string/int or nil
-  28 group               - run-as group string/int or nil
+  6  stdout-log-file     - explicit stdout log file path or nil
+  7  stderr-log-file     - explicit stderr log file path or nil
+  8  type                - `simple' or `oneshot'
+  9  stage               - startup stage symbol
+  10 after               - ordering dependencies (same stage)
+  11 oneshot-blocking    - block stage for oneshot exit
+  12 oneshot-timeout     - timeout for blocking oneshots
+  13 tags                - list of filter tags
+  14 requires            - requirement dependencies
+  15 working-directory   - process working directory or nil
+  16 environment         - environment alist or nil
+  17 environment-file    - list of env-file paths or nil
+  18 exec-stop           - list of stop commands or nil
+  19 exec-reload         - list of reload commands or nil
+  20 restart-sec         - per-unit restart delay or nil
+  21 description         - human-readable description or nil
+  22 documentation       - list of doc URIs/paths or nil
+  23 before              - before-ordering deps or nil
+  24 wants               - soft deps or nil
+  25 kill-signal         - canonical signal symbol or nil
+  26 kill-mode           - `process' or `mixed' or nil
+  27 remain-after-exit   - oneshot active latch boolean
+  28 success-exit-status - plist (:codes :signals) or nil
+  29 user                - run-as user string/int or nil
+  30 group               - run-as group string/int or nil
 
 ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
@@ -2503,7 +2596,7 @@ Use accessor functions instead of direct indexing for new code."
              (id (or (car tokens)
                      (error "Supervisor: empty command string")))
              (id (file-name-nondirectory id)))
-        (list id entry 0 t 'always t 'simple 'stage3 nil
+        (list id entry 0 t 'always t nil nil 'simple 'stage3 nil
               supervisor-oneshot-default-blocking supervisor-oneshot-timeout nil nil
               nil nil nil nil nil nil
               nil nil nil nil nil nil nil nil
@@ -2542,6 +2635,8 @@ Use accessor functions instead of direct indexing for new code."
            (logging (if (plist-member plist :logging)
                         (plist-get plist :logging)
                       t))
+           (stdout-log-file (plist-get plist :stdout-log-file))
+           (stderr-log-file (plist-get plist :stderr-log-file))
            ;; :stage (default stage3)
            (stage-raw (plist-get plist :stage))
            (stage (if stage-raw
@@ -2598,7 +2693,9 @@ Use accessor functions instead of direct indexing for new code."
            ;; Identity fields (indices 27-28)
            (user (plist-get plist :user))
            (group (plist-get plist :group)))
-      (list id cmd delay enabled restart logging type stage after
+      (list id cmd delay enabled restart logging
+            stdout-log-file stderr-log-file
+            type stage after
             oneshot-blocking oneshot-timeout tags requires
             working-directory environment environment-file
             exec-stop exec-reload restart-sec
@@ -2619,6 +2716,8 @@ Use accessor functions instead of direct indexing for new code."
    :enabled (supervisor-entry-enabled-p entry)
    :restart (supervisor-entry-restart-policy entry)
    :logging (supervisor-entry-logging-p entry)
+   :stdout-log-file (supervisor-entry-stdout-log-file entry)
+   :stderr-log-file (supervisor-entry-stderr-log-file entry)
    :after (supervisor-entry-after entry)
    :requires (supervisor-entry-requires entry)
    :oneshot-blocking (supervisor-entry-oneshot-blocking entry)
@@ -2649,6 +2748,8 @@ Use accessor functions instead of direct indexing for new code."
         (supervisor-service-enabled service)
         (supervisor-service-restart service)
         (supervisor-service-logging service)
+        (supervisor-service-stdout-log-file service)
+        (supervisor-service-stderr-log-file service)
         (supervisor-service-type service)
         (supervisor-service-stage service)
         (supervisor-service-after service)
@@ -2795,7 +2896,7 @@ to the first 20 descendants.  Returns nil if PID has no children."
   "Partition PARSED-ENTRIES by stage.  Return alist of (stage . entries)."
   (let ((by-stage (make-hash-table)))
     (dolist (entry parsed-entries)
-      (let* ((stage (nth 7 entry))
+      (let* ((stage (supervisor-entry-stage entry))
              (stage-int (supervisor--stage-to-int stage)))
         (puthash stage-int (cons entry (gethash stage-int by-stage)) by-stage)))
     ;; Convert to sorted alist, reverse each list to preserve original order
@@ -2812,8 +2913,8 @@ all valid IDs across all stages.  Return ENTRIES with invalid :after
 edges removed.  Stores computed deps in `supervisor--computed-deps'."
   (mapcar
    (lambda (entry)
-     (let* ((id (nth 0 entry))
-            (after (nth 8 entry))
+     (let* ((id (supervisor-entry-id entry))
+            (after (supervisor-entry-after entry))
             (valid-after
              (cl-remove-if-not
               (lambda (dep)
@@ -2829,8 +2930,8 @@ edges removed.  Stores computed deps in `supervisor--computed-deps'."
        (puthash id valid-after supervisor--computed-deps)
        (if (equal after valid-after)
            entry
-         ;; Return entry with filtered :after, preserving remaining fields
-         (append (cl-subseq entry 0 8) (list valid-after) (cl-subseq entry 9)))))
+         ;; Return entry with filtered :after (index 10), preserving others.
+         (append (cl-subseq entry 0 10) (list valid-after) (cl-subseq entry 11)))))
    entries))
 
 (defun supervisor--all-parsed-entries ()
@@ -2929,12 +3030,22 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
             (puthash id t supervisor--cycle-fallback-ids)
             (puthash id nil supervisor--computed-deps)))
         ;; Return entries with :after, :requires, and :wants stripped
-        ;; Handle full (29-element), 13-element, and 11-element entries
+        ;; Handle full (31-element), 13-element, and 11-element entries
         (mapcar (lambda (entry)
                   (let ((len (length entry)))
                     (cond
-                     ;; Full entry: clear :after (8), :requires (12),
-                     ;; and :wants (22)
+                     ;; Current schema entry: clear :after (10), :requires (14),
+                     ;; and :wants (24).
+                     ((>= len 31)
+                      (append (cl-subseq entry 0 10)
+                              (list nil)                ; clear :after
+                              (cl-subseq entry 11 14)
+                              (list nil)                ; clear :requires
+                              (cl-subseq entry 15 24)
+                              (list nil)                ; clear :wants
+                              (cl-subseq entry 25)))    ; preserve remaining
+                     ;; Legacy full entry: clear :after (8), :requires (12),
+                     ;; and :wants (22).
                      ((>= len 23)
                       (append (cl-subseq entry 0 8)
                               (list nil)                ; clear :after
@@ -2942,7 +3053,7 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
                               (list nil)                ; clear :requires
                               (cl-subseq entry 13 22)
                               (list nil)                ; clear :wants
-                              (cl-subseq entry 23)))    ; preserve remaining
+                              (cl-subseq entry 23)))
                      ;; 13+ element entry: clear :after (8) and :requires (12)
                      ((>= len 13)
                       (append (cl-subseq entry 0 8)
@@ -2961,14 +3072,66 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
 
 ;;; Logging
 
+(defvar supervisor--last-log-directory-warning nil
+  "Last warning string emitted for log-directory fallback issues.")
+
+(defun supervisor--default-log-directory ()
+  "Return the default user-local log directory."
+  (expand-file-name "supervisor" user-emacs-directory))
+
+(defun supervisor--warn-log-directory (format-string &rest args)
+  "Emit a throttled warning for log-directory issues.
+Use FORMAT-STRING and ARGS to compose the warning text.
+This uses `message' directly to avoid recursive file logging when the
+configured log directory is unavailable."
+  (let ((warning (apply #'format format-string args)))
+    (unless (equal warning supervisor--last-log-directory-warning)
+      (setq supervisor--last-log-directory-warning warning)
+      (message "Supervisor: WARNING - %s" warning))))
+
+(defun supervisor--ensure-directory-writable (directory)
+  "Ensure DIRECTORY exists and is writable.
+Return DIRECTORY when usable, otherwise return nil."
+  (condition-case nil
+      (progn
+        (unless (file-directory-p directory)
+          (make-directory directory t))
+        (and (file-directory-p directory)
+             (file-writable-p directory)
+             directory))
+    (error nil)))
+
+(defun supervisor--effective-log-directory ()
+  "Return a writable log directory path, or nil.
+Prefer `supervisor-log-directory'.  If it is not writable, fall back to
+`supervisor--default-log-directory'.  If neither is writable, return nil."
+  (let* ((configured supervisor-log-directory)
+         (configured-dir (supervisor--ensure-directory-writable configured))
+         (fallback (supervisor--default-log-directory))
+         (fallback-dir (and (not configured-dir)
+                            (not (equal configured fallback))
+                            (supervisor--ensure-directory-writable fallback))))
+    (cond
+     (configured-dir configured-dir)
+     (fallback-dir
+      (supervisor--warn-log-directory
+       "log directory %s is not writable; using %s"
+       configured fallback-dir)
+      fallback-dir)
+     (t
+      (supervisor--warn-log-directory
+       "log directory %s is not writable; file logging disabled"
+       configured)
+      nil))))
+
 (defun supervisor--ensure-log-directory ()
-  "Create log directory if it doesn't exist."
-  (unless (file-directory-p supervisor-log-directory)
-    (make-directory supervisor-log-directory t)))
+  "Return the effective writable log directory, or nil."
+  (supervisor--effective-log-directory))
 
 (defun supervisor--log-file (prog)
-  "Return the log file path for PROG."
-  (expand-file-name (format "log-%s.log" prog) supervisor-log-directory))
+  "Return the log file path for PROG, or nil."
+  (when-let* ((log-directory (supervisor--ensure-log-directory)))
+    (expand-file-name (format "log-%s.log" prog) log-directory)))
 
 ;;;; Log writer lifecycle
 
@@ -2976,78 +3139,136 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
   "Return the directory for logd PID files.
 Use `supervisor-logd-pid-directory' when set, otherwise
 `supervisor-log-directory'."
-  (or supervisor-logd-pid-directory supervisor-log-directory))
+  (or supervisor-logd-pid-directory
+      (supervisor--effective-log-directory)
+      supervisor-log-directory))
 
-(defun supervisor--write-logd-pid-file (id proc)
-  "Write a PID file for log writer PROC serving service ID.
-The file is named `logd-ID.pid' in `supervisor--logd-pid-dir'.
+(defun supervisor--stream-writer-id (id stream)
+  "Return PID-file ID for service ID and STREAM."
+  (if (eq stream 'stderr)
+      (format "%s.stderr" id)
+    id))
+
+(defun supervisor--write-logd-pid-file (writer-id proc)
+  "Write a PID file for log writer PROC serving WRITER-ID.
+The file is named `logd-WRITER-ID.pid' in `supervisor--logd-pid-dir'.
 The rotation script reads these files when `--signal-reopen' is
 given to send SIGHUP to all active writers."
-  (let ((pid-file (expand-file-name (format "logd-%s.pid" id)
+  (let ((pid-file (expand-file-name (format "logd-%s.pid" writer-id)
                                     (supervisor--logd-pid-dir))))
     (condition-case err
         (write-region (number-to-string (process-id proc))
                       nil pid-file nil 'silent)
       (error
        (supervisor--log 'warning "%s: could not write PID file: %s"
-                        id (error-message-string err))))))
+                        writer-id (error-message-string err))))))
 
-(defun supervisor--remove-logd-pid-file (id)
-  "Remove the PID file for log writer serving service ID."
-  (let ((pid-file (expand-file-name (format "logd-%s.pid" id)
+(defun supervisor--remove-logd-pid-file (writer-id)
+  "Remove the PID file for log writer serving WRITER-ID."
+  (let ((pid-file (expand-file-name (format "logd-%s.pid" writer-id)
                                     (supervisor--logd-pid-dir))))
     (when (file-exists-p pid-file)
       (delete-file pid-file))))
 
-(defun supervisor--start-writer (id log-file)
-  "Start a log writer process for service ID writing to LOG-FILE.
-Spawn `supervisor-logd' with the configured size cap and log directory.
-Write a PID file for the writer so the rotation script can signal it.
-Return the writer process, or nil if the writer could not be started.
-Store it in `supervisor--writers' on success."
+(defun supervisor--start-stream-writer (id stream log-file table)
+  "Start log writer for service ID STREAM writing to LOG-FILE.
+TABLE receives the process keyed by ID.  STREAM is `stdout' or `stderr'."
   (condition-case err
-      (let* ((cmd (list supervisor-logd-command
+      (let* ((writer-id (supervisor--stream-writer-id id stream))
+             (log-directory-raw (or (file-name-directory log-file)
+                                    (supervisor--ensure-log-directory)
+                                    supervisor-log-directory))
+             (log-directory (directory-file-name log-directory-raw))
+             (cmd (list supervisor-logd-command
                         "--file" log-file
                         "--max-file-size-bytes"
                         (number-to-string supervisor-logd-max-file-size)
-                        "--log-dir" supervisor-log-directory
+                        "--log-dir" log-directory
                         "--prune-cmd"
                         (supervisor--build-prune-command)
                         "--prune-min-interval-sec"
                         (number-to-string
                          supervisor-logd-prune-min-interval)))
              (proc (make-process
-                    :name (format "logd-%s" id)
+                    :name (format "logd-%s" writer-id)
                     :command cmd
                     :connection-type 'pipe
                     :noquery t)))
         (set-process-query-on-exit-flag proc nil)
-        (puthash id proc supervisor--writers)
-        (supervisor--write-logd-pid-file id proc)
+        (puthash id proc table)
+        (supervisor--write-logd-pid-file writer-id proc)
         proc)
     (error
-     (supervisor--log 'warning "%s: log writer failed to start: %s"
+     (supervisor--log 'warning "%s(%s): log writer failed to start: %s"
+                      id stream (error-message-string err))
+     nil)))
+
+(defun supervisor--start-writer (id log-file)
+  "Start stdout log writer process for service ID writing to LOG-FILE."
+  (supervisor--start-stream-writer id 'stdout log-file supervisor--writers))
+
+(defun supervisor--start-stderr-writer (id log-file)
+  "Start dedicated stderr log writer process for service ID and LOG-FILE."
+  (supervisor--start-stream-writer id 'stderr log-file supervisor--stderr-writers))
+
+(defun supervisor--start-stderr-pipe (id writer)
+  "Start an internal stderr pipe process for service ID using WRITER."
+  (condition-case err
+      (let ((pipe
+             (make-pipe-process
+              :name (format "supervisor-stderr-%s" id)
+              :coding 'no-conversion
+              :filter (lambda (_proc output)
+                        (when (process-live-p writer)
+                          (process-send-string writer output)))
+              :sentinel (lambda (_proc _event) nil)
+              :noquery t)))
+        (set-process-query-on-exit-flag pipe nil)
+        (puthash id pipe supervisor--stderr-pipes)
+        pipe)
+    (error
+     (supervisor--log 'warning "%s(stderr): could not create stderr pipe: %s"
                       id (error-message-string err))
      nil)))
 
-(defun supervisor--stop-writer (id)
-  "Stop the log writer process for service ID.
-Send SIGTERM if the writer is alive, remove PID file, then remove
-from `supervisor--writers'."
-  (when-let* ((writer (gethash id supervisor--writers)))
+(defun supervisor--stop-stream-writer (id stream table)
+  "Stop stream writer for service ID STREAM from TABLE."
+  (when-let* ((writer (gethash id table)))
     (when (process-live-p writer)
       (signal-process writer 'SIGTERM))
-    (supervisor--remove-logd-pid-file id)
-    (remhash id supervisor--writers)))
+    (supervisor--remove-logd-pid-file (supervisor--stream-writer-id id stream))
+    (remhash id table)))
+
+(defun supervisor--stop-writer (id)
+  "Stop all log writer state for service ID."
+  (supervisor--stop-stream-writer id 'stdout supervisor--writers)
+  (supervisor--stop-stream-writer id 'stderr supervisor--stderr-writers)
+  (when-let* ((stderr-pipe (gethash id supervisor--stderr-pipes)))
+    (when (process-live-p stderr-pipe)
+      (delete-process stderr-pipe))
+    (remhash id supervisor--stderr-pipes)))
 
 (defun supervisor--stop-all-writers ()
-  "Stop all log writer processes and clear `supervisor--writers'."
+  "Stop all log writer processes and clear writer state hashes."
   (maphash (lambda (id writer)
              (when (process-live-p writer)
                (signal-process writer 'SIGTERM))
-             (supervisor--remove-logd-pid-file id))
+             (supervisor--remove-logd-pid-file
+              (supervisor--stream-writer-id id 'stdout)))
            supervisor--writers)
-  (clrhash supervisor--writers))
+  (maphash (lambda (id writer)
+             (when (process-live-p writer)
+               (signal-process writer 'SIGTERM))
+             (supervisor--remove-logd-pid-file
+              (supervisor--stream-writer-id id 'stderr)))
+           supervisor--stderr-writers)
+  (maphash (lambda (_id pipe)
+             (when (process-live-p pipe)
+               (delete-process pipe)))
+           supervisor--stderr-pipes)
+  (clrhash supervisor--writers)
+  (clrhash supervisor--stderr-writers)
+  (clrhash supervisor--stderr-pipes))
 
 (defun supervisor--build-prune-command ()
   "Build the shell command string for logd's --prune-cmd flag.
@@ -3055,10 +3276,12 @@ Return a string suitable for passing to logd as the value of its
 `--prune-cmd' argument.  The command invokes the prune script with
 the current `supervisor-log-directory' and
 `supervisor-log-prune-max-total-bytes'."
-  (format "%s --log-dir %s --max-total-bytes %d"
-          (shell-quote-argument supervisor-log-prune-command)
-          (shell-quote-argument supervisor-log-directory)
-          supervisor-log-prune-max-total-bytes))
+  (let ((log-directory (or (supervisor--effective-log-directory)
+                           supervisor-log-directory)))
+    (format "%s --log-dir %s --max-total-bytes %d"
+            (shell-quote-argument supervisor-log-prune-command)
+            (shell-quote-argument log-directory)
+            supervisor-log-prune-max-total-bytes)))
 
 (defun supervisor--signal-writers-reopen ()
   "Send SIGHUP to all live log writers to trigger file reopen.
@@ -3068,7 +3291,11 @@ closing and reopening the configured log file."
   (maphash (lambda (_id writer)
              (when (process-live-p writer)
                (signal-process writer 'SIGHUP)))
-           supervisor--writers))
+           supervisor--writers)
+  (maphash (lambda (_id writer)
+             (when (process-live-p writer)
+               (signal-process writer 'SIGHUP)))
+           supervisor--stderr-writers))
 
 (defun supervisor-run-log-maintenance ()
   "Run log maintenance: rotate, signal writers to reopen, then prune.
@@ -3077,50 +3304,62 @@ Execute the scheduled maintenance path asynchronously:
 2. Signal all live writers to reopen their files.
 3. Run `supervisor-log-prune-command' to enforce the directory size cap."
   (interactive)
-  (let ((log-dir supervisor-log-directory)
-        (keep-days (number-to-string supervisor-logrotate-keep-days))
-        (max-bytes (number-to-string supervisor-log-prune-max-total-bytes)))
-    (supervisor--log 'info "log maintenance: rotating")
-    (set-process-sentinel
-     (start-process "supervisor-logrotate" nil
-                    supervisor-logrotate-command
-                    "--log-dir" log-dir
-                    "--keep-days" keep-days)
-     (lambda (_proc event)
-       (when (string-match-p "finished" event)
-         (supervisor--signal-writers-reopen)
-         (supervisor--log 'info "log maintenance: pruning")
-         (start-process "supervisor-log-prune" nil
-                        supervisor-log-prune-command
+  (if-let* ((log-dir (supervisor--effective-log-directory)))
+      (let ((keep-days (number-to-string supervisor-logrotate-keep-days))
+            (max-bytes (number-to-string supervisor-log-prune-max-total-bytes)))
+        (supervisor--log 'info "log maintenance: rotating")
+        (set-process-sentinel
+         (start-process "supervisor-logrotate" nil
+                        supervisor-logrotate-command
                         "--log-dir" log-dir
-                        "--max-total-bytes" max-bytes))))))
+                        "--keep-days" keep-days)
+         (lambda (_proc event)
+           (when (string-match-p "finished" event)
+             (supervisor--signal-writers-reopen)
+             (supervisor--log 'info "log maintenance: pruning")
+             (start-process "supervisor-log-prune" nil
+                            supervisor-log-prune-command
+                            "--log-dir" log-dir
+                            "--max-total-bytes" max-bytes)))))
+    (supervisor--log 'warning
+                     "log maintenance skipped: no writable log directory")))
 
-(defun supervisor--builtin-maintenance-command ()
-  "Build the shell command for the built-in logrotate oneshot unit.
-Return a command string that runs logrotate (with writer reopen
-signaling) then prune, using current configuration values."
-  (format "%s --log-dir %s --keep-days %d --signal-reopen --pid-dir %s && %s --log-dir %s --max-total-bytes %d"
-          (shell-quote-argument supervisor-logrotate-command)
-          (shell-quote-argument supervisor-log-directory)
-          supervisor-logrotate-keep-days
-          (shell-quote-argument (supervisor--logd-pid-dir))
-          (shell-quote-argument supervisor-log-prune-command)
-          (shell-quote-argument supervisor-log-directory)
-          supervisor-log-prune-max-total-bytes))
+(defun supervisor--builtin-logrotate-command ()
+  "Build the shell command for the built-in logrotate oneshot unit."
+  (let ((log-directory (or (supervisor--effective-log-directory)
+                           supervisor-log-directory)))
+    (format "%s --log-dir %s --keep-days %d --signal-reopen --pid-dir %s"
+            (shell-quote-argument supervisor-logrotate-command)
+            (shell-quote-argument log-directory)
+            supervisor-logrotate-keep-days
+            (shell-quote-argument (supervisor--logd-pid-dir)))))
+
+(defun supervisor--builtin-log-prune-command ()
+  "Build the shell command for the built-in log-prune oneshot unit."
+  (let ((log-directory (or (supervisor--effective-log-directory)
+                           supervisor-log-directory)))
+    (format "%s --log-dir %s --max-total-bytes %d"
+            (shell-quote-argument supervisor-log-prune-command)
+            (shell-quote-argument log-directory)
+            supervisor-log-prune-max-total-bytes)))
 
 (defun supervisor--builtin-programs ()
   "Return list of built-in program entries.
 These are appended to disk-loaded programs at lowest priority.
-A user unit file with the same ID overrides the built-in entry.
-Returns nil when `supervisor-timer-subsystem-mode' is disabled,
-so that no automatic maintenance runs without the timer subsystem."
-  (when supervisor-timer-subsystem-mode
-    (list
-     (cons (supervisor--builtin-maintenance-command)
-           (list :id "logrotate"
-                 :type 'oneshot
-                 :stage 'stage4
-                 :description "Rotate and prune log files")))))
+A user unit file with the same ID overrides the built-in entry."
+  (list
+   (cons (supervisor--builtin-logrotate-command)
+         (list :id "logrotate"
+               :type 'oneshot
+               :stage 'stage4
+               :description "Rotate supervisor log files"))
+   (cons (supervisor--builtin-log-prune-command)
+         (list :id "log-prune"
+               :type 'oneshot
+               :stage 'stage4
+               :after '("logrotate")
+               :requires '("logrotate")
+               :description "Prune supervisor log files"))))
 
 ;;; DAG Scheduler
 
@@ -3276,6 +3515,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
         (enabled-p (supervisor-entry-enabled-p entry))
         (restart-policy (supervisor-entry-restart-policy entry))
         (logging-p (supervisor-entry-logging-p entry))
+        (stdout-log-file (supervisor-entry-stdout-log-file entry))
+        (stderr-log-file (supervisor-entry-stderr-log-file entry))
         (type (supervisor-entry-type entry))
         (oneshot-blocking (supervisor-entry-oneshot-blocking entry))
         (oneshot-timeout (supervisor-entry-oneshot-timeout entry))
@@ -3305,7 +3546,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
                               (lambda ()
                                 (remhash id supervisor--dag-delay-timers)
                                 (supervisor--dag-do-start
-                                 id cmd logging-p type restart-policy
+                                 id cmd logging-p stdout-log-file stderr-log-file
+                                 type restart-policy
                                  oneshot-blocking oneshot-timeout
                                  working-directory environment
                                  environment-file restart-sec
@@ -3315,7 +3557,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
        ;; Start immediately
        (t
         (supervisor--dag-do-start
-         id cmd logging-p type restart-policy
+         id cmd logging-p stdout-log-file stderr-log-file
+         type restart-policy
          oneshot-blocking oneshot-timeout
          working-directory environment
          environment-file restart-sec
@@ -3360,13 +3603,15 @@ Mark ready immediately for simple processes, on exit for oneshot."
     (supervisor--dag-mark-ready id)
     (supervisor--emit-event 'process-ready id nil (list :type type))))
 
-(defun supervisor--dag-do-start (id cmd logging-p type restart-policy
+(defun supervisor--dag-do-start (id cmd logging-p stdout-log-file stderr-log-file
+                                    type restart-policy
                                     _oneshot-blocking oneshot-timeout
                                     &optional working-directory environment
                                     environment-file restart-sec
                                     unit-file-directory
                                     user group)
   "Start process ID with CMD, LOGGING-P, TYPE, RESTART-POLICY, ONESHOT-TIMEOUT.
+STDOUT-LOG-FILE and STDERR-LOG-FILE are per-stream log file overrides.
 Optional WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE,
 RESTART-SEC, UNIT-FILE-DIRECTORY, USER, and GROUP are passed through to
 `supervisor--start-process'."
@@ -3383,7 +3628,8 @@ RESTART-SEC, UNIT-FILE-DIRECTORY, USER, and GROUP are passed through to
                    working-directory environment
                    environment-file restart-sec
                    unit-file-directory
-                   user group)))
+                   user group
+                   stdout-log-file stderr-log-file)))
         (if (not proc)
             (supervisor--dag-handle-spawn-failure id)
           (supervisor--dag-handle-spawn-success id type oneshot-timeout))))))
@@ -3692,13 +3938,15 @@ ignored."
                                         &optional working-directory environment
                                         environment-file restart-sec
                                         unit-file-directory
-                                        user group)
+                                        user group
+                                        stdout-log-file stderr-log-file)
   "Schedule restart of process ID after crash.
 CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are original process params.
 PROC-STATUS and EXIT-CODE describe the exit for logging.
 WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, RESTART-SEC,
 and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts.
-USER and GROUP are identity parameters preserved for restart."
+USER and GROUP are identity parameters preserved for restart.
+STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets."
   (supervisor--log 'info "%s %s, restarting..."
                    id (supervisor--format-exit-status proc-status exit-code))
   (let ((delay (or restart-sec supervisor-restart-delay)))
@@ -3709,19 +3957,22 @@ USER and GROUP are identity parameters preserved for restart."
                           working-directory environment
                           environment-file restart-sec
                           unit-file-directory
-                          user group)
+                          user group
+                          stdout-log-file stderr-log-file)
              supervisor--restart-timers)))
 
 (defun supervisor--make-process-sentinel (id cmd default-logging type config-restart
                                              &optional working-directory environment
                                              environment-file restart-sec
                                              unit-file-directory
-                                             user group)
+                                             user group
+                                             stdout-log-file stderr-log-file)
   "Create a process sentinel for ID with captured parameters.
 CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart.
 WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, RESTART-SEC,
 and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts.
-USER and GROUP are identity parameters preserved for restart."
+USER and GROUP are identity parameters preserved for restart.
+STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets."
   (lambda (p _event)
     (unless (process-live-p p)
       (let* ((name (process-name p))
@@ -3760,12 +4011,13 @@ USER and GROUP are identity parameters preserved for restart."
                             proc-status exit-code ses)))
                     (gethash name supervisor--failed)
                     (supervisor--check-crash-loop name))
-          (supervisor--schedule-restart id cmd default-logging type config-restart
-                                        proc-status exit-code
-                                        working-directory environment
-                                        environment-file restart-sec
-                                        unit-file-directory
-                                        user group))))))
+	          (supervisor--schedule-restart id cmd default-logging type config-restart
+	                                        proc-status exit-code
+	                                        working-directory environment
+	                                        environment-file restart-sec
+	                                        unit-file-directory
+	                                        user group
+	                                        stdout-log-file stderr-log-file))))))
 
 ;;; Process Environment and Working Directory Helpers
 
@@ -3956,7 +4208,6 @@ the wrong context."
         (when (and dir env)
           (let* ((logging (supervisor--get-effective-logging id logging-p))
                  (log-file (when logging
-                             (supervisor--ensure-log-directory)
                              (supervisor--log-file id))))
             (supervisor--exec-command-chain
              exec-stop id dir env log-file supervisor-shutdown-timeout)))))))
@@ -4187,7 +4438,8 @@ Return a list suitable for the `make-process' :command keyword."
                                      working-directory environment
                                      environment-file restart-sec
                                      unit-file-directory
-                                     user group)
+                                     user group
+                                     stdout-log-file stderr-log-file)
   "Start CMD with identifier ID.
 DEFAULT-LOGGING is the config value; runtime override is checked at restart.
 TYPE is `simple' (long-running) or `oneshot' (run once).
@@ -4199,7 +4451,9 @@ UNIT-FILE-DIRECTORY is the directory of the authoritative unit file,
 captured at plan time for deterministic relative-path resolution.
 USER and GROUP are optional identity parameters for privilege drop.
 When set, `supervisor-runas-command' is used to launch the process
-as the specified identity.  Requires root privileges."
+as the specified identity.  Requires root privileges.
+STDOUT-LOG-FILE and STDERR-LOG-FILE are optional per-unit stream log
+targets.  By default stderr follows stdout into the same log file."
   ;; Clear any pending restart timer for this ID first
   (when-let* ((timer (gethash id supervisor--restart-timers)))
     (when (timerp timer)
@@ -4265,18 +4519,34 @@ as the specified identity.  Requires root privileges."
       (when (and default-directory process-environment)
         (let* ((args (supervisor--build-launch-command cmd user group))
                (logging (supervisor--get-effective-logging id default-logging))
-               (log-file (when logging
-                           (supervisor--ensure-log-directory)
-                           (supervisor--log-file id)))
-               (writer (when log-file
-                         (supervisor--start-writer id log-file)))
+               (default-log-file (when logging
+                                   (supervisor--log-file id)))
+               (stdout-log-target (when logging
+                                    (or stdout-log-file default-log-file)))
+               (stderr-log-target (when logging
+                                    (or stderr-log-file stdout-log-target)))
+               (split-stderr (and stderr-log-target
+                                  (not (equal stderr-log-target
+                                              stdout-log-target))))
+               (writer (when stdout-log-target
+                         (supervisor--start-writer id stdout-log-target)))
+               (stderr-writer (when split-stderr
+                                (supervisor--start-stderr-writer
+                                 id stderr-log-target)))
+               (stderr-pipe (when stderr-writer
+                              (supervisor--start-stderr-pipe id stderr-writer)))
+               (_ (when (and stderr-writer (not stderr-pipe))
+                    (supervisor--stop-stream-writer
+                     id 'stderr supervisor--stderr-writers)))
+               (effective-split (and stderr-writer stderr-pipe))
                (proc (condition-case err
                          (make-process
                           :name id
                           :command args
                           :connection-type 'pipe
-                          ;; Merge stderr into stdout - both captured by filter
-                          :stderr nil
+                          ;; Default is merged streams (stderr=nil).  In split mode
+                          ;; stderr is routed through a dedicated pipe/writer pair.
+                          :stderr (when effective-split stderr-pipe)
                           :filter (when writer
                                     (lambda (_proc output)
                                       (when (process-live-p writer)
@@ -4286,10 +4556,10 @@ as the specified identity.  Requires root privileges."
                                      working-directory environment
                                      environment-file restart-sec
                                      unit-file-directory
-                                     user group))
+                                     user group
+                                     stdout-log-file stderr-log-file))
                        (error
-                        (when writer
-                          (supervisor--stop-writer id))
+                        (supervisor--stop-writer id)
                         (puthash id (error-message-string err)
                                  supervisor--spawn-failure-reason)
                         (supervisor--log 'warning "%s: %s"
@@ -4333,6 +4603,8 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
         (enabled-p (supervisor-entry-enabled-p entry))
         (restart-policy (supervisor-entry-restart-policy entry))
         (logging-p (supervisor-entry-logging-p entry))
+        (stdout-log-file (supervisor-entry-stdout-log-file entry))
+        (stderr-log-file (supervisor-entry-stderr-log-file entry))
         (type (supervisor-entry-type entry))
         (otimeout (supervisor-entry-oneshot-timeout entry))
         (working-directory (supervisor-entry-working-directory entry))
@@ -4359,7 +4631,8 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
                        working-directory environment
                        environment-file restart-sec
                        unit-file-directory
-                       user group)))
+                       user group
+                       stdout-log-file stderr-log-file)))
             (if (not proc)
                 (progn
                   (supervisor--emit-event 'process-failed id nil nil)
@@ -4414,6 +4687,8 @@ are blocked.  Manually started disabled units are tracked in
         (let ((cmd (supervisor-entry-command entry))
               (restart-policy (supervisor-entry-restart-policy entry))
               (logging-p (supervisor-entry-logging-p entry))
+              (stdout-log-file (supervisor-entry-stdout-log-file entry))
+              (stderr-log-file (supervisor-entry-stderr-log-file entry))
               (type (supervisor-entry-type entry))
               (working-directory (supervisor-entry-working-directory entry))
               (environment (supervisor-entry-environment entry))
@@ -4456,7 +4731,8 @@ are blocked.  Manually started disabled units are tracked in
                          working-directory environment
                          environment-file restart-sec
                          unit-file-directory
-                         user group)))
+                         user group
+                         stdout-log-file stderr-log-file)))
               (if proc
                   (progn
                     ;; Track manual start only on success so reconcile
@@ -4716,6 +4992,8 @@ Ready semantics (when dependents are unblocked):
     (clrhash supervisor--invalid-timers))
   (clrhash supervisor--logging)
   (clrhash supervisor--writers)
+  (clrhash supervisor--stderr-writers)
+  (clrhash supervisor--stderr-pipes)
   (clrhash supervisor--restart-times)
   (clrhash supervisor--restart-timers)
   (clrhash supervisor--last-exit-info)
@@ -4743,6 +5021,9 @@ Ready semantics (when dependents are unblocked):
   (supervisor--load-overrides)
   (supervisor--dag-cleanup)
 
+  ;; Seed default maintenance units on disk when missing.
+  (when (fboundp 'supervisor--ensure-default-maintenance-units)
+    (supervisor--ensure-default-maintenance-units))
   ;; Refresh programs cache from disk before building plan
   (supervisor--refresh-programs)
   ;; Build execution plan (pure, deterministic)
@@ -4962,7 +5243,7 @@ This function does not modify any state."
               (push (list :op 'stop :id id :reason 'removed) actions)
             ;; Check if now disabled or masked
             (let* ((entry (cl-find id plan-entries :key #'car :test #'equal))
-                   (enabled-p (nth 3 entry))
+                   (enabled-p (supervisor-entry-enabled-p entry))
                    (is-masked (eq (gethash id mask-override) 'masked))
                    (override (gethash id enabled-override))
                    (effective-enabled (cond (is-masked nil)
@@ -4988,8 +5269,8 @@ This function does not modify any state."
     ;; Check for processes to start (in plan but not running)
     (dolist (entry plan-entries)
       (let* ((id (car entry))
-             (enabled-p (nth 3 entry))
-             (type (nth 6 entry))
+             (enabled-p (supervisor-entry-enabled-p entry))
+             (type (supervisor-entry-type entry))
              (is-masked (eq (gethash id mask-override) 'masked))
              (override (gethash id enabled-override))
              (effective-enabled (cond (is-masked nil)
@@ -5042,6 +5323,8 @@ Returns a plist with :stopped and :started counts."
                    (enabled-p (supervisor-entry-enabled-p entry))
                    (restart-policy (supervisor-entry-restart-policy entry))
                    (logging-p (supervisor-entry-logging-p entry))
+                   (stdout-log-file (supervisor-entry-stdout-log-file entry))
+                   (stderr-log-file (supervisor-entry-stderr-log-file entry))
                    (type (supervisor-entry-type entry))
                    (working-directory (supervisor-entry-working-directory entry))
                    (environment (supervisor-entry-environment entry))
@@ -5063,7 +5346,8 @@ Returns a plist with :stopped and :started counts."
                                   working-directory environment
                                   environment-file restart-sec
                                   unit-file-directory
-                                  user group)))
+                                  user group
+                                  stdout-log-file stderr-log-file)))
                        (if proc
                            (progn
                              (supervisor--emit-event 'process-started id nil (list :type type))
@@ -5204,7 +5488,6 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
                         :action "error: cannot resolve exec-reload context")
                 (let* ((logging (supervisor--get-effective-logging id logging-p))
                        (log-file (when logging
-                                   (supervisor--ensure-log-directory)
                                    (supervisor--log-file id))))
                   (if (supervisor--exec-command-chain
                        exec-reload id dir env log-file
@@ -5223,6 +5506,8 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
             (remhash id supervisor--manually-stopped)
             (let* ((cmd (supervisor-entry-command entry))
                    (logging-p (supervisor-entry-logging-p entry))
+                   (stdout-log-file (supervisor-entry-stdout-log-file entry))
+                   (stderr-log-file (supervisor-entry-stderr-log-file entry))
                    (restart-policy (supervisor-entry-restart-policy entry))
                    (working-directory (supervisor-entry-working-directory entry))
                    (environment (supervisor-entry-environment entry))
@@ -5239,7 +5524,8 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
                                  working-directory environment
                                  environment-file restart-sec
                                  unit-file-directory
-                                 user group)))
+                                 user group
+                                 stdout-log-file stderr-log-file)))
                   (if new-proc
                       (list :id id :action "reloaded")
                     (list :id id
@@ -5269,6 +5555,9 @@ refreshed plan.
 Returns a plist with :entries and :invalid counts."
   (interactive)
 
+  ;; Seed default maintenance units on disk when missing.
+  (when (fboundp 'supervisor--ensure-default-maintenance-units)
+    (supervisor--ensure-default-maintenance-units))
   ;; Refresh programs cache from disk
   (supervisor--refresh-programs)
   (let ((plan (supervisor--build-plan (supervisor--effective-programs))))

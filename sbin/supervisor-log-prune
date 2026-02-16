@@ -37,6 +37,10 @@ warn() {
     printf 'Warning: %s\n' "${1}" >&2
 }
 
+info() {
+    printf '%s\n' "${1}"
+}
+
 die() {
     code="${1}"
     shift
@@ -123,7 +127,10 @@ command -v fuser >/dev/null 2>&1 && has_fuser=1
 # --- Acquire exclusive lock (non-blocking) ---
 # Open the lock file on fd 9 for flock
 exec 9>"${lock_file}"
-flock -n 9 || exit 0
+flock -n 9 || {
+    info "prune: lock busy lock_file=${lock_file}; skipping"
+    exit 0
+}
 
 # --- Active vs rotated file detection ---
 # Reuse the exact is_rotated() pattern from sbin/supervisor-logrotate.
@@ -159,7 +166,11 @@ file_size_bytes() {
 
 # --- Compute total and check cap ---
 total="$(dir_total_bytes "${log_dir}")"
-[ "${total}" -gt "${max_total_bytes}" ] || exit 0
+info "prune: start log_dir=${log_dir} total_bytes=${total} max_total_bytes=${max_total_bytes} dry_run=${dry_run}"
+[ "${total}" -gt "${max_total_bytes}" ] || {
+    info "prune: no action (under cap)"
+    exit 0
+}
 
 # --- Collect rotated files sorted by mtime oldest-first ---
 # find -printf '%T@ %p\n' gives epoch.frac path; sort -n gives oldest first.
@@ -168,7 +179,10 @@ rotated_files="$(find "${log_dir}" -maxdepth 1 -type f \
     \( -name 'supervisor.*.log' -o -name 'log-*.*.log' \) \
     -printf '%T@ %p\n' | sort -n | awk '{ print $2 }')"
 
-[ -n "${rotated_files}" ] || exit 0
+[ -n "${rotated_files}" ] || {
+    info "prune: no rotated candidates"
+    exit 0
+}
 
 # --- Build protection metadata ---
 # Compute parent names for all rotated files (shared by three guards).
@@ -231,7 +245,12 @@ printf '%s\n' "${rotated_files}" | while IFS= read -r f; do
     fsize="$(file_size_bytes "${f}")"
     case "${dry_run}" in
         1) printf 'prune: %s (%s bytes)\n' "${f}" "${fsize}" ;;
-        *) rm -f "${f}" ;;
+        *)
+            rm -f "${f}"
+            printf 'prune: %s (%s bytes)\n' "${f}" "${fsize}"
+            ;;
     esac
     excess=$((excess - fsize))
 done
+
+info "prune: complete"
