@@ -5383,6 +5383,38 @@ for convergence tracking."
         ;; Check if already complete (e.g., all entries were disabled)
         (supervisor--dag-check-complete)))))
 
+(defun supervisor--dag-start-with-deps (entries callback)
+  "Start ENTRIES respecting DAG dependency and oneshot-blocking order.
+Call CALLBACK when all entries are ready.
+
+Unlike `supervisor--start-entries-async', this does not reinitialize
+target convergence state and does not set a startup timeout.  This is
+intended for mid-run operations like isolate that need DAG-ordered
+starts without disrupting existing runtime state."
+  (if (null entries)
+      (funcall callback)
+    ;; Initialize DAG scheduler (resets DAG variables only)
+    (supervisor--dag-init entries)
+    (setq supervisor--dag-complete-callback callback)
+    (setq supervisor--dag-pending-starts nil)
+    (setq supervisor--dag-active-starts 0)
+    ;; Start all initially ready entries (in-degree = 0)
+    (let ((ready-ids nil))
+      (maphash (lambda (id in-deg)
+                 (when (= 0 in-deg)
+                   (push id ready-ids)))
+               supervisor--dag-in-degree)
+      ;; Sort by original order for stable startup
+      (setq ready-ids (sort ready-ids
+                            (lambda (a b)
+                              (< (gethash a supervisor--dag-id-to-index 999)
+                                 (gethash b supervisor--dag-id-to-index 999)))))
+      (if (null ready-ids)
+          (funcall callback)
+        (dolist (id ready-ids)
+          (supervisor--dag-try-start-entry id))
+        (supervisor--dag-check-complete)))))
+
 ;;; Default target resolution
 
 (defun supervisor--resolve-default-target-link ()

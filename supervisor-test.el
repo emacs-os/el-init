@@ -18655,12 +18655,13 @@ An invalid entry ID that happens to end in .target must not pass."
           (supervisor--target-members nil)
           (supervisor-default-target-link "app.target")
           (supervisor--default-target-link-override nil)
-          (started nil)
+          (dag-entries nil)
           (stopped nil))
-      ;; Mock manual-start and manual-stop to track calls
-      (cl-letf (((symbol-function 'supervisor--manual-start)
-                 (lambda (id) (push id started)
-                   (list :status 'started :reason nil)))
+      ;; Mock dag-start-with-deps to capture entries and manual-stop to track stops
+      (cl-letf (((symbol-function 'supervisor--dag-start-with-deps)
+                 (lambda (entries callback)
+                   (setq dag-entries (mapcar #'supervisor-entry-id entries))
+                   (funcall callback)))
                 ((symbol-function 'supervisor--manual-stop)
                  (lambda (id) (push id stopped)
                    (list :status 'stopped :reason nil))))
@@ -18670,8 +18671,73 @@ An invalid entry ID that happens to end in .target must not pass."
                       (supervisor-cli-result-exitcode result)))
           (should (string-match "Isolated"
                                 (supervisor-cli-result-output result)))
-          ;; svc-a should be started (in app.target closure)
-          (should (member "svc-a" started)))))))
+          ;; svc-a should be submitted to DAG (in app.target closure)
+          (should (member "svc-a" dag-entries))
+          ;; svc-b should NOT be submitted (not in closure)
+          (should-not (member "svc-b" dag-entries)))))))
+
+(ert-deftest supervisor-test-dag-start-with-deps-oneshot-blocking ()
+  "DAG start respects blocking oneshot: dependent waits for oneshot exit."
+  (supervisor-test-with-unit-files
+      '(("true" :id "setup" :type oneshot :oneshot-blocking t)
+        ("sleep 300" :id "svc" :type simple :after ("setup")))
+    (let ((supervisor--dag-in-degree (make-hash-table :test 'equal))
+          (supervisor--dag-dependents (make-hash-table :test 'equal))
+          (supervisor--dag-entries (make-hash-table :test 'equal))
+          (supervisor--dag-blocking (make-hash-table :test 'equal))
+          (supervisor--dag-started (make-hash-table :test 'equal))
+          (supervisor--dag-ready (make-hash-table :test 'equal))
+          (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+          (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+          (supervisor--dag-id-to-index (make-hash-table :test 'equal))
+          (supervisor--dag-complete-callback nil)
+          (supervisor--dag-pending-starts nil)
+          (supervisor--dag-active-starts 0)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--ready-times (make-hash-table :test 'equal))
+          (supervisor--start-times (make-hash-table :test 'equal))
+          (supervisor--target-member-reverse nil)
+          (supervisor--target-converging nil)
+          (supervisor--shutting-down nil)
+          (supervisor-max-concurrent-starts nil)
+          (spawned nil)
+          (complete nil))
+      (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
+             (entries (cl-remove-if
+                       (lambda (e) (eq (supervisor-entry-type e) 'target))
+                       (supervisor-plan-by-target plan))))
+        ;; Mock start-process to track spawns without real processes
+        (cl-letf (((symbol-function 'supervisor--start-process)
+                   (lambda (id _cmd _log _type _restart &rest _args)
+                     (push id spawned)
+                     ;; Return a fake process object
+                     (start-process (concat "fake-" id) nil "sleep" "300")))
+                  ((symbol-function 'executable-find) (lambda (_) t))
+                  ((symbol-function 'supervisor--emit-event) #'ignore)
+                  ((symbol-function 'supervisor--maybe-refresh-dashboard)
+                   #'ignore))
+          (unwind-protect
+              (progn
+                ;; Start entries via DAG
+                (supervisor--dag-start-with-deps
+                 entries
+                 (lambda () (setq complete t)))
+                ;; Oneshot should be spawned first
+                (should (member "setup" spawned))
+                ;; Dependent should NOT be spawned yet (waiting for oneshot)
+                (should-not (member "svc" spawned))
+                ;; Simulate oneshot exit by marking ready
+                (supervisor--dag-mark-ready "setup")
+                ;; Now dependent should be spawned
+                (should (member "svc" spawned)))
+            ;; Cleanup fake processes
+            (maphash (lambda (_id proc)
+                       (when (process-live-p proc)
+                         (delete-process proc)))
+                     supervisor--processes)))))))
 
 (ert-deftest supervisor-test-cli-isolate-nonexistent ()
   "Isolate with nonexistent target returns exit code 4."

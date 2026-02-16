@@ -2525,17 +2525,22 @@ Requires --yes flag.  Transaction-scoped (does not persist default change)."
                   (unless (gethash id closure)
                     (supervisor--manual-stop id)
                     (cl-incf stop-count)))
-                ;; Start entries in closure using topological order
-                (dolist (entry (supervisor-plan-by-target plan))
-                  (let* ((id (supervisor-entry-id entry))
-                         (proc (gethash id supervisor--processes)))
-                    (when (and (gethash id closure)
-                               (not (and proc (process-live-p proc)))
-                               (not (eq (supervisor-entry-type entry)
-                                        'target)))
-                      (let ((result (supervisor--manual-start id)))
-                        (when (eq (plist-get result :status) 'started)
-                          (cl-incf start-count))))))
+                ;; Collect entries that need DAG-ordered starting
+                (let ((to-start
+                       (cl-remove-if
+                        (lambda (e)
+                          (let* ((id (supervisor-entry-id e))
+                                 (proc (gethash id supervisor--processes)))
+                            (or (not (gethash id closure))
+                                (eq (supervisor-entry-type e) 'target)
+                                (and proc (process-live-p proc)))))
+                        (supervisor-plan-by-target plan))))
+                  (setq start-count (length to-start))
+                  ;; Start via DAG scheduler (respects oneshot-blocking)
+                  (supervisor--dag-start-with-deps
+                   to-start
+                   (lambda ()
+                     (supervisor--log 'info "isolate startup complete"))))
                 ;; Update convergence state for new target membership
                 (when (hash-table-p supervisor--target-members)
                   (maphash (lambda (k v) (puthash k v supervisor--target-members))
