@@ -947,18 +947,39 @@ that invocation only."
      (t
       ;; Start all via supervisor-start, optionally with --target override
       (if target-val
-          (let ((supervisor-default-target target-val))
-            (supervisor-start))
-        (supervisor-start))
-      (supervisor--cli-success
-       (if json-p
-           (json-encode `((message . "Supervisor started")
-                          ,@(when target-val
-                              `((target . ,target-val)))))
-         (if target-val
-             (format "Supervisor started (target: %s)\n" target-val)
-           "Supervisor started\n"))
-       (if json-p 'json 'human))))))
+          ;; Pre-validate target exists before calling supervisor-start
+          (let* ((plan (supervisor--build-plan
+                        (supervisor--effective-programs)))
+                 (entries (supervisor-plan-entries plan))
+                 (found (cl-find target-val entries
+                                 :key #'supervisor-entry-id
+                                 :test #'equal)))
+            (cond
+             ((not found)
+              (supervisor--cli-error
+               supervisor-cli-exit-no-such-unit
+               (format "Target '%s' does not exist" target-val)
+               (if json-p 'json 'human)))
+             ((not (eq (supervisor-entry-type found) 'target))
+              (supervisor--cli-error
+               supervisor-cli-exit-invalid-args
+               (format "'%s' exists but is not a target unit" target-val)
+               (if json-p 'json 'human)))
+             (t
+              (let ((supervisor-default-target target-val))
+                (supervisor-start))
+              (supervisor--cli-success
+               (if json-p
+                   (json-encode `((message . "Supervisor started")
+                                  (target . ,target-val)))
+                 (format "Supervisor started (target: %s)\n" target-val))
+               (if json-p 'json 'human)))))
+        (supervisor-start)
+        (supervisor--cli-success
+         (if json-p
+             (json-encode '((message . "Supervisor started")))
+           "Supervisor started\n")
+         (if json-p 'json 'human)))))))
 
 (defun supervisor--cli-stop-all-gracefully ()
   "Stop all supervised processes and wait for completion.
@@ -2060,6 +2081,16 @@ In non-interactive context, launch $VISUAL or $EDITOR."
 
 ;;; CLI Target Commands
 
+(defun supervisor--cli-require-running (json-p)
+  "Return an error result if the supervisor has no runtime context.
+Return nil when the supervisor is running (current plan is available).
+JSON-P controls the output format."
+  (unless supervisor--current-plan
+    (supervisor--cli-error
+     supervisor-cli-exit-failure
+     "Supervisor is not running (no current plan)"
+     (if json-p 'json 'human))))
+
 (defun supervisor--cli-cmd-get-default (args json-p)
   "Handle `get-default' command with ARGS.  JSON-P enables JSON output.
 Print the effective default-target-link (what default.target resolves to)."
@@ -2131,6 +2162,8 @@ Persist default-target-link override.  Reject \"default.target\"."
 List all target units with convergence state and member counts."
   (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
+      (let ((running-err (supervisor--cli-require-running json-p)))
+        (if running-err running-err
       (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
              (entries (supervisor-plan-entries plan))
              (target-entries
@@ -2185,7 +2218,7 @@ List all target units with convergence state and member counts."
                          id status req wants
                          (if link (format "  (-> %s)" link) ""))))
              rows "")))
-         (if json-p 'json 'human))))))
+         (if json-p 'json 'human))))))))
 
 (defun supervisor--cli-cmd-target-status (args json-p)
   "Handle `target-status TARGET' command with ARGS.  JSON-P for JSON.
@@ -2201,6 +2234,8 @@ Show convergence state, reasons, and member lists for a target."
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    (t
+    (let ((running-err (supervisor--cli-require-running json-p)))
+      (or running-err
     (let* ((target (car args))
            (plan (supervisor--build-plan (supervisor--effective-programs)))
            (entries (supervisor-plan-entries plan))
@@ -2295,7 +2330,7 @@ Show convergence state, reasons, and member lists for a target."
                              (format "%s (%s)" (car p) (cdr p)))
                            want-info ", ")
                         "none"))))
-           (if json-p 'json 'human)))))))))
+           (if json-p 'json 'human)))))))))))
 
 (defun supervisor--cli-type-for-id (id entries)
   "Return the entry type symbol for ID in ENTRIES list, or nil."
@@ -2318,6 +2353,8 @@ Show root-cause chain: why is this target in its current state?"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    (t
+    (let ((running-err (supervisor--cli-require-running json-p)))
+      (or running-err
     (let* ((target (car args))
            (plan (supervisor--build-plan (supervisor--effective-programs)))
            (entries (supervisor-plan-entries plan))
@@ -2408,7 +2445,7 @@ Show root-cause chain: why is this target in its current state?"
                          (if (= 1 (length req-ids)) "" "s")))
                 ("pending"
                  "  Supervisor not started or target not in activation closure\n"))))
-           (if json-p 'json 'human)))))))))
+           (if json-p 'json 'human)))))))))))
 
 (defun supervisor--cli-cmd-isolate (args json-p)
   "Handle `isolate [--yes] TARGET' command with ARGS.  JSON-P for JSON.
@@ -2439,6 +2476,8 @@ Requires --yes flag.  Transaction-scoped (does not persist default change)."
                              "isolate requires --yes to confirm"
                              (if json-p 'json 'human)))
      (t
+      (let ((running-err (supervisor--cli-require-running json-p)))
+        (or running-err
       (let ((target (car positional)))
         (cond
          ((not (string-suffix-p ".target" target))
@@ -2486,20 +2525,17 @@ Requires --yes flag.  Transaction-scoped (does not persist default change)."
                   (unless (gethash id closure)
                     (supervisor--manual-stop id)
                     (cl-incf stop-count)))
-                ;; Start entries in closure that aren't running
-                (maphash
-                 (lambda (id _)
-                   (let ((proc (gethash id supervisor--processes)))
-                     (unless (and proc (process-live-p proc))
-                       ;; Skip target entries (no process to start)
-                       (let ((entry (gethash id entries-by-id)))
-                         (when (and entry
-                                    (not (eq (supervisor-entry-type entry)
-                                             'target)))
-                           (let ((result (supervisor--manual-start id)))
-                             (when (eq (plist-get result :status) 'started)
-                               (cl-incf start-count))))))))
-                 closure)
+                ;; Start entries in closure using topological order
+                (dolist (entry (supervisor-plan-by-target plan))
+                  (let* ((id (supervisor-entry-id entry))
+                         (proc (gethash id supervisor--processes)))
+                    (when (and (gethash id closure)
+                               (not (and proc (process-live-p proc)))
+                               (not (eq (supervisor-entry-type entry)
+                                        'target)))
+                      (let ((result (supervisor--manual-start id)))
+                        (when (eq (plist-get result :status) 'started)
+                          (cl-incf start-count))))))
                 ;; Update convergence state for new target membership
                 (when (hash-table-p supervisor--target-members)
                   (maphash (lambda (k v) (puthash k v supervisor--target-members))
@@ -2513,7 +2549,7 @@ Requires --yes flag.  Transaction-scoped (does not persist default change)."
                                     (started . ,start-count)))
                    (format "Isolated to %s: stopped %d, started %d\n"
                            target stop-count start-count))
-                 (if json-p 'json 'human)))))))))))))
+                 (if json-p 'json 'human)))))))))))))))
 
 (defun supervisor--cli-dispatch (argv)
   "Dispatch CLI command from ARGV.

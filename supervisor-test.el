@@ -18369,7 +18369,8 @@ An invalid entry ID that happens to end in .target must not pass."
         (nil :id "graphical.target" :type target
              :after ("multi-user.target"))
         (nil :id "default.target" :type target))
-    (let ((supervisor--target-convergence nil)
+    (let ((supervisor--current-plan t)
+          (supervisor--target-convergence nil)
           (supervisor--target-convergence-reasons nil)
           (supervisor-default-target-link "graphical.target")
           (supervisor--default-target-link-override nil))
@@ -18389,7 +18390,8 @@ An invalid entry ID that happens to end in .target must not pass."
   (supervisor-test-with-unit-files
       '((nil :id "basic.target" :type target)
         (nil :id "default.target" :type target))
-    (let ((supervisor--target-convergence nil)
+    (let ((supervisor--current-plan t)
+          (supervisor--target-convergence nil)
           (supervisor--target-convergence-reasons nil)
           (supervisor-default-target-link "basic.target")
           (supervisor--default-target-link-override nil))
@@ -18408,7 +18410,8 @@ An invalid entry ID that happens to end in .target must not pass."
   (supervisor-test-with-unit-files
       '((nil :id "empty.target" :type target)
         (nil :id "default.target" :type target))
-    (let ((supervisor--target-convergence nil)
+    (let ((supervisor--current-plan t)
+          (supervisor--target-convergence nil)
           (supervisor--target-convergence-reasons nil)
           (supervisor-default-target-link "empty.target")
           (supervisor--default-target-link-override nil))
@@ -18426,7 +18429,8 @@ An invalid entry ID that happens to end in .target must not pass."
         (nil :id "multi-user.target" :type target
              :after ("basic.target"))
         (nil :id "default.target" :type target))
-    (let ((supervisor--processes (make-hash-table :test 'equal))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
           (supervisor--entry-state (make-hash-table :test 'equal))
           (supervisor--failed (make-hash-table :test 'equal))
           (supervisor--oneshot-completed (make-hash-table :test 'equal))
@@ -18451,7 +18455,8 @@ An invalid entry ID that happens to end in .target must not pass."
   (supervisor-test-with-unit-files
       '((nil :id "basic.target" :type target)
         (nil :id "default.target" :type target))
-    (let ((supervisor--processes (make-hash-table :test 'equal))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
           (supervisor--entry-state (make-hash-table :test 'equal))
           (supervisor--failed (make-hash-table :test 'equal))
           (supervisor--oneshot-completed (make-hash-table :test 'equal))
@@ -18474,7 +18479,8 @@ An invalid entry ID that happens to end in .target must not pass."
   (supervisor-test-with-unit-files
       '((nil :id "basic.target" :type target)
         (nil :id "default.target" :type target))
-    (let ((supervisor-default-target-link "basic.target")
+    (let ((supervisor--current-plan t)
+          (supervisor-default-target-link "basic.target")
           (supervisor--default-target-link-override nil))
       (let ((result (supervisor--cli-dispatch
                      '("target-status" "nonexistent.target"))))
@@ -18487,7 +18493,8 @@ An invalid entry ID that happens to end in .target must not pass."
       '(("sleep 1" :id "svc-a" :wanted-by ("app.target"))
         (nil :id "app.target" :type target)
         (nil :id "default.target" :type target))
-    (let ((supervisor--processes (make-hash-table :test 'equal))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
           (supervisor--entry-state (make-hash-table :test 'equal))
           (supervisor--failed (make-hash-table :test 'equal))
           (supervisor--oneshot-completed (make-hash-table :test 'equal))
@@ -18516,7 +18523,8 @@ An invalid entry ID that happens to end in .target must not pass."
       '(("sleep 1" :id "svc-a" :required-by ("app.target"))
         (nil :id "app.target" :type target)
         (nil :id "default.target" :type target))
-    (let ((supervisor--processes (make-hash-table :test 'equal))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
           (supervisor--entry-state (make-hash-table :test 'equal))
           (supervisor--failed (make-hash-table :test 'equal))
           (supervisor--oneshot-completed (make-hash-table :test 'equal))
@@ -18544,7 +18552,8 @@ An invalid entry ID that happens to end in .target must not pass."
       '(("sleep 1" :id "svc-a" :required-by ("app.target"))
         (nil :id "app.target" :type target)
         (nil :id "default.target" :type target))
-    (let ((supervisor--processes (make-hash-table :test 'equal))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
           (supervisor--entry-state (make-hash-table :test 'equal))
           (supervisor--failed (make-hash-table :test 'equal))
           (supervisor--oneshot-completed (make-hash-table :test 'equal))
@@ -18574,7 +18583,8 @@ An invalid entry ID that happens to end in .target must not pass."
   (supervisor-test-with-unit-files
       '((nil :id "app.target" :type target)
         (nil :id "default.target" :type target))
-    (let ((supervisor--processes (make-hash-table :test 'equal))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
           (supervisor--entry-state (make-hash-table :test 'equal))
           (supervisor--failed (make-hash-table :test 'equal))
           (supervisor--oneshot-completed (make-hash-table :test 'equal))
@@ -18597,7 +18607,8 @@ An invalid entry ID that happens to end in .target must not pass."
   (supervisor-test-with-unit-files
       '((nil :id "basic.target" :type target)
         (nil :id "default.target" :type target))
-    (let ((supervisor-default-target-link "basic.target")
+    (let ((supervisor--current-plan t)
+          (supervisor-default-target-link "basic.target")
           (supervisor--default-target-link-override nil))
       (let ((result (supervisor--cli-dispatch
                      '("explain-target" "nonexistent.target"))))
@@ -18609,7 +18620,8 @@ An invalid entry ID that happens to end in .target must not pass."
   (supervisor-test-with-unit-files
       '((nil :id "app.target" :type target)
         (nil :id "default.target" :type target))
-    (let ((supervisor-default-target-link "app.target")
+    (let ((supervisor--current-plan t)
+          (supervisor-default-target-link "app.target")
           (supervisor--default-target-link-override nil))
       (let ((result (supervisor--cli-dispatch
                      '("isolate" "app.target"))))
@@ -18626,7 +18638,8 @@ An invalid entry ID that happens to end in .target must not pass."
         (nil :id "app.target" :type target)
         (nil :id "other.target" :type target)
         (nil :id "default.target" :type target))
-    (let ((supervisor--processes (make-hash-table :test 'equal))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
           (supervisor--entry-state (make-hash-table :test 'equal))
           (supervisor--failed (make-hash-table :test 'equal))
           (supervisor--oneshot-completed (make-hash-table :test 'equal))
@@ -18665,7 +18678,8 @@ An invalid entry ID that happens to end in .target must not pass."
   (supervisor-test-with-unit-files
       '((nil :id "basic.target" :type target)
         (nil :id "default.target" :type target))
-    (let ((supervisor-default-target-link "basic.target")
+    (let ((supervisor--current-plan t)
+          (supervisor-default-target-link "basic.target")
           (supervisor--default-target-link-override nil))
       (let ((result (supervisor--cli-dispatch
                      '("isolate" "--yes" "nonexistent.target"))))
@@ -18764,6 +18778,60 @@ An invalid entry ID that happens to end in .target must not pass."
       (should (string-match "isolate" output))
       (should (string-match "get-default" output))
       (should (string-match "set-default" output)))))
+
+(ert-deftest supervisor-test-cli-list-targets-not-running ()
+  "The `list-targets' rejects when supervisor has no runtime context."
+  (let ((supervisor--current-plan nil))
+    (let ((result (supervisor--cli-dispatch '("list-targets"))))
+      (should (= supervisor-cli-exit-failure
+                  (supervisor-cli-result-exitcode result)))
+      (should (string-match "not running"
+                            (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-target-status-not-running ()
+  "The `target-status' rejects when supervisor has no runtime context."
+  (let ((supervisor--current-plan nil))
+    (let ((result (supervisor--cli-dispatch
+                   '("target-status" "app.target"))))
+      (should (= supervisor-cli-exit-failure
+                  (supervisor-cli-result-exitcode result)))
+      (should (string-match "not running"
+                            (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-explain-target-not-running ()
+  "The `explain-target' rejects when supervisor has no runtime context."
+  (let ((supervisor--current-plan nil))
+    (let ((result (supervisor--cli-dispatch
+                   '("explain-target" "app.target"))))
+      (should (= supervisor-cli-exit-failure
+                  (supervisor-cli-result-exitcode result)))
+      (should (string-match "not running"
+                            (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-isolate-not-running ()
+  "The `isolate --yes' rejects when supervisor has no runtime context."
+  (let ((supervisor--current-plan nil))
+    (let ((result (supervisor--cli-dispatch
+                   '("isolate" "--yes" "app.target"))))
+      (should (= supervisor-cli-exit-failure
+                  (supervisor-cli-result-exitcode result)))
+      (should (string-match "not running"
+                            (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-start-target-nonexistent-clean-error ()
+  "The `start --target' with nonexistent target returns clean error."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("start" "--target" "nonexistent.target"))))
+        (should (= supervisor-cli-exit-no-such-unit
+                    (supervisor-cli-result-exitcode result)))
+        ;; Should be a clean error, not "Internal error"
+        (should-not (string-match "Internal error"
+                                  (supervisor-cli-result-output result)))))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
