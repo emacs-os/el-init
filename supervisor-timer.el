@@ -50,20 +50,21 @@
 (defvar supervisor--invalid)
 (defvar supervisor--oneshot-completed)
 
-;;; Experimental Gate
+;;; Timer Subsystem Gate
 
 ;;;###autoload
 (define-minor-mode supervisor-timer-subsystem-mode
-  "Toggle the experimental timer subsystem for supervisor.el.
+  "Toggle the timer subsystem for supervisor.el.
 
 When enabled, supervisor will process timer definitions from
-`supervisor-timers' and schedule oneshot services accordingly.
+`supervisor-timers' (and built-in timers such as the daily
+logrotate maintenance job) and schedule oneshot services accordingly.
 
-IMPORTANT: This is an experimental feature.  The timer subsystem
-requires `supervisor-mode' to be enabled.  If `supervisor-mode' is
-disabled, timer functionality is a no-op even if this mode is enabled.
+The timer subsystem requires `supervisor-mode' to be enabled.  If
+`supervisor-mode' is disabled, timer functionality is a no-op even
+if this mode is enabled.
 
-When disabled (the default), timer code will not:
+When disabled, timer code will not:
 - Build timer plans/lists in startup or reconcile flows
 - Start, tick, or reschedule scheduler loops
 - Trigger timer-driven oneshot runs
@@ -72,11 +73,11 @@ When disabled (the default), timer code will not:
 - Load or save timer-state persistence data"
   :global t
   :group 'supervisor-timer
-  :init-value nil
+  :init-value t
   :lighter nil
   (if supervisor-timer-subsystem-mode
       (when (fboundp 'supervisor--log)
-        (supervisor--log 'info "timer subsystem mode enabled (experimental)"))
+        (supervisor--log 'info "timer subsystem mode enabled"))
     ;; When disabling, stop the scheduler immediately
     (when (fboundp 'supervisor-timer-scheduler-stop)
       (supervisor-timer-scheduler-stop))
@@ -453,14 +454,24 @@ Assumes validation has already passed."
                  t)))
 
 (defun supervisor-timer-build-list (plan)
-  "Build list of validated timer structs from `supervisor-timers'.
-Invalid timers are added to `supervisor--invalid-timers' hash.
-PLAN is used for target validation.
+  "Build list of validated timer structs from user and built-in timers.
+User timers from `supervisor-timers' are merged with built-in timers
+from `supervisor--builtin-timers'; a user timer with the same `:id'
+overrides the built-in one.  Invalid timers are added to
+`supervisor--invalid-timers' hash.  PLAN is used for target validation.
 Note: No gate check - validation should work even when subsystem is off."
   (clrhash supervisor--invalid-timers)
-  (let ((timers nil)
-        (seen-ids (make-hash-table :test 'equal)))
-    (dolist (timer-plist supervisor-timers)
+  (let* ((user-ids (mapcar (lambda (tp) (plist-get tp :id))
+                           supervisor-timers))
+         (merged (append supervisor-timers
+                         (cl-remove-if
+                          (lambda (bt) (member (plist-get bt :id) user-ids))
+                          (if (boundp 'supervisor--builtin-timers)
+                              supervisor--builtin-timers
+                            nil))))
+         (timers nil)
+         (seen-ids (make-hash-table :test 'equal)))
+    (dolist (timer-plist merged)
       (let* ((id (or (plist-get timer-plist :id)
                      (format "timer#%d" (hash-table-count supervisor--invalid-timers)))))
         (cond
@@ -746,6 +757,8 @@ Returns t if triggered, nil if skipped."
       (supervisor--start-entry-async
        entry
        (lambda (success)
+         (when (and success (fboundp 'supervisor--signal-writers-reopen))
+           (supervisor--signal-writers-reopen))
          (supervisor-timer--on-target-complete id target-id success)))
       t)))
 

@@ -844,16 +844,18 @@ All dashboard policy commands (~enable~, ~disable~, ~mask~, ~unmask~,
 :CUSTOM_ID: timer-subsystem-handbook
 :END:
 
-Timer subsystem lives in ~supervisor-timer.el~ and is disabled by default.
+Timer subsystem lives in ~supervisor-timer.el~ and is enabled by default.
+Both ~supervisor-mode~ and ~supervisor-timer-subsystem-mode~ must be
+active for timers to run.
 
-To enable:
+To disable:
 
 #+begin_src emacs-lisp
-(supervisor-mode 1)
-(supervisor-timer-subsystem-mode 1)
+(supervisor-timer-subsystem-mode -1)
 #+end_src
 
-Both modes must be active for timers to run.
+Disabling the timer subsystem disables all timer-driven scheduling,
+including the built-in daily log maintenance.
 
 ** Timer Configuration (~supervisor-timers~)
 
@@ -1541,25 +1543,44 @@ A typical cron entry for periodic pruning (e.g. hourly):
 
 *** Integrated Maintenance
 
-Two paths keep log growth bounded end-to-end:
+Three paths keep log growth bounded end-to-end:
 
 1. *logd path* --- each logd writer rotates its own file when the
    per-file size cap is reached, then triggers the prune script
    (throttled by ~supervisor-logd-prune-min-interval~ seconds) to keep
    the directory within the total size cap.
 
-2. *Scheduled path* --- ~M-x supervisor-run-log-maintenance~ runs the
+2. *Daily automatic path* --- a built-in ~logrotate~ oneshot unit and
+   ~logrotate-daily~ timer run log rotation and pruning every day at
+   03:00.  This runs automatically when the timer subsystem is enabled
+   (the default).  After rotation completes, all log writers receive
+   SIGHUP to reopen their files.
+
+3. *Manual path* --- ~M-x supervisor-run-log-maintenance~ runs the
    full maintenance sequence asynchronously: rotate all active logs,
    signal writers to reopen, then prune.
 
-The ~supervisor-run-log-maintenance~ command is suitable for periodic
-invocation via a timer or manual use:
+The built-in ~logrotate~ unit appears in stage4 as a oneshot service.
+A user-created unit file with ~:id "logrotate"~ overrides the built-in
+entry.  Similarly, a user timer with ~:id "logrotate-daily"~ in
+~supervisor-timers~ overrides the built-in timer schedule.
 
-#+begin_example
-M-x supervisor-run-log-maintenance
-#+end_example
+To disable automatic daily maintenance, either disable the timer
+subsystem entirely:
 
-Both paths use the same lock file (~<log-dir>/.prune.lock~) for prune
+#+begin_src emacs-lisp
+(supervisor-timer-subsystem-mode -1)
+#+end_src
+
+Or override the built-in timer with a disabled one:
+
+#+begin_src emacs-lisp
+(setq supervisor-timers
+      '((:id "logrotate-daily" :target "logrotate"
+         :on-calendar (:hour 3 :minute 0) :enabled nil)))
+#+end_src
+
+All paths use the same lock file (~<log-dir>/.prune.lock~) for prune
 coordination, so concurrent invocations are safe.
 
 Relevant customization variables:

@@ -17,6 +17,14 @@
 
 ;;; Test Helpers
 
+(defmacro supervisor-test-without-builtins (&rest body)
+  "Execute BODY with built-in programs and timers suppressed."
+  (declare (indent 0) (debug (body)))
+  `(let ((supervisor--builtin-timers nil))
+     (cl-letf (((symbol-function 'supervisor--builtin-programs)
+                (lambda () nil)))
+       ,@body)))
+
 (defun supervisor-test--write-unit-files (dir programs)
   "Write PROGRAMS list as unit files in DIR.
 Each entry in PROGRAMS is either a string (bare command) or
@@ -45,38 +53,42 @@ Each entry in PROGRAMS is either a string (bare command) or
   "Execute BODY with PROGRAMS written as unit files in a temp directory.
 Binds `supervisor-unit-authority-path' and `supervisor-unit-directory'
 to the temp dir, clears `supervisor--unit-file-invalid' and
-`supervisor--programs-cache', and cleans up afterward."
+`supervisor--programs-cache', suppresses built-in programs and timers,
+and cleans up afterward."
   (declare (indent 1) (debug (form body)))
-  `(let* ((dir--temp (make-temp-file "units-" t))
-          (supervisor-unit-authority-path (list dir--temp))
-          (supervisor-unit-directory dir--temp)
-          (supervisor--programs-cache :not-yet-loaded)
-          (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
-     (supervisor-test--write-unit-files dir--temp ,programs)
-     (unwind-protect
-         (progn ,@body)
-       (delete-directory dir--temp t))))
+  `(supervisor-test-without-builtins
+     (let* ((dir--temp (make-temp-file "units-" t))
+            (supervisor-unit-authority-path (list dir--temp))
+            (supervisor-unit-directory dir--temp)
+            (supervisor--programs-cache :not-yet-loaded)
+            (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+       (supervisor-test--write-unit-files dir--temp ,programs)
+       (unwind-protect
+           (progn ,@body)
+         (delete-directory dir--temp t)))))
 
 (defmacro supervisor-test-with-authority-tiers (n &rest body)
   "Execute BODY with N authority tier directories.
 Bind `dir1' through `dirN' to temp directories, set
 `supervisor-unit-authority-path' to (dir1 ... dirN) (low to high
-precedence), clear caches, and clean up afterward."
+precedence), clear caches, suppress built-in programs and timers,
+and clean up afterward."
   (declare (indent 1) (debug (form body)))
   (let ((dir-syms (cl-loop for i from 1 to n
                             collect (intern (format "dir%d" i)))))
-    `(let* (,@(mapcar (lambda (sym)
-                        `(,sym (make-temp-file "tier-" t)))
-                      dir-syms)
-            (supervisor-unit-authority-path (list ,@dir-syms))
-            (supervisor-unit-directory ,(car (last dir-syms)))
-            (supervisor--programs-cache :not-yet-loaded)
-            (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
-       (unwind-protect
-           (progn ,@body)
-         ,@(mapcar (lambda (sym)
-                     `(delete-directory ,sym t))
-                   dir-syms)))))
+    `(supervisor-test-without-builtins
+       (let* (,@(mapcar (lambda (sym)
+                          `(,sym (make-temp-file "tier-" t)))
+                        dir-syms)
+              (supervisor-unit-authority-path (list ,@dir-syms))
+              (supervisor-unit-directory ,(car (last dir-syms)))
+              (supervisor--programs-cache :not-yet-loaded)
+              (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+         (unwind-protect
+             (progn ,@body)
+           ,@(mapcar (lambda (sym)
+                       `(delete-directory ,sym t))
+                     dir-syms))))))
 
 ;;; Package structure tests
 
@@ -1477,25 +1489,26 @@ Only auto-started (not manually-started) disabled units are stopped."
 (ert-deftest supervisor-test-health-summary-deduplication ()
   "Health summary deduplicates entries with same ID.
 Unit-file loader already deduplicates, so only one entry is loaded."
-  (let* ((dir (make-temp-file "units-" t))
-         (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir)
-         (supervisor--programs-cache :not-yet-loaded)
-         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
-         (supervisor--invalid (make-hash-table :test 'equal))
-         (supervisor--processes (make-hash-table :test 'equal))
-         (supervisor--failed (make-hash-table :test 'equal))
-         (supervisor--oneshot-completed (make-hash-table :test 'equal)))
-    ;; Create two unit files with the same :id
-    (with-temp-file (expand-file-name "dup1.el" dir)
-      (insert "(:id \"dup\" :command \"sleep 100\")"))
-    (with-temp-file (expand-file-name "dup2.el" dir)
-      (insert "(:id \"dup\" :command \"sleep 100\")"))
-    (unwind-protect
-        (let ((summary (supervisor--health-summary)))
-          ;; Should count only 1 pending, not 2
-          (should (string-match-p "1 pend" summary)))
-      (delete-directory dir t))))
+  (supervisor-test-without-builtins
+    (let* ((dir (make-temp-file "units-" t))
+           (supervisor-unit-authority-path (list dir))
+           (supervisor-unit-directory dir)
+           (supervisor--programs-cache :not-yet-loaded)
+           (supervisor--unit-file-invalid (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal)))
+      ;; Create two unit files with the same :id
+      (with-temp-file (expand-file-name "dup1.el" dir)
+        (insert "(:id \"dup\" :command \"sleep 100\")"))
+      (with-temp-file (expand-file-name "dup2.el" dir)
+        (insert "(:id \"dup\" :command \"sleep 100\")"))
+      (unwind-protect
+          (let ((summary (supervisor--health-summary)))
+            ;; Should count only 1 pending, not 2
+            (should (string-match-p "1 pend" summary)))
+        (delete-directory dir t)))))
 
 (ert-deftest supervisor-test-disabled-only-stage-completes ()
   "Stage with only disabled entries completes immediately."
@@ -3367,114 +3380,120 @@ prior snapshot, lookup returns the correct root and actual file path."
 
 (ert-deftest supervisor-test-load-programs-empty-directory ()
   "With no unit files present, returns empty list."
-  (let* ((dir (make-temp-file "units-" t))
-         (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir)
-         (supervisor--programs-cache :not-yet-loaded))
-    (unwind-protect
-        (should (null (supervisor--effective-programs)))
-      (delete-directory dir t))))
+  (supervisor-test-without-builtins
+    (let* ((dir (make-temp-file "units-" t))
+           (supervisor-unit-authority-path (list dir))
+           (supervisor-unit-directory dir)
+           (supervisor--programs-cache :not-yet-loaded))
+      (unwind-protect
+          (should (null (supervisor--effective-programs)))
+        (delete-directory dir t)))))
 
 (ert-deftest supervisor-test-load-programs-unit-file-merge ()
   "Unit file entries are loaded from disk via effective-programs."
-  (let* ((dir (make-temp-file "units-" t))
-         (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir)
-         (supervisor--programs-cache :not-yet-loaded))
-    (unwind-protect
-        (progn
-          (with-temp-file (expand-file-name "svc.el" dir)
-            (insert "(:id \"svc\" :command \"new-cmd\" :type simple)"))
-          (let ((programs (supervisor--effective-programs)))
-            ;; Should have exactly one entry (unit-file wins)
-            (should (= 1 (length programs)))
-            ;; The command should be the unit-file version
-            (should (equal "new-cmd" (car (nth 0 programs))))))
-      (delete-directory dir t))))
+  (supervisor-test-without-builtins
+    (let* ((dir (make-temp-file "units-" t))
+           (supervisor-unit-authority-path (list dir))
+           (supervisor-unit-directory dir)
+           (supervisor--programs-cache :not-yet-loaded))
+      (unwind-protect
+          (progn
+            (with-temp-file (expand-file-name "svc.el" dir)
+              (insert "(:id \"svc\" :command \"new-cmd\" :type simple)"))
+            (let ((programs (supervisor--effective-programs)))
+              ;; Should have exactly one entry (unit-file wins)
+              (should (= 1 (length programs)))
+              ;; The command should be the unit-file version
+              (should (equal "new-cmd" (car (nth 0 programs))))))
+        (delete-directory dir t)))))
 
 (ert-deftest supervisor-test-load-programs-unit-file-adds-new ()
   "Multiple unit files are loaded and returned."
-  (let* ((dir (make-temp-file "units-" t))
-         (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir)
-         (supervisor--programs-cache :not-yet-loaded))
-    (unwind-protect
-        (progn
-          (with-temp-file (expand-file-name "alpha.el" dir)
-            (insert "(:id \"alpha\" :command \"alpha-cmd\" :type simple)"))
-          (with-temp-file (expand-file-name "beta.el" dir)
-            (insert "(:id \"beta\" :command \"beta-cmd\" :type simple)"))
-          (let ((programs (supervisor--effective-programs)))
-            ;; Should have both entries (alphabetical order)
-            (should (= 2 (length programs)))
-            (should (equal "alpha-cmd" (car (nth 0 programs))))
-            (should (equal "beta-cmd" (car (nth 1 programs))))))
-      (delete-directory dir t))))
+  (supervisor-test-without-builtins
+    (let* ((dir (make-temp-file "units-" t))
+           (supervisor-unit-authority-path (list dir))
+           (supervisor-unit-directory dir)
+           (supervisor--programs-cache :not-yet-loaded))
+      (unwind-protect
+          (progn
+            (with-temp-file (expand-file-name "alpha.el" dir)
+              (insert "(:id \"alpha\" :command \"alpha-cmd\" :type simple)"))
+            (with-temp-file (expand-file-name "beta.el" dir)
+              (insert "(:id \"beta\" :command \"beta-cmd\" :type simple)"))
+            (let ((programs (supervisor--effective-programs)))
+              ;; Should have both entries (alphabetical order)
+              (should (= 2 (length programs)))
+              (should (equal "alpha-cmd" (car (nth 0 programs))))
+              (should (equal "beta-cmd" (car (nth 1 programs))))))
+        (delete-directory dir t)))))
 
 (ert-deftest supervisor-test-loader-cross-tier-precedence ()
   "Loader returns higher-tier unit when same ID exists in multiple roots."
-  (let* ((dir1 (make-temp-file "tier1-" t))
-         (dir2 (make-temp-file "tier2-" t))
-         (supervisor-unit-authority-path (list dir1 dir2))
-         (supervisor-unit-directory dir2)
-         (supervisor--programs-cache :not-yet-loaded))
-    (unwind-protect
-        (progn
-          (with-temp-file (expand-file-name "svc.el" dir1)
-            (insert "(:id \"svc\" :command \"low-cmd\" :type simple)"))
-          (with-temp-file (expand-file-name "svc.el" dir2)
-            (insert "(:id \"svc\" :command \"high-cmd\" :type simple)"))
-          ;; effective-programs should return the higher-tier version
-          (let ((programs (supervisor--effective-programs)))
-            (should (= 1 (length programs)))
-            (should (equal "high-cmd" (car (nth 0 programs))))))
-      (delete-directory dir1 t)
-      (delete-directory dir2 t))))
+  (supervisor-test-without-builtins
+    (let* ((dir1 (make-temp-file "tier1-" t))
+           (dir2 (make-temp-file "tier2-" t))
+           (supervisor-unit-authority-path (list dir1 dir2))
+           (supervisor-unit-directory dir2)
+           (supervisor--programs-cache :not-yet-loaded))
+      (unwind-protect
+          (progn
+            (with-temp-file (expand-file-name "svc.el" dir1)
+              (insert "(:id \"svc\" :command \"low-cmd\" :type simple)"))
+            (with-temp-file (expand-file-name "svc.el" dir2)
+              (insert "(:id \"svc\" :command \"high-cmd\" :type simple)"))
+            ;; effective-programs should return the higher-tier version
+            (let ((programs (supervisor--effective-programs)))
+              (should (= 1 (length programs)))
+              (should (equal "high-cmd" (car (nth 0 programs))))))
+        (delete-directory dir1 t)
+        (delete-directory dir2 t)))))
 
 (ert-deftest supervisor-test-loader-invalid-blocks-lower-tier ()
   "Loader blocks lower-tier valid unit when higher tier is invalid."
-  (let* ((dir1 (make-temp-file "tier1-" t))
-         (dir2 (make-temp-file "tier2-" t))
-         (supervisor-unit-authority-path (list dir1 dir2))
-         (supervisor-unit-directory dir2)
-         (supervisor--programs-cache :not-yet-loaded))
-    (unwind-protect
-        (progn
-          ;; Valid in lower tier
-          (with-temp-file (expand-file-name "svc.el" dir1)
-            (insert "(:id \"svc\" :command \"good-cmd\")"))
-          ;; Invalid in higher tier (missing :command)
-          (with-temp-file (expand-file-name "svc.el" dir2)
-            (insert "(:id \"svc\")"))
-          (let ((programs (supervisor--effective-programs)))
-            ;; No valid programs - higher tier blocks
-            (should (= 0 (length programs)))
-            ;; Invalid hash should record it
-            (should (gethash "svc" supervisor--unit-file-invalid))))
-      (delete-directory dir1 t)
-      (delete-directory dir2 t))))
+  (supervisor-test-without-builtins
+    (let* ((dir1 (make-temp-file "tier1-" t))
+           (dir2 (make-temp-file "tier2-" t))
+           (supervisor-unit-authority-path (list dir1 dir2))
+           (supervisor-unit-directory dir2)
+           (supervisor--programs-cache :not-yet-loaded))
+      (unwind-protect
+          (progn
+            ;; Valid in lower tier
+            (with-temp-file (expand-file-name "svc.el" dir1)
+              (insert "(:id \"svc\" :command \"good-cmd\")"))
+            ;; Invalid in higher tier (missing :command)
+            (with-temp-file (expand-file-name "svc.el" dir2)
+              (insert "(:id \"svc\")"))
+            (let ((programs (supervisor--effective-programs)))
+              ;; No valid programs - higher tier blocks
+              (should (= 0 (length programs)))
+              ;; Invalid hash should record it
+              (should (gethash "svc" supervisor--unit-file-invalid))))
+        (delete-directory dir1 t)
+        (delete-directory dir2 t)))))
 
 (ert-deftest supervisor-test-loader-snapshot-consistency ()
   "Authority snapshot is consistent with loader output."
-  (let* ((dir (make-temp-file "tier-" t))
-         (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir)
-         (supervisor--programs-cache :not-yet-loaded))
-    (unwind-protect
-        (progn
-          (with-temp-file (expand-file-name "a.el" dir)
-            (insert "(:id \"a\" :command \"echo a\")"))
-          (with-temp-file (expand-file-name "b.el" dir)
-            (insert "(:id \"b\" :command \"echo b\")"))
-          (let ((programs (supervisor--effective-programs)))
-            (should (= 2 (length programs)))
-            ;; Snapshot should exist and match
-            (should supervisor--authority-snapshot)
+  (supervisor-test-without-builtins
+    (let* ((dir (make-temp-file "tier-" t))
+           (supervisor-unit-authority-path (list dir))
+           (supervisor-unit-directory dir)
+           (supervisor--programs-cache :not-yet-loaded))
+      (unwind-protect
+          (progn
+            (with-temp-file (expand-file-name "a.el" dir)
+              (insert "(:id \"a\" :command \"echo a\")"))
+            (with-temp-file (expand-file-name "b.el" dir)
+              (insert "(:id \"b\" :command \"echo b\")"))
+            (let ((programs (supervisor--effective-programs)))
+              (should (= 2 (length programs)))
+              ;; Snapshot should exist and match
+              (should supervisor--authority-snapshot)
             (let ((winners (plist-get supervisor--authority-snapshot :winners)))
               (should (= 2 (hash-table-count winners)))
               (should (gethash "a" winners))
               (should (gethash "b" winners)))))
-      (delete-directory dir t))))
+        (delete-directory dir t)))))
 
 (ert-deftest supervisor-test-dashboard-shows-invalid-authority-units ()
   "Dashboard entries include invalid units from authority resolution."
@@ -3554,59 +3573,61 @@ prior snapshot, lookup returns the correct root and actual file path."
 
 (ert-deftest supervisor-test-programs-cache-isolates-disk-changes ()
   "Programs cache prevents disk changes from leaking without daemon-reload."
-  (let* ((dir (make-temp-file "cache-" t))
-         (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir)
-         (supervisor--programs-cache :not-yet-loaded)
-         (supervisor--authority-snapshot nil)
-         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
-    (unwind-protect
-        (progn
-          ;; Create one unit and load
-          (with-temp-file (expand-file-name "a.el" dir)
-            (insert "(:id \"a\" :command \"echo a\")"))
-          (let ((programs (supervisor--effective-programs)))
-            (should (= 1 (length programs))))
-          ;; Add a second unit on disk WITHOUT refreshing
-          (with-temp-file (expand-file-name "b.el" dir)
-            (insert "(:id \"b\" :command \"echo b\")"))
-          ;; Cache should still return only 1 program
-          (let ((programs (supervisor--effective-programs)))
-            (should (= 1 (length programs))))
-          ;; Explicit refresh (simulates daemon-reload) picks up the new unit
-          (supervisor--refresh-programs)
-          (let ((programs (supervisor--effective-programs)))
-            (should (= 2 (length programs)))))
-      (delete-directory dir t))))
+  (supervisor-test-without-builtins
+    (let* ((dir (make-temp-file "cache-" t))
+           (supervisor-unit-authority-path (list dir))
+           (supervisor-unit-directory dir)
+           (supervisor--programs-cache :not-yet-loaded)
+           (supervisor--authority-snapshot nil)
+           (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+      (unwind-protect
+          (progn
+            ;; Create one unit and load
+            (with-temp-file (expand-file-name "a.el" dir)
+              (insert "(:id \"a\" :command \"echo a\")"))
+            (let ((programs (supervisor--effective-programs)))
+              (should (= 1 (length programs))))
+            ;; Add a second unit on disk WITHOUT refreshing
+            (with-temp-file (expand-file-name "b.el" dir)
+              (insert "(:id \"b\" :command \"echo b\")"))
+            ;; Cache should still return only 1 program
+            (let ((programs (supervisor--effective-programs)))
+              (should (= 1 (length programs))))
+            ;; Explicit refresh (simulates daemon-reload) picks up the new unit
+            (supervisor--refresh-programs)
+            (let ((programs (supervisor--effective-programs)))
+              (should (= 2 (length programs)))))
+        (delete-directory dir t)))))
 
 (ert-deftest supervisor-test-start-path-publishes-authority-snapshot ()
   "The `supervisor-start' path refreshes the programs cache from disk."
-  (let* ((dir (make-temp-file "start-" t))
-         (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir)
-         (supervisor--programs-cache :not-yet-loaded)
-         (supervisor--authority-snapshot nil)
-         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
-         (publish-count 0))
-    (unwind-protect
-        (progn
-          (with-temp-file (expand-file-name "svc.el" dir)
-            (insert "(:id \"svc\" :command \"echo ok\")"))
-          ;; Count authority resolutions during refresh-programs
-          (cl-letf (((symbol-function 'supervisor--resolve-authority)
-                     (let ((orig (symbol-function
-                                  'supervisor--resolve-authority)))
-                       (lambda ()
-                         (cl-incf publish-count)
-                         (funcall orig)))))
-            ;; Simulate what supervisor-start does: refresh then read
-            (supervisor--refresh-programs)
-            (should (= 1 publish-count))
-            ;; Subsequent reads use cache (no extra publish)
-            (let ((programs (supervisor--effective-programs)))
-              (should (= 1 (length programs)))
-              (should (= 1 publish-count)))))
-      (delete-directory dir t))))
+  (supervisor-test-without-builtins
+    (let* ((dir (make-temp-file "start-" t))
+           (supervisor-unit-authority-path (list dir))
+           (supervisor-unit-directory dir)
+           (supervisor--programs-cache :not-yet-loaded)
+           (supervisor--authority-snapshot nil)
+           (supervisor--unit-file-invalid (make-hash-table :test 'equal))
+           (publish-count 0))
+      (unwind-protect
+          (progn
+            (with-temp-file (expand-file-name "svc.el" dir)
+              (insert "(:id \"svc\" :command \"echo ok\")"))
+            ;; Count authority resolutions during refresh-programs
+            (cl-letf (((symbol-function 'supervisor--resolve-authority)
+                       (let ((orig (symbol-function
+                                    'supervisor--resolve-authority)))
+                         (lambda ()
+                           (cl-incf publish-count)
+                           (funcall orig)))))
+              ;; Simulate what supervisor-start does: refresh then read
+              (supervisor--refresh-programs)
+              (should (= 1 publish-count))
+              ;; Subsequent reads use cache (no extra publish)
+              (let ((programs (supervisor--effective-programs)))
+                (should (= 1 (length programs)))
+                (should (= 1 publish-count)))))
+        (delete-directory dir t)))))
 
 (ert-deftest supervisor-test-three-tier-loader-precedence ()
   "Loader returns highest-tier unit across a three-tier authority path."
@@ -3659,34 +3680,35 @@ prior snapshot, lookup returns the correct root and actual file path."
   "User-configured root order determines precedence, not directory names.
 Reversing the authority path order flips which root wins for a
 conflicting ID, proving precedence derives from list position."
-  (let* ((dir-a (make-temp-file "rootA-" t))
-         (dir-b (make-temp-file "rootB-" t))
-         (supervisor--programs-cache :not-yet-loaded)
-         (supervisor--authority-snapshot nil)
-         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
-    (unwind-protect
-        (progn
-          ;; Same ID in both roots, different commands
-          (with-temp-file (expand-file-name "svc.el" dir-a)
-            (insert "(:id \"svc\" :command \"from-a\")"))
-          (with-temp-file (expand-file-name "svc.el" dir-b)
-            (insert "(:id \"svc\" :command \"from-b\")"))
-          ;; Order A, B: B is last = highest precedence
-          (let ((supervisor-unit-authority-path (list dir-a dir-b)))
-            (supervisor--publish-authority-snapshot)
-            (setq supervisor--programs-cache :not-yet-loaded)
-            (let ((programs (supervisor--effective-programs)))
-              (should (= 1 (length programs)))
-              (should (equal "from-b" (caar programs)))))
-          ;; Reverse to B, A: A is last = highest precedence
-          (let ((supervisor-unit-authority-path (list dir-b dir-a)))
-            (setq supervisor--authority-snapshot nil)
-            (setq supervisor--programs-cache :not-yet-loaded)
-            (let ((programs (supervisor--effective-programs)))
-              (should (= 1 (length programs)))
-              (should (equal "from-a" (caar programs))))))
-      (delete-directory dir-a t)
-      (delete-directory dir-b t))))
+  (supervisor-test-without-builtins
+    (let* ((dir-a (make-temp-file "rootA-" t))
+           (dir-b (make-temp-file "rootB-" t))
+           (supervisor--programs-cache :not-yet-loaded)
+           (supervisor--authority-snapshot nil)
+           (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+      (unwind-protect
+          (progn
+            ;; Same ID in both roots, different commands
+            (with-temp-file (expand-file-name "svc.el" dir-a)
+              (insert "(:id \"svc\" :command \"from-a\")"))
+            (with-temp-file (expand-file-name "svc.el" dir-b)
+              (insert "(:id \"svc\" :command \"from-b\")"))
+            ;; Order A, B: B is last = highest precedence
+            (let ((supervisor-unit-authority-path (list dir-a dir-b)))
+              (supervisor--publish-authority-snapshot)
+              (setq supervisor--programs-cache :not-yet-loaded)
+              (let ((programs (supervisor--effective-programs)))
+                (should (= 1 (length programs)))
+                (should (equal "from-b" (caar programs)))))
+            ;; Reverse to B, A: A is last = highest precedence
+            (let ((supervisor-unit-authority-path (list dir-b dir-a)))
+              (setq supervisor--authority-snapshot nil)
+              (setq supervisor--programs-cache :not-yet-loaded)
+              (let ((programs (supervisor--effective-programs)))
+                (should (= 1 (length programs)))
+                (should (equal "from-a" (caar programs))))))
+        (delete-directory dir-a t)
+        (delete-directory dir-b t)))))
 
 (ert-deftest supervisor-test-cli-verify-invalid-unit-file ()
   "CLI verify reports invalid unit files in count and output."
@@ -4487,23 +4509,24 @@ conflicting ID, proving precedence derives from list position."
 
 (ert-deftest supervisor-test-migrate-all-entries-skips-duplicates ()
   "Migration sees only one entry when unit-file loader deduplicates."
-  (let* ((dir (make-temp-file "units-" t))
-         (supervisor-unit-authority-path (list dir))
-         (supervisor-unit-directory dir)
-         (supervisor--programs-cache :not-yet-loaded)
-         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
-    ;; Two unit files with the same :id but different filenames
-    (with-temp-file (expand-file-name "test-a.el" dir)
-      (insert "(:id \"test\" :command \"a\" :type simple)"))
-    (with-temp-file (expand-file-name "test-b.el" dir)
-      (insert "(:id \"test\" :command \"b\" :type oneshot)"))
-    (unwind-protect
-        (let ((result (supervisor--migrate-all-entries)))
-          ;; Unit-file loader deduplicates, so migration sees only one
-          (should (= 1 (length (plist-get result :migrated))))
-          ;; No skipped entries at migration level (dedup happened upstream)
-          (should (= 0 (length (plist-get result :skipped)))))
-      (delete-directory dir t))))
+  (supervisor-test-without-builtins
+    (let* ((dir (make-temp-file "units-" t))
+           (supervisor-unit-authority-path (list dir))
+           (supervisor-unit-directory dir)
+           (supervisor--programs-cache :not-yet-loaded)
+           (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+      ;; Two unit files with the same :id but different filenames
+      (with-temp-file (expand-file-name "test-a.el" dir)
+        (insert "(:id \"test\" :command \"a\" :type simple)"))
+      (with-temp-file (expand-file-name "test-b.el" dir)
+        (insert "(:id \"test\" :command \"b\" :type oneshot)"))
+      (unwind-protect
+          (let ((result (supervisor--migrate-all-entries)))
+            ;; Unit-file loader deduplicates, so migration sees only one
+            (should (= 1 (length (plist-get result :migrated))))
+            ;; No skipped entries at migration level (dedup happened upstream)
+            (should (= 0 (length (plist-get result :skipped)))))
+        (delete-directory dir t)))))
 
 (ert-deftest supervisor-test-migrate-entry-to-service ()
   "High-level migration function works."
@@ -4883,7 +4906,8 @@ conflicting ID, proving precedence derives from list position."
 
 (ert-deftest supervisor-test-timer-build-list-valid ()
   "Build timer list from valid config."
-  (let* ((supervisor-timers '((:id "t1" :target "s1" :on-startup-sec 60)
+  (let* ((supervisor--builtin-timers nil)
+         (supervisor-timers '((:id "t1" :target "s1" :on-startup-sec 60)
                               (:id "t2" :target "s2" :on-startup-sec 120)))
          (programs '(("s1" :type oneshot :id "s1")
                      ("s2" :type oneshot :id "s2")))
@@ -4894,7 +4918,8 @@ conflicting ID, proving precedence derives from list position."
 
 (ert-deftest supervisor-test-timer-build-list-invalid-rejected ()
   "Invalid timers are rejected and tracked."
-  (let* ((supervisor-timers '((:id "valid" :target "s1" :on-startup-sec 60)
+  (let* ((supervisor--builtin-timers nil)
+         (supervisor-timers '((:id "valid" :target "s1" :on-startup-sec 60)
                               (:id "invalid" :target "missing" :on-startup-sec 60)))
          (programs '(("s1" :type oneshot :id "s1")))
          (plan (supervisor--build-plan programs))
@@ -4905,7 +4930,8 @@ conflicting ID, proving precedence derives from list position."
 
 (ert-deftest supervisor-test-timer-build-list-duplicate-rejected ()
   "Duplicate timer IDs are rejected."
-  (let* ((supervisor-timers '((:id "dup" :target "s1" :on-startup-sec 60)
+  (let* ((supervisor--builtin-timers nil)
+         (supervisor-timers '((:id "dup" :target "s1" :on-startup-sec 60)
                               (:id "dup" :target "s1" :on-startup-sec 120)))
          (programs '(("s1" :type oneshot :id "s1")))
          (plan (supervisor--build-plan programs))
@@ -4916,7 +4942,8 @@ conflicting ID, proving precedence derives from list position."
 (ert-deftest supervisor-test-timer-build-list-duplicate-invalid-first ()
   "Duplicate timer ID rejected deterministically when first is invalid.
 Second valid occurrence should not activate when first invalid occurrence used the ID."
-  (let* ((supervisor-timers '((:id "dup" :target "missing" :on-startup-sec 60)  ; invalid (bad target)
+  (let* ((supervisor--builtin-timers nil)
+         (supervisor-timers '((:id "dup" :target "missing" :on-startup-sec 60)  ; invalid (bad target)
                               (:id "dup" :target "s1" :on-startup-sec 120)))    ; valid but duplicate
          (programs '(("s1" :type oneshot :id "s1")))
          (plan (supervisor--build-plan programs))
@@ -14579,6 +14606,129 @@ PATH set to exclude fuser."
       ;; Reopen was called between rotate and prune
       (let ((reopen-call (cadr calls)))
         (should (equal (car reopen-call) "reopen"))))))
+
+;;;; Phase 8: Default Daily Unit + Timer Wiring
+
+(ert-deftest supervisor-test-builtin-programs-logrotate ()
+  "Built-in programs include a logrotate oneshot in stage4."
+  (let ((builtins (supervisor--builtin-programs)))
+    (should (= 1 (length builtins)))
+    (let ((entry (car builtins)))
+      (should (stringp (car entry)))
+      (should (equal "logrotate" (plist-get (cdr entry) :id)))
+      (should (eq 'oneshot (plist-get (cdr entry) :type)))
+      (should (eq 'stage4 (plist-get (cdr entry) :stage))))))
+
+(ert-deftest supervisor-test-builtin-programs-overridden-by-disk ()
+  "Disk unit file with same ID overrides the built-in entry."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+    (supervisor-test--write-unit-files dir '(("echo hi" :id "logrotate" :type oneshot)))
+    (unwind-protect
+        (progn
+          (supervisor--load-programs)
+          (let ((ids (mapcar (lambda (e) (plist-get (cdr e) :id))
+                             supervisor--programs-cache)))
+            ;; Should appear exactly once (disk version, not builtin)
+            (should (= 1 (cl-count "logrotate" ids :test #'equal)))
+            ;; The command should be the disk version, not the builtin
+            (let ((entry (cl-find "logrotate" supervisor--programs-cache
+                                  :key (lambda (e) (plist-get (cdr e) :id))
+                                  :test #'equal)))
+              (should (string-match-p "echo hi" (car entry))))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-builtin-timers-present ()
+  "Built-in timers are included when `supervisor-timers' is nil."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+    (supervisor-test--write-unit-files
+     dir '(("echo rotate" :id "logrotate" :type oneshot :stage stage4)))
+    (unwind-protect
+        (let* ((supervisor-timers nil)
+               (programs (supervisor--effective-programs))
+               (plan (supervisor--build-plan programs))
+               (timers (supervisor-timer-build-list plan)))
+          (should (cl-find "logrotate-daily" timers
+                           :key #'supervisor-timer-id
+                           :test #'equal)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-builtin-timers-overridden-by-user ()
+  "User timer with same ID overrides the built-in timer."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+    (supervisor-test--write-unit-files
+     dir '(("echo rotate" :id "logrotate" :type oneshot :stage stage4)))
+    (unwind-protect
+        (let* ((supervisor-timers '((:id "logrotate-daily"
+                                     :target "logrotate"
+                                     :on-startup-sec 300
+                                     :enabled t)))
+               (programs (supervisor--effective-programs))
+               (plan (supervisor--build-plan programs))
+               (timers (supervisor-timer-build-list plan)))
+          ;; Should appear exactly once
+          (should (= 1 (cl-count "logrotate-daily" timers
+                                  :key #'supervisor-timer-id
+                                  :test #'equal)))
+          ;; Should have user's on-startup-sec, not builtin's on-calendar
+          (let ((timer (cl-find "logrotate-daily" timers
+                                :key #'supervisor-timer-id
+                                :test #'equal)))
+            (should (= 300 (supervisor-timer-on-startup-sec timer)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-timer-subsystem-default-enabled ()
+  "Timer subsystem mode defaults to enabled."
+  ;; init-value is t, so the variable should be t by default
+  (should (eq t (default-value 'supervisor-timer-subsystem-mode))))
+
+(ert-deftest supervisor-test-timer-completion-signals-writers ()
+  "Timer trigger callback calls `supervisor--signal-writers-reopen' on success."
+  (supervisor-test-with-unit-files
+      '(("true" :id "s1" :type oneshot))
+    (let* ((supervisor-timer-subsystem-mode t)
+           (supervisor-mode t)
+           (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
+           (supervisor--timer-state (make-hash-table :test 'equal))
+           (supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--scheduler-startup-time (float-time))
+           (captured-callback nil)
+           (reopen-called nil))
+      (cl-letf (((symbol-function 'supervisor--start-entry-async)
+                 (lambda (_entry callback) (setq captured-callback callback)))
+                ((symbol-function 'supervisor--signal-writers-reopen)
+                 (lambda () (setq reopen-called t)))
+                ((symbol-function 'supervisor-timer--on-target-complete)
+                 (lambda (_id _target-id _success) nil)))
+        (unwind-protect
+            (progn
+              (supervisor-timer--trigger timer 'scheduled)
+              ;; Callback should have been captured
+              (should captured-callback)
+              ;; Call with success=t, should trigger reopen
+              (funcall captured-callback t)
+              (should reopen-called)
+              ;; Reset and call with success=nil, should not trigger reopen
+              (setq reopen-called nil)
+              (funcall captured-callback nil)
+              (should-not reopen-called))
+          (clrhash supervisor--invalid)
+          (clrhash supervisor--timer-state)
+          (clrhash supervisor--processes)
+          (clrhash supervisor--enabled-override))))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

@@ -35,8 +35,8 @@
 ;; The timer subsystem is gated behind this mode variable.
 ;; The full mode definition is in supervisor-timer.el.
 
-(defvar supervisor-timer-subsystem-mode nil
-  "Non-nil when the experimental timer subsystem is enabled.
+(defvar supervisor-timer-subsystem-mode t
+  "Non-nil when the timer subsystem is enabled.
 Use `supervisor-timer-subsystem-mode' command to toggle.
 See supervisor-timer.el for the full mode definition.")
 
@@ -106,6 +106,15 @@ Example:
      :on-startup-sec 60))"
   :type '(repeat plist)
   :group 'supervisor)
+
+(defvar supervisor--builtin-timers
+  '((:id "logrotate-daily"
+     :target "logrotate"
+     :on-calendar (:hour 3 :minute 0)
+     :enabled t
+     :persistent t))
+  "Built-in timer definitions merged with `supervisor-timers'.
+A user timer with the same `:id' overrides the built-in one.")
 
 (defcustom supervisor-log-directory
   (expand-file-name "supervisor" user-emacs-directory)
@@ -3054,6 +3063,29 @@ Execute the scheduled maintenance path asynchronously:
                         "--log-dir" log-dir
                         "--max-total-bytes" max-bytes))))))
 
+(defun supervisor--builtin-maintenance-command ()
+  "Build the shell command for the built-in logrotate oneshot unit.
+Return a command string that runs logrotate then prune using
+current configuration values."
+  (format "%s --log-dir %s --keep-days %d && %s --log-dir %s --max-total-bytes %d"
+          (shell-quote-argument supervisor-logrotate-command)
+          (shell-quote-argument supervisor-log-directory)
+          supervisor-logrotate-keep-days
+          (shell-quote-argument supervisor-log-prune-command)
+          (shell-quote-argument supervisor-log-directory)
+          supervisor-log-prune-max-total-bytes))
+
+(defun supervisor--builtin-programs ()
+  "Return list of built-in program entries.
+These are appended to disk-loaded programs at lowest priority.
+A user unit file with the same ID overrides the built-in entry."
+  (list
+   (cons (supervisor--builtin-maintenance-command)
+         (list :id "logrotate"
+               :type 'oneshot
+               :stage 'stage4
+               :description "Rotate and prune log files"))))
+
 ;;; DAG Scheduler
 
 (defun supervisor--dag-init (entries)
@@ -4697,8 +4729,7 @@ Entries are already validated and topologically sorted."
         (setq supervisor--current-stage nil)
         (supervisor--log 'info "startup complete")
         ;; Start timer scheduler after all stages complete (if timer module loaded)
-        (when (and supervisor-timers
-                   (not supervisor--shutting-down)
+        (when (and (not supervisor--shutting-down)
                    (fboundp 'supervisor-timer-scheduler-start))
           (supervisor-timer-scheduler-start)))
     (let* ((stage-pair (car remaining-stages))

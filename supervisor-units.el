@@ -34,6 +34,7 @@
 (declare-function supervisor--log "supervisor-core" (level format-string &rest args))
 (declare-function supervisor--plist-duplicate-keys "supervisor-core" (plist))
 (declare-function supervisor--validate-entry "supervisor-core" (entry))
+(declare-function supervisor--builtin-programs "supervisor-core")
 ;;; Customization
 
 (defcustom supervisor-unit-authority-path
@@ -409,13 +410,27 @@ need to separate publication from reading, use
   "Reload programs from disk and update the cache.
 Publish the authority snapshot, read valid winners, convert to
 program entries, and store the result in `supervisor--programs-cache'.
+Built-in entries from `supervisor--builtin-programs' are appended at
+lowest priority; a disk unit with the same ID overrides the builtin.
 This is the explicit refresh point called by `supervisor-start' and
 `supervisor-daemon-reload'.  Consumers that just need the current
 program list should use `supervisor--effective-programs' instead."
   (supervisor--publish-authority-snapshot)
-  (let ((unit-plists (supervisor--read-authority-snapshot)))
+  (let* ((unit-plists (supervisor--read-authority-snapshot))
+         (disk-entries (mapcar #'supervisor--unit-file-to-program-entry
+                               unit-plists))
+         (disk-ids (mapcar (lambda (e)
+                             (or (plist-get (cdr e) :id)
+                                 (file-name-nondirectory
+                                  (car (split-string-and-unquote (car e))))))
+                           disk-entries))
+         (builtins (when (fboundp 'supervisor--builtin-programs)
+                    (cl-remove-if
+                     (lambda (e)
+                       (member (plist-get (cdr e) :id) disk-ids))
+                     (supervisor--builtin-programs)))))
     (setq supervisor--programs-cache
-          (mapcar #'supervisor--unit-file-to-program-entry unit-plists))))
+          (append disk-entries builtins))))
 
 ;;; Unit-File Template
 
