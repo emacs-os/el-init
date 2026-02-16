@@ -16020,6 +16020,26 @@ PATH set to exclude fuser."
     (should-error (supervisor--resolve-startup-root valid-id-set)
                   :type 'user-error)))
 
+(ert-deftest supervisor-test-resolve-circular-alias-errors ()
+  "Setting default-target-link to default.target signals user-error."
+  (let ((supervisor-default-target "default.target")
+        (supervisor-default-target-link "default.target")
+        (supervisor--default-target-link-override nil)
+        (valid-id-set (make-hash-table :test 'equal)))
+    (puthash "default.target" t valid-id-set)
+    (should-error (supervisor--resolve-startup-root valid-id-set)
+                  :type 'user-error)))
+
+(ert-deftest supervisor-test-resolve-circular-alias-override-errors ()
+  "Override link to default.target signals user-error."
+  (let ((supervisor-default-target "default.target")
+        (supervisor-default-target-link "graphical.target")
+        (supervisor--default-target-link-override "default.target")
+        (valid-id-set (make-hash-table :test 'equal)))
+    (puthash "default.target" t valid-id-set)
+    (should-error (supervisor--resolve-startup-root valid-id-set)
+                  :type 'user-error)))
+
 (ert-deftest supervisor-test-maintenance-unit-content-no-stage ()
   "Seeded maintenance unit content does not contain :stage."
   (let ((content (supervisor--maintenance-unit-content

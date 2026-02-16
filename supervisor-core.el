@@ -5078,6 +5078,8 @@ Signal `user-error' if resolved target does not exist or is not a target."
          (resolved (if (equal root "default.target")
                        (supervisor--resolve-default-target-link)
                      root)))
+    (when (equal resolved "default.target")
+      (user-error "Supervisor: default-target-link must not be \"default.target\" (circular alias)"))
     (unless (string-suffix-p ".target" resolved)
       (user-error "Supervisor: startup root `%s' is not a target (must end in .target)"
                   resolved))
