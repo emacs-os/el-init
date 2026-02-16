@@ -264,6 +264,19 @@ Set to nil (default) for unlimited concurrent starts."
   :type '(choice integer (const nil))
   :group 'supervisor)
 
+(defcustom supervisor-default-target "default.target"
+  "Target to activate at startup.
+The default value \"default.target\" is an alias that resolves
+to `supervisor-default-target-link'."
+  :type 'string
+  :group 'supervisor)
+
+(defcustom supervisor-default-target-link "graphical.target"
+  "Target that \"default.target\" resolves to.
+Must end in \".target\" and must not be \"default.target\"."
+  :type 'string
+  :group 'supervisor)
+
 (defcustom supervisor-verbose nil
   "When non-nil, log all events including informational messages.
 When nil, only warnings and errors are logged.
@@ -1216,6 +1229,9 @@ Set to nil to disable persistence (overrides only live in memory)."
 (defvar supervisor--overrides-loaded nil
   "Non-nil if overrides have been loaded from file this session.")
 
+(defvar supervisor--default-target-link-override nil
+  "Persisted override for default-target-link, or nil.")
+
 (defun supervisor--overrides-file-path ()
   "Return the overrides file path, or nil if persistence is disabled."
   supervisor-overrides-file)
@@ -1272,6 +1288,11 @@ Returns nil if no overrides are set."
                      (setcdr existing (plist-put (cdr existing) :mask val))
                    (push (cons id (list :mask val)) overrides))))
              supervisor--mask-override)
+    ;; Prepend default-target-link override if set
+    (when supervisor--default-target-link-override
+      (push (cons :default-target-link
+                  supervisor--default-target-link-override)
+            overrides))
     overrides))
 
 (defun supervisor--save-overrides ()
@@ -1333,6 +1354,12 @@ Clears existing in-memory overrides before loading to prevent stale state."
             (clrhash supervisor--restart-override)
             (clrhash supervisor--logging)
             (clrhash supervisor--mask-override)
+            ;; Extract default-target-link override before per-entry loop
+            (when-let* ((link-entry (assq :default-target-link overrides)))
+              (when (and (stringp (cdr link-entry))
+                         (string-suffix-p ".target" (cdr link-entry)))
+                (setq supervisor--default-target-link-override (cdr link-entry)))
+              (setq overrides (assq-delete-all :default-target-link overrides)))
             ;; Load overrides into hashes
             (dolist (entry overrides)
               (let ((id (car entry))
@@ -1365,6 +1392,7 @@ Clears existing in-memory overrides before loading to prevent stale state."
   (clrhash supervisor--restart-override)
   (clrhash supervisor--logging)
   (clrhash supervisor--mask-override)
+  (setq supervisor--default-target-link-override nil)
   (when-let* ((path (supervisor--overrides-file-path)))
     (when (file-exists-p path)
       (delete-file path)))
@@ -3534,7 +3562,18 @@ A user unit file with the same ID overrides the built-in entry."
                :type 'oneshot
                :after '("logrotate")
                :requires '("logrotate")
-               :description "Prune supervisor log files"))))
+               :description "Prune supervisor log files"))
+   ;; Built-in targets (lowest authority, user overrides win)
+   (list nil :id "basic.target" :type 'target
+         :description "Basic system initialization target")
+   (list nil :id "multi-user.target" :type 'target
+         :requires '("basic.target") :after '("basic.target")
+         :description "Multi-user services target")
+   (list nil :id "graphical.target" :type 'target
+         :requires '("multi-user.target") :after '("multi-user.target")
+         :description "Graphical session target")
+   (list nil :id "default.target" :type 'target
+         :description "Default startup target (alias)")))
 
 ;;; DAG Scheduler
 
@@ -5127,6 +5166,26 @@ Mark all unstarted entries as timed out and invoke the callback."
         ;; Check if stage is already complete (e.g., all entries were disabled)
         (supervisor--dag-check-stage-complete)))))
 
+;;; Default target resolution
+
+(defun supervisor--resolve-default-target-link ()
+  "Return the effective default-target-link value."
+  (or supervisor--default-target-link-override
+      supervisor-default-target-link))
+
+(defun supervisor--resolve-startup-root (valid-id-set)
+  "Resolve the startup root target from configuration.
+VALID-ID-SET is a hash of valid entry IDs.
+Signal `user-error' if resolved target does not exist."
+  (let* ((root supervisor-default-target)
+         (resolved (if (equal root "default.target")
+                       (supervisor--resolve-default-target-link)
+                     root)))
+    (unless (gethash resolved valid-id-set)
+      (user-error "Supervisor: startup root target `%s' does not exist"
+                  resolved))
+    resolved))
+
 ;;;###autoload
 (defun supervisor-start ()
   "Start all programs defined in unit files by stage.
@@ -5192,6 +5251,7 @@ Ready semantics (when dependents are unblocked):
   (setq supervisor--current-stage nil)
   (setq supervisor--completed-stages nil)
   (setq supervisor--current-plan nil)
+  (setq supervisor--default-target-link-override nil)
   ;; Load persisted overrides (restores enabled/restart/logging overrides)
   (supervisor--load-overrides)
   (supervisor--dag-cleanup)

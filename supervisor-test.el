@@ -15948,9 +15948,9 @@ PATH set to exclude fuser."
 ;;;; Phase 8: Default Daily Unit + Timer Wiring
 
 (ert-deftest supervisor-test-builtin-programs-log-maintenance-pair ()
-  "Built-in programs include logrotate and log-prune oneshots."
+  "Built-in programs include logrotate, log-prune, and built-in targets."
   (let ((builtins (supervisor--builtin-programs)))
-    (should (= 2 (length builtins)))
+    (should (= 6 (length builtins)))
     (let* ((ids (mapcar (lambda (e) (plist-get (cdr e) :id)) builtins))
            (rotate (cl-find "logrotate" builtins
                             :key (lambda (e) (plist-get (cdr e) :id))
@@ -15966,6 +15966,103 @@ PATH set to exclude fuser."
       (should-not (plist-get (cdr prune) :stage))
       (should (equal '("logrotate") (plist-get (cdr prune) :after)))
       (should (equal '("logrotate") (plist-get (cdr prune) :requires))))))
+
+(ert-deftest supervisor-test-default-target-defcustom ()
+  "Default target defcustom has expected default value."
+  (should (equal supervisor-default-target "default.target")))
+
+(ert-deftest supervisor-test-default-target-link-defcustom ()
+  "Default target link defcustom has expected default value."
+  (should (equal supervisor-default-target-link "graphical.target")))
+
+(ert-deftest supervisor-test-builtin-targets-present ()
+  "Built-in programs include the four standard targets."
+  (let* ((builtins (supervisor--builtin-programs))
+         (ids (mapcar (lambda (e) (plist-get (cdr e) :id)) builtins)))
+    (should (member "basic.target" ids))
+    (should (member "multi-user.target" ids))
+    (should (member "graphical.target" ids))
+    (should (member "default.target" ids))))
+
+(ert-deftest supervisor-test-builtin-targets-valid ()
+  "Built-in targets parse without validation errors."
+  (let* ((builtins (supervisor--builtin-programs))
+         (targets (cl-remove-if-not
+                   (lambda (e) (eq 'target (plist-get (cdr e) :type)))
+                   builtins)))
+    (should (= 4 (length targets)))
+    (dolist (entry targets)
+      (let ((parsed (supervisor--parse-entry entry)))
+        (should (eq 'target (supervisor-entry-type parsed)))
+        (should (string-suffix-p ".target" (supervisor-entry-id parsed)))))))
+
+(ert-deftest supervisor-test-builtin-target-topology ()
+  "Built-in targets have correct dependency chain."
+  (let* ((builtins (supervisor--builtin-programs))
+         (multi (cl-find "multi-user.target" builtins
+                         :key (lambda (e) (plist-get (cdr e) :id))
+                         :test #'equal))
+         (graphical (cl-find "graphical.target" builtins
+                             :key (lambda (e) (plist-get (cdr e) :id))
+                             :test #'equal))
+         (basic (cl-find "basic.target" builtins
+                         :key (lambda (e) (plist-get (cdr e) :id))
+                         :test #'equal))
+         (default-tgt (cl-find "default.target" builtins
+                               :key (lambda (e) (plist-get (cdr e) :id))
+                               :test #'equal)))
+    ;; basic.target has no deps
+    (should-not (plist-get (cdr basic) :requires))
+    (should-not (plist-get (cdr basic) :after))
+    ;; multi-user.target depends on basic.target
+    (should (equal '("basic.target") (plist-get (cdr multi) :requires)))
+    (should (equal '("basic.target") (plist-get (cdr multi) :after)))
+    ;; graphical.target depends on multi-user.target
+    (should (equal '("multi-user.target") (plist-get (cdr graphical) :requires)))
+    (should (equal '("multi-user.target") (plist-get (cdr graphical) :after)))
+    ;; default.target has no static edges
+    (should-not (plist-get (cdr default-tgt) :requires))
+    (should-not (plist-get (cdr default-tgt) :after))))
+
+(ert-deftest supervisor-test-resolve-default-chain ()
+  "Default resolution chain: default.target -> graphical.target."
+  (let ((supervisor-default-target "default.target")
+        (supervisor-default-target-link "graphical.target")
+        (supervisor--default-target-link-override nil)
+        (valid-id-set (make-hash-table :test 'equal)))
+    (puthash "graphical.target" t valid-id-set)
+    (should (equal "graphical.target"
+                   (supervisor--resolve-startup-root valid-id-set)))))
+
+(ert-deftest supervisor-test-resolve-custom-link ()
+  "Override link resolves correctly."
+  (let ((supervisor-default-target "default.target")
+        (supervisor-default-target-link "graphical.target")
+        (supervisor--default-target-link-override "multi-user.target")
+        (valid-id-set (make-hash-table :test 'equal)))
+    (puthash "multi-user.target" t valid-id-set)
+    (should (equal "multi-user.target"
+                   (supervisor--resolve-startup-root valid-id-set)))))
+
+(ert-deftest supervisor-test-resolve-direct-target ()
+  "Non-default.target resolves directly without alias."
+  (let ((supervisor-default-target "custom.target")
+        (supervisor-default-target-link "graphical.target")
+        (supervisor--default-target-link-override nil)
+        (valid-id-set (make-hash-table :test 'equal)))
+    (puthash "custom.target" t valid-id-set)
+    (should (equal "custom.target"
+                   (supervisor--resolve-startup-root valid-id-set)))))
+
+(ert-deftest supervisor-test-resolve-missing-target-errors ()
+  "Missing resolved target signals user-error."
+  (let ((supervisor-default-target "default.target")
+        (supervisor-default-target-link "graphical.target")
+        (supervisor--default-target-link-override nil)
+        (valid-id-set (make-hash-table :test 'equal)))
+    ;; graphical.target not in valid-id-set
+    (should-error (supervisor--resolve-startup-root valid-id-set)
+                  :type 'user-error)))
 
 (ert-deftest supervisor-test-builtin-programs-overridden-by-disk ()
   "Disk unit file with same ID overrides the built-in entry."
