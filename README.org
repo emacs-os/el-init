@@ -2084,6 +2084,30 @@ Where behavior diverges across systems, parenthetical notes explain.
 
 ** Example Conversions: systemd to supervisor
 
+The examples below are strict do-the-same-thing translations.
+Each supervisor unit includes ~:command~ in the plist, because unit files
+require both ~:id~ and ~:command~.
+
+*** Translation Rules Used in Examples
+
+| systemd directive | supervisor key | Notes |
+|-------------------+----------------+-------|
+| ~Description=~ | ~:description~ | Same intent |
+| ~Type=simple~ | ~:type simple~ | Same process model |
+| ~Type=oneshot~ | ~:type oneshot~ | Same run-to-completion model |
+| ~ExecStart=...~ | ~:command \"...\"~ | Required in supervisor unit files |
+| ~Restart=...~ | ~:restart ...~ | Same policy names for supported values |
+| ~RestartSec=...~ | ~:restart-sec ...~ | Restart delay |
+| ~WorkingDirectory=...~ | ~:working-directory ...~ | Same intent |
+| ~After=...~ | ~:after (...)~ | Use supervisor IDs (for example, ~database~ not ~database.service~) |
+| ~Requires=...~ | ~:requires (...)~ | Hard dependency + ordering |
+| ~Environment=K=V~ | ~:environment ((\"K\" . \"V\"))~ | Alist form |
+| ~ExecStop=...~ | ~:exec-stop \"...\"~ | Stop command |
+| ~KillSignal=...~ | ~:kill-signal ...~ | Signal symbol |
+| ~RemainAfterExit=yes~ | ~:remain-after-exit t~ | Oneshot active latch |
+| ~User=~/~Group=~ | ~:user~ / ~:group~ | Requires root manager + trusted unit file |
+| ~WantedBy=multi-user.target~ | ~:stage stage3~ + ~:enabled t~ | Stage model approximation in current implementation |
+
 *** Example 1: Simple Daemon
 
 systemd unit:
@@ -2091,7 +2115,7 @@ systemd unit:
 #+begin_example
 [Unit]
 Description=My Background Service
-After=network.target
+After=network-ready.service
 
 [Service]
 Type=simple
@@ -2108,27 +2132,15 @@ supervisor unit file (~my-daemon.el~):
 
 #+begin_src emacs-lisp
 (:id "my-daemon"
+ :command "/usr/bin/my-daemon --config /etc/my-daemon.conf"
  :description "My Background Service"
  :type simple
  :stage stage3
+ :after ("network-ready")
  :restart on-failure
  :restart-sec 5
- :working-directory "/var/lib/my-daemon")
-;; Command: /usr/bin/my-daemon --config /etc/my-daemon.conf
-#+end_src
-
-Or inline in config:
-
-#+begin_src emacs-lisp
-(setq supervisor-programs
-      '(("/usr/bin/my-daemon --config /etc/my-daemon.conf"
-         :id "my-daemon"
-         :description "My Background Service"
-         :type simple
-         :stage stage3
-         :restart on-failure
-         :restart-sec 5
-         :working-directory "/var/lib/my-daemon")))
+ :working-directory "/var/lib/my-daemon"
+ :enabled t)
 #+end_src
 
 *** Example 2: Oneshot Setup Script
@@ -2152,14 +2164,15 @@ supervisor unit file (~setup-dirs.el~):
 
 #+begin_src emacs-lisp
 (:id "setup-dirs"
+ :command "/usr/bin/mkdir -p /run/myapp"
  :description "Create runtime directories"
  :type oneshot
  :stage stage1
- :remain-after-exit t)
-;; Command: /usr/bin/mkdir -p /run/myapp
+ :remain-after-exit t
+ :enabled t)
 #+end_src
 
-*** Example 3: Service with Dependencies
+*** Example 3: Service with Dependencies and Environment
 
 systemd unit:
 
@@ -2168,14 +2181,14 @@ systemd unit:
 Description=Web Application
 After=database.service
 Requires=database.service
-Environment=NODE_ENV=production
-Environment=PORT=3000
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/node /opt/webapp/server.js
+Environment=NODE_ENV=production
+Environment=PORT=3000
 Restart=always
-ExecStop=/usr/bin/kill -TERM $MAINPID
+ExecStop=/usr/bin/pkill -TERM -f /opt/webapp/server.js
 KillSignal=SIGTERM
 
 [Install]
@@ -2186,16 +2199,18 @@ supervisor unit file (~webapp.el~):
 
 #+begin_src emacs-lisp
 (:id "webapp"
+ :command "/usr/bin/node /opt/webapp/server.js"
  :description "Web Application"
  :type simple
  :stage stage3
  :after ("database")
  :requires ("database")
- :environment (("NODE_ENV" . "production") ("PORT" . "3000"))
+ :environment (("NODE_ENV" . "production")
+               ("PORT" . "3000"))
  :restart always
- :exec-stop ("/usr/bin/kill -TERM $MAINPID")
- :kill-signal SIGTERM)
-;; Command: /usr/bin/node /opt/webapp/server.js
+ :exec-stop "/usr/bin/pkill -TERM -f /opt/webapp/server.js"
+ :kill-signal SIGTERM
+ :enabled t)
 #+end_src
 
 *** Example 4: Service with Privilege Drop
@@ -2221,13 +2236,14 @@ supervisor unit file (~nginx.el~), placed in a root-owned unit directory:
 
 #+begin_src emacs-lisp
 (:id "nginx"
+ :command "/usr/bin/nginx -g \"daemon off;\""
  :description "Web server"
  :type simple
  :stage stage3
  :restart on-failure
  :user "www-data"
- :group "www-data")
-;; Command: /usr/bin/nginx -g "daemon off;"
+ :group "www-data"
+ :enabled t)
 #+end_src
 
 Requirements: the Emacs manager must run as root, and the unit file must be
