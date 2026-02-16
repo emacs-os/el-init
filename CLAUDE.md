@@ -95,55 +95,6 @@ modes work.
 This matches CI exactly (GitHub Actions runs `make check` on Emacs 28.2, 29.4, and snapshot).
 CI failures that pass locally often involve Emacs version differences (e.g., `when-let` → `when-let*` for Emacs 31+).
 
-## Architecture
-
-### Entry Parsing (Schema v1)
-`supervisor--parse-entry` converts user config into a 27-element list:
-`(id cmd delay enabled-p restart-p logging-p type stage after oneshot-blocking oneshot-timeout tags requires working-directory environment environment-file exec-stop exec-reload restart-sec description documentation before wants kill-signal kill-mode remain-after-exit success-exit-status)`
-
-Use accessor functions (`supervisor-entry-id`, `supervisor-entry-command`, etc.) instead of direct indexing.
-The `supervisor-service` struct provides a canonical schema v1 representation with conversion functions.
-
-### Staged Startup Flow
-1. `supervisor-start` builds a plan using `supervisor--build-plan` (pure, deterministic)
-2. Plan contains entries partitioned by stage (stage1→stage2→stage3→stage4), pre-sorted
-3. `supervisor--start-stages-from-plan` processes stages sequentially via continuation-passing
-4. Within each stage, `supervisor--dag-init` builds a dependency graph from `:after` and `:requires` declarations
-5. Entries with in-degree 0 start immediately; others wait for dependencies
-6. `supervisor--dag-mark-ready` is called when a process is ready (spawned for simple, exited for oneshot)
-
-### Dependency Model
-- `:after` - ordering only (controls start order, same stage)
-- `:requires` - pull-in + ordering (same stage, cross-stage is an error)
-Both are combined for topological sorting.
-
-### Process Types
-- **simple**: Long-running daemons. "Ready" when spawned. Restarts on crash.
-- **oneshot**: Run-once scripts. "Ready" when exited (success or failure) or timed out. No restart.
-
-### State Management
-All runtime state lives in `supervisor--*` hash tables:
-- `supervisor--processes`: id → process object
-- `supervisor--failed`: ids that have crash-looped
-- `supervisor--restart-override`: runtime restart policy overrides
-- `supervisor--enabled-override`: runtime enabled policy overrides
-- `supervisor--mask-override`: id → `masked` or nil
-- `supervisor--oneshot-completed`: id → exit code
-- `supervisor--manually-stopped`: ids stopped via CLI/dashboard (suppresses restart)
-- `supervisor--manually-started`: ids started via CLI/dashboard (session-only, does not change enabled state)
-
-DAG scheduler state (`supervisor--dag-*` variables) is per-stage and reset between stages.
-
-### Persistent Overrides
-Override state is persisted to `supervisor-overrides-file` (default: `~/.local/state/supervisor/overrides.eld`).
-- Loaded on `supervisor-start` after clearing runtime state
-- Saved on dashboard toggle actions
-- Uses atomic write pattern (temp file + rename)
-- Corrupt files are logged and preserved, not deleted
-
-### Dashboard
-`supervisor-dashboard-mode` extends `tabulated-list-mode`. The dashboard reads from unit files (via `supervisor--effective-programs`) and runtime state hash tables to display current status.
-
 ## Code Quality Standards
 
 See PLAN-INIT-followups.md for the authoritative spec. Key requirements:
