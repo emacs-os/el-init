@@ -59,6 +59,8 @@
 (defvar supervisor--oneshot-completed)
 (defvar supervisor--target-convergence)
 (defvar supervisor--target-converging)
+(defvar supervisor--target-members)
+(defvar supervisor--target-member-reverse)
 (defvar supervisor--current-plan)
 (defvar supervisor--mask-override)
 
@@ -869,16 +871,18 @@ Returns t if triggered, nil if skipped."
                      id target-id reason)
     (supervisor-timer--record-trigger id now reason target-id)
     (let* ((plan supervisor--current-plan)
+           (members
+            (when plan
+              (or (supervisor-plan-target-members plan)
+                  (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan)))))
            (closure
             (when plan
               (let ((entries-by-id (make-hash-table :test 'equal)))
                 (dolist (e (supervisor-plan-entries plan))
                   (puthash (supervisor-entry-id e) e entries-by-id))
                 (supervisor--expand-transaction
-                 target-id entries-by-id
-                 (or (supervisor-plan-target-members plan)
-                     (supervisor--materialize-target-members
-                      (supervisor-plan-entries plan)))
+                 target-id entries-by-id members
                  (supervisor-plan-order-index plan)))))
            (to-start
             (when (and plan closure)
@@ -887,9 +891,40 @@ Returns t if triggered, nil if skipped."
                  (let* ((eid (supervisor-entry-id e))
                         (proc (gethash eid supervisor--processes)))
                    (or (not (gethash eid closure))
-                       (eq (supervisor-entry-type e) 'target)
+                       ;; Exclude targets OTHER than the triggered one
+                       (and (eq (supervisor-entry-type e) 'target)
+                            (not (equal eid target-id)))
                        (and proc (process-live-p proc)))))
                (supervisor-plan-by-target plan)))))
+      ;; Initialize convergence infrastructure for this target.
+      ;; Update target-members so target-check-convergence can read
+      ;; membership, and rebuild the reverse index so dag-mark-ready
+      ;; triggers convergence checks when members complete.
+      (when (and members closure)
+        (let ((target-mem (gethash target-id members)))
+          (when target-mem
+            (unless (hash-table-p supervisor--target-members)
+              (setq supervisor--target-members
+                    (make-hash-table :test 'equal)))
+            (puthash target-id target-mem supervisor--target-members)))
+        ;; Rebuild reverse index for closure members
+        (unless (hash-table-p supervisor--target-member-reverse)
+          (setq supervisor--target-member-reverse
+                (make-hash-table :test 'equal)))
+        (let ((mem (gethash target-id members)))
+          (when mem
+            (dolist (mid (plist-get mem :requires))
+              (when (gethash mid closure)
+                (puthash mid (cons target-id
+                                   (gethash mid
+                                            supervisor--target-member-reverse))
+                         supervisor--target-member-reverse)))
+            (dolist (mid (plist-get mem :wants))
+              (when (gethash mid closure)
+                (puthash mid (cons target-id
+                                   (gethash mid
+                                            supervisor--target-member-reverse))
+                         supervisor--target-member-reverse))))))
       (if (null to-start)
           ;; Nothing to start, check convergence immediately
           (supervisor-timer--on-target-converge id target-id)

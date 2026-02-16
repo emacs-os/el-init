@@ -7669,6 +7669,8 @@ at minute boundaries."
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--target-convergence (make-hash-table :test 'equal))
          (supervisor--target-converging (make-hash-table :test 'equal))
+         (supervisor--target-members (make-hash-table :test 'equal))
+         (supervisor--target-member-reverse (make-hash-table :test 'equal))
          (programs '(("echo a" :id "svc-a" :wanted-by ("app.target"))
                      ("echo b" :id "svc-b" :wanted-by ("other.target"))
                      (nil :id "app.target" :type target)
@@ -7694,10 +7696,61 @@ at minute boundaries."
                    (push (supervisor-entry-id e) started-ids))
                  (funcall callback))))
       (supervisor-timer--trigger timer 'scheduled)
-      ;; Only svc-a should be started (in app.target closure),
-      ;; not svc-b (in other.target closure)
+      ;; svc-a and app.target should be in DAG (closure members),
+      ;; but not svc-b (in other.target closure)
       (should (member "svc-a" started-ids))
+      (should (member "app.target" started-ids))
       (should-not (member "svc-b" started-ids)))))
+
+(ert-deftest supervisor-test-timer-target-trigger-convergence-success ()
+  "Target timer trigger reaches success when DAG processes convergence."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "app.target"
+                                          :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--target-converging (make-hash-table :test 'equal))
+         (supervisor--target-members (make-hash-table :test 'equal))
+         (supervisor--target-member-reverse (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (programs '(("echo a" :id "svc-a" :wanted-by ("app.target"))
+                     (nil :id "app.target" :type target)))
+         (plan (supervisor--build-plan programs))
+         (supervisor--current-plan plan)
+         (entry (list "app.target" nil 0 t nil nil nil nil 'target nil nil
+                      nil nil nil nil nil nil nil nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil nil nil)))
+    (puthash "t1" nil supervisor--timer-state)
+    (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'supervisor--get-effective-enabled)
+               (lambda (_id _p) t))
+              ((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
+              ((symbol-function 'supervisor-timer--update-next-run) #'ignore)
+              ((symbol-function 'supervisor--dag-start-with-deps)
+               (lambda (entries callback)
+                 ;; Simulate DAG processing: target entry triggers
+                 ;; begin-convergence, service entries become ready
+                 (dolist (e entries)
+                   (let ((eid (supervisor-entry-id e)))
+                     (if (eq (supervisor-entry-type e) 'target)
+                         (supervisor--target-begin-convergence eid)
+                       ;; Mark service as ready (simulates successful start)
+                       (supervisor--dag-mark-ready eid))))
+                 (funcall callback))))
+      (supervisor-timer--trigger timer 'scheduled)
+      ;; Target should have converged to reached
+      (should (eq 'reached
+                  (gethash "app.target" supervisor--target-convergence)))
+      ;; Timer state should record success
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'success (plist-get state :last-result)))
+        (should (eq 'target-reached
+                    (plist-get state :last-result-reason)))))))
 
 (ert-deftest supervisor-test-timer-disabled-timer-records-skip-result ()
   "Disabled timer records skip result alongside miss metadata."
