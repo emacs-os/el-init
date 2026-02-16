@@ -147,10 +147,11 @@ The `:stage` key is removed from startup semantics.
   `:required-by`.
 
 ### 7) Entry Tuple Extension
-Entry tuple extends from 29 to 31 elements.
+Entry tuple extends from 31 to 33 elements.
+(Indices 29-30 are occupied by `:user` and `:group` from prior work.)
 
-- index 29: `wanted-by`
-- index 30: `required-by`
+- index 31: `wanted-by`
+- index 32: `required-by`
 
 Required accessors:
 
@@ -303,7 +304,7 @@ Deliverables:
 
 1. Add `target` type validation.
 2. Add `:wanted-by` and `:required-by` keywords.
-3. Extend tuple to 31 elements and add accessors.
+3. Extend tuple to 33 elements and add accessors.
 4. Enforce target-only and target-invalid field constraints.
 5. Enforce `:stage` as invalid with explicit replacement guidance.
 6. Enforce `.target` suffix rules for target and non-target IDs.
@@ -318,7 +319,7 @@ Acceptance:
 4. Service entry with `:stage` is invalid with actionable reason.
 5. Target ID without `.target` suffix is invalid.
 6. Non-target ID with `.target` suffix is invalid.
-7. Tuple length is 31 for parsed entries.
+7. Tuple length is 33 for parsed entries.
 8. Missing `:wanted-by` and `:required-by` targets invalidate the owner unit.
 9. Target `:requires` missing-reference is invalid.
 10. Target missing `:wants`/`:after`/`:before` references warn and drop.

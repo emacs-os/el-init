@@ -16607,5 +16607,19 @@ PATH set to exclude fuser."
                            '("sleep 300" :id "svc"
                              :required-by "svc")))))
 
+(ert-deftest supervisor-test-nil-car-target-duplicate-id-detected ()
+  "Duplicate nil-car target entries are correctly deduplicated by ID."
+  (let* ((programs '((nil :type target :id "a.target")
+                     (nil :type target :id "a.target")))
+         (plan (supervisor--build-plan programs)))
+    ;; Only one should survive (first wins)
+    (should (= 1 (length (supervisor-plan-entries plan))))))
+
+(ert-deftest supervisor-test-extract-id-nil-car-target ()
+  "`supervisor--extract-id' returns :id for nil-car target entries."
+  (should (equal "a.target"
+                 (supervisor--extract-id
+                  '(nil :type target :id "a.target") 0))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

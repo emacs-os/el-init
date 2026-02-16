@@ -976,6 +976,10 @@ For malformed entries, returns \"malformed#IDX\" for consistency."
    ((and (listp entry) (stringp (car entry)))
     (or (plist-get (cdr entry) :id)
         (file-name-nondirectory (car (split-string-and-unquote (car entry))))))
+   ;; List with nil car (target entry) - use :id
+   ((and (listp entry) (null (car entry))
+         (plist-get (cdr entry) :id))
+    (plist-get (cdr entry) :id))
    ;; Malformed - use index-based ID
    (t (format "malformed#%d" idx))))
 
