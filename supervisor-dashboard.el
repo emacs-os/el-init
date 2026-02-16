@@ -103,6 +103,11 @@
   "Face for stopped status in dashboard."
   :group 'supervisor)
 
+(defface supervisor-status-unreachable
+  '((t :foreground "#666666"))
+  "Face for unreachable (not in activation closure) status in dashboard."
+  :group 'supervisor)
+
 
 (defface supervisor-type-simple
   '((t :foreground "#87ceeb"))
@@ -364,6 +369,8 @@ Requires the `transient' package to be installed."
     ("reached" 'supervisor-status-running)
     ("degraded" 'supervisor-status-failed)
     ("converging" 'supervisor-status-pending)
+    ("disabled" 'supervisor-status-stopped)
+    ("unreachable" 'supervisor-status-unreachable)
     (_ nil)))
 
 (defun supervisor--propertize-status (status)
@@ -467,7 +474,7 @@ Signal `user-error' if point is on a separator, timer, or empty row."
   "Return projected TIMER fields as a plist for display.
 Provides rendering parity with `list-timers' CLI output.
 Fields: :id, :target, :enabled, :last-run, :next-run, :last-exit,
-:miss-reason."
+:miss-reason, :target-type, :last-result."
   (let* ((id (supervisor-timer-id timer))
          (state (gethash id supervisor--timer-state)))
     (list :id id
@@ -476,13 +483,17 @@ Fields: :id, :target, :enabled, :last-run, :next-run, :last-exit,
           :last-run (plist-get state :last-run-at)
           :next-run (plist-get state :next-run-at)
           :last-exit (plist-get state :last-exit)
-          :miss-reason (plist-get state :last-miss-reason))))
+          :miss-reason (plist-get state :last-miss-reason)
+          :target-type (plist-get state :last-target-type)
+          :last-result (plist-get state :last-result))))
 
-(defun supervisor--make-dashboard-entry (id type _stage enabled-p restart-policy logging-p
+(defun supervisor--make-dashboard-entry (id type parent-target enabled-p
+                                            restart-policy logging-p
                                             &optional snapshot)
   "Create a dashboard entry vector for ID.
-TYPE, _STAGE, ENABLED-P, RESTART-POLICY, LOGGING-P are parsed entry fields.
-_STAGE is accepted for API compatibility but no longer displayed.
+TYPE, PARENT-TARGET, ENABLED-P, RESTART-POLICY, LOGGING-P are entry fields.
+PARENT-TARGET is the first target this entry belongs to (via wanted-by or
+required-by), shown in the TARGET column for non-target entries.
 If SNAPSHOT is provided, read runtime state from it."
   (let* ((status-pid (supervisor--compute-entry-status id type snapshot))
          (status (car status-pid))
@@ -532,15 +543,20 @@ If SNAPSHOT is provided, read runtime state from it."
                                 ('target 'supervisor-type-target)
                                 (_ 'supervisor-type-simple)))
             (if (eq type 'target)
-                (let* ((conv (when (hash-table-p supervisor--target-convergence)
-                               (gethash id supervisor--target-convergence)))
+                (let* ((effective-id
+                        (if (equal id "default.target")
+                            (supervisor--resolve-default-target-link)
+                          id))
+                       (conv (when (hash-table-p supervisor--target-convergence)
+                               (gethash effective-id
+                                        supervisor--target-convergence)))
                        (conv-str (pcase conv
                                    ('reached "reached")
                                    ('degraded "degraded")
                                    ('converging "pending")
                                    (_ "pending"))))
                   (supervisor--propertize-status conv-str))
-              "-")
+              (or parent-target "-"))
             (propertize (if effective-enabled "yes" "no")
                         'face (if effective-enabled
                                   'supervisor-enabled-yes
@@ -578,7 +594,8 @@ If SNAPSHOT is provided, read runtime state from it."
                 (propertize "NEXT-RUN" 'face 'supervisor-stage-separator)
                 (propertize "EXIT" 'face 'supervisor-stage-separator)
                 (propertize "MISS" 'face 'supervisor-stage-separator)
-                "" "")))
+                (propertize "TYPE" 'face 'supervisor-stage-separator)
+                (propertize "RESULT" 'face 'supervisor-stage-separator))))
 
 (defun supervisor--make-services-separator ()
   "Create a header row for the Services section with column labels."
@@ -609,7 +626,7 @@ If SNAPSHOT is provided, read runtime state from it."
 (defun supervisor--make-timer-dashboard-entry (timer)
   "Create a dashboard entry vector for TIMER.
 Columns are mapped to match `list-timers' semantics:
-ID, TARGET, ENABLED, LAST-RUN, NEXT-RUN, EXIT, MISS."
+ID, TARGET, ENABLED, LAST-RUN, NEXT-RUN, EXIT, MISS, TYPE, RESULT."
   (let* ((proj (supervisor--timer-projection timer))
          (id (plist-get proj :id))
          (target (plist-get proj :target))
@@ -617,7 +634,9 @@ ID, TARGET, ENABLED, LAST-RUN, NEXT-RUN, EXIT, MISS."
          (last-run (plist-get proj :last-run))
          (next-run (plist-get proj :next-run))
          (last-exit (plist-get proj :last-exit))
-         (miss-reason (plist-get proj :miss-reason)))
+         (miss-reason (plist-get proj :miss-reason))
+         (target-type (plist-get proj :target-type))
+         (last-result (plist-get proj :last-result)))
     (vector (propertize id 'face 'supervisor-type-timer)
             (propertize (or target "-") 'face 'supervisor-type-oneshot)
             (propertize (if enabled "yes" "no")
@@ -628,8 +647,11 @@ ID, TARGET, ENABLED, LAST-RUN, NEXT-RUN, EXIT, MISS."
             (supervisor--format-timer-relative-time next-run)
             (if (null last-exit) "-" (number-to-string last-exit))
             (if miss-reason (symbol-name miss-reason) "-")
-            ""
-            "")))
+            (if target-type (symbol-name target-type) "-")
+            (if last-result
+                (supervisor--propertize-status
+                 (symbol-name last-result))
+              "-"))))
 
 (defun supervisor--get-timer-entries ()
   "Generate timer entries for the dashboard.
@@ -694,8 +716,10 @@ if `supervisor-dashboard-show-timers' is non-nil."
                    (restart-policy (supervisor-entry-restart-policy parsed))
                    (logging-p (supervisor-entry-logging-p parsed))
                    (type (supervisor-entry-type parsed))
-                   (stage (supervisor-entry-stage parsed))
-                   (tags (supervisor-entry-tags parsed)))
+                   (tags (supervisor-entry-tags parsed))
+                   (parent-target
+                    (or (car (supervisor-entry-required-by parsed))
+                        (car (supervisor-entry-wanted-by parsed)))))
               (when (and (or (null tag-filter) (member tag-filter tags))
                         (or (null target-filter)
                             (string= id target-filter)
@@ -710,7 +734,8 @@ if `supervisor-dashboard-show-timers' is non-nil."
                                     (member id (plist-get members :wants)))))))
                 (push (list (cons :service id)
                             (supervisor--make-dashboard-entry
-                             id type stage enabled-p restart-policy logging-p snapshot))
+                             id type parent-target enabled-p restart-policy
+                             logging-p snapshot))
                       entries)))))))
     ;; Include invalid authority units not already seen via programs
     (when (boundp 'supervisor--unit-file-invalid)
@@ -753,11 +778,15 @@ If SNAPSHOT is provided, read state from it; otherwise read from globals.
 If PROGRAMS is provided, use it instead of calling
 `supervisor--effective-programs'."
   (let ((running 0) (active 0) (done 0) (failed 0) (invalid 0) (pending 0)
+        (disabled 0)
         (programs (or programs (supervisor--effective-programs)))
         (seen (make-hash-table :test 'equal))
         (invalid-hash (if snapshot
                           (supervisor-snapshot-invalid snapshot)
                         supervisor--invalid))
+        (entry-state-hash (if snapshot
+                              (supervisor-snapshot-entry-state snapshot)
+                            supervisor--entry-state))
         (process-alive (when snapshot (supervisor-snapshot-process-alive snapshot)))
         (failed-hash (if snapshot
                          (supervisor-snapshot-failed snapshot)
@@ -783,6 +812,7 @@ If PROGRAMS is provided, use it instead of calling
                   (cl-incf invalid)
                 (let* ((id (car parsed))
                        (type (supervisor-entry-type parsed))
+                       (e-state (gethash id entry-state-hash))
                        (alive (if snapshot
                                   (gethash id process-alive)
                                 (let ((proc (gethash id supervisor--processes)))
@@ -791,6 +821,10 @@ If PROGRAMS is provided, use it instead of calling
                        (oneshot-p (eq type 'oneshot))
                        (oneshot-exit (gethash id oneshot-hash)))
                   (cond
+                   ;; Skip target entries from health counts (no process)
+                   ((eq type 'target))
+                   ;; Disabled entries are counted separately
+                   ((eq e-state 'disabled) (cl-incf disabled))
                    (alive (cl-incf running))
                    (is-failed (cl-incf failed))
                    ((and oneshot-p oneshot-exit (/= oneshot-exit 0)) (cl-incf failed))
@@ -810,7 +844,8 @@ If PROGRAMS is provided, use it instead of calling
           :done done
           :pending pending
           :failed failed
-          :invalid invalid)))
+          :invalid invalid
+          :disabled disabled)))
 
 (defun supervisor--health-summary (&optional snapshot programs)
   "Return compact health summary string.
@@ -823,7 +858,8 @@ If PROGRAMS is provided, use it instead of calling
          (done (plist-get counts :done))
          (pending (plist-get counts :pending))
          (failed (plist-get counts :failed))
-         (invalid (plist-get counts :invalid)))
+         (invalid (plist-get counts :invalid))
+         (disabled (plist-get counts :disabled)))
     (concat (propertize (format "%d" running) 'face 'supervisor-status-running)
             " run | "
             (when (> active 0)
@@ -833,6 +869,9 @@ If PROGRAMS is provided, use it instead of calling
             " done | "
             (propertize (format "%d" pending) 'face 'supervisor-status-pending)
             " pend | "
+            (when (> disabled 0)
+              (concat (propertize (format "%d" disabled) 'face 'supervisor-status-stopped)
+                      " off | "))
             (propertize (format "%d" failed) 'face 'supervisor-status-failed)
             " fail | "
             (propertize (format "%d" invalid) 'face 'supervisor-status-invalid)
@@ -1332,6 +1371,8 @@ Use `s' to start the process again later."
   (interactive)
   (let ((id (supervisor--require-service-row)))
     (let ((entry (supervisor--get-entry-for-id id)))
+      (when (and entry (eq (supervisor-entry-type entry) 'target))
+        (user-error "Cannot stop target unit '%s'" id))
       (when (and entry (eq (supervisor-entry-type entry) 'oneshot)
                  (not (gethash id supervisor--remain-active)))
         (user-error "Cannot stop oneshot entry '%s'" id)))
@@ -1339,7 +1380,9 @@ Use `s' to start the process again later."
       (let ((result (supervisor--manual-stop id)))
         (pcase (plist-get result :status)
           ('stopped (supervisor--refresh-dashboard))
-          ('skipped (message "Entry %s is %s" id (plist-get result :reason))))))))
+          ('skipped (message "Entry %s is %s" id (plist-get result :reason)))
+          ('error (message "Cannot stop %s: %s"
+                           id (plist-get result :reason))))))))
 
 (defun supervisor-dashboard-restart ()
   "Restart process at point with confirmation.
@@ -1347,6 +1390,9 @@ Stop the process gracefully, then start it again.
 If the entry is not running, this is equivalent to start."
   (interactive)
   (let ((id (supervisor--require-service-row)))
+    (let ((entry (supervisor--get-entry-for-id id)))
+      (when (and entry (eq (supervisor-entry-type entry) 'target))
+        (user-error "Cannot restart target unit '%s'" id)))
     (when (yes-or-no-p (format "Restart process '%s'? " id))
       ;; Stop first (ignore result — entry may not be running)
       (supervisor--manual-stop id)
@@ -1832,7 +1878,18 @@ Reject invalid timers and when timer mode gate is off."
                 (princ (format "   Retry at: %s\n"
                                (supervisor--format-timer-relative-time retry-at))))
               (when-let* ((miss (plist-get state :last-miss-reason)))
-                (princ (format "  Last miss: %s\n" (symbol-name miss))))))))))))
+                (princ (format "  Last miss: %s\n" (symbol-name miss))))
+              (when-let* ((target-type (plist-get state :last-target-type)))
+                (princ (format "Target type: %s\n"
+                               (symbol-name target-type))))
+              (when-let* ((result (plist-get state :last-result)))
+                (princ (format "Last result: %s\n"
+                               (symbol-name result))))
+              (when (plist-member state :last-result-reason)
+                (let ((reason (plist-get state :last-result-reason)))
+                  (when reason
+                    (princ (format "     Reason: %s\n"
+                                   (symbol-name reason))))))))))))))
 
 (defun supervisor-dashboard-timer-jump ()
   "Jump to the target service row for the timer at point."

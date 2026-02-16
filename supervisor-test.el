@@ -609,7 +609,7 @@ restart-timer cancellation on `no'."
                       :manually-started (make-hash-table :test 'equal)
                       :timestamp (float-time)))
            (vec (supervisor--make-dashboard-entry
-                 "svc" 'simple 'stage3 t 'always t snapshot)))
+                 "svc" 'simple nil t 'always t snapshot)))
       ;; Restart column (index 5) should say "no" from snapshot, not "yes" from global
       (should (equal "no" (aref vec 5))))))
 
@@ -629,7 +629,7 @@ restart-timer cancellation on `no'."
                     :manually-started (make-hash-table :test 'equal)
                     :timestamp (float-time)))
          (vec (supervisor--make-dashboard-entry
-               "svc" 'oneshot 'stage3 t 'always t snapshot)))
+               "svc" 'oneshot nil t 'always t snapshot)))
     (should (equal "n/a" (aref vec 5)))))
 
 (ert-deftest supervisor-test-dashboard-oneshot-done-pid-renders-dash ()
@@ -653,7 +653,7 @@ restart-timer cancellation on `no'."
            :manually-started (make-hash-table :test 'equal)
            :timestamp (float-time)))
     (setq vec (supervisor--make-dashboard-entry
-               "svc" 'oneshot 'stage3 t 'always t snapshot))
+               "svc" 'oneshot nil t 'always t snapshot))
     (should (equal "done" (substring-no-properties (aref vec 4))))
     (should (equal "-" (aref vec 7)))))
 
@@ -5916,13 +5916,70 @@ conflicting ID, proving precedence derives from list position."
                '(:id "t" :target "missing" :on-startup-sec 60) plan)))
     (should (string-match-p "not found" err))))
 
-(ert-deftest supervisor-test-timer-validate-target-not-oneshot ()
-  "Timer targeting simple service is rejected."
+(ert-deftest supervisor-test-timer-validate-target-simple-accepted ()
+  "Timer targeting simple service is accepted."
   (let* ((programs '(("daemon" :type simple :id "daemon")))
          (plan (supervisor--build-plan programs))
          (err (supervisor-timer--validate
                '(:id "t" :target "daemon" :on-startup-sec 60) plan)))
-    (should (string-match-p "must be a oneshot" err))))
+    (should-not err)))
+
+(ert-deftest supervisor-test-timer-validate-target-type-target-accepted ()
+  "Timer targeting a target unit is accepted."
+  (let* ((programs '(("" :type target :id "app.target")))
+         (plan (supervisor--build-plan programs))
+         (err (supervisor-timer--validate
+               '(:id "t" :target "app.target" :on-startup-sec 60) plan)))
+    (should-not err)))
+
+(ert-deftest supervisor-test-timer-validate-target-type-target-bad-suffix ()
+  "Timer targeting a target entry without .target suffix is rejected.
+The suffix check at timer validation level catches any target type
+entry whose ID does not end in .target (entry validation blocks
+this in practice, but the timer validator defends independently)."
+  ;; Construct a plan with a hand-built entry where type=target but ID
+  ;; lacks the .target suffix.  This bypasses entry validation to test
+  ;; the timer validator's own suffix guard.
+  (let* ((fake-entry (supervisor--parse-entry
+                      '(nil :id "bad.target" :type target)))
+         ;; Rename the ID in the parsed tuple to remove the suffix
+         (bad-entry (cons "bad-no-suffix" (cdr fake-entry)))
+         (plan (supervisor-plan--create
+                :entries (list bad-entry)
+                :by-target nil
+                :deps (make-hash-table :test 'equal)
+                :requires-deps (make-hash-table :test 'equal)
+                :dependents (make-hash-table :test 'equal)
+                :invalid (make-hash-table :test 'equal)
+                :cycle-fallback-ids (make-hash-table :test 'equal)
+                :order-index (make-hash-table :test 'equal)
+                :meta nil))
+         (err (supervisor-timer--validate
+               '(:id "t" :target "bad-no-suffix" :on-startup-sec 60) plan)))
+    (should err)
+    (should (string-match "does not end in .target" err))))
+
+(ert-deftest supervisor-test-timer-validate-disallowed-target-type ()
+  "Timer targeting a timer entry (not oneshot/simple/target) is rejected."
+  ;; Timers can only target oneshot, simple, or target entries.
+  ;; This tests the rejection of an unsupported type.
+  (let* ((fake-entry (supervisor--parse-entry
+                      '("sleep 1" :id "my-timer" :type timer
+                        :on-calendar (:hour 3))))
+         (plan (supervisor-plan--create
+                :entries (list fake-entry)
+                :by-target nil
+                :deps (make-hash-table :test 'equal)
+                :requires-deps (make-hash-table :test 'equal)
+                :dependents (make-hash-table :test 'equal)
+                :invalid (make-hash-table :test 'equal)
+                :cycle-fallback-ids (make-hash-table :test 'equal)
+                :order-index (make-hash-table :test 'equal)
+                :meta nil))
+         (err (supervisor-timer--validate
+               '(:id "t2" :target "my-timer" :on-startup-sec 60) plan)))
+    (should err)
+    (should (string-match "must be oneshot, simple, or target" err))))
 
 (ert-deftest supervisor-test-timer-validate-valid ()
   "Valid timer passes validation."
@@ -6377,14 +6434,16 @@ timezone that `encode-time' and `decode-time' use is actually changed."
       (clrhash supervisor--invalid))))
 
 (ert-deftest supervisor-test-timer-trigger-target-not-found ()
-  "Timer trigger handles missing target gracefully."
+  "Timer trigger handles missing target as failure."
   (supervisor-test-with-unit-files nil
     (let* ((timer (supervisor-timer--create :id "t1" :target "nonexistent" :enabled t))
            (supervisor--timer-state (make-hash-table :test 'equal)))
       ;; Trigger timer with nonexistent target
       (should-not (supervisor-timer--trigger timer 'scheduled))
-      ;; No state recorded (early return)
-      (should-not (gethash "t1" supervisor--timer-state))
+      ;; Failure is recorded per plan (surfaced diagnostic)
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should state)
+        (should (eq 'failure (plist-get state :last-result))))
       ;; Cleanup
       (clrhash supervisor--timer-state))))
 
@@ -7245,6 +7304,336 @@ at minute boundaries."
     ;; Timer should NOT be triggered when parent mode is off
     (should-not triggered)
     (clrhash supervisor--timer-state)))
+
+;;; Timer Phase 6: Expanded Coverage
+
+(ert-deftest supervisor-test-timer-trigger-simple-success ()
+  "Timer trigger for simple service records success on spawn."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (entry (list "svc" nil 0 t nil nil nil nil 'simple nil nil
+                      nil nil nil nil nil nil nil nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil nil nil))
+         (async-callback nil))
+    (puthash "t1" nil supervisor--timer-state)
+    (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'supervisor--get-effective-enabled)
+               (lambda (_id _p) t))
+              ((symbol-function 'supervisor--start-entry-async)
+               (lambda (_entry cb) (setq async-callback cb)))
+              ((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
+              ((symbol-function 'supervisor-timer--update-next-run) #'ignore))
+      (supervisor-timer--trigger timer 'scheduled)
+      ;; Simulate successful spawn
+      (funcall async-callback t)
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'success (plist-get state :last-result)))
+        (should (eq 'simple (plist-get state :last-target-type)))))))
+
+(ert-deftest supervisor-test-timer-trigger-simple-already-active ()
+  "Timer trigger for already-running simple service records success no-op."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (entry (list "svc" nil 0 t nil nil nil nil 'simple nil nil
+                      nil nil nil nil nil nil nil nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil nil nil))
+         (mock-proc (start-process "test" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "t1" nil supervisor--timer-state)
+          (puthash "svc" mock-proc supervisor--processes)
+          (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
+                     (lambda (_id) entry))
+                    ((symbol-function 'supervisor--get-effective-enabled)
+                     (lambda (_id _p) t))
+                    ((symbol-function 'supervisor-timer--save-state) #'ignore)
+                    ((symbol-function 'supervisor--emit-event) #'ignore)
+                    ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
+                    ((symbol-function 'supervisor-timer--update-next-run) #'ignore))
+            (supervisor-timer--trigger timer 'scheduled)
+            (let ((state (gethash "t1" supervisor--timer-state)))
+              (should (eq 'success (plist-get state :last-result)))
+              (should (eq 'already-active
+                          (plist-get state :last-result-reason))))))
+      (delete-process mock-proc))))
+
+(ert-deftest supervisor-test-timer-trigger-simple-spawn-failure-retries ()
+  "Timer trigger for simple spawn failure schedules retry."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor-timer-retry-intervals '(30 120 600))
+         (entry (list "svc" nil 0 t nil nil nil nil 'simple nil nil
+                      nil nil nil nil nil nil nil nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil nil nil))
+         (async-callback nil))
+    (puthash "t1" nil supervisor--timer-state)
+    (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'supervisor--get-effective-enabled)
+               (lambda (_id _p) t))
+              ((symbol-function 'supervisor--start-entry-async)
+               (lambda (_entry cb) (setq async-callback cb)))
+              ((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
+              ((symbol-function 'supervisor-timer--update-next-run) #'ignore))
+      (supervisor-timer--trigger timer 'scheduled)
+      ;; Simulate spawn failure
+      (funcall async-callback nil)
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'failure (plist-get state :last-result)))
+        (should (eq 'spawn-failed (plist-get state :last-result-reason)))
+        ;; Retry should be scheduled
+        (should (= 1 (plist-get state :retry-attempt)))
+        (should (plist-get state :retry-next-at))))))
+
+(ert-deftest supervisor-test-timer-trigger-target-reached ()
+  "Timer trigger for target records success on reached convergence."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "app.target"
+                                          :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--target-converging (make-hash-table :test 'equal))
+         (supervisor--current-plan t)
+         (entry (list "app.target" nil 0 t nil nil nil nil 'target nil nil
+                      nil nil nil nil nil nil nil nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil nil nil)))
+    ;; Target already reached -- no-op success
+    (puthash "app.target" 'reached supervisor--target-convergence)
+    (puthash "t1" nil supervisor--timer-state)
+    (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'supervisor--get-effective-enabled)
+               (lambda (_id _p) t))
+              ((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
+              ((symbol-function 'supervisor-timer--update-next-run) #'ignore))
+      (supervisor-timer--trigger timer 'scheduled)
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'success (plist-get state :last-result)))
+        (should (eq 'already-reached
+                    (plist-get state :last-result-reason)))))))
+
+(ert-deftest supervisor-test-timer-trigger-target-converging-skips ()
+  "Timer trigger for converging target records miss."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "app.target"
+                                          :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--target-converging (make-hash-table :test 'equal))
+         (entry (list "app.target" nil 0 t nil nil nil nil 'target nil nil
+                      nil nil nil nil nil nil nil nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil nil nil)))
+    ;; Target is converging
+    (puthash "app.target" t supervisor--target-converging)
+    (puthash "t1" nil supervisor--timer-state)
+    (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'supervisor--get-effective-enabled)
+               (lambda (_id _p) t))
+              ((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore))
+      (let ((result (supervisor-timer--trigger timer 'scheduled)))
+        (should-not result)
+        (let ((state (gethash "t1" supervisor--timer-state)))
+          (should (eq 'target-converging
+                      (plist-get state :last-miss-reason))))))))
+
+(ert-deftest supervisor-test-timer-target-degraded-retries ()
+  "Timer target convergence to degraded schedules retry."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor-timer-retry-intervals '(30 120 600)))
+    (puthash "t1" '(:retry-attempt 0) supervisor--timer-state)
+    (puthash "app.target" 'degraded supervisor--target-convergence)
+    (cl-letf (((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
+              ((symbol-function 'supervisor-timer--update-next-run) #'ignore))
+      (supervisor-timer--on-target-converge "t1" "app.target")
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'failure (plist-get state :last-result)))
+        (should (eq 'target-degraded (plist-get state :last-result-reason)))
+        ;; Retry should be scheduled
+        (should (= 1 (plist-get state :retry-attempt)))
+        (should (plist-get state :retry-next-at))))))
+
+(ert-deftest supervisor-test-timer-unit-active-simple-anchors-on-success ()
+  "on-unit-active for simple timer anchors on last success."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "svc" :enabled t
+                                          :on-unit-active-sec 300))
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    (puthash "t1" '(:last-success-at 1000.0) supervisor--timer-state)
+    (let ((next (supervisor-timer--next-unit-active-time timer)))
+      (should (= 1300.0 next)))))
+
+(ert-deftest supervisor-test-timer-unit-active-target-anchors-on-success ()
+  "on-unit-active for target timer anchors on last success."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "app.target"
+                                          :enabled t :on-unit-active-sec 600))
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    (puthash "t1" '(:last-success-at 2000.0) supervisor--timer-state)
+    (let ((next (supervisor-timer--next-unit-active-time timer)))
+      (should (= 2600.0 next)))))
+
+(ert-deftest supervisor-test-timer-overlap-no-retry ()
+  "Overlap skip does not schedule retry."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (entry (list "svc" nil 0 t nil nil nil nil 'oneshot nil nil
+                      nil nil nil nil nil nil nil nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil nil nil))
+         (mock-proc (start-process "test" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "svc" mock-proc supervisor--processes)
+          (puthash "t1" '(:retry-attempt 0) supervisor--timer-state)
+          (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
+                     (lambda (_id) entry))
+                    ((symbol-function 'supervisor--get-effective-enabled)
+                     (lambda (_id _p) t))
+                    ((symbol-function 'supervisor-timer--save-state) #'ignore)
+                    ((symbol-function 'supervisor--emit-event) #'ignore))
+            (supervisor-timer--trigger timer 'scheduled)
+            (let ((state (gethash "t1" supervisor--timer-state)))
+              ;; Overlap recorded as miss, no retry scheduled
+              (should (eq 'overlap (plist-get state :last-miss-reason)))
+              (should-not (plist-get state :retry-next-at)))))
+      (delete-process mock-proc))))
+
+(ert-deftest supervisor-test-timer-missing-target-records-failure ()
+  "Missing target at runtime records failure with target-not-found."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "gone" :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal)))
+    (puthash "t1" nil supervisor--timer-state)
+    (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
+               (lambda (_id) nil))
+              ((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor-timer--update-next-run) #'ignore))
+      (supervisor-timer--trigger timer 'scheduled)
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'failure (plist-get state :last-result)))
+        (should (eq 'target-not-found
+                    (plist-get state :last-result-reason)))))))
+
+(ert-deftest supervisor-test-timer-masked-target-skips ()
+  "Masked target skips with masked-target miss reason."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (entry (list "svc" nil 0 t nil nil nil nil 'simple nil nil
+                      nil nil nil nil nil nil nil nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil nil nil)))
+    (puthash "svc" 'masked supervisor--mask-override)
+    (puthash "t1" nil supervisor--timer-state)
+    (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor--log) #'ignore))
+      (supervisor-timer--trigger timer 'scheduled)
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'masked-target
+                    (plist-get state :last-miss-reason)))))))
+
+(ert-deftest supervisor-test-cli-list-timers-json-v2-fields ()
+  "CLI list-timers JSON includes v2 fields: target_type, last_result."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "svc"
+                                          :enabled t :persistent t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    (puthash "t1" '(:last-result success
+                    :last-result-reason nil
+                    :last-target-type oneshot)
+             supervisor--timer-state)
+    (let ((result (supervisor--cli-dispatch '("--json" "list-timers"))))
+      (let* ((json-object-type 'alist)
+             (json-array-type 'list)
+             (data (json-read-from-string
+                    (supervisor-cli-result-output result)))
+             (timers (alist-get 'timers data))
+             (entry (car timers)))
+        (should (equal "success" (alist-get 'last_result entry)))
+        (should (equal "oneshot" (alist-get 'target_type entry)))))))
+
+(ert-deftest supervisor-test-cli-list-timers-human-v2-columns ()
+  "CLI list-timers human output includes TYPE and RESULT columns."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "svc"
+                                          :enabled t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    (puthash "t1" '(:last-result failure
+                    :last-target-type simple)
+             supervisor--timer-state)
+    (let ((result (supervisor--cli-dispatch '("list-timers"))))
+      (let ((output (supervisor-cli-result-output result)))
+        ;; Header should have TYPE and RESULT columns
+        (should (string-match-p "TYPE" output))
+        (should (string-match-p "RESULT" output))
+        ;; Data row should have the values
+        (should (string-match-p "simple" output))
+        (should (string-match-p "failure" output))))))
+
+(ert-deftest supervisor-test-dashboard-timer-entry-v2-columns ()
+  "Dashboard timer entry vector includes TYPE and RESULT columns."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal)))
+    (puthash "t1" '(:last-target-type oneshot :last-result success)
+             supervisor--timer-state)
+    (let ((entry (supervisor--make-timer-dashboard-entry timer)))
+      ;; Column 7 is TYPE, column 8 is RESULT
+      (should (string= "oneshot" (aref entry 7)))
+      (should (string-match-p "success" (aref entry 8))))))
+
+(ert-deftest supervisor-test-dashboard-timer-entry-empty-v2-defaults ()
+  "Dashboard timer entry shows dash for missing TYPE and RESULT."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal)))
+    ;; No state set -- columns default to "-"
+    (let ((entry (supervisor--make-timer-dashboard-entry timer)))
+      (should (string= "-" (aref entry 7)))
+      (should (string= "-" (aref entry 8))))))
 
 ;;; CLI Control Plane tests
 
@@ -17741,7 +18130,7 @@ An invalid entry ID that happens to end in .target must not pass."
          (supervisor--target-convergence (make-hash-table :test 'equal))
          (supervisor--target-convergence-reasons (make-hash-table :test 'equal))
          (vec (supervisor--make-dashboard-entry
-               "app.target" 'target 'stage3 t nil nil snapshot)))
+               "app.target" 'target nil t nil nil snapshot)))
     ;; TYPE column (index 1) should have target face
     (should (eq 'supervisor-type-target
                 (get-text-property 0 'face (aref vec 1))))
@@ -17772,19 +18161,19 @@ An invalid entry ID that happens to end in .target must not pass."
     ;; Test reached
     (puthash "app.target" 'reached conv-hash)
     (let ((vec (supervisor--make-dashboard-entry
-                "app.target" 'target 'stage3 t nil nil snapshot)))
+                "app.target" 'target nil t nil nil snapshot)))
       (should (equal "reached"
                      (substring-no-properties (aref vec 4)))))
     ;; Test degraded
     (puthash "app.target" 'degraded conv-hash)
     (let ((vec (supervisor--make-dashboard-entry
-                "app.target" 'target 'stage3 t nil nil snapshot)))
+                "app.target" 'target nil t nil nil snapshot)))
       (should (equal "degraded"
                      (substring-no-properties (aref vec 4)))))
     ;; Test converging
     (puthash "app.target" 'converging conv-hash)
     (let ((vec (supervisor--make-dashboard-entry
-                "app.target" 'target 'stage3 t nil nil snapshot)))
+                "app.target" 'target nil t nil nil snapshot)))
       (should (equal "converging"
                      (substring-no-properties (aref vec 4)))))))
 
@@ -17812,7 +18201,7 @@ An invalid entry ID that happens to end in .target must not pass."
     (puthash "app.target" 'degraded conv-hash)
     (puthash "app.target" '("svc-a failed" "svc-b failed") reasons-hash)
     (let ((vec (supervisor--make-dashboard-entry
-                "app.target" 'target 'stage3 t nil nil snapshot)))
+                "app.target" 'target nil t nil nil snapshot)))
       (should (equal "svc-a failed; svc-b failed"
                      (substring-no-properties (aref vec 8)))))))
 
@@ -17908,7 +18297,7 @@ An invalid entry ID that happens to end in .target must not pass."
     (puthash "app.target" '(:requires ("svc-a") :wants ("svc-b")) members-hash)
     ;; Simulate calling on a target entry
     (let* ((entry (list "app.target" nil 0 t nil nil nil nil
-                        'target 'stage3 nil nil nil nil nil
+                        'target nil nil nil nil nil nil
                         nil nil nil nil nil nil nil nil nil nil
                         nil nil nil nil nil nil nil nil))
            (msg nil))
@@ -18007,7 +18396,7 @@ An invalid entry ID that happens to end in .target must not pass."
          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
          ;; 33-element target entry
          (entry (list "app.target" nil 0 t nil nil nil nil
-                      'target 'stage3 nil nil nil nil nil
+                      'target nil nil nil nil nil nil
                       nil nil nil nil nil nil
                       "Test target" nil nil nil nil nil nil nil nil nil
                       '("multi-user.target") nil)))
@@ -18057,13 +18446,17 @@ An invalid entry ID that happens to end in .target must not pass."
     ;; Target with reached convergence
     (puthash "app.target" 'reached conv-hash)
     (let ((vec (supervisor--make-dashboard-entry
-                "app.target" 'target 'stage3 t nil nil snapshot)))
+                "app.target" 'target nil t nil nil snapshot)))
       ;; TARGET column (index 2) shows convergence
       (should (equal "reached"
                      (substring-no-properties (aref vec 2)))))
-    ;; Simple service shows "-" in TARGET column
+    ;; Simple service with parent-target shows it in TARGET column
     (let ((vec (supervisor--make-dashboard-entry
-                "svc" 'simple 'stage3 t 'always t snapshot)))
+                "svc" 'simple "basic.target" t 'always t snapshot)))
+      (should (equal "basic.target" (aref vec 2))))
+    ;; Simple service without parent-target shows "-" in TARGET column
+    (let ((vec (supervisor--make-dashboard-entry
+                "svc" 'simple nil t 'always t snapshot)))
       (should (equal "-" (aref vec 2))))))
 
 (ert-deftest supervisor-test-dashboard-target-restart-renders-na ()
@@ -18087,7 +18480,7 @@ An invalid entry ID that happens to end in .target must not pass."
                     :remain-active (make-hash-table :test 'equal)
                     :timestamp (float-time)))
          (vec (supervisor--make-dashboard-entry
-               "app.target" 'target 'stage3 t nil nil snapshot)))
+               "app.target" 'target nil t nil nil snapshot)))
     (should (equal "n/a" (aref vec 5)))))
 
 (ert-deftest supervisor-test-dashboard-target-log-renders-dash ()
@@ -18111,7 +18504,7 @@ An invalid entry ID that happens to end in .target must not pass."
                     :remain-active (make-hash-table :test 'equal)
                     :timestamp (float-time)))
          (vec (supervisor--make-dashboard-entry
-               "app.target" 'target 'stage3 t nil nil snapshot)))
+               "app.target" 'target nil t nil nil snapshot)))
     (should (equal "-" (aref vec 6)))))
 
 (ert-deftest supervisor-test-dashboard-services-separator-says-target ()
@@ -18177,12 +18570,12 @@ An invalid entry ID that happens to end in .target must not pass."
   (let* ((members-hash (make-hash-table :test 'equal))
          ;; 33-element target entry for empty-target (no members)
          (empty-entry (list "empty.target" nil 0 t nil nil nil nil
-                            'target 'stage3 nil nil nil nil nil
+                            'target nil nil nil nil nil nil
                             nil nil nil nil nil nil nil nil nil nil
                             nil nil nil nil nil nil nil nil nil))
          ;; 33-element target entry for pop.target (has members)
          (pop-entry (list "pop.target" nil 0 t nil nil nil nil
-                          'target 'stage3 nil nil nil nil nil
+                          'target nil nil nil nil nil nil
                           nil nil nil nil nil nil nil nil nil nil
                           nil nil nil nil nil nil nil nil nil))
          (supervisor--current-plan
@@ -19074,6 +19467,239 @@ An invalid entry ID that happens to end in .target must not pass."
             (should (equal "app.target" (alist-get 'target json)))
             (should (numberp (alist-get 'stopped json)))
             (should (numberp (alist-get 'started json)))))))))
+
+;;; Regression Tests: Convergence, Status, and Target Guards
+
+(ert-deftest supervisor-test-convergence-survives-dag-cleanup ()
+  "Target convergence state persists after DAG cleanup."
+  (let ((supervisor--target-convergence (make-hash-table :test 'equal))
+        (supervisor--target-convergence-reasons (make-hash-table :test 'equal))
+        (supervisor--target-converging nil)
+        (supervisor--target-member-reverse nil)
+        (supervisor--target-members (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree nil)
+        (supervisor--dag-dependents nil)
+        (supervisor--dag-entries nil)
+        (supervisor--dag-blocking nil)
+        (supervisor--dag-started nil)
+        (supervisor--dag-ready nil)
+        (supervisor--dag-timeout-timers nil)
+        (supervisor--dag-delay-timers nil)
+        (supervisor--dag-id-to-index nil)
+        (supervisor--dag-complete-callback nil)
+        (supervisor--dag-timeout-timer nil)
+        (supervisor--dag-pending-starts nil)
+        (supervisor--dag-active-starts 0))
+    (puthash "basic.target" 'reached supervisor--target-convergence)
+    (puthash "multi.target" 'degraded supervisor--target-convergence)
+    (puthash "multi.target" '("svc: failed") supervisor--target-convergence-reasons)
+    (supervisor--dag-cleanup)
+    ;; Convergence state must survive
+    (should (eq 'reached (gethash "basic.target" supervisor--target-convergence)))
+    (should (eq 'degraded (gethash "multi.target" supervisor--target-convergence)))
+    (should (equal '("svc: failed")
+                   (gethash "multi.target" supervisor--target-convergence-reasons)))
+    ;; DAG temporaries must be cleared
+    (should (null supervisor--target-converging))
+    (should (null supervisor--target-member-reverse))))
+
+(ert-deftest supervisor-test-disabled-oneshot-status ()
+  "Disabled oneshot entries show status=disabled, not pending."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--remain-active (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--target-convergence nil)
+        (supervisor--current-plan nil))
+    (puthash "setup-x" 'disabled supervisor--entry-state)
+    (let ((result (supervisor--compute-entry-status "setup-x" 'oneshot)))
+      (should (equal "disabled" (car result))))))
+
+(ert-deftest supervisor-test-disabled-simple-status ()
+  "Disabled simple entries show status=disabled, not stopped."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--remain-active (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--target-convergence nil)
+        (supervisor--current-plan nil))
+    (puthash "svc" 'disabled supervisor--entry-state)
+    (let ((result (supervisor--compute-entry-status "svc" 'simple)))
+      (should (equal "disabled" (car result))))))
+
+(ert-deftest supervisor-test-default-target-alias-mirrors-link ()
+  "Status of default.target mirrors its resolved link convergence."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--remain-active (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--target-convergence (make-hash-table :test 'equal))
+        (supervisor--current-plan nil)
+        (supervisor-default-target-link "graphical.target")
+        (supervisor--default-target-link-override nil))
+    (puthash "graphical.target" 'reached supervisor--target-convergence)
+    (let ((result (supervisor--compute-entry-status "default.target" 'target)))
+      (should (equal "reached" (car result))))))
+
+(ert-deftest supervisor-test-unreachable-status-outside-closure ()
+  "Entries outside the activation closure show unreachable status."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--remain-active (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--target-convergence nil)
+         (closure (make-hash-table :test 'equal))
+         (supervisor--current-plan
+          (supervisor-plan--create
+           :entries nil :by-target nil
+           :deps (make-hash-table :test 'equal)
+           :requires-deps (make-hash-table :test 'equal)
+           :dependents (make-hash-table :test 'equal)
+           :invalid (make-hash-table :test 'equal)
+           :cycle-fallback-ids (make-hash-table :test 'equal)
+           :order-index (make-hash-table :test 'equal)
+           :meta nil
+           :activation-closure closure)))
+    ;; "inside" is in the closure
+    (puthash "inside" t closure)
+    ;; "outside" is not in the closure
+    (let ((result (supervisor--compute-entry-status "outside" 'simple)))
+      (should (equal "unreachable" (car result))))
+    ;; "inside" should show normal status (stopped since not running)
+    (let ((result (supervisor--compute-entry-status "inside" 'simple)))
+      (should (equal "stopped" (car result))))))
+
+(ert-deftest supervisor-test-health-counts-disabled-not-pending ()
+  "Health counts put disabled entries in :disabled, not :pending."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--remain-active (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal)))
+    (puthash "setup-a" 'disabled supervisor--entry-state)
+    (let ((counts (supervisor--health-counts
+                   nil
+                   '(("true" :id "setup-a" :type oneshot)))))
+      (should (= 0 (plist-get counts :pending)))
+      (should (= 1 (plist-get counts :disabled))))))
+
+(ert-deftest supervisor-test-health-counts-skips-targets ()
+  "Health counts do not count target entries."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--remain-active (make-hash-table :test 'equal))
+        (supervisor--mask-override (make-hash-table :test 'equal))
+        (supervisor--invalid (make-hash-table :test 'equal))
+        (supervisor--entry-state (make-hash-table :test 'equal)))
+    (let ((counts (supervisor--health-counts
+                   nil
+                   '((nil :id "basic.target" :type target)
+                     ("sleep 300" :id "svc" :type simple)))))
+      ;; Only svc should be counted (as pending since not running)
+      (should (= 1 (plist-get counts :pending)))
+      (should (= 0 (plist-get counts :running))))))
+
+(ert-deftest supervisor-test-manual-start-rejects-target ()
+  "Manual start of a target returns error."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil)
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal)))
+      (let ((result (supervisor--manual-start "basic.target")))
+        (should (eq 'error (plist-get result :status)))
+        (should (string-match "target" (plist-get result :reason)))))))
+
+(ert-deftest supervisor-test-manual-stop-rejects-target ()
+  "Manual stop of a target returns error."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal)))
+      (let ((result (supervisor--manual-stop "basic.target")))
+        (should (eq 'error (plist-get result :status)))
+        (should (string-match "target" (plist-get result :reason)))))))
+
+(ert-deftest supervisor-test-policy-set-restart-rejects-target ()
+  "Restart policy not applicable to target entries."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil)
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--overrides-loaded-p t))
+      (let ((result (supervisor--policy-set-restart "basic.target" 'always)))
+        (should (eq 'error (plist-get result :status)))
+        (should (string-match "target" (plist-get result :message)))))))
+
+(ert-deftest supervisor-test-policy-set-logging-rejects-target ()
+  "Logging not applicable to target entries."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil)
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--overrides-loaded-p t))
+      (let ((result (supervisor--policy-set-logging "basic.target" t)))
+        (should (eq 'error (plist-get result :status)))
+        (should (string-match "target" (plist-get result :message)))))))
+
+(ert-deftest supervisor-test-cli-cat-rejects-target ()
+  "CLI cat rejects target units."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch '("cat" "basic.target"))))
+        (should (/= supervisor-cli-exit-success
+                     (supervisor-cli-result-exitcode result)))
+        (should (string-match "target"
+                              (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-logs-rejects-target ()
+  "CLI logs rejects target units."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch '("logs" "basic.target"))))
+        (should (/= supervisor-cli-exit-success
+                     (supervisor-cli-result-exitcode result)))
+        (should (string-match "target"
+                              (supervisor-cli-result-output result)))))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

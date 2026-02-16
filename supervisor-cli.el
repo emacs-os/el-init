@@ -1659,6 +1659,12 @@ Options must come before --.  Use -- before IDs that start with hyphen."
                              (format "logs takes exactly one ID, got extra: %s"
                                      (mapconcat #'identity extra-ids " "))
                              (if json-p 'json 'human)))
+     ;; Target units have no logs
+     ((let ((entry (supervisor--get-entry-for-id id)))
+        (and entry (eq (supervisor-entry-type entry) 'target)))
+      (supervisor--cli-error supervisor-cli-exit-failure
+                             (format "Cannot show logs for target unit: %s" id)
+                             (if json-p 'json 'human)))
      (t
       (let ((log-file (supervisor--log-file id)))
         (if (file-exists-p log-file)
@@ -1798,7 +1804,10 @@ Return a list of alists, one per timer."
              (next-run (plist-get state :next-run-at))
              (last-miss (plist-get state :last-missed-at))
              (miss-reason (plist-get state :last-miss-reason))
-             (retry-at (plist-get state :retry-next-at)))
+             (retry-at (plist-get state :retry-next-at))
+             (last-result (plist-get state :last-result))
+             (last-result-reason (plist-get state :last-result-reason))
+             (last-target-type (plist-get state :last-target-type)))
         (push `((id . ,id)
                 (target . ,target)
                 (enabled . ,enabled)
@@ -1810,7 +1819,10 @@ Return a list of alists, one per timer."
                 (next-run . ,next-run)
                 (last-miss . ,last-miss)
                 (miss-reason . ,miss-reason)
-                (retry-at . ,retry-at))
+                (retry-at . ,retry-at)
+                (last-result . ,last-result)
+                (last-result-reason . ,last-result-reason)
+                (target-type . ,last-target-type))
               result)))
     (nreverse result)))
 
@@ -1842,26 +1854,31 @@ Return a list of alists, one per timer."
   (let ((id (alist-get 'id info))
         (target (alist-get 'target info))
         (enabled (alist-get 'enabled info))
+        (target-type (alist-get 'target-type info))
         (last-run (alist-get 'last-run info))
         (next-run (alist-get 'next-run info))
         (last-exit (alist-get 'last-exit info))
+        (last-result (alist-get 'last-result info))
         (miss-reason (alist-get 'miss-reason info)))
-    (format "%-16s %-16s %-8s %-12s %-12s %-8s %s\n"
+    (format "%-16s %-16s %-8s %-8s %-12s %-12s %-8s %-8s %s\n"
             (or id "-")
             (or target "-")
             (if enabled "yes" "no")
+            (if target-type (symbol-name target-type) "-")
             (supervisor--cli-format-relative-time last-run)
             (supervisor--cli-format-relative-time next-run)
             (if (null last-exit) "-" (number-to-string last-exit))
+            (if last-result (symbol-name last-result) "-")
             (if miss-reason (symbol-name miss-reason) "-"))))
 
 (defun supervisor--cli-timers-human (timers invalid)
   "Format TIMERS and INVALID as human-readable timer status table."
   (if (and (null timers) (null invalid))
       "No timers configured.\n"
-    (let ((header (format "%-16s %-16s %-8s %-12s %-12s %-8s %s\n"
-                          "ID" "TARGET" "ENABLED" "LAST-RUN" "NEXT-RUN" "EXIT" "MISS"))
-          (sep (make-string 90 ?-)))
+    (let ((header (format "%-16s %-16s %-8s %-8s %-12s %-12s %-8s %-8s %s\n"
+                          "ID" "TARGET" "ENABLED" "TYPE"
+                          "LAST-RUN" "NEXT-RUN" "EXIT" "RESULT" "MISS"))
+          (sep (make-string 106 ?-)))
       (concat header sep "\n"
               (mapconcat #'supervisor--cli-format-timer-line timers "")
               (when invalid
@@ -1887,7 +1904,16 @@ Return a list of alists, one per timer."
     (miss_reason . ,(if (alist-get 'miss-reason info)
                         (symbol-name (alist-get 'miss-reason info))
                       :json-null))
-    (retry_at . ,(alist-get 'retry-at info))))
+    (retry_at . ,(alist-get 'retry-at info))
+    (last_result . ,(if (alist-get 'last-result info)
+                        (symbol-name (alist-get 'last-result info))
+                      :json-null))
+    (last_result_reason . ,(if (alist-get 'last-result-reason info)
+                               (symbol-name (alist-get 'last-result-reason info))
+                             :json-null))
+    (target_type . ,(if (alist-get 'target-type info)
+                        (symbol-name (alist-get 'target-type info))
+                      :json-null))))
 
 (defun supervisor--cli-invalid-timer-to-json-obj (info)
   "Convert invalid timer INFO plist to JSON-compatible alist."
@@ -1971,27 +1997,33 @@ Output literal raw content of a unit file."
                            (if json-p 'json 'human)))
    (t
     (let* ((id (car args))
-           (path (supervisor--unit-file-path id)))
-      (if (and path (file-exists-p path))
-          (let ((content (with-temp-buffer
-                           (insert-file-contents path)
-                           (buffer-string))))
-            (if json-p
-                (supervisor--cli-success
-                 (json-encode `((path . ,path)
-                                (content . ,content)))
-                 'json)
-              (supervisor--cli-success content 'human)))
-        (if (and path (supervisor--get-entry-for-id id))
-            (supervisor--cli-error
-             supervisor-cli-exit-failure
-             (format "No unit file on disk for '%s' (use 'edit %s' to create an override)"
-                     id id)
-             (if json-p 'json 'human))
-          (supervisor--cli-error supervisor-cli-exit-failure
-                                 (format "Unit file not found: %s"
-                                         (or path id))
-                                 (if json-p 'json 'human))))))))
+           (entry (supervisor--get-entry-for-id id)))
+      (if (and entry (eq (supervisor-entry-type entry) 'target))
+          (supervisor--cli-error
+           supervisor-cli-exit-failure
+           (format "Cannot cat a target unit: %s" id)
+           (if json-p 'json 'human))
+        (let ((path (supervisor--unit-file-path id)))
+          (if (and path (file-exists-p path))
+              (let ((content (with-temp-buffer
+                               (insert-file-contents path)
+                               (buffer-string))))
+                (if json-p
+                    (supervisor--cli-success
+                     (json-encode `((path . ,path)
+                                    (content . ,content)))
+                     'json)
+                  (supervisor--cli-success content 'human)))
+            (if (and path entry)
+                (supervisor--cli-error
+                 supervisor-cli-exit-failure
+                 (format "No unit file on disk for '%s' (use 'edit %s' to create an override)"
+                         id id)
+                 (if json-p 'json 'human))
+              (supervisor--cli-error
+               supervisor-cli-exit-failure
+               (format "Unit file not found: %s" (or path id))
+               (if json-p 'json 'human))))))))))
 
 (defun supervisor--cli-edit-launch-editor (editor path)
   "Launch EDITOR on PATH synchronously.
@@ -2018,7 +2050,13 @@ In non-interactive context, launch $VISUAL or $EDITOR."
                            (if json-p 'json 'human)))
    (t
     (let* ((id (car args))
-           (path (supervisor--unit-file-path id))
+           (entry (supervisor--get-entry-for-id id)))
+      (if (and entry (eq (supervisor-entry-type entry) 'target))
+          (supervisor--cli-error
+           supervisor-cli-exit-failure
+           (format "Cannot edit a target unit: %s" id)
+           (if json-p 'json 'human))
+    (let* ((path (supervisor--unit-file-path id))
            (root (or (when (fboundp 'supervisor--authority-root-for-id)
                        (supervisor--authority-root-for-id id))
                      (when path (file-name-directory path))))
@@ -2077,7 +2115,7 @@ In non-interactive context, launch $VISUAL or $EDITOR."
                  supervisor-cli-exit-failure
                  (format "%sNo $VISUAL or $EDITOR set.  Edit the file manually:\n  %s\n\nNext steps after editing:\n  supervisorctl daemon-reload    Reload unit definitions"
                          preamble path)
-                 'human))))))))))
+                 'human))))))))))))
 
 ;;; CLI Target Commands
 

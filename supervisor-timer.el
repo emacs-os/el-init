@@ -38,10 +38,14 @@
 (declare-function supervisor--start-entry-async "supervisor-core" (entry callback))
 (declare-function supervisor--get-effective-enabled "supervisor-core" (id config-enabled))
 (declare-function supervisor-plan-entries "supervisor-core" (plan))
+(declare-function supervisor-plan-by-target "supervisor-core" (plan))
+(declare-function supervisor-plan-target-members "supervisor-core" (plan))
 (declare-function supervisor-entry-id "supervisor-core" (entry))
 (declare-function supervisor-entry-type "supervisor-core" (entry))
 (declare-function supervisor-entry-enabled-p "supervisor-core" (entry))
 (declare-function supervisor--get-entry-for-id "supervisor-core" (id))
+(declare-function supervisor--manual-start "supervisor-core" (id))
+(declare-function supervisor--dag-start-with-deps "supervisor-core" (entries callback))
 
 ;; Forward declarations for variables from supervisor-core
 (defvar supervisor-mode)
@@ -49,6 +53,10 @@
 (defvar supervisor--processes)
 (defvar supervisor--invalid)
 (defvar supervisor--oneshot-completed)
+(defvar supervisor--target-convergence)
+(defvar supervisor--target-converging)
+(defvar supervisor--current-plan)
+(defvar supervisor--mask-override)
 
 ;;; Timer Subsystem Gate
 
@@ -58,7 +66,7 @@
 
 When enabled, supervisor will process timer definitions from
 `supervisor-timers' (and built-in timers such as the daily
-logrotate maintenance job) and schedule oneshot services accordingly.
+logrotate maintenance job) and schedule units accordingly.
 
 The timer subsystem requires `supervisor-mode' to be enabled.  If
 `supervisor-mode' is disabled, timer functionality is a no-op even
@@ -67,7 +75,7 @@ if this mode is enabled.
 When disabled, timer code will not:
 - Build timer plans/lists in startup or reconcile flows
 - Start, tick, or reschedule scheduler loops
-- Trigger timer-driven oneshot runs
+- Trigger timer-driven unit runs
 - Execute retry or catch-up logic
 - Emit timer-specific events
 - Load or save timer-state persistence data"
@@ -132,18 +140,20 @@ Default is 24 hours.  Set to 0 to disable catch-up."
 
 (cl-defstruct (supervisor-timer (:constructor supervisor-timer--create)
                                 (:copier nil))
-  "Timer definition for scheduled oneshot execution.
+  "Timer definition for scheduled unit execution.
+
+Timers can trigger oneshot, simple, and target units.
 
 Field documentation:
   id              - Unique identifier string (required)
-  target          - ID of oneshot service to trigger (required)
+  target          - ID of unit to trigger (required)
   enabled         - Whether this timer is active (boolean, default t)
   on-calendar     - Calendar schedule plist (optional)
   on-startup-sec  - Seconds after startup to trigger (optional)
   on-unit-active-sec - Seconds after target completes to trigger again (optional)
   persistent      - Enable catch-up after downtime (boolean, default t)"
   (id nil :type string :documentation "Unique timer identifier (required)")
-  (target nil :type string :documentation "Target oneshot service ID (required)")
+  (target nil :type string :documentation "Target unit ID (required)")
   (enabled t :type boolean :documentation "Whether timer is active")
   (on-calendar nil :type (or null list) :documentation "Calendar schedule plist")
   (on-startup-sec nil :type (or null integer) :documentation "Startup delay seconds")
@@ -176,15 +186,18 @@ Field documentation:
 (defvar supervisor--timer-state (make-hash-table :test 'equal)
   "Hash table mapping timer ID to runtime state plist.
 State keys:
-  :last-run-at      - timestamp of last trigger
-  :last-success-at  - timestamp of last successful completion
-  :last-failure-at  - timestamp of last failed completion
-  :last-exit        - exit code of last run (0 = success)
-  :retry-attempt    - current retry attempt number (0 = not retrying)
-  :retry-next-at    - timestamp of next retry (nil if not pending)
-  :last-missed-at   - timestamp of last missed run
-  :last-miss-reason - symbol: overlap, downtime, disabled
-  :next-run-at      - timestamp of next scheduled run
+  :last-run-at         - timestamp of last trigger
+  :last-success-at     - timestamp of last successful completion
+  :last-failure-at     - timestamp of last failed completion
+  :last-exit           - exit code of last run (0 = success)
+  :retry-attempt       - current retry attempt number (0 = not retrying)
+  :retry-next-at       - timestamp of next retry (nil if not pending)
+  :last-missed-at      - timestamp of last missed run
+  :last-miss-reason    - symbol: overlap, downtime, disabled
+  :next-run-at         - timestamp of next scheduled run
+  :last-result         - symbol: success, failure, skip (v2)
+  :last-result-reason  - symbol or nil: overlap, etc. (v2)
+  :last-target-type    - symbol: oneshot, simple, target (v2)
 All timestamps are float seconds since epoch.")
 
 (defvar supervisor--timer-scheduler nil
@@ -201,15 +214,18 @@ All timestamps are float seconds since epoch.")
 
 ;;; Timer State Persistence
 
-(defconst supervisor-timer-state-schema-version 1
-  "Schema version for persistent timer state file.")
+(defconst supervisor-timer-state-schema-version 2
+  "Schema version for persistent timer state file.
+Version 2 adds :last-result, :last-result-reason, :last-target-type.")
 
 (defconst supervisor-timer--state-persist-keys
   '(:last-run-at :last-success-at :last-failure-at :last-exit
-    :last-missed-at :last-miss-reason)
+    :last-missed-at :last-miss-reason
+    :last-result :last-result-reason :last-target-type)
   "State keys that should be persisted across restarts.
 Excludes transient keys like :next-run-at, :retry-attempt, :retry-next-at,
-and :startup-triggered which are computed fresh each session.")
+and :startup-triggered which are computed fresh each session.
+Schema v2 added :last-result, :last-result-reason, :last-target-type.")
 
 (defun supervisor--timer-state-file-path ()
   "Return the path to the timer state file, or nil if disabled."
@@ -223,20 +239,24 @@ and :startup-triggered which are computed fresh each session.")
         (make-directory dir t)))))
 
 (defun supervisor--timer-state-to-alist ()
-  "Convert timer state hash to alist for persistence.
-Only includes keys from `supervisor-timer--state-persist-keys'."
+  "Convert timer state hash to sorted alist for persistence.
+Only includes keys from `supervisor-timer--state-persist-keys'.
+Output is sorted by timer ID for deterministic serialization."
   (let (result)
     (maphash
      (lambda (id state)
        (when state
          (let (filtered)
            (dolist (key supervisor-timer--state-persist-keys)
-             (when-let* ((val (plist-get state key)))
-               (setq filtered (plist-put filtered key val))))
+             ;; Persist every key present in state (even if nil).
+             (when (plist-member state key)
+               (setq filtered (plist-put filtered key
+                                         (plist-get state key)))))
            (when filtered
              (push (cons id filtered) result)))))
      supervisor--timer-state)
-    (nreverse result)))
+    ;; Sort by ID for deterministic output
+    (sort result (lambda (a b) (string< (car a) (car b))))))
 
 (cl-defun supervisor-timer--save-state ()
   "Save timer state to file using atomic write.
@@ -250,7 +270,6 @@ Does nothing if timer subsystem is not active."
       (supervisor-timer--ensure-state-dir)
       (let* ((state-alist (supervisor--timer-state-to-alist))
              (data `((version . ,supervisor-timer-state-schema-version)
-                     (timestamp . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
                      (timers . ,state-alist)))
              (temp-file (concat path ".tmp"))
              (coding-system-for-write 'utf-8-unix))
@@ -260,6 +279,9 @@ Does nothing if timer subsystem is not active."
                 (insert ";; Supervisor timer state - do not edit manually\n")
                 (insert ";; Schema version: "
                         (number-to-string supervisor-timer-state-schema-version)
+                        "\n")
+                (insert ";; Written: "
+                        (format-time-string "%Y-%m-%dT%H:%M:%S%z")
                         "\n")
                 (pp data (current-buffer)))
               (rename-file temp-file path t)
@@ -287,13 +309,16 @@ Does nothing if timer subsystem is not active."
                          (read (current-buffer))))
                  (version (alist-get 'version data))
                  (timers (alist-get 'timers data)))
-            ;; Check version compatibility - skip loading if incompatible
+            ;; Check version compatibility - accept v1 and v2, reject future
             (when (or (null version)
                       (> version supervisor-timer-state-schema-version))
               (supervisor--log 'warning
                                "Timer state file version %s is incompatible (supported: %s), skipping"
                                version supervisor-timer-state-schema-version)
               (signal 'error (list "Incompatible timer state schema version")))
+            ;; v1 loads fine -- new v2 keys are simply absent (nil defaults)
+            (when (and version (= version 1))
+              (supervisor--log 'info "Upgrading timer state from schema v1 to v2"))
             ;; Merge loaded state into hash
             (dolist (entry timers)
               (let ((id (car entry))
@@ -301,8 +326,10 @@ Does nothing if timer subsystem is not active."
                 (let ((current (or (gethash id supervisor--timer-state) nil)))
                   ;; Merge saved keys into current state
                   (dolist (key supervisor-timer--state-persist-keys)
-                    (when-let* ((val (plist-get saved-state key)))
-                      (setq current (plist-put current key val))))
+                    (when (plist-member saved-state key)
+                      (setq current
+                            (plist-put current key
+                                       (plist-get saved-state key)))))
                   (puthash id current supervisor--timer-state))))
             (setq supervisor--timer-state-loaded t)
             (supervisor--log 'info "Loaded timer state for %d timers from %s"
@@ -378,7 +405,7 @@ Return nil if valid, or an error message string."
 (defun supervisor-timer--validate (timer-plist plan)
   "Validate TIMER-PLIST against PLAN.
 Return nil if valid, or an error message string.
-PLAN is used to verify the target exists and is a oneshot."
+PLAN is used to verify the target exists and is oneshot, simple, or target."
   (catch 'invalid
     (let ((id (plist-get timer-plist :id))
           (target (plist-get timer-plist :target)))
@@ -421,7 +448,7 @@ PLAN is used to verify the target exists and is a oneshot."
       (when (plist-member timer-plist :persistent)
         (unless (booleanp (plist-get timer-plist :persistent))
           (throw 'invalid ":persistent must be a boolean")))
-      ;; Validate target exists and is oneshot
+      ;; Validate target exists and is oneshot, simple, or target
       (when plan
         (let* ((entries (supervisor-plan-entries plan))
                (target-entry (cl-find target entries
@@ -430,10 +457,16 @@ PLAN is used to verify the target exists and is a oneshot."
           (unless target-entry
             (throw 'invalid
                    (format ":target '%s' not found in loaded unit files" target)))
-          (unless (eq (supervisor-entry-type target-entry) 'oneshot)
-            (throw 'invalid
-                   (format ":target '%s' must be a oneshot service, not %s"
-                           target (supervisor-entry-type target-entry))))))
+          (let ((ttype (supervisor-entry-type target-entry)))
+            (unless (memq ttype '(oneshot simple target))
+              (throw 'invalid
+                     (format ":target '%s' must be oneshot, simple, or target, not %s"
+                             target ttype)))
+            (when (and (eq ttype 'target)
+                       (not (string-suffix-p ".target" target)))
+              (throw 'invalid
+                     (format ":target '%s' is type target but ID does not end in .target"
+                             target))))))
       ;; Valid
       nil)))
 
@@ -708,12 +741,11 @@ Returns non-nil if startup trigger was just consumed."
         t))))
 
 (cl-defun supervisor-timer--trigger (timer reason)
-  "Trigger TIMER's target oneshot.
+  "Trigger TIMER's target unit.
 REASON is a symbol describing why: scheduled, retry, manual, catch-up.
 Returns t if triggered, nil if skipped."
   (let* ((id (supervisor-timer-id timer))
-         (target-id (supervisor-timer-target timer))
-         (now (float-time)))
+         (target-id (supervisor-timer-target timer)))
     ;; Check if timer is enabled
     (unless (supervisor-timer-enabled timer)
       (supervisor-timer--record-miss id 'disabled)
@@ -721,6 +753,49 @@ Returns t if triggered, nil if skipped."
       (cl-return-from supervisor-timer--trigger nil))
     ;; Mark startup trigger consumed early to prevent retry loops
     (supervisor-timer--maybe-mark-startup-consumed timer)
+    ;; Get the parsed entry for the target
+    (let ((entry (supervisor-timer--get-entry-for-id target-id)))
+      (unless entry
+        (supervisor--log 'warning "timer %s: target %s not found" id target-id)
+        (supervisor-timer--record-result id 'failure 'target-not-found)
+        (let ((state (gethash id supervisor--timer-state)))
+          (setq state (plist-put state :last-failure-at (float-time)))
+          (puthash id state supervisor--timer-state))
+        (supervisor--emit-event 'timer-failure id nil
+                                (list :target target-id :reason 'not-found))
+        (cl-return-from supervisor-timer--trigger nil))
+      (let ((target-type (supervisor-entry-type entry)))
+        ;; Record target type in state
+        (let ((state (or (gethash id supervisor--timer-state) nil)))
+          (setq state (plist-put state :last-target-type target-type))
+          (puthash id state supervisor--timer-state))
+        ;; Check if target is disabled or masked
+        (let ((enabled-p (supervisor-entry-enabled-p entry)))
+          (unless (supervisor--get-effective-enabled target-id enabled-p)
+            (let ((masked (eq (gethash target-id supervisor--mask-override)
+                              'masked)))
+              (supervisor-timer--record-miss
+               id (if masked 'masked-target 'disabled-target))
+              (supervisor--log 'info "timer %s: skipped (target %s %s)"
+                               id target-id
+                               (if masked "masked" "disabled")))
+            (cl-return-from supervisor-timer--trigger nil)))
+        ;; Dispatch by target unit type
+        (pcase target-type
+          ('oneshot (supervisor-timer--trigger-oneshot timer reason entry))
+          ('simple (supervisor-timer--trigger-simple timer reason entry))
+          ('target (supervisor-timer--trigger-target timer reason))
+          (_ (supervisor--log 'warning
+                              "timer %s: unsupported target type %s"
+                              id target-type)
+             nil))))))
+
+(cl-defun supervisor-timer--trigger-oneshot (timer reason entry)
+  "Trigger oneshot ENTRY for TIMER with REASON.
+Returns t if triggered, nil if skipped."
+  (let ((id (supervisor-timer-id timer))
+        (target-id (supervisor-timer-target timer))
+        (now (float-time)))
     ;; Check for overlap
     (when (supervisor-timer--target-active-p timer)
       (supervisor-timer--record-miss id 'overlap)
@@ -728,37 +803,160 @@ Returns t if triggered, nil if skipped."
                        id target-id)
       (supervisor--emit-event 'timer-overlap id nil
                               (list :target target-id :reason reason))
-      (cl-return-from supervisor-timer--trigger nil))
-    ;; Get the parsed entry for the target
-    (let ((entry (supervisor-timer--get-entry-for-id target-id)))
-      (unless entry
-        (supervisor--log 'warning "timer %s: target %s not found" id target-id)
-        (cl-return-from supervisor-timer--trigger nil))
-      ;; Check if target is disabled
-      (let ((enabled-p (supervisor-entry-enabled-p entry)))
-        (unless (supervisor--get-effective-enabled target-id enabled-p)
-          (supervisor-timer--record-miss id 'disabled-target)
-          (supervisor--log 'info "timer %s: skipped (target %s disabled)"
-                           id target-id)
-          (cl-return-from supervisor-timer--trigger nil)))
-      ;; Start the target oneshot
-      (supervisor--log 'info "timer %s: triggering target %s (%s)"
-                       id target-id reason)
-      ;; Update state before triggering
-      (let ((state (or (gethash id supervisor--timer-state) nil)))
-        (setq state (plist-put state :last-run-at now))
-        (puthash id state supervisor--timer-state))
-      ;; Persist state
+      (cl-return-from supervisor-timer--trigger-oneshot nil))
+    ;; Start the oneshot
+    (supervisor--log 'info "timer %s: triggering oneshot %s (%s)"
+                     id target-id reason)
+    (supervisor-timer--record-trigger id now reason target-id)
+    (supervisor--start-entry-async
+     entry
+     (lambda (success)
+       (supervisor-timer--on-target-complete id target-id success)))
+    t))
+
+(cl-defun supervisor-timer--trigger-simple (timer reason entry)
+  "Trigger simple ENTRY for TIMER with REASON.
+If already running, record success with already-active.
+Returns t if triggered, nil if skipped."
+  (let ((id (supervisor-timer-id timer))
+        (target-id (supervisor-timer-target timer))
+        (now (float-time)))
+    ;; If already running, no-op success
+    (when (supervisor-timer--target-active-p timer)
+      (supervisor--log 'info "timer %s: target %s already active (no-op)"
+                       id target-id)
+      (supervisor-timer--record-trigger id now reason target-id)
+      (supervisor-timer--record-result id 'success 'already-active)
+      (cl-return-from supervisor-timer--trigger-simple t))
+    ;; Start the simple service
+    (supervisor--log 'info "timer %s: triggering simple %s (%s)"
+                     id target-id reason)
+    (supervisor-timer--record-trigger id now reason target-id)
+    (supervisor--start-entry-async
+     entry
+     (lambda (success)
+       (supervisor-timer--on-simple-complete id target-id success)))
+    t))
+
+(cl-defun supervisor-timer--trigger-target (timer reason)
+  "Trigger target activation for TIMER with REASON.
+Returns t if triggered, nil if skipped."
+  (let ((id (supervisor-timer-id timer))
+        (target-id (supervisor-timer-target timer))
+        (now (float-time)))
+    ;; Check if target is already converging
+    (when (and (hash-table-p supervisor--target-converging)
+               (gethash target-id supervisor--target-converging))
+      (supervisor-timer--record-miss id 'target-converging)
+      (supervisor--log 'info "timer %s: skipped (target %s converging)"
+                       id target-id)
+      (cl-return-from supervisor-timer--trigger-target nil))
+    ;; Check if target is already reached
+    (when (and (hash-table-p supervisor--target-convergence)
+               (eq 'reached (gethash target-id supervisor--target-convergence)))
+      (supervisor--log 'info "timer %s: target %s already reached (no-op)"
+                       id target-id)
+      (supervisor-timer--record-trigger id now reason target-id)
+      (supervisor-timer--record-result id 'success 'already-reached)
+      (cl-return-from supervisor-timer--trigger-target t))
+    ;; Start target activation: collect non-running members and DAG-start them
+    (supervisor--log 'info "timer %s: triggering target %s (%s)"
+                     id target-id reason)
+    (supervisor-timer--record-trigger id now reason target-id)
+    (let* ((plan supervisor--current-plan)
+           (to-start
+            (when plan
+              (cl-remove-if
+               (lambda (e)
+                 (let* ((eid (supervisor-entry-id e))
+                        (proc (gethash eid supervisor--processes)))
+                   (or (eq (supervisor-entry-type e) 'target)
+                       (and proc (process-live-p proc)))))
+               (supervisor-plan-by-target plan)))))
+      (if (null to-start)
+          ;; Nothing to start, check convergence immediately
+          (supervisor-timer--on-target-converge id target-id)
+        (supervisor--dag-start-with-deps
+         to-start
+         (lambda ()
+           (supervisor-timer--on-target-converge id target-id)))))
+    t))
+
+(defun supervisor-timer--record-trigger (timer-id now reason
+                                        &optional target-id)
+  "Record trigger event for TIMER-ID at time NOW with REASON.
+Optional TARGET-ID is included in the event data."
+  (let ((state (or (gethash timer-id supervisor--timer-state) nil)))
+    (setq state (plist-put state :last-run-at now))
+    (puthash timer-id state supervisor--timer-state))
+  (supervisor-timer--save-state)
+  (supervisor--emit-event 'timer-trigger timer-id nil
+                          (list :target target-id :reason reason)))
+
+(defun supervisor-timer--record-result (timer-id result result-reason)
+  "Record RESULT and RESULT-REASON for TIMER-ID.
+RESULT is success, failure, or skip.
+RESULT-REASON is a symbol like already-active, overlap, etc."
+  (let ((state (or (gethash timer-id supervisor--timer-state) nil))
+        (now (float-time)))
+    (setq state (plist-put state :last-result result))
+    (setq state (plist-put state :last-result-reason result-reason))
+    (when (eq result 'success)
+      (setq state (plist-put state :last-success-at now))
+      (setq state (plist-put state :retry-attempt 0))
+      (setq state (plist-put state :retry-next-at nil)))
+    (puthash timer-id state supervisor--timer-state)
+    (supervisor-timer--save-state)
+    (supervisor-timer--update-next-run timer-id)))
+
+(defun supervisor-timer--on-simple-complete (timer-id target-id success)
+  "Handle completion of simple service trigger for TIMER-ID.
+TARGET-ID is the simple service.  SUCCESS is t if spawned."
+  (if success
+      (progn
+        (supervisor-timer--record-result timer-id 'success nil)
+        (supervisor--emit-event 'timer-success timer-id nil
+                                (list :target target-id)))
+    (supervisor-timer--record-result timer-id 'failure 'spawn-failed)
+    (let ((state (gethash timer-id supervisor--timer-state)))
+      (setq state (plist-put state :last-failure-at (float-time)))
+      (setq state (plist-put state :last-exit -1))
+      ;; Schedule retry for spawn failures (uniform retry policy)
+      (when-let* ((updated (supervisor-timer--schedule-retry timer-id state)))
+        (setq state updated))
+      (puthash timer-id state supervisor--timer-state)
       (supervisor-timer--save-state)
-      ;; Emit event
-      (supervisor--emit-event 'timer-trigger id nil
-                              (list :target target-id :reason reason))
-      ;; Start the oneshot
-      (supervisor--start-entry-async
-       entry
-       (lambda (success)
-         (supervisor-timer--on-target-complete id target-id success)))
-      t)))
+      (supervisor--emit-event 'timer-failure timer-id nil
+                              (list :target target-id))))
+  (supervisor--timer-scheduler-tick))
+
+(defun supervisor-timer--on-target-converge (timer-id target-id)
+  "Handle convergence check after target activation for TIMER-ID.
+TARGET-ID is the target unit."
+  (let ((conv (when (hash-table-p supervisor--target-convergence)
+                (gethash target-id supervisor--target-convergence))))
+    (pcase conv
+      ('reached
+       (supervisor-timer--record-result timer-id 'success nil)
+       (supervisor--emit-event 'timer-success timer-id nil
+                               (list :target target-id)))
+      ('degraded
+       (supervisor-timer--record-result timer-id 'failure 'target-degraded)
+       (let ((state (gethash timer-id supervisor--timer-state)))
+         (setq state (plist-put state :last-failure-at (float-time)))
+         ;; Schedule retry for degraded targets (uniform retry policy)
+         (when-let* ((updated (supervisor-timer--schedule-retry timer-id state)))
+           (setq state updated))
+         (puthash timer-id state supervisor--timer-state)
+         (supervisor-timer--save-state))
+       (supervisor--emit-event 'timer-failure timer-id nil
+                               (list :target target-id :reason 'degraded)))
+      (_
+       ;; Still converging or unknown state -- treat as success
+       (supervisor-timer--record-result timer-id 'success nil)
+       (supervisor--emit-event 'timer-success timer-id nil
+                               (list :target target-id)))))
+  (supervisor--timer-scheduler-tick))
 
 (defun supervisor-timer--failure-retryable-p (exit-code)
   "Return non-nil if EXIT-CODE represents a retryable failure.
@@ -785,7 +983,7 @@ or nil if no retry should be scheduled."
           state)))))
 
 (defun supervisor-timer--on-target-complete (timer-id target-id success)
-  "Handle completion of TIMER-ID's target TARGET-ID.
+  "Handle completion of TIMER-ID's oneshot target TARGET-ID.
 SUCCESS is t if completed successfully, nil otherwise."
   (let* ((now (float-time))
          (state (or (gethash timer-id supervisor--timer-state) nil))
@@ -795,6 +993,8 @@ SUCCESS is t if completed successfully, nil otherwise."
         (progn
           (setq state (plist-put state :last-success-at now))
           (setq state (plist-put state :last-exit 0))
+          (setq state (plist-put state :last-result 'success))
+          (setq state (plist-put state :last-result-reason nil))
           (setq state (plist-put state :retry-attempt 0))
           (setq state (plist-put state :retry-next-at nil))
           (supervisor--emit-event 'timer-success timer-id nil
@@ -802,6 +1002,8 @@ SUCCESS is t if completed successfully, nil otherwise."
       ;; Failure - check if retryable
       (setq state (plist-put state :last-failure-at now))
       (setq state (plist-put state :last-exit (or exit-code -1)))
+      (setq state (plist-put state :last-result 'failure))
+      (setq state (plist-put state :last-result-reason nil))
       (supervisor--emit-event 'timer-failure timer-id nil
                               (list :target target-id :exit exit-code))
       ;; Schedule retry if eligible
@@ -961,11 +1163,13 @@ Does nothing if timer subsystem is not active."
 
 (defun supervisor-timer-scheduler-stop ()
   "Stop the timer scheduler.
+Saves timer state to disk before stopping.
 Safe to call even if timer subsystem is not active."
   (when (timerp supervisor--timer-scheduler)
     (cancel-timer supervisor--timer-scheduler)
     (setq supervisor--timer-scheduler nil))
   (when (supervisor-timer-subsystem-active-p)
+    (supervisor-timer--save-state)
     (supervisor--log 'info "timer scheduler stopped")))
 
 (defun supervisor-timer-clear-state ()

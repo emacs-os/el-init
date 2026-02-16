@@ -2060,16 +2060,24 @@ Return a cons cell (STATUS . PID)."
                           (or (supervisor-snapshot-manually-stopped snapshot)
                               (make-hash-table :test 'equal))
                         supervisor--manually-stopped)))
+         (entry-state (gethash id (if snapshot
+                                      (supervisor-snapshot-entry-state snapshot)
+                                    supervisor--entry-state)))
          (pid (cond (alive (number-to-string pid-num))
                     ((and oneshot-p oneshot-done) (format "exit:%d" oneshot-exit))
                     (t "-")))
          (target-p (eq type 'target))
          (status (cond (masked "masked")
                        (target-p
-                        (let ((conv (when (hash-table-p
-                                          supervisor--target-convergence)
-                                     (gethash id
-                                              supervisor--target-convergence))))
+                        (let* ((effective-id
+                                (if (equal id "default.target")
+                                    (supervisor--resolve-default-target-link)
+                                  id))
+                               (conv
+                                (when (hash-table-p
+                                       supervisor--target-convergence)
+                                  (gethash effective-id
+                                           supervisor--target-convergence))))
                           (pcase conv
                             ('reached "reached")
                             ('degraded "degraded")
@@ -2081,6 +2089,16 @@ Return a cons cell (STATUS . PID)."
                        ((and oneshot-p remain-active-p) "active")
                        ((and oneshot-p oneshot-done) "done")
                        ((and oneshot-p manually-stopped-p) "stopped")
+                       ;; Disabled entries show "disabled" (not "pending")
+                       ((eq entry-state 'disabled) "disabled")
+                       ;; Not in activation closure: unreachable
+                       ((let ((closure (and (supervisor-plan-p
+                                            supervisor--current-plan)
+                                           (supervisor-plan-activation-closure
+                                            supervisor--current-plan))))
+                          (and (hash-table-p closure)
+                               (not (gethash id closure))))
+                        "unreachable")
                        (oneshot-p "pending")
                        (t "stopped"))))
     (cons status pid)))
@@ -4094,11 +4112,12 @@ RESTART-SEC, UNIT-FILE-DIRECTORY, USER, and GROUP are passed through to
   (setq supervisor--dag-timeout-timer nil)
   (setq supervisor--dag-pending-starts nil)
   (setq supervisor--dag-active-starts 0)
-  (setq supervisor--target-convergence nil)
-  (setq supervisor--target-convergence-reasons nil)
+  ;; Clear DAG-only convergence temporaries (execution-phase tracking).
+  ;; Preserve supervisor--target-convergence, convergence-reasons, and
+  ;; target-members: these must outlive the DAG so the dashboard and
+  ;; CLI can display convergence state after startup completes.
   (setq supervisor--target-converging nil)
-  (setq supervisor--target-member-reverse nil)
-  (setq supervisor--target-members nil))
+  (setq supervisor--target-member-reverse nil))
 
 ;;; Process Management
 
@@ -4253,10 +4272,11 @@ Return a plist with `:status' and `:message'."
     (let ((entry (supervisor--get-entry-for-id id)))
       (if (null entry)
           (list :status 'error :message (format "Unknown entry: %s" id))
-        (if (eq (supervisor-entry-type entry) 'oneshot)
+        (if (memq (supervisor-entry-type entry) '(oneshot target))
             (list :status 'error
                   :message
-                  "Restart policy not applicable to oneshot entries")
+                  (format "Restart policy not applicable to %s entries"
+                          (supervisor-entry-type entry)))
           (let ((config-policy (supervisor--normalize-restart-policy
                                 (supervisor-entry-restart-policy entry))))
             (if (eq policy config-policy)
@@ -4284,8 +4304,13 @@ Return a plist with `:status' and `:message'."
           :message (format "Cannot set logging for invalid entry: %s" id)))
    (t
     (let ((entry (supervisor--get-entry-for-id id)))
-      (if (null entry)
-          (list :status 'error :message (format "Unknown entry: %s" id))
+      (cond
+       ((null entry)
+        (list :status 'error :message (format "Unknown entry: %s" id)))
+       ((eq (supervisor-entry-type entry) 'target)
+        (list :status 'error
+              :message "Logging not applicable to target entries"))
+       (t
         (let ((config-logging (supervisor-entry-logging-p entry)))
           (if (eq enabled-p config-logging)
               (remhash id supervisor--logging)
@@ -4293,7 +4318,7 @@ Return a plist with `:status' and `:message'."
                      supervisor--logging))
           (list :status 'applied
                 :message (format "Logging for %s: %s"
-                                 id (if enabled-p "on" "off")))))))))
+                                 id (if enabled-p "on" "off"))))))))))
 
 (defun supervisor--handle-oneshot-exit (name proc-status exit-code)
   "Handle exit of oneshot process NAME.
@@ -5092,6 +5117,10 @@ are blocked.  Manually started disabled units are tracked in
    ;; Entry is invalid (check first - get-entry-for-id skips invalid entries)
    ((gethash id supervisor--invalid)
     (list :status 'error :reason "invalid entry"))
+   ;; Target entries are passive (no process to start)
+   ((let ((e (supervisor--get-entry-for-id id)))
+      (and e (eq (supervisor-entry-type e) 'target)))
+    (list :status 'error :reason "cannot start a target unit"))
    ;; Already running
    ((and (gethash id supervisor--processes)
          (process-live-p (gethash id supervisor--processes)))
@@ -5234,6 +5263,9 @@ before the process is signaled.  The configured `:kill-signal'
 process does not exit within `supervisor-shutdown-timeout'
 seconds, SIGKILL is sent.  For units with `:kill-mode' `mixed',
 SIGKILL is also sent to discovered descendants at escalation time."
+  (let ((entry (supervisor--get-entry-for-id id)))
+    (if (and entry (eq (supervisor-entry-type entry) 'target))
+        (list :status 'error :reason "cannot stop a target unit")
   (let ((proc (gethash id supervisor--processes)))
     (cond
      ;; Active remain-after-exit unit: process exited but latched active
@@ -5267,7 +5299,7 @@ SIGKILL is also sent to discovered descendants at escalation time."
                            (if (eq kill-mode 'mixed)
                                (supervisor--kill-with-descendants proc)
                              (signal-process proc 'SIGKILL)))))))
-      (list :status 'stopped :reason nil)))))
+      (list :status 'stopped :reason nil)))))))
 
 (defun supervisor--manual-kill (id &optional signal)
   "Attempt to send SIGNAL to running entry with ID.

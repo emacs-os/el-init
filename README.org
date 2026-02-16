@@ -46,7 +46,7 @@ provides detailed reference material:
 - [[#unit-files-modular-configuration][Unit Files]] - authority roots, precedence, and unit-file management
 - [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] - targets, dependencies, and restarts
 - [[#runtime-overrides-and-reconciliation][Runtime Overrides]] - enabling, disabling, and policy changes at runtime
-- [[#timer-subsystem-handbook][Timer Subsystem]] - scheduled oneshot execution
+- [[#timer-subsystem-handbook][Timer Subsystem]] - scheduled unit execution (oneshot, simple, target)
 - [[#dashboard-handbook-m-x-supervisor][Dashboard]] - the interactive UI
 - [[#cli-handbook-sbinsupervisorctl][CLI]] - terminal control with ~supervisorctl~
 - [[#events-and-hooks][Events and Hooks]] - programmatic integration
@@ -873,7 +873,7 @@ Each timer is a plist.
 Required keys:
 
 - ~:id~ (non-empty string)
-- ~:target~ (non-empty string; must resolve to a ~oneshot~ service)
+- ~:target~ (non-empty string; must resolve to a ~oneshot~, ~simple~, or ~target~ unit)
 
 Trigger keys (at least one required):
 
@@ -889,15 +889,18 @@ Optional keys:
 #+begin_src emacs-lisp
 (setq supervisor-timers
       '((:id "daily-backup"
-         :target "backup-oneshot"
+         :target "backup-oneshot"       ;; oneshot target
          :on-calendar (:hour 3 :minute 0)
          :persistent t)
         (:id "warm-cache"
-         :target "cache-prime"
+         :target "cache-prime"          ;; simple service
          :on-startup-sec 45)
         (:id "sync-loop"
-         :target "sync-oneshot"
-         :on-unit-active-sec 300)))
+         :target "sync-oneshot"         ;; oneshot target
+         :on-unit-active-sec 300)
+        (:id "nightly-converge"
+         :target "multi-user.target"    ;; target unit
+         :on-calendar (:hour 2 :minute 30))))
 #+end_src
 
 ** Calendar Trigger Format
@@ -937,7 +940,9 @@ Semantics:
 
 ~:on-unit-active-sec~:
 
-- positive integer seconds after last successful target completion
+- positive integer seconds after last successful target execution
+- anchored on ~:last-success-at~ uniformly for all target types (oneshot,
+  simple, target)
 
 Combined timers:
 
@@ -949,8 +954,11 @@ When due:
 
 - Disabled timer -> skipped, miss reason ~disabled~
 - Active target oneshot -> skipped, miss reason ~overlap~
-- Disabled target service -> skipped, miss reason ~disabled-target~
-- Missing target entry -> warning, no trigger
+- Already-running simple service -> success no-op, reason ~already-active~
+- Converging target unit -> skipped, miss reason ~overlap~
+- Disabled target unit -> skipped, miss reason ~disabled-target~
+- Masked target unit -> skipped, miss reason ~masked-target~
+- Missing target entry -> failure recorded, reason ~target-not-found~
 
 Miss metadata is stored in timer state.
 
@@ -958,8 +966,11 @@ Miss metadata is stored in timer state.
 
 Configured by ~supervisor-timer-retry-intervals~ (default ~'(30 120 600)~).
 
-- Retryable failures: positive exit codes only
-- Non-retryable: signal deaths (negative stored exit codes), nil, and zero
+- Retryable failures for oneshot targets: positive exit codes only
+- Retryable failures for simple targets: spawn failures
+- Retryable failures for target units: degraded convergence outcome
+- Non-retryable: signal deaths (negative stored exit codes), nil, zero, overlap
+  skips
 - Retry budget resets on fresh scheduled runs
 
 ** Catch-up Policy
@@ -989,9 +1000,15 @@ Persisted keys include:
 - ~:last-exit~
 - ~:last-missed-at~
 - ~:last-miss-reason~
+- ~:last-result~ (~success~ or ~failure~)
+- ~:last-result-reason~ (type-specific reason symbol, e.g. ~exit-ok~,
+  ~spawn-failed~, ~target-degraded~, ~already-active~)
+- ~:last-target-type~ (~oneshot~, ~simple~, or ~target~)
 
 Transient keys (for example ~:next-run-at~, retry bookkeeping, startup-consumed
 state) are recomputed each session.
+
+State is saved on every trigger, completion, and scheduler stop.
 
 ** Timer Scheduler Lifecycle
 
@@ -1066,8 +1083,8 @@ latched active until explicitly stopped.
 ** Timer Rows in Dashboard
 
 Timer rows appear in a dedicated section below services with their own
-column layout: ~ID~, ~TARGET~, ~ENABLED~, ~LAST-RUN~, ~NEXT-RUN~,
-~EXIT~, ~MISS~.  This matches the columns of ~supervisorctl list-timers~.
+column layout: ~ID~, ~TARGET~, ~ENABLED~, ~TYPE~, ~LAST-RUN~, ~NEXT-RUN~,
+~EXIT~, ~RESULT~, ~MISS~.  This matches the columns of ~supervisorctl list-timers~.
 
 Timer rows support interactive timer actions via the ~y~ submenu.
 Service-only commands (lifecycle, policy, inspect) reject timer rows
@@ -1084,9 +1101,11 @@ header line.  These counters are service-only and do not include timer rows.
 Timer rows do not use service ~STATUS~/~REASON~ semantics.  They show
 timer-specific runtime fields:
 
+- ~TYPE~: target type (~oneshot~, ~simple~, ~target~, or ~-~)
 - ~LAST-RUN~: relative time since the most recent trigger (or ~-~)
 - ~NEXT-RUN~: relative time until next scheduled trigger (or ~-~)
 - ~EXIT~: last target exit code (or ~-~)
+- ~RESULT~: last execution result (~success~, ~failure~, or ~-~)
 - ~MISS~: last miss reason (or ~-~)
 
 ** Dashboard Keymap
@@ -1883,7 +1902,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Systemd oneshot comparison (~:oneshot-blocking~, ~:oneshot-timeout~ mapping): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Timer catch-up window (~supervisor-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
 - Timer disabled/gated behavior (~supervisor-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook][Timer Subsystem]], [[#command-reference][Command Reference]]
-- Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~, ~masked-target~, ~target-not-found~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Timer retry policy (~supervisor-timer-retry-intervals~, signal non-retry): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
 - Timer state persistence and schema compatibility (~supervisor-timer-state-file~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#persistence-and-files][Persistence and Files]]
 - Unit file scaffold template (created by ~edit~ on missing file): [[#unit-files-modular-configuration][Unit Files]]
