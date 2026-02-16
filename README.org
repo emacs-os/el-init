@@ -1463,12 +1463,24 @@ This is optional. You can also check the dashboard or logs.
 - Supervisor-level log file (optional):
 - ~<supervisor-log-directory>/supervisor.log~ (controlled by ~supervisor-log-to-file~)
 - Per-process logs:
-- ~<supervisor-log-directory>/log-<id>.log~ (controlled per service logging policy)
+- ~<supervisor-log-directory>/log-<id>.log~ by default (controlled per service
+  logging policy)
 
 By default, each unit merges stdout and stderr into the same per-process
 log file.  Units can override stream targets with ~:stdout-log-file~ and
 ~:stderr-log-file~.  If both resolve to the same path, streams remain merged.
 If they differ, supervisor writes stdout and stderr via separate logd writers.
+These stream overrides are literal file paths; use writable paths and ensure
+the target directories exist.
+
+Example split stream configuration:
+
+#+begin_src emacs-lisp
+(:id "example-svc"
+ :command "/usr/bin/example"
+ :stdout-log-file "~/.config/supervisor/log/example-svc.out.log"
+ :stderr-log-file "~/.config/supervisor/log/example-svc.err.log")
+#+end_src
 
 Log files are managed by external ~supervisor-logd~ writer processes.
 Each writer enforces a per-file size cap (~supervisor-logd-max-file-size~)
@@ -1476,7 +1488,7 @@ and rotates locally when the limit is reached.
 
 The default ~supervisor-log-directory~ is user-local
 (~(expand-file-name "supervisor" user-emacs-directory)~), so userland setups
-work without write access to ~/ and /var/log.
+work without requiring write access to ~/var/log~.
 
 If ~supervisor-log-directory~ is configured to an unwritable location,
 supervisor automatically falls back to the same user-local default path.
@@ -1511,11 +1523,16 @@ Options:
 - ~--pid-dir DIR~ (default: same as ~--log-dir~) --- directory for writer
   PID file discovery
 - ~--dry-run~ --- print actions without executing
+- ~--help~ --- show usage
+
+Script output behavior:
+- progress/action lines are written to stdout
+- warnings and errors are written to stderr
 
 A typical cron entry for daily rotation:
 
 #+begin_example
-0 3 * * * /path/to/supervisor-logrotate --log-dir ~/.local/state/supervisor/log --signal-reopen
+0 3 * * * /path/to/supervisor-logrotate --log-dir /path/to/supervisor-log-directory --signal-reopen
 #+end_example
 
 *** Global Pruning
@@ -1540,9 +1557,15 @@ Options:
   ~svc.20250101-120000~) to prevent their active log from being
   misidentified as rotated
 - ~--dry-run~ --- print actions without executing
+- ~--help~ --- show usage
+
+Script output behavior:
+- progress/action lines are written to stdout
+- warnings and errors are written to stderr
 
 The script uses ~flock~ for exclusive locking.  If another prune instance
-is already running, the script exits 0 silently without taking action.
+is already running, the script prints a lock-busy skip message and exits 0
+without taking action.
 
 Active logs whose service ID contains a timestamp pattern (e.g.
 ~svc.20250101-120000~) are unconditionally protected.  A file matching
@@ -1568,7 +1591,7 @@ The ~--protect-id~ flag provides additional explicit protection.
 A typical cron entry for periodic pruning (e.g. hourly):
 
 #+begin_example
-0 * * * * /path/to/supervisor-log-prune --log-dir ~/.local/state/supervisor/log --max-total-bytes 1073741824
+0 * * * * /path/to/supervisor-log-prune --log-dir /path/to/supervisor-log-directory --max-total-bytes 1073741824
 #+end_example
 
 *** Integrated Maintenance
@@ -1591,8 +1614,9 @@ Three paths keep log growth bounded end-to-end:
    full maintenance sequence asynchronously: rotate all active logs,
    signal writers to reopen, then prune.
 
-When the timer subsystem is enabled (the default), the built-in
-~logrotate~ and ~log-prune~ units appear in stage4 as oneshot services.
+Built-in ~logrotate~ and ~log-prune~ units appear in stage4 as oneshot
+services.  When the timer subsystem is enabled (the default), timers
+~logrotate-daily~ and ~log-prune-daily~ schedule those units automatically.
 A user-created unit file with ~:id "logrotate"~ overrides the built-in
 entry, and a user-created unit file with ~:id "log-prune"~ overrides
 that built-in entry.  Similarly, user timers with IDs
@@ -1682,7 +1706,7 @@ All user options (defcustom) are listed below.
 | ~supervisor-logd-max-file-size~ | ~52428800~ (50 MiB) | Per-file size cap for log writer |
 | ~supervisor-log-prune-max-total-bytes~ | ~1073741824~ (1 GiB) | Total log directory size cap |
 | ~supervisor-logd-prune-min-interval~ | ~60~ | Throttle interval for logd-triggered prune (seconds) |
-| ~supervisor-logd-pid-directory~ | ~nil~ (falls back to ~supervisor-log-directory~) | Writer PID file directory |
+| ~supervisor-logd-pid-directory~ | ~nil~ (falls back to effective log directory) | Writer PID file directory |
 | ~supervisor-libexec-build-on-startup~ | ~prompt~ | Build bundled helper binaries on startup (~prompt~/~automatic~/~never~) |
 | ~supervisor-libexec-compiler-candidates~ | ~("cc" "clang" "gcc")~ | Candidate compiler commands, checked in order |
 | ~supervisor-libexec-cflags~ | ~("-Wall" "-Wextra" "-Werror" "-pedantic" "-std=c99" "-O2")~ | C flags used when building bundled helpers |
@@ -1723,6 +1747,7 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-start~ | Build plan and start staged scheduler |
 | ~M-x supervisor-stop~ | Async graceful stop |
 | ~M-x supervisor-stop-now~ | Sync hard stop |
+| ~M-x supervisor-run-log-maintenance~ | Run rotate, reopen, and prune immediately |
 | ~M-x supervisor-build-libexec-helpers~ | Compile missing/stale bundled libexec helpers |
 | ~M-x supervisor-verify~ | Verify config without start |
 | ~M-x supervisor-dry-run~ | Show execution plan without start |
