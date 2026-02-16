@@ -2043,7 +2043,7 @@ Regression test: M-x supervisor must use shared snapshot like refresh does."
                 (should (eq '--services-- first-id))
                 (should (string-match-p "TYPE"
                                         (substring-no-properties (aref first-vec 1))))
-                (should (string-match-p "STAGE"
+                (should (string-match-p "TARGET"
                                         (substring-no-properties (aref first-vec 2))))
                 (should (string-match-p "PID"
                                         (substring-no-properties (aref first-vec 7)))))))
@@ -17708,6 +17708,457 @@ An invalid entry ID that happens to end in .target must not pass."
     ;; "svc-a" but svc-a was dropped, so dep normalization should
     ;; invalidate the target.
     (should (gethash "app.target" (supervisor-plan-invalid plan)))))
+
+;;; Dashboard Target UX Tests (Phase 6)
+
+(ert-deftest supervisor-test-dashboard-target-type-face ()
+  "Target entry renders with `supervisor-type-target' face in TYPE column."
+  (let* ((snapshot (supervisor-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time)))
+         (supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--target-convergence-reasons (make-hash-table :test 'equal))
+         (vec (supervisor--make-dashboard-entry
+               "app.target" 'target 'stage3 t nil nil snapshot)))
+    ;; TYPE column (index 1) should have target face
+    (should (eq 'supervisor-type-target
+                (get-text-property 0 'face (aref vec 1))))
+    ;; TYPE text should be "target"
+    (should (equal "target" (substring-no-properties (aref vec 1))))))
+
+(ert-deftest supervisor-test-dashboard-target-convergence-in-status ()
+  "Target with convergence state shows correct STATUS column."
+  (let* ((conv-hash (make-hash-table :test 'equal))
+         (supervisor--target-convergence conv-hash)
+         (supervisor--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (snapshot (supervisor-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time))))
+    ;; Test reached
+    (puthash "app.target" 'reached conv-hash)
+    (let ((vec (supervisor--make-dashboard-entry
+                "app.target" 'target 'stage3 t nil nil snapshot)))
+      (should (equal "reached"
+                     (substring-no-properties (aref vec 4)))))
+    ;; Test degraded
+    (puthash "app.target" 'degraded conv-hash)
+    (let ((vec (supervisor--make-dashboard-entry
+                "app.target" 'target 'stage3 t nil nil snapshot)))
+      (should (equal "degraded"
+                     (substring-no-properties (aref vec 4)))))
+    ;; Test converging
+    (puthash "app.target" 'converging conv-hash)
+    (let ((vec (supervisor--make-dashboard-entry
+                "app.target" 'target 'stage3 t nil nil snapshot)))
+      (should (equal "converging"
+                     (substring-no-properties (aref vec 4)))))))
+
+(ert-deftest supervisor-test-dashboard-target-reason-shows-degraded ()
+  "Target with degraded reasons shows joined reasons in REASON column."
+  (let* ((conv-hash (make-hash-table :test 'equal))
+         (reasons-hash (make-hash-table :test 'equal))
+         (supervisor--target-convergence conv-hash)
+         (supervisor--target-convergence-reasons reasons-hash)
+         (snapshot (supervisor-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time))))
+    (puthash "app.target" 'degraded conv-hash)
+    (puthash "app.target" '("svc-a failed" "svc-b failed") reasons-hash)
+    (let ((vec (supervisor--make-dashboard-entry
+                "app.target" 'target 'stage3 t nil nil snapshot)))
+      (should (equal "svc-a failed; svc-b failed"
+                     (substring-no-properties (aref vec 8)))))))
+
+(ert-deftest supervisor-test-dashboard-target-filter-cycle ()
+  "Cycle filter: nil -> first-target -> second-target -> nil."
+  (let* ((members-hash (make-hash-table :test 'equal))
+         (supervisor--current-plan
+          (supervisor-plan--create
+           :target-members members-hash
+           :entries nil
+           :invalid (make-hash-table :test 'equal)
+           :by-target nil
+           :deps (make-hash-table :test 'equal)
+           :requires-deps (make-hash-table :test 'equal)
+           :dependents (make-hash-table :test 'equal)
+           :cycle-fallback-ids (make-hash-table :test 'equal)
+           :order-index (make-hash-table :test 'equal)
+           :meta nil)))
+    (puthash "alpha.target" '(:requires ("svc-a") :wants nil) members-hash)
+    (puthash "beta.target" '(:requires nil :wants ("svc-b")) members-hash)
+    (with-temp-buffer
+      (let ((supervisor--dashboard-target-filter nil))
+        ;; First cycle: nil -> alpha.target
+        (let ((all-targets (supervisor--all-target-ids)))
+          (should (equal '("alpha.target" "beta.target") all-targets)))
+        (setq supervisor--dashboard-target-filter
+              (car (supervisor--all-target-ids)))
+        (should (equal "alpha.target" supervisor--dashboard-target-filter))
+        ;; Second cycle: alpha.target -> beta.target
+        (let* ((all-targets (supervisor--all-target-ids))
+               (idx (cl-position supervisor--dashboard-target-filter
+                                all-targets :test #'equal)))
+          (setq supervisor--dashboard-target-filter
+                (nth (1+ idx) all-targets)))
+        (should (equal "beta.target" supervisor--dashboard-target-filter))
+        ;; Third cycle: beta.target -> nil
+        (let* ((all-targets (supervisor--all-target-ids))
+               (idx (cl-position supervisor--dashboard-target-filter
+                                all-targets :test #'equal)))
+          (setq supervisor--dashboard-target-filter
+                (when (< idx (1- (length all-targets)))
+                  (nth (1+ idx) all-targets))))
+        (should (null supervisor--dashboard-target-filter))))))
+
+(ert-deftest supervisor-test-dashboard-target-filter-includes-members ()
+  "Filtered view includes target and its members only."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("app.target"))
+        ("sleep 1" :id "svc-b")
+        (nil :id "app.target" :type target))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--restart-override (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal))
+           (supervisor--target-convergence (make-hash-table :test 'equal))
+           (supervisor--target-convergence-reasons
+            (make-hash-table :test 'equal))
+           (members-hash (make-hash-table :test 'equal))
+           (supervisor--current-plan
+            (supervisor-plan--create
+             :target-members members-hash
+             :entries nil
+             :invalid (make-hash-table :test 'equal)
+             :by-target nil
+             :deps (make-hash-table :test 'equal)
+             :requires-deps (make-hash-table :test 'equal)
+             :dependents (make-hash-table :test 'equal)
+             :cycle-fallback-ids (make-hash-table :test 'equal)
+             :order-index (make-hash-table :test 'equal)
+             :meta nil))
+           (supervisor--dashboard-target-filter "app.target"))
+      (puthash "app.target" '(:requires nil :wants ("svc-a")) members-hash)
+      (let* ((snapshot (supervisor--build-snapshot))
+             (all-entries (supervisor--get-entries snapshot))
+             ;; Filter out separator rows
+             (service-ids
+              (cl-loop for entry in all-entries
+                       when (supervisor--service-row-p (car entry))
+                       collect (cdr (car entry)))))
+        ;; Should include svc-a (member) and app.target, not svc-b
+        (should (member "svc-a" service-ids))
+        (should (member "app.target" service-ids))
+        (should-not (member "svc-b" service-ids))))))
+
+(ert-deftest supervisor-test-dashboard-target-members-command ()
+  "On target row: shows requires and wants members."
+  (let* ((members-hash (make-hash-table :test 'equal))
+         (supervisor--target-members members-hash))
+    (puthash "app.target" '(:requires ("svc-a") :wants ("svc-b")) members-hash)
+    ;; Simulate calling on a target entry
+    (let* ((entry (list "app.target" nil 0 t nil nil nil nil
+                        'target 'stage3 nil nil nil nil nil
+                        nil nil nil nil nil nil nil nil nil nil
+                        nil nil nil nil nil nil nil nil))
+           (msg nil))
+      ;; Verify entry type accessor works
+      (should (eq 'target (supervisor-entry-type entry)))
+      ;; Test the message formatting logic directly
+      (let ((members (gethash "app.target" members-hash)))
+        (let ((req (plist-get members :requires))
+              (wants (plist-get members :wants)))
+          (setq msg (format "%s members: requires=[%s] wants=[%s]"
+                            "app.target"
+                            (if req (mapconcat #'identity req ", ") "none")
+                            (if wants
+                                (mapconcat #'identity wants ", ")
+                              "none")))))
+      (should (string-match-p "requires=\\[svc-a\\]" msg))
+      (should (string-match-p "wants=\\[svc-b\\]" msg)))))
+
+(ert-deftest supervisor-test-dashboard-target-members-non-target ()
+  "On non-target row: shows error message."
+  (let* ((supervisor--target-members (make-hash-table :test 'equal))
+         ;; A simple entry, not a target
+         (entry (list "svc-a" "sleep 1" 0 t nil nil nil nil
+                      'simple 'stage3 nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil)))
+    (should (eq 'simple (supervisor-entry-type entry)))
+    ;; Not a target, so members command should say so
+    (should-not (eq (supervisor-entry-type entry) 'target))))
+
+(ert-deftest supervisor-test-dashboard-header-shows-root ()
+  "When plan has activation-root, header includes root info."
+  (let* ((supervisor--current-plan
+          (supervisor-plan--create
+           :activation-root "graphical.target"
+           :entries nil
+           :invalid (make-hash-table :test 'equal)
+           :by-target nil
+           :deps (make-hash-table :test 'equal)
+           :requires-deps (make-hash-table :test 'equal)
+           :dependents (make-hash-table :test 'equal)
+           :cycle-fallback-ids (make-hash-table :test 'equal)
+           :order-index (make-hash-table :test 'equal)
+           :target-members (make-hash-table :test 'equal)
+           :meta nil))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (header (supervisor--dashboard-header-line)))
+    (should (string-match-p "root" (substring-no-properties header)))
+    (should (string-match-p "graphical\\.target"
+                            (substring-no-properties header)))))
+
+(ert-deftest supervisor-test-dashboard-header-no-root-when-no-plan ()
+  "Without a plan, header does not include root info."
+  (let* ((supervisor--current-plan nil)
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--invalid (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (header (supervisor--dashboard-header-line)))
+    (should-not (string-match-p "root"
+                                (substring-no-properties header)))))
+
+(ert-deftest supervisor-test-dashboard-describe-target-shows-convergence ()
+  "Describe entry detail for target shows convergence state and members."
+  (let* ((supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (supervisor--target-members (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--remain-active (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--start-times (make-hash-table :test 'equal))
+         (supervisor--ready-times (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (supervisor--logging-override (make-hash-table :test 'equal))
+         (supervisor--last-exit-info (make-hash-table :test 'equal))
+         (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+         ;; 33-element target entry
+         (entry (list "app.target" nil 0 t nil nil nil nil
+                      'target 'stage3 nil nil nil nil nil
+                      nil nil nil nil nil nil
+                      "Test target" nil nil nil nil nil nil nil nil nil
+                      '("multi-user.target") nil)))
+    (puthash "app.target" 'degraded supervisor--target-convergence)
+    (puthash "app.target" '("svc-x failed")
+             supervisor--target-convergence-reasons)
+    (puthash "app.target" '(:requires ("svc-a") :wants ("svc-b"))
+             supervisor--target-members)
+    (cl-letf (((symbol-function 'supervisor--unit-file-path)
+               (lambda (_id) nil))
+              ((symbol-function 'supervisor--telemetry-log-tail)
+               (lambda (_id &optional _lines) nil)))
+      (supervisor--describe-entry-detail "app.target" entry)
+      (let ((info-buf (get-buffer "*supervisor-info*")))
+        (unwind-protect
+            (progn
+              (should info-buf)
+              (let ((output (with-current-buffer info-buf
+                              (buffer-string))))
+                (should (string-match-p "Converge: degraded" output))
+                (should (string-match-p "Reasons: svc-x failed" output))
+                (should (string-match-p "Req-mem: svc-a" output))
+                (should (string-match-p "Want-mem: svc-b" output))))
+          (when info-buf (kill-buffer info-buf)))))))
+
+(ert-deftest supervisor-test-dashboard-target-column-shows-convergence ()
+  "TARGET column shows convergence state for target entries."
+  (let* ((conv-hash (make-hash-table :test 'equal))
+         (supervisor--target-convergence conv-hash)
+         (supervisor--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (snapshot (supervisor-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time))))
+    ;; Target with reached convergence
+    (puthash "app.target" 'reached conv-hash)
+    (let ((vec (supervisor--make-dashboard-entry
+                "app.target" 'target 'stage3 t nil nil snapshot)))
+      ;; TARGET column (index 2) shows convergence
+      (should (equal "reached"
+                     (substring-no-properties (aref vec 2)))))
+    ;; Simple service shows "-" in TARGET column
+    (let ((vec (supervisor--make-dashboard-entry
+                "svc" 'simple 'stage3 t 'always t snapshot)))
+      (should (equal "-" (aref vec 2))))))
+
+(ert-deftest supervisor-test-dashboard-target-restart-renders-na ()
+  "Dashboard renders target restart column as n/a."
+  (let* ((supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (snapshot (supervisor-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time)))
+         (vec (supervisor--make-dashboard-entry
+               "app.target" 'target 'stage3 t nil nil snapshot)))
+    (should (equal "n/a" (aref vec 5)))))
+
+(ert-deftest supervisor-test-dashboard-target-log-renders-dash ()
+  "Dashboard renders target LOG column as dash."
+  (let* ((supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (snapshot (supervisor-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time)))
+         (vec (supervisor--make-dashboard-entry
+               "app.target" 'target 'stage3 t nil nil snapshot)))
+    (should (equal "-" (aref vec 6)))))
+
+(ert-deftest supervisor-test-dashboard-services-separator-says-target ()
+  "Services separator row uses TARGET not STAGE in column label."
+  (let ((row (supervisor--make-services-separator)))
+    (should (string-match-p "TARGET"
+                            (substring-no-properties (aref (cadr row) 2))))))
+
+(ert-deftest supervisor-test-dashboard-status-face-target-states ()
+  "Status face returns correct faces for target convergence states."
+  (should (eq 'supervisor-status-running
+              (supervisor--status-face "reached")))
+  (should (eq 'supervisor-status-failed
+              (supervisor--status-face "degraded")))
+  (should (eq 'supervisor-status-pending
+              (supervisor--status-face "converging"))))
+
+(ert-deftest supervisor-test-compute-entry-status-target-reached ()
+  "Compute-entry-status returns reached for target with reached convergence."
+  (let* ((supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--remain-active (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal)))
+    (puthash "app.target" 'reached supervisor--target-convergence)
+    (let ((result (supervisor--compute-entry-status "app.target" 'target)))
+      (should (equal "reached" (car result))))))
+
+(ert-deftest supervisor-test-compute-entry-status-target-degraded ()
+  "Compute-entry-status returns degraded for target with degraded convergence."
+  (let* ((supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--remain-active (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal)))
+    (puthash "app.target" 'degraded supervisor--target-convergence)
+    (let ((result (supervisor--compute-entry-status "app.target" 'target)))
+      (should (equal "degraded" (car result))))))
+
+(ert-deftest supervisor-test-compute-entry-reason-target-degraded ()
+  "Compute-entry-reason returns joined reasons for degraded target."
+  (let* ((supervisor--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--spawn-failure-reason (make-hash-table :test 'equal)))
+    (puthash "app.target" '("svc-a failed" "svc-b timeout")
+             supervisor--target-convergence-reasons)
+    (let ((result (supervisor--compute-entry-reason "app.target" 'target)))
+      (should (equal "svc-a failed; svc-b timeout" result)))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

@@ -2063,7 +2063,18 @@ Return a cons cell (STATUS . PID)."
          (pid (cond (alive (number-to-string pid-num))
                     ((and oneshot-p oneshot-done) (format "exit:%d" oneshot-exit))
                     (t "-")))
+         (target-p (eq type 'target))
          (status (cond (masked "masked")
+                       (target-p
+                        (let ((conv (when (hash-table-p
+                                          supervisor--target-convergence)
+                                     (gethash id
+                                              supervisor--target-convergence))))
+                          (pcase conv
+                            ('reached "reached")
+                            ('degraded "degraded")
+                            ('converging "converging")
+                            (_ "pending"))))
                        (alive "running")
                        (failed "dead")
                        ((and oneshot-p oneshot-failed) "failed")
@@ -2100,6 +2111,13 @@ If SNAPSHOT is provided, read from it; otherwise read from globals."
                                     supervisor--entry-state))))
     (cond
      (masked "masked")
+     ((eq type 'target)
+      (let ((reasons (when (hash-table-p
+                            supervisor--target-convergence-reasons)
+                       (gethash id
+                                supervisor--target-convergence-reasons))))
+        (when reasons
+          (mapconcat #'identity reasons "; "))))
      (alive nil)
      ((and oneshot-p oneshot-done) nil)
      ((eq entry-state 'disabled) "disabled")

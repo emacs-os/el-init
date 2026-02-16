@@ -119,6 +119,11 @@
   "Face for timer type in dashboard."
   :group 'supervisor)
 
+(defface supervisor-type-target
+  '((t :foreground "#ffd700"))
+  "Face for target type in dashboard."
+  :group 'supervisor)
+
 (defface supervisor-stage-1
   '((t :foreground "#ff6b6b"))
   "Face for stage1 in dashboard."
@@ -176,6 +181,10 @@ counters.  Press `h' in the dashboard for full keybinding help."
 (defvar-local supervisor--dashboard-tag-filter nil
   "Current tag filter for dashboard.
 nil means show all entries, otherwise a tag symbol or string.")
+
+(defvar-local supervisor--dashboard-target-filter nil
+  "Current target filter for dashboard.
+nil means show all entries, otherwise a target ID string.")
 
 (defvar supervisor-dashboard-mode-map
   (let ((map (make-sparse-keymap)))
@@ -236,7 +245,7 @@ Policy actions modify persistent configuration overrides."
 Inspect actions are read-only presentation workflows."
   (interactive)
   (pcase (read-char
-          "Inspect: [i]nfo [d]eps [g]raph [b]lame [l]og [c]at [e]dit ")
+          "Inspect: [i]nfo [d]eps [g]raph [b]lame [l]og [c]at [e]dit [m]embers ")
     (?i (call-interactively #'supervisor-dashboard-describe-entry))
     (?d (call-interactively #'supervisor-dashboard-show-deps))
     (?g (call-interactively #'supervisor-dashboard-show-graph))
@@ -244,6 +253,7 @@ Inspect actions are read-only presentation workflows."
     (?l (call-interactively #'supervisor-dashboard-view-log))
     (?c (call-interactively #'supervisor-dashboard-cat))
     (?e (call-interactively #'supervisor-dashboard-edit))
+    (?m (call-interactively #'supervisor-dashboard-target-members))
     (_ (message "Inspect: cancelled"))))
 
 (defun supervisor-dashboard-timer-actions ()
@@ -286,7 +296,7 @@ This is called on first use to avoid loading transient at package load time."
           ("y r" "Reset state" supervisor-dashboard-timer-reset)
           ("y g" "Refresh timers" supervisor-dashboard-timer-refresh)]
          ["Navigation"
-          ("f" "Stage filter" supervisor-dashboard-cycle-filter)
+          ("f" "Target filter" supervisor-dashboard-cycle-filter)
           ("F" "Tag filter" supervisor-dashboard-cycle-tag-filter)
           ("g" "Refresh" supervisor-dashboard-refresh)
           ("G" "Auto-refresh" supervisor-dashboard-toggle-auto-refresh)]
@@ -325,7 +335,7 @@ Requires the `transient' package to be installed."
   "Major mode for the supervisor dashboard."
   (setq tabulated-list-format [("ID" 16 t)
                                ("TYPE" 8 t)
-                               ("STAGE" 8 t)
+                               ("TARGET" 10 t)
                                ("ENABLED" 8 t)
                                ("STATUS" 10 t)
                                ("RESTART" 11 t)
@@ -351,6 +361,9 @@ Requires the `transient' package to be installed."
     ("pending" 'supervisor-status-pending)
     ("stopped" 'supervisor-status-stopped)
     ("masked" 'supervisor-status-dead)
+    ("reached" 'supervisor-status-running)
+    ("degraded" 'supervisor-status-failed)
+    ("converging" 'supervisor-status-pending)
     (_ nil)))
 
 (defun supervisor--propertize-status (status)
@@ -465,10 +478,11 @@ Fields: :id, :target, :enabled, :last-run, :next-run, :last-exit,
           :last-exit (plist-get state :last-exit)
           :miss-reason (plist-get state :last-miss-reason))))
 
-(defun supervisor--make-dashboard-entry (id type stage enabled-p restart-policy logging-p
+(defun supervisor--make-dashboard-entry (id type _stage enabled-p restart-policy logging-p
                                             &optional snapshot)
   "Create a dashboard entry vector for ID.
-TYPE, STAGE, ENABLED-P, RESTART-POLICY, LOGGING-P are parsed entry fields.
+TYPE, _STAGE, ENABLED-P, RESTART-POLICY, LOGGING-P are parsed entry fields.
+_STAGE is accepted for API compatibility but no longer displayed.
 If SNAPSHOT is provided, read runtime state from it."
   (let* ((status-pid (supervisor--compute-entry-status id type snapshot))
          (status (car status-pid))
@@ -502,7 +516,7 @@ If SNAPSHOT is provided, read runtime state from it."
                                    restart-override)
                                   (t (supervisor--normalize-restart-policy
                                       restart-policy))))
-         (restart-str (if (eq type 'oneshot)
+         (restart-str (if (memq type '(oneshot target))
                           "n/a"
                         (symbol-name effective-restart)))
          (log-override (if snapshot
@@ -513,23 +527,27 @@ If SNAPSHOT is provided, read runtime state from it."
                                   (t logging-p))))
     (vector id
             (propertize (symbol-name type)
-                        'face (if (eq type 'oneshot)
-                                  'supervisor-type-oneshot
-                                'supervisor-type-simple))
-            (propertize (symbol-name stage)
-                        'face (pcase stage
-                                ('stage1 'supervisor-stage-1)
-                                ('stage2 'supervisor-stage-2)
-                                ('stage3 'supervisor-stage-3)
-                                ('stage4 'supervisor-stage-4)
-                                (_ nil)))
+                        'face (pcase type
+                                ('oneshot 'supervisor-type-oneshot)
+                                ('target 'supervisor-type-target)
+                                (_ 'supervisor-type-simple)))
+            (if (eq type 'target)
+                (let* ((conv (when (hash-table-p supervisor--target-convergence)
+                               (gethash id supervisor--target-convergence)))
+                       (conv-str (pcase conv
+                                   ('reached "reached")
+                                   ('degraded "degraded")
+                                   ('converging "pending")
+                                   (_ "pending"))))
+                  (supervisor--propertize-status conv-str))
+              "-")
             (propertize (if effective-enabled "yes" "no")
                         'face (if effective-enabled
                                   'supervisor-enabled-yes
                                 'supervisor-enabled-no))
             (supervisor--propertize-status status)
             restart-str
-            (if effective-logging "yes" "no")
+            (if (eq type 'target) "-" (if effective-logging "yes" "no"))
             pid
             (if (or (null reason) (string-empty-p reason))
                 ""
@@ -567,7 +585,7 @@ If SNAPSHOT is provided, read runtime state from it."
   (list '--services--
         (vector (propertize "── Services" 'face 'supervisor-stage-separator)
                 (propertize "TYPE" 'face 'supervisor-stage-separator)
-                (propertize "STAGE" 'face 'supervisor-stage-separator)
+                (propertize "TARGET" 'face 'supervisor-stage-separator)
                 (propertize "ENABLED" 'face 'supervisor-stage-separator)
                 (propertize "STATUS" 'face 'supervisor-stage-separator)
                 (propertize "RESTART" 'face 'supervisor-stage-separator)
@@ -651,6 +669,10 @@ if `supervisor-dashboard-show-timers' is non-nil."
          (entries nil)
          (seen (make-hash-table :test 'equal))
          (tag-filter supervisor--dashboard-tag-filter)
+         (target-filter supervisor--dashboard-target-filter)
+         (target-member-hash
+          (when (and supervisor--current-plan target-filter)
+            (supervisor-plan-target-members supervisor--current-plan)))
          (invalid-hash (supervisor-snapshot-invalid snapshot))
          (idx 0))
     (dolist (entry programs)
@@ -674,7 +696,18 @@ if `supervisor-dashboard-show-timers' is non-nil."
                    (type (supervisor-entry-type parsed))
                    (stage (supervisor-entry-stage parsed))
                    (tags (supervisor-entry-tags parsed)))
-              (when (or (null tag-filter) (member tag-filter tags))
+              (when (and (or (null tag-filter) (member tag-filter tags))
+                        (or (null target-filter)
+                            (string= id target-filter)
+                            (member target-filter
+                                    (supervisor-entry-wanted-by parsed))
+                            (member target-filter
+                                    (supervisor-entry-required-by parsed))
+                            (when (hash-table-p target-member-hash)
+                              (let ((members (gethash target-filter
+                                                      target-member-hash)))
+                                (or (member id (plist-get members :requires))
+                                    (member id (plist-get members :wants)))))))
                 (push (list (cons :service id)
                             (supervisor--make-dashboard-entry
                              id type stage enabled-p restart-policy logging-p snapshot))
@@ -842,17 +875,27 @@ SNAPSHOT and PROGRAMS are forwarded to `supervisor--health-counts'."
          (done (plist-get counts :done))
          (pending (plist-get counts :pending))
          (failed (plist-get counts :failed))
-         (invalid (plist-get counts :invalid)))
-    (concat (propertize (format "%d" running) 'face 'supervisor-status-running)
-            " run    "
-            (propertize (format "%d" done) 'face 'supervisor-status-done)
-            " done   "
-            (propertize (format "%d" pending) 'face 'supervisor-status-pending)
-            " pend  "
-            (propertize (format "%d" failed) 'face 'supervisor-status-failed)
-            " fail     "
-            (propertize (format "%d" invalid) 'face 'supervisor-status-invalid)
-            " inv")))
+         (invalid (plist-get counts :invalid))
+         (base (concat (propertize (format "%d" running)
+                                   'face 'supervisor-status-running)
+                       " run    "
+                       (propertize (format "%d" done)
+                                   'face 'supervisor-status-done)
+                       " done   "
+                       (propertize (format "%d" pending)
+                                   'face 'supervisor-status-pending)
+                       " pend  "
+                       (propertize (format "%d" failed)
+                                   'face 'supervisor-status-failed)
+                       " fail     "
+                       (propertize (format "%d" invalid)
+                                   'face 'supervisor-status-invalid)
+                       " inv"))
+         (root (when supervisor--current-plan
+                 (supervisor-plan-activation-root supervisor--current-plan))))
+    (if root
+        (concat base "    " (propertize "root" 'face 'bold) ": " root)
+      base)))
 
 (defun supervisor--refresh-dashboard ()
   "Refresh the dashboard buffer if it exists.
@@ -875,10 +918,30 @@ to entries and health summary for consistency within a single refresh."
   (interactive)
   (supervisor--refresh-dashboard))
 
+(defun supervisor--all-target-ids ()
+  "Return sorted list of all target IDs from current plan."
+  (let ((ids nil))
+    (when (and supervisor--current-plan
+               (supervisor-plan-target-members supervisor--current-plan))
+      (maphash (lambda (id _) (push id ids))
+               (supervisor-plan-target-members supervisor--current-plan)))
+    (sort ids #'string<)))
+
 (defun supervisor-dashboard-cycle-filter ()
-  "Stage filter removed (no-op)."
+  "Cycle dashboard target filter through all defined targets."
   (interactive)
-  (message "Stage filter removed (stages are deprecated)"))
+  (let* ((all-targets (supervisor--all-target-ids))
+         (current supervisor--dashboard-target-filter)
+         (idx (cl-position current all-targets :test #'equal)))
+    (setq supervisor--dashboard-target-filter
+          (cond
+           ((null all-targets) nil)
+           ((null idx) (car all-targets))
+           ((= idx (1- (length all-targets))) nil)
+           (t (nth (1+ idx) all-targets))))
+    (message "Target filter: %s"
+             (or supervisor--dashboard-target-filter "all"))
+    (supervisor--refresh-dashboard)))
 
 (defun supervisor--all-tags ()
   "Return list of all unique tags used in entries."
@@ -909,6 +972,24 @@ to entries and health summary for consistency within a single refresh."
                  (format "%s" supervisor--dashboard-tag-filter)
                "all"))
     (supervisor--refresh-dashboard)))
+
+(defun supervisor-dashboard-target-members ()
+  "Show members of target at point."
+  (interactive)
+  (let* ((id (supervisor--require-service-row))
+         (entry (supervisor--get-entry-for-id id)))
+    (if (or (not entry) (not (eq (supervisor-entry-type entry) 'target)))
+        (message "Not a target entry: %s" id)
+      (let ((members (when (hash-table-p supervisor--target-members)
+                       (gethash id supervisor--target-members))))
+        (if (not members)
+            (message "%s: no members" id)
+          (let ((req (plist-get members :requires))
+                (wants (plist-get members :wants)))
+            (message "%s members: requires=[%s] wants=[%s]"
+                     id
+                     (if req (mapconcat #'identity req ", ") "none")
+                     (if wants (mapconcat #'identity wants ", ") "none"))))))))
 
 (defvar supervisor--status-legend
   "Status: running=active process | active=oneshot remain-after-exit | done=oneshot completed ok | failed=crashed/exit>0 | dead=crash-loop | pending=not yet started | stopped=terminated | invalid=config error"
@@ -1019,6 +1100,27 @@ With prefix argument, show status legend instead."
       (when requires
         (princ (format " Requires: %s\n"
                        (mapconcat #'identity requires ", "))))
+      ;; Target-specific convergence info
+      (when (eq type 'target)
+        (let ((conv (when (hash-table-p supervisor--target-convergence)
+                      (gethash id supervisor--target-convergence)))
+              (reasons (when (hash-table-p supervisor--target-convergence-reasons)
+                         (gethash id supervisor--target-convergence-reasons)))
+              (members (when (hash-table-p supervisor--target-members)
+                         (gethash id supervisor--target-members))))
+          (princ (format "Converge: %s\n" (or conv "not started")))
+          (when reasons
+            (princ (format " Reasons: %s\n"
+                           (mapconcat #'identity reasons "; "))))
+          (when members
+            (let ((req (plist-get members :requires))
+                  (wants (plist-get members :wants)))
+              (when req
+                (princ (format " Req-mem: %s\n"
+                               (mapconcat #'identity req ", "))))
+              (when wants
+                (princ (format "Want-mem: %s\n"
+                               (mapconcat #'identity wants ", "))))))))
       ;; Oneshot-specific
       (when (eq type 'oneshot)
         (princ (format " Blocking: %s\n"
@@ -1091,7 +1193,7 @@ With prefix argument, show status legend instead."
     (princ "=========================\n\n")
     (princ "TOP-LEVEL KEYS\n")
     (princ "--------------\n")
-    (princ "  f     Cycle stage filter (all -> stage1 -> stage2 -> ...)\n")
+    (princ "  f     Cycle target filter (all -> target1 -> target2 -> ...)\n")
     (princ "  F     Cycle tag filter\n")
     (princ "  g     Refresh dashboard\n")
     (princ "  G     Toggle auto-refresh (live monitoring)\n")
@@ -1128,7 +1230,8 @@ With prefix argument, show status legend instead."
     (princ "  b     Blame: startup timing sorted by duration\n")
     (princ "  l     View log file\n")
     (princ "  c     View unit file (read-only)\n")
-    (princ "  e     Edit unit file (create scaffold if missing)\n\n")
+    (princ "  e     Edit unit file (create scaffold if missing)\n")
+    (princ "  m     Show target members (target rows only)\n\n")
     (princ "TIMERS (y) - timer rows only\n")
     (princ "----------------------------\n")
     (princ "  t     Trigger timer now (manual)\n")
@@ -1151,12 +1254,15 @@ With prefix argument, show status legend instead."
     (princ "  pending   Not yet started (waiting for stage/deps)\n")
     (princ "  stopped   Process terminated or active oneshot explicitly stopped\n")
     (princ "  masked    Entry is masked (always disabled)\n")
-    (princ "  invalid   Config entry has errors\n\n")
+    (princ "  invalid   Config entry has errors\n")
+    (princ "  reached   Target converged successfully (all members ok)\n")
+    (princ "  degraded  Target converged with failures\n")
+    (princ "  converging Target is still converging\n\n")
     (princ "SERVICE COLUMNS\n")
     (princ "---------------\n")
     (princ "  ID        Process identifier (from :id or command)\n")
-    (princ "  Type      simple (daemon) or oneshot (run-once)\n")
-    (princ "  Stage     Startup stage (stage1-4, lower runs first)\n")
+    (princ "  Type      simple (daemon), oneshot (run-once), or target (group)\n")
+    (princ "  Target    Convergence state for targets, - for services\n")
     (princ "  Enabled   Whether process will start (yes/no)\n")
     (princ "  Status    Current state (see above)\n")
     (princ "  Restart   Restart policy: no, on-success, on-failure, always (simple only)\n")
