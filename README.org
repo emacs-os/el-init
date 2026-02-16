@@ -51,8 +51,7 @@ provides detailed reference material:
 - [[#events-and-hooks][Events and Hooks]] - programmatic integration
 - [[#customization-reference][Customization Reference]] - all variables and faces
 - [[#command-reference][Command Reference]] - every interactive command
-- [[#service-management-comparison][Systems Comparison]] - supervisor vs systemd vs runit
-- [[#unplanned-systemd-directives][Unplanned Directives]] - systemd features not implemented
+- [[#service-management-comparison][Systems Comparison]] - supervisor vs systemd vs runit vs s6
 
 * Quick Start
 :PROPERTIES:
@@ -1938,34 +1937,126 @@ handle fine-grained ordering where needed.
 
 ** Feature Support Matrix
 
-| Feature | supervisor | systemd | Notes |
-|---------+------------+---------+-------|
-| Process supervision | Supported | Supported | Core functionality |
-| Restart on crash | Supported | Supported | ~:restart~ / ~Restart=~ |
-| Restart policies | Supported | Supported | ~always~, ~on-success~, ~on-failure~, ~no~ |
-| Restart backoff | Supported | Supported | ~:restart-sec~ / ~RestartSec=~ |
-| Oneshot services | Supported | Supported | ~:type oneshot~ / ~Type=oneshot~ |
-| Dependency ordering | Supported | Supported | ~:after~ / ~After=~ |
-| Soft dependencies | Supported | Supported | ~:wants~ / ~Wants=~ |
-| Hard dependencies | Supported | Supported | ~:requires~ / ~Requires=~ |
-| Environment vars | Supported | Supported | ~:environment~ / ~Environment=~ |
-| Environment files | Supported | Supported | ~:environment-file~ / ~EnvironmentFile=~ |
-| Working directory | Supported | Supported | ~:working-directory~ / ~WorkingDirectory=~ |
-| Custom stop command | Supported | Supported | ~:exec-stop~ / ~ExecStop=~ |
-| Custom reload | Supported | Supported | ~:exec-reload~ / ~ExecReload=~ |
-| Kill signal | Supported | Supported | ~:kill-signal~ / ~KillSignal=~ |
-| Kill mode | Partial | Supported | ~process~, ~mixed~ only (no ~control-group~) |
-| Remain after exit | Supported | Supported | ~:remain-after-exit~ / ~RemainAfterExit=~ |
-| Success exit status | Supported | Supported | ~:success-exit-status~ / ~SuccessExitStatus=~ |
-| Runtime overrides | Supported | Partial | Persistent enable/disable/mask/restart-policy/logging |
-| Unit file config | Supported | Supported | ~.el~ files / ~.service~ files |
-| Timer services | Supported | Supported | Experimental timer subsystem |
-| Process metrics | Supported | Supported | Best-effort RSS/CPU via ~process-attributes~ |
-| Log management | Partial | Supported | File-based, per-service; no journal integration |
-| Socket activation | Not planned | Supported | Outside scope of userland supervisor |
-| Cgroup isolation | Not planned | Supported | Requires PID 1 / kernel integration |
-| D-Bus activation | Not planned | Supported | Requires D-Bus integration |
-| Notification protocol | Not planned | Supported | ~Type=notify~ requires socket protocol |
+Where behavior diverges across systems, parenthetical notes explain.
+
+| Feature | systemd | runit | s6 | supervisor |
+|---------+---------+-------+----+------------|
+| *Init System (PID 1)* | | | | |
+| Can run as PID 1 | yes (systemd is PID 1) | yes (runit-init, 3-stage boot) | yes (s6-linux-init, separate package) | no (needs sinit-style shim as PID 1, runs as PID 2) |
+| *Process Supervision* | | | | |
+| Restart crashed daemons | yes | yes | yes | yes |
+| Restart policies (always/on-failure/on-success/no) | yes (6 modes) | no (always or never) | no (always or never) | yes (4 modes) |
+| Restart backoff / graduated delay | yes (v254 RestartSteps) | no | no | yes (restart-sec per unit) |
+| Crash-loop detection | yes (StartLimitBurst) | no | no | yes (supervisor--failed) |
+| Configurable kill signal | yes (KillSignal) | yes (control/ scripts) | yes (down-signal file) | yes (kill-signal) |
+| Kill mode (cgroup/process/mixed) | yes (KillMode) | no (process only) | no (process only) | yes (kill-mode, process/mixed) |
+| Exec-stop custom shutdown | yes (ExecStop) | yes (finish script) | yes (finish script) | yes (exec-stop) |
+| Exec-reload custom reload | yes (ExecReload) | no | no | yes (exec-reload) |
+| *Service Types* | | | | |
+| Long-running daemons | yes (Type=simple) | yes | yes (longruns) | yes (type simple) |
+| Oneshot run-to-completion | yes (Type=oneshot) | partial (sv once, no dedicated type) | yes (s6-rc oneshot) | yes (type oneshot) |
+| Forking/double-fork PID tracking | yes (Type=forking) | no | no | no |
+| D-Bus readiness type | yes (Type=dbus) | no | no | no |
+| Notify readiness protocol | yes (Type=notify, sd_notify) | no | yes (notification-fd, no library needed) | no |
+| Remain-after-exit | yes (RemainAfterExit) | no | no | yes (remain-after-exit) |
+| Success-exit-status override | yes (SuccessExitStatus) | no | no | yes (success-exit-status) |
+| *Dependencies and Ordering* | | | | |
+| Explicit dependency declarations | yes (Requires/Wants/BindsTo) | no | yes (s6-rc dependencies) | yes (requires/wants) |
+| Ordering declarations | yes (Before/After) | no (manual in run scripts) | yes (s6-rc ordering) | yes (before/after) |
+| Topological sort with cycle detection | yes | no | yes | yes (DAG with cycle fallback) |
+| Parallel startup respecting ordering | yes | yes (all parallel, no ordering) | yes | yes (DAG in-degree scheduling) |
+| Conflict declarations | yes (Conflicts) | no | no | no |
+| Conditional activation | yes (ConditionXxx) | no | no | no |
+| *Staged / Phased Startup* | | | | |
+| Named synchronization barriers | yes (targets) | partial (runlevels as dirs) | yes (s6-rc bundles) | yes (4 stages) |
+| Runlevel/target switching at runtime | yes (isolate) | yes (runsvchdir) | yes (s6-rc -u/-d bundles) | no (stages are boot-time only) |
+| *Activation Mechanisms* | | | | |
+| Socket activation | yes (centralized, fd passing) | no | partial (s6-ipcserver/s6-tcpserver, composable not centralized) | no |
+| Timer activation | yes (OnCalendar, monotonic) | no | no | yes (on-calendar, on-startup-sec, on-unit-active-sec) |
+| Path activation (inotify) | yes (.path units) | no | no (ftrig is FIFO-based, not inotify) | no |
+| D-Bus activation | yes | no | no | no |
+| Device activation | yes (.device from udev) | no | no | no |
+| *Logging* | | | | |
+| Integrated logging daemon | yes (journald, structured binary) | yes (svlogd, plain text) | yes (s6-log, plain text) | yes (supervisor-logd, plain text) |
+| Per-service log capture | yes (journal tags by unit) | yes (service/log/run pipe) | yes (servicedir/log pipe) | yes (per-id log files) |
+| Log rotation | yes (journal size/time) | yes (svlogd built-in) | yes (s6-log built-in) | yes (supervisor-logrotate) |
+| Log pruning | yes (journald vacuum) | no (manual) | no (manual) | yes (supervisor-log-prune) |
+| Structured/indexed log queries | yes (journalctl field filtering) | no | no | no |
+| Network log shipping | yes (journal-remote/upload) | partial (svlogd UDP) | no | no |
+| *Resource Control* | | | | |
+| Cgroup integration | yes (native, per-unit cgroup) | no | no | no |
+| CPU/memory/IO limits | yes (CPUQuota, MemoryMax, etc.) | no | no | no |
+| Task limits | yes (TasksMax) | no | no | no |
+| Resource accounting | yes (CPUAccounting, etc.) | no | no | no |
+| Resource limits (ulimit-style) | yes (LimitNOFILE, etc.) | yes (chpst) | yes (s6-softlimit) | no |
+| *Sandboxing* | | | | |
+| Namespace isolation | yes (PrivateTmp, PrivateNetwork, etc.) | no | no | no |
+| Seccomp syscall filtering | yes (SystemCallFilter) | no | no | no |
+| Capability restriction | yes (CapabilityBoundingSet) | no | no | no |
+| Filesystem protection | yes (ProtectSystem, ReadOnlyPaths) | no | no | no |
+| Dynamic user allocation | yes (DynamicUser) | no | no | no |
+| Security audit scoring | yes (systemd-analyze security) | no | no | no |
+| *Environment and Execution Context* | | | | |
+| Environment variables | yes (Environment, EnvironmentFile) | partial (chpst -e envdir) | yes (s6-envdir) | yes (environment, environment-file) |
+| Working directory | yes (WorkingDirectory) | yes (set in run script) | yes (set in run script) | yes (working-directory) |
+| User/group execution | yes (User, Group) | yes (chpst -u) | yes (s6-setuidgid) | yes (user, group fields) |
+| Supplementary groups | yes (SupplementaryGroups) | yes (chpst -u uid:gid:gid) | yes (s6-applyuidgid) | no |
+| *Enable / Disable / Mask* | | | | |
+| Enable/disable services | yes (systemctl enable/disable) | yes (symlink in/out of rundir) | yes (s6-rc enable/disable) | yes (enabled/disabled, runtime overrides) |
+| Mask (force-prevent start) | yes (systemctl mask) | no | no | yes (mask-override) |
+| Persistent runtime overrides | partial (enable/disable persist, runtime overrides do not) | yes (symlinks persist) | yes (compiled db persists) | yes (overrides.eld atomic file) |
+| Preset defaults | yes (systemd.preset files) | no | no | no |
+| Drop-in override fragments | yes (unit.d/*.conf) | no | no | no |
+| *Template / Instance Services* | | | | |
+| Template units with instances | yes (unit@.service, %i specifier) | no | yes (s6-instance-maker) | no |
+| *Watchdog* | | | | |
+| Service heartbeat watchdog | yes (WatchdogSec, sd_notify WATCHDOG=1) | no | no | no |
+| Hardware watchdog | yes (RuntimeWatchdogSec) | no | no | no |
+| *UI and Observability* | | | | |
+| Interactive dashboard | no (third-party cockpit) | no | no | yes (supervisor-dashboard-mode) |
+| CLI status/control | yes (systemctl) | yes (sv) | yes (s6-rc, s6-svc) | yes (supervisorctl) |
+| JSON output mode | yes (systemctl --output=json) | no | no | yes (supervisorctl --json) |
+| Telemetry (uptime, restarts, RSS, CPU) | partial (systemctl show, cgroup accounting) | no | no | yes (built-in telemetry model) |
+| *Boot Loader* | | | | |
+| UEFI boot manager | yes (systemd-boot) | no | no | no |
+| Unified Kernel Images | yes (ukify, sd-stub) | no | no | no |
+| TPM2 measured boot | yes (pcrlock, pcrextend, measure) | no | no | no |
+| *Networking* | | | | |
+| Network configuration | yes (networkd) | no | no | no |
+| DNS resolver/cache | yes (resolved) | no | no | no |
+| NTP client | yes (timesyncd) | no | no | no |
+| *Container / VM Management* | | | | |
+| OS containers | yes (nspawn) | no | no | no |
+| VM spawning | yes (vmspawn) | no | no | no |
+| Machine registration | yes (machined) | no | no | no |
+| Portable services | yes (portabled) | no | no | no |
+| System extensions | yes (sysext, confext) | no | no | no |
+| *Home / User / Identity* | | | | |
+| Encrypted home dirs | yes (homed) | no | no | no |
+| Declarative system users | yes (sysusers) | no | no | no |
+| User record multiplexer | yes (userdb) | no | no | no |
+| Hostname/locale daemons | yes (hostnamed, localed) | no | no | no |
+| *Storage / Filesystem* | | | | |
+| LUKS/dm-crypt setup | yes (cryptsetup, cryptenroll) | no | no | no |
+| dm-verity/dm-integrity | yes (veritysetup, integritysetup) | no | no | no |
+| Declarative partitioning | yes (repart) | no | no | no |
+| Disk image inspection | yes (dissect) | no | no | no |
+| *Credentials / Secrets* | | | | |
+| Encrypted service credentials | yes (systemd-creds, TPM2-sealed) | no | no | no |
+| *OOM / Core Dumps* | | | | |
+| Userspace OOM killer | yes (oomd, PSI-based) | no | no | no |
+| Core dump capture/management | yes (coredump, coredumpctl) | no | no | no |
+| *Power Management* | | | | |
+| Suspend/hibernate/hybrid | yes (systemd-sleep) | no | no | no |
+| Inhibitor locks | yes (systemd-inhibit) | no | no | no |
+| Soft reboot (userspace only) | yes (systemd-soft-reboot) | no | no | no |
+| *Misc* | | | | |
+| Transient units from CLI | yes (systemd-run) | no | no | no |
+| Boot performance analysis | yes (systemd-analyze blame/plot/critical-chain) | no | no | no |
+| Virtualization detection | yes (systemd-detect-virt) | no | no | no |
+| sudo replacement | yes (run0, v256+) | no | no | no |
+| Config override delta view | yes (systemd-delta) | no | no | no |
+| Unit file validation | yes (systemd-analyze verify) | no | no | yes (entry whitelist validation) |
 
 ** Example Conversions: systemd to supervisor
 
@@ -2279,72 +2370,6 @@ validate entry existence, reject invalid entries, normalize overrides
 against config defaults, and return a status plist.  Both CLI and
 dashboard call ~supervisor--save-overrides~ after the core mutator
 applies the change.
-
-* Unplanned systemd Directives
-:PROPERTIES:
-:CUSTOM_ID: unplanned-systemd-directives
-:END:
-
-The following systemd directives are not implemented in the current codebase
-and are not covered by approved implementation plans in this repository.  They
-are listed explicitly for auditability.
-
-| Directive | Category |
-|-----------+----------|
-| ~DefaultDependencies~ | Default dependencies |
-| ~WantedBy~ | Install/target graph |
-| ~RequiredBy~ | Install/target graph |
-| ~Also~ | Install/target graph |
-| ~Alias~ | Install/target graph |
-| Target units | Install/target graph |
-| ~ProtectSystem~ | Cgroup/namespace hardening |
-| ~ProtectHome~ | Cgroup/namespace hardening |
-| ~NoNewPrivileges~ | Cgroup/namespace hardening |
-| ~PrivateTmp~ | Cgroup/namespace hardening |
-| ~PrivateNetwork~ | Cgroup/namespace hardening |
-| ~PrivateDevices~ | Cgroup/namespace hardening |
-| ~ProtectKernelTunables~ | Cgroup/namespace hardening |
-| ~ProtectKernelModules~ | Cgroup/namespace hardening |
-| ~ProtectControlGroups~ | Cgroup/namespace hardening |
-| ~RestrictAddressFamilies~ | Cgroup/namespace hardening |
-| ~RestrictNamespaces~ | Cgroup/namespace hardening |
-| ~SystemCallFilter~ | Cgroup/namespace hardening |
-| ~MemoryMax~ | Resource limits |
-| ~MemoryHigh~ | Resource limits |
-| ~CPUQuota~ | Resource limits |
-| ~TasksMax~ | Resource limits |
-| ~LimitNOFILE~ | Resource limits |
-| ~LimitCORE~ | Resource limits |
-| ~LimitNPROC~ | Resource limits |
-| ~OOMPolicy~ | OOM and failure policy |
-| ~FailureAction~ | OOM and failure policy |
-| ~SuccessAction~ | OOM and failure policy |
-| ~StartLimitBurst~ | OOM and failure policy |
-| ~StartLimitIntervalSec~ | OOM and failure policy |
-| ~WatchdogSec~ | Watchdog |
-| ~WatchdogSignal~ | Watchdog |
-| ~LoadCredential~ | Credentials and security |
-| ~SetCredential~ | Credentials and security |
-| ~DynamicUser~ | Credentials and security |
-| ~Type=notify~ | Notification protocol |
-| ~NotifyAccess~ | Notification protocol |
-| ~Type=socket~ | Socket activation |
-| Socket units | Socket activation |
-| ~Type=dbus~ | D-Bus activation |
-| ~BusName~ | D-Bus activation |
-| Path units | Paths and mounts |
-| Mount units | Paths and mounts |
-| Automount units | Paths and mounts |
-| systemd timer units | Timers (supervisor has its own timer subsystem) |
-| Slice units | Slices and scopes |
-| Scope units | Slices and scopes |
-| ~Condition*=~ (all condition directives) | Conditions and assertions |
-| ~Assert*=~ (all assertion directives) | Conditions and assertions |
-
-Rationale: these are primarily PID 1 / system-manager concerns (cgroups,
-namespaces, boot targets) or require integration with system services (D-Bus,
-socket activation) that are outside the scope of a userland Emacs process
-supervisor.
 
 * Development
 :PROPERTIES:
