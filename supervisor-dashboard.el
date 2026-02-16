@@ -919,12 +919,20 @@ to entries and health summary for consistency within a single refresh."
   (supervisor--refresh-dashboard))
 
 (defun supervisor--all-target-ids ()
-  "Return sorted list of all target IDs from current plan."
+  "Return sorted list of all target IDs from current plan.
+Includes all target-type entries, even those with no members."
   (let ((ids nil))
-    (when (and supervisor--current-plan
-               (supervisor-plan-target-members supervisor--current-plan))
-      (maphash (lambda (id _) (push id ids))
-               (supervisor-plan-target-members supervisor--current-plan)))
+    (when supervisor--current-plan
+      ;; Collect targets from membership hash (targets with members)
+      (when-let* ((members (supervisor-plan-target-members
+                            supervisor--current-plan)))
+        (when (hash-table-p members)
+          (maphash (lambda (id _) (cl-pushnew id ids :test #'equal))
+                   members)))
+      ;; Collect target-type entries from plan (includes empty targets)
+      (dolist (entry (supervisor-plan-entries supervisor--current-plan))
+        (when (eq (supervisor-entry-type entry) 'target)
+          (cl-pushnew (supervisor-entry-id entry) ids :test #'equal))))
     (sort ids #'string<)))
 
 (defun supervisor-dashboard-cycle-filter ()

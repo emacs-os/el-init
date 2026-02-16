@@ -6020,8 +6020,6 @@ Returns a plist with :entries and :invalid counts."
   ;; Refresh programs cache from disk
   (supervisor--refresh-programs)
   (let ((plan (supervisor--build-plan (supervisor--effective-programs))))
-    ;; Store plan for later use
-    (setq supervisor--current-plan plan)
     ;; Populate legacy globals from plan for dashboard/CLI visibility
     (clrhash supervisor--invalid)
     (when (boundp 'supervisor--invalid-timers)
@@ -6029,6 +6027,30 @@ Returns a plist with :entries and :invalid counts."
     (maphash (lambda (k v) (puthash k v supervisor--invalid))
              (supervisor-plan-invalid plan))
     (supervisor--merge-unit-file-invalid)
+    ;; Resolve target metadata (activation-root, target-members, closure)
+    ;; so dashboard target filter, header root, and drill-down work after
+    ;; reload without requiring a full restart.
+    (when (supervisor-plan-entries plan)
+      (let ((valid-ids (make-hash-table :test 'equal))
+            (entries-by-id (make-hash-table :test 'equal)))
+        (dolist (entry (supervisor-plan-entries plan))
+          (puthash (supervisor-entry-id entry) t valid-ids)
+          (puthash (supervisor-entry-id entry) entry entries-by-id))
+        (condition-case nil
+            (let* ((root (supervisor--resolve-startup-root valid-ids))
+                   (members (supervisor--materialize-target-members
+                             (supervisor-plan-entries plan)))
+                   (closure (supervisor--expand-transaction
+                             root entries-by-id members
+                             (supervisor-plan-order-index plan))))
+              (setf (supervisor-plan-target-members plan) members)
+              (setf (supervisor-plan-activation-root plan) root)
+              (setf (supervisor-plan-activation-closure plan) closure)
+              ;; Update runtime global so drill-down reflects reloaded state
+              (setq supervisor--target-members members))
+          (user-error nil))))
+    ;; Store plan for later use (after metadata population)
+    (setq supervisor--current-plan plan)
     ;; Validate timers when subsystem is active
     (when (and (fboundp 'supervisor-timer-subsystem-active-p)
                (supervisor-timer-subsystem-active-p)

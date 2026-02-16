@@ -18160,5 +18160,115 @@ An invalid entry ID that happens to end in .target must not pass."
     (let ((result (supervisor--compute-entry-reason "app.target" 'target)))
       (should (equal "svc-a failed; svc-b timeout" result)))))
 
+;;; Phase 6 Review Fixes
+
+(ert-deftest supervisor-test-all-target-ids-includes-empty-targets ()
+  "All-target-ids includes targets with no members."
+  (let* ((members-hash (make-hash-table :test 'equal))
+         ;; 33-element target entry for empty-target (no members)
+         (empty-entry (list "empty.target" nil 0 t nil nil nil nil
+                            'target 'stage3 nil nil nil nil nil
+                            nil nil nil nil nil nil nil nil nil nil
+                            nil nil nil nil nil nil nil nil nil))
+         ;; 33-element target entry for pop.target (has members)
+         (pop-entry (list "pop.target" nil 0 t nil nil nil nil
+                          'target 'stage3 nil nil nil nil nil
+                          nil nil nil nil nil nil nil nil nil nil
+                          nil nil nil nil nil nil nil nil nil))
+         (supervisor--current-plan
+          (supervisor-plan--create
+           :target-members members-hash
+           :entries (list empty-entry pop-entry)
+           :invalid (make-hash-table :test 'equal)
+           :by-target nil
+           :deps (make-hash-table :test 'equal)
+           :requires-deps (make-hash-table :test 'equal)
+           :dependents (make-hash-table :test 'equal)
+           :cycle-fallback-ids (make-hash-table :test 'equal)
+           :order-index (make-hash-table :test 'equal)
+           :meta nil)))
+    ;; Only pop.target has members
+    (puthash "pop.target" '(:requires ("svc-a") :wants nil) members-hash)
+    (let ((ids (supervisor--all-target-ids)))
+      ;; Both targets should appear
+      (should (member "empty.target" ids))
+      (should (member "pop.target" ids)))))
+
+(ert-deftest supervisor-test-daemon-reload-populates-target-metadata ()
+  "Daemon-reload populates target-members and activation-root in plan."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("multi-user.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target
+             :after ("basic.target"))
+        (nil :id "graphical.target" :type target
+             :after ("multi-user.target"))
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan nil)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--target-members nil)
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target "default.target")
+          (supervisor-default-target-link "graphical.target"))
+      (supervisor-daemon-reload)
+      ;; Plan should have activation-root
+      (should supervisor--current-plan)
+      (should (supervisor-plan-activation-root supervisor--current-plan))
+      (should (equal "graphical.target"
+                     (supervisor-plan-activation-root
+                      supervisor--current-plan)))
+      ;; Plan should have target-members populated
+      (should (hash-table-p
+               (supervisor-plan-target-members supervisor--current-plan)))
+      ;; svc-a declared :wanted-by multi-user.target
+      (let ((members (gethash "multi-user.target"
+                              (supervisor-plan-target-members
+                               supervisor--current-plan))))
+        (should members)
+        (should (member "svc-a" (plist-get members :wants))))
+      ;; Runtime global should also be updated
+      (should (hash-table-p supervisor--target-members))
+      (should (gethash "multi-user.target" supervisor--target-members)))))
+
+(ert-deftest supervisor-test-daemon-reload-all-target-ids-after-reload ()
+  "All-target-ids returns all targets after daemon-reload."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("multi-user.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target
+             :after ("basic.target"))
+        (nil :id "graphical.target" :type target
+             :after ("multi-user.target"))
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan nil)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--target-members nil)
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target "default.target")
+          (supervisor-default-target-link "graphical.target"))
+      (supervisor-daemon-reload)
+      (let ((ids (supervisor--all-target-ids)))
+        ;; All four targets should be present (including empty ones)
+        (should (member "basic.target" ids))
+        (should (member "multi-user.target" ids))
+        (should (member "graphical.target" ids))
+        (should (member "default.target" ids))))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
