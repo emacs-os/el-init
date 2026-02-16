@@ -15581,7 +15581,7 @@ No warning is emitted when there are simply no child processes."
       (delete-directory tmp t))))
 
 (ert-deftest supervisor-test-maybe-build-libexec-helpers-prompt ()
-  "Prompt policy builds helpers when startup is interactive and confirmed."
+  "Prompt policy builds helpers in graphical Emacs when confirmed."
   (let ((supervisor-libexec-build-on-startup 'prompt)
         (noninteractive nil)
         (asked nil)
@@ -15598,7 +15598,7 @@ No warning is emitted when there are simply no child processes."
                  (setq built t)
                  (list :built 1 :attempted 1 :failed nil :missing-source nil)))
               ((symbol-function 'supervisor--log-libexec-build-result) #'ignore))
-      (supervisor--maybe-build-libexec-helpers t)
+      (supervisor--maybe-build-libexec-helpers)
       (should asked)
       (should built))))
 
@@ -15614,7 +15614,7 @@ No warning is emitted when there are simply no child processes."
                  (setq built t)
                  (list :built 1 :attempted 1 :failed nil :missing-source nil)))
               ((symbol-function 'supervisor--log-libexec-build-result) #'ignore))
-      (supervisor--maybe-build-libexec-helpers nil)
+      (supervisor--maybe-build-libexec-helpers)
       (should built))))
 
 ;;;; Log writer lifecycle tests

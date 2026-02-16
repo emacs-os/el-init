@@ -4812,9 +4812,11 @@ helpers.  Return a plist with summary keys:
   (dolist (missing (plist-get result :missing-source))
     (supervisor--log 'warning "%s" missing)))
 
-(defun supervisor--maybe-build-libexec-helpers (interactive-invocation)
+(defun supervisor--maybe-build-libexec-helpers ()
   "Maybe compile libexec helpers during startup.
-INTERACTIVE-INVOCATION is non-nil when startup was user-invoked."
+When `supervisor-libexec-build-on-startup' is `prompt', show a
+`y-or-n-p' prompt in graphical Emacs sessions.  In batch mode the
+prompt is skipped and an info message is logged instead."
   (let ((pending (supervisor--libexec-pending-build-targets)))
     (when pending
       (pcase supervisor-libexec-build-on-startup
@@ -4823,9 +4825,9 @@ INTERACTIVE-INVOCATION is non-nil when startup was user-invoked."
          (supervisor--log-libexec-build-result
           (supervisor-build-libexec-helpers)))
         ('prompt
-         (if (and interactive-invocation (not noninteractive))
+         (if (not noninteractive)
              (when (y-or-n-p
-                    (format "Build supervisor libexec helpers now (%s)? "
+                    (format "Supervisor requires compiled C helpers (%s).  Build now? "
                             (supervisor--libexec-target-names pending)))
                (supervisor--log-libexec-build-result
                 (supervisor-build-libexec-helpers)))
@@ -5481,8 +5483,7 @@ Ready semantics (when dependents are unblocked):
 - Disabled entry: immediately ready
 - Start failure: immediately ready (dependents proceed)"
   (interactive)
-  (supervisor--maybe-build-libexec-helpers
-   (called-interactively-p 'interactive))
+  (supervisor--maybe-build-libexec-helpers)
   (setq supervisor--shutting-down nil)
   ;; Cancel any existing timers before clearing (prevents orphaned timers)
   (dolist (timer supervisor--timers)
