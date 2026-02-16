@@ -159,21 +159,6 @@
   "Face for stage separator rows in dashboard."
   :group 'supervisor)
 
-(defcustom supervisor-stage-descriptions
-  '((stage1 . "X Setup")
-    (stage2 . "System")
-    (stage3 . "Services")
-    (stage4 . "Applets"))
-  "Alist mapping stage symbols to human-readable descriptions.
-Used in dashboard stage separators for better readability."
-  :type '(alist :key-type symbol :value-type string)
-  :group 'supervisor)
-
-(defcustom supervisor-dashboard-group-by-stage t
-  "When non-nil, group dashboard entries by stage with separators."
-  :type 'boolean
-  :group 'supervisor)
-
 (defcustom supervisor-dashboard-show-header-hints nil
   "Reserved compatibility option for dashboard header hints.
 This option is currently inert; the header line shows only service
@@ -187,10 +172,6 @@ counters.  Press `h' in the dashboard for full keybinding help."
   :group 'supervisor)
 
 ;;; Dashboard
-
-(defvar-local supervisor--dashboard-stage-filter nil
-  "Current stage filter for dashboard.
-nil means show all stages, otherwise a stage symbol.")
 
 (defvar-local supervisor--dashboard-tag-filter nil
   "Current tag filter for dashboard.
@@ -378,15 +359,6 @@ Requires the `transient' package to be installed."
     (if face
         (propertize status 'face face)
       status)))
-
-(defun supervisor--make-stage-separator (stage)
-  "Create a separator row for STAGE."
-  (let* ((desc (or (cdr (assq stage supervisor-stage-descriptions))
-                   (symbol-name stage)))
-         (label (propertize (format "── %s: %s " stage desc)
-                            'face 'supervisor-stage-separator)))
-    (list (intern (format "--%s--" stage))  ; Use symbol for separator ID
-          (vector label "" "" "" "" "" "" "" ""))))
 
 (defun supervisor--make-blank-row (n)
   "Create a blank row for visual spacing.
@@ -665,31 +637,9 @@ Returns list of (typed-id vector) pairs with (:timer . ID) keys."
              supervisor--invalid-timers)
     (nreverse entries)))
 
-(defun supervisor--group-entries-by-stage (entries)
-  "Group ENTRIES by stage with separator rows.
-ENTRIES is a list of (id vector stage) tuples."
-  (let* ((sorted (sort entries
-                       (lambda (a b)
-                         (let* ((stage-a (nth 2 a))
-                                (stage-b (nth 2 b))
-                                (sa (if stage-a (supervisor--stage-to-int stage-a) 99))
-                                (sb (if stage-b (supervisor--stage-to-int stage-b) 99)))
-                           (< sa sb)))))
-         (result nil)
-         (current-stage nil))
-    (dolist (entry sorted)
-      (let ((entry-stage (nth 2 entry)))
-        (when (and entry-stage (not (eq entry-stage current-stage)))
-          (setq current-stage entry-stage)
-          (push (supervisor--make-stage-separator entry-stage) result))
-        (push (list (car entry) (cadr entry)) result)))
-    (nreverse result)))
-
 (defun supervisor--get-entries (&optional snapshot programs)
   "Generate entries for the dashboard (deduplicates on the fly).
-Respects `supervisor--dashboard-stage-filter' and tag filter when set.
-When `supervisor-dashboard-group-by-stage' is non-nil and no stage filter
-is active, entries are grouped by stage with separator rows.
+Respects tag filter when set.
 If SNAPSHOT is provided, read runtime state from it.
 If PROGRAMS is provided, use it instead of calling
 `supervisor--effective-programs'.
@@ -700,7 +650,6 @@ if `supervisor-dashboard-show-timers' is non-nil."
          (programs (or programs (supervisor--effective-programs)))
          (entries nil)
          (seen (make-hash-table :test 'equal))
-         (stage-filter supervisor--dashboard-stage-filter)
          (tag-filter supervisor--dashboard-tag-filter)
          (invalid-hash (supervisor-snapshot-invalid snapshot))
          (idx 0))
@@ -711,14 +660,12 @@ if `supervisor-dashboard-show-timers' is non-nil."
         (unless (gethash raw-id seen)
           (puthash raw-id t seen)
           (if invalid-reason
-              (unless stage-filter
-                (push (list (cons :service raw-id)
-                            (vector raw-id "-" "-" "-"
-                                    (supervisor--propertize-status "invalid")
-                                    "-" "-" "-"
-                                    invalid-reason)
-                            nil)
-                      entries))
+              (push (list (cons :service raw-id)
+                          (vector raw-id "-" "-" "-"
+                                  (supervisor--propertize-status "invalid")
+                                  "-" "-" "-"
+                                  invalid-reason))
+                    entries)
             (let* ((parsed (supervisor--parse-entry entry))
                    (id (supervisor-entry-id parsed))
                    (enabled-p (supervisor-entry-enabled-p parsed))
@@ -727,16 +674,13 @@ if `supervisor-dashboard-show-timers' is non-nil."
                    (type (supervisor-entry-type parsed))
                    (stage (supervisor-entry-stage parsed))
                    (tags (supervisor-entry-tags parsed)))
-              (when (and (or (null stage-filter) (eq stage stage-filter))
-                         (or (null tag-filter) (member tag-filter tags)))
+              (when (or (null tag-filter) (member tag-filter tags))
                 (push (list (cons :service id)
                             (supervisor--make-dashboard-entry
-                             id type stage enabled-p restart-policy logging-p snapshot)
-                            stage)
+                             id type stage enabled-p restart-policy logging-p snapshot))
                       entries)))))))
     ;; Include invalid authority units not already seen via programs
-    (when (and (boundp 'supervisor--unit-file-invalid)
-               (not stage-filter))
+    (when (boundp 'supervisor--unit-file-invalid)
       (maphash (lambda (id reason)
                  (unless (gethash id seen)
                    (puthash id t seen)
@@ -744,19 +688,15 @@ if `supervisor-dashboard-show-timers' is non-nil."
                                (vector id "-" "-" "-"
                                        (supervisor--propertize-status "invalid")
                                        "-" "-" "-"
-                                       reason)
-                               nil)
+                                       reason))
                          entries)))
                (symbol-value 'supervisor--unit-file-invalid)))
     (setq entries (nreverse entries))
-    (let ((final-entries
-           (if (and supervisor-dashboard-group-by-stage (null stage-filter))
-               (supervisor--group-entries-by-stage entries)
-             (mapcar (lambda (e) (list (car e) (cadr e))) entries))))
+    (let ((final-entries (mapcar (lambda (e) (list (car e) (cadr e))) entries)))
       ;; Services section header is always first row in buffer body.
       (setq final-entries
             (cons (supervisor--make-services-separator) final-entries))
-      ;; Timer section (stage/tag filters do not hide timers)
+      ;; Timer section (tag filter does not hide timers)
       (when supervisor-dashboard-show-timers
         (setq final-entries
               (append final-entries
@@ -936,20 +876,9 @@ to entries and health summary for consistency within a single refresh."
   (supervisor--refresh-dashboard))
 
 (defun supervisor-dashboard-cycle-filter ()
-  "Cycle dashboard stage filter through all stages."
+  "Stage filter removed (no-op)."
   (interactive)
-  (setq supervisor--dashboard-stage-filter
-        (pcase supervisor--dashboard-stage-filter
-          ('nil 'stage1)
-          ('stage1 'stage2)
-          ('stage2 'stage3)
-          ('stage3 'stage4)
-          ('stage4 nil)))
-  (message "Stage filter: %s"
-           (if supervisor--dashboard-stage-filter
-               (symbol-name supervisor--dashboard-stage-filter)
-             "all"))
-  (supervisor--refresh-dashboard))
+  (message "Stage filter removed (stages are deprecated)"))
 
 (defun supervisor--all-tags ()
   "Return list of all unique tags used in entries."
@@ -1663,37 +1592,30 @@ Displays computed dependencies after validation and cycle fallback."
       (princ "Supervisor Dependency Graph\n")
       (princ (make-string 50 ?=))
       (princ "\n\n")
-      ;; Group by stage
-      (dolist (stage-name '(stage1 stage2 stage3 stage4))
-        (let ((stage-entries nil))
-          ;; Collect entries for this stage
-          (let ((idx 0))
-            (dolist (entry (supervisor--effective-programs))
-              (let ((id (supervisor--extract-id entry idx)))
-                (cl-incf idx)
-                (unless (gethash id supervisor--invalid)
-                  (let ((parsed (supervisor--parse-entry entry)))
-                    (when (eq (supervisor-entry-stage parsed) stage-name)
-                      (push id stage-entries)))))))
-          (when stage-entries
-            (princ (format "=== %s ===\n" (upcase (symbol-name stage-name))))
-            (dolist (id (nreverse stage-entries))
-              (let* ((deps (gethash id supervisor--computed-deps))
-                     (cycle-fallback (gethash id supervisor--cycle-fallback-ids))
-                     (dependents nil))
-                ;; Find entries that depend on this one
-                (maphash (lambda (e-id e-deps)
-                           (when (member id e-deps)
-                             (push e-id dependents)))
-                         supervisor--computed-deps)
-                (princ (format "  %s%s\n"
-                               id
-                               (if cycle-fallback " [CYCLE FALLBACK]" "")))
-                (when deps
-                  (princ (format "    <- %s\n" (mapconcat #'identity deps ", "))))
-                (when dependents
-                  (princ (format "    -> %s\n" (mapconcat #'identity dependents ", "))))))
-            (princ "\n")))))))
+      ;; Flat listing of all entries
+      (let ((all-ids nil))
+        (let ((idx 0))
+          (dolist (entry (supervisor--effective-programs))
+            (let ((id (supervisor--extract-id entry idx)))
+              (cl-incf idx)
+              (unless (gethash id supervisor--invalid)
+                (push id all-ids)))))
+        (dolist (id (nreverse all-ids))
+          (let* ((deps (gethash id supervisor--computed-deps))
+                 (cycle-fallback (gethash id supervisor--cycle-fallback-ids))
+                 (dependents nil))
+            ;; Find entries that depend on this one
+            (maphash (lambda (e-id e-deps)
+                       (when (member id e-deps)
+                         (push e-id dependents)))
+                     supervisor--computed-deps)
+            (princ (format "  %s%s\n"
+                           id
+                           (if cycle-fallback " [CYCLE FALLBACK]" "")))
+            (when deps
+              (princ (format "    <- %s\n" (mapconcat #'identity deps ", "))))
+            (when dependents
+              (princ (format "    -> %s\n" (mapconcat #'identity dependents ", "))))))))))
 
 ;;;###autoload
 (defun supervisor ()

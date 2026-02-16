@@ -171,13 +171,6 @@ core symbols exist without dashboard/cli-specific dependencies."
   ;; CLI-specific symbols should be in cli
   (should (fboundp 'supervisor--cli-dispatch)))
 
-(ert-deftest supervisor-test-stages-defined ()
-  "Verify stages are properly defined."
-  (should (equal supervisor-stage-names '(stage1 stage2 stage3 stage4)))
-  (should (= (alist-get 'stage1 supervisor-stages) 0))
-  (should (= (alist-get 'stage2 supervisor-stages) 1))
-  (should (= (alist-get 'stage3 supervisor-stages) 2))
-  (should (= (alist-get 'stage4 supervisor-stages) 3)))
 
 ;;; Entry parsing tests
 
@@ -666,22 +659,6 @@ restart-timer cancellation on `no'."
 
 ;;; Stage conversion tests
 
-(ert-deftest supervisor-test-stage-to-int ()
-  "Convert stage symbols to integers."
-  (should (= (supervisor--stage-to-int 'stage1) 0))
-  (should (= (supervisor--stage-to-int 'stage2) 1))
-  (should (= (supervisor--stage-to-int 'stage3) 2))
-  (should (= (supervisor--stage-to-int 'stage4) 3))
-  ;; Unknown defaults to stage3 (2)
-  (should (= (supervisor--stage-to-int 'unknown) 2)))
-
-(ert-deftest supervisor-test-int-to-stage ()
-  "Convert integers to stage symbols."
-  (should (eq (supervisor--int-to-stage 0) 'stage1))
-  (should (eq (supervisor--int-to-stage 1) 'stage2))
-  (should (eq (supervisor--int-to-stage 2) 'stage3))
-  (should (eq (supervisor--int-to-stage 3) 'stage4)))
-
 ;;; Normalize :after tests
 
 (ert-deftest supervisor-test-normalize-after ()
@@ -1075,7 +1052,7 @@ restart-timer cancellation on `no'."
         (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
         (supervisor--dag-delay-timers (make-hash-table :test 'equal))
         (supervisor--dag-id-to-index (make-hash-table :test 'equal))
-        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--dag-complete-callback nil)
         (supervisor--shutting-down nil)
         (callback-called nil))
     ;; Entry with delay
@@ -1083,13 +1060,13 @@ restart-timer cancellation on `no'."
     (puthash "delayed" 0 supervisor--dag-in-degree)
     (puthash "delayed" 0 supervisor--dag-id-to-index)
     (puthash "delayed" nil supervisor--dag-dependents)
-    (setq supervisor--dag-stage-complete-callback (lambda () (setq callback-called t)))
+    (setq supervisor--dag-complete-callback (lambda () (setq callback-called t)))
     ;; Simulate starting the delayed entry - adds to delay-timers
     (puthash "delayed" 'mock-timer supervisor--dag-delay-timers)
     ;; Mark as "started" from scheduler's perspective
     (puthash "delayed" t supervisor--dag-started)
     ;; Try to complete stage - should NOT call callback because delay timer exists
-    (supervisor--dag-check-stage-complete)
+    (supervisor--dag-check-complete)
     (should-not callback-called)))
 
 (ert-deftest supervisor-test-stage-complete-blocked-by-blocking-oneshot ()
@@ -1103,7 +1080,7 @@ restart-timer cancellation on `no'."
         (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
         (supervisor--dag-delay-timers (make-hash-table :test 'equal))
         (supervisor--dag-id-to-index (make-hash-table :test 'equal))
-        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--dag-complete-callback nil)
         (callback-called nil))
     ;; Blocking oneshot entry
     (puthash "blocking" '("blocking" "sleep 10" 0 t always t oneshot stage3 nil t 30) supervisor--dag-entries)
@@ -1111,9 +1088,9 @@ restart-timer cancellation on `no'."
     (puthash "blocking" t supervisor--dag-started)
     ;; Oneshot is blocking
     (puthash "blocking" t supervisor--dag-blocking)
-    (setq supervisor--dag-stage-complete-callback (lambda () (setq callback-called t)))
+    (setq supervisor--dag-complete-callback (lambda () (setq callback-called t)))
     ;; Try to complete stage - should NOT call callback because blocking oneshot exists
-    (supervisor--dag-check-stage-complete)
+    (supervisor--dag-check-complete)
     (should-not callback-called)))
 
 (ert-deftest supervisor-test-mark-ready-removes-from-blocking ()
@@ -1127,7 +1104,7 @@ restart-timer cancellation on `no'."
         (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
         (supervisor--dag-delay-timers (make-hash-table :test 'equal))
         (supervisor--dag-id-to-index (make-hash-table :test 'equal))
-        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--dag-complete-callback nil)
         (supervisor-verbose nil))
     ;; Set up blocking oneshot
     (puthash "oneshot" '("oneshot" "cmd" 0 t always t oneshot stage3 nil t 30) supervisor--dag-entries)
@@ -1153,7 +1130,7 @@ restart-timer cancellation on `no'."
         (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
         (supervisor--dag-delay-timers (make-hash-table :test 'equal))
         (supervisor--dag-id-to-index (make-hash-table :test 'equal))
-        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--dag-complete-callback nil)
         (supervisor--shutting-down nil)
         (supervisor-verbose nil)
         (started-ids nil))
@@ -1189,7 +1166,7 @@ restart-timer cancellation on `no'."
         (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
         (supervisor--dag-delay-timers (make-hash-table :test 'equal))
         (supervisor--dag-id-to-index (make-hash-table :test 'equal))
-        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--dag-complete-callback nil)
         (supervisor--shutting-down nil)
         (supervisor-verbose nil)
         (stage-complete nil)
@@ -1212,7 +1189,7 @@ restart-timer cancellation on `no'."
       ;; Set up a mock timeout timer
       (puthash "slow" 'mock-timer supervisor--dag-timeout-timers)
       ;; Stage completion callback
-      (setq supervisor--dag-stage-complete-callback
+      (setq supervisor--dag-complete-callback
             (lambda () (setq stage-complete t)))
       ;; Simulate timeout firing: this is what the timeout timer does
       (supervisor--dag-mark-ready "slow")
@@ -1327,8 +1304,8 @@ restart-timer cancellation on `no'."
         (supervisor--dag-delay-timers (make-hash-table :test 'equal))
         (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
         (supervisor--dag-id-to-index (make-hash-table :test 'equal))
-        (supervisor--dag-stage-complete-callback nil)
-        (supervisor--dag-stage-timeout-timer nil)
+        (supervisor--dag-complete-callback nil)
+        (supervisor--dag-timeout-timer nil)
         (supervisor--dag-pending-starts nil)
         (supervisor--dag-active-starts 0)
         (supervisor--entry-state (make-hash-table :test 'equal))
@@ -1336,10 +1313,10 @@ restart-timer cancellation on `no'."
     ;; Set up entry that hasn't started
     (puthash "delayed" '("delayed" "cmd" 5 t t t simple stage3 nil t 30)
              supervisor--dag-entries)
-    (setq supervisor--dag-stage-complete-callback (lambda () (setq callback-called t)))
+    (setq supervisor--dag-complete-callback (lambda () (setq callback-called t)))
     ;; Force stage complete should mark unstarted as stage-timeout
-    (supervisor--dag-force-stage-complete)
-    (should (eq (gethash "delayed" supervisor--entry-state) 'stage-timeout))
+    (supervisor--dag-force-complete)
+    (should (eq (gethash "delayed" supervisor--entry-state) 'startup-timeout))
     (should callback-called)))
 
 (ert-deftest supervisor-test-format-exit-status-signal ()
@@ -1468,8 +1445,8 @@ Only auto-started (not manually-started) disabled units are stopped."
       (let ((output (with-current-buffer "*supervisor-dry-run*"
                       (buffer-string))))
         (kill-buffer "*supervisor-dry-run*")
-        ;; All entries in stage3 (default)
-        (should (string-match-p "Stage: stage3" output))
+        ;; All entries in startup order
+        (should (string-match-p "Startup order" output))
         (should (string-match-p "\\ba\\b" output))
         (should (string-match-p "\\bb\\b" output))
         (should (string-match-p "\\bc\\b" output))))))
@@ -1551,15 +1528,6 @@ Only auto-started (not manually-started) disabled units are stopped."
   (should (string-match-p "\\[h\\]" supervisor--help-text))
   (should (string-match-p "\\[q\\]" supervisor--help-text)))
 
-(ert-deftest supervisor-test-stage-separator-creation ()
-  "Stage separators have correct structure."
-  (let ((sep (supervisor--make-stage-separator 'stage1)))
-    ;; ID should be a symbol starting with --
-    (should (symbolp (car sep)))
-    (should (string-prefix-p "--" (symbol-name (car sep))))
-    ;; Vector should have 9 elements
-    (should (= 9 (length (cadr sep))))))
-
 (ert-deftest supervisor-test-health-summary-deduplication ()
   "Health summary deduplicates entries with same ID.
 Unit-file loader already deduplicates, so only one entry is loaded."
@@ -1584,8 +1552,8 @@ Unit-file loader already deduplicates, so only one entry is loaded."
             (should (string-match-p "1 pend" summary)))
         (delete-directory dir t)))))
 
-(ert-deftest supervisor-test-disabled-only-stage-completes ()
-  "Stage with only disabled entries completes immediately."
+(ert-deftest supervisor-test-disabled-only-completes ()
+  "Only disabled entries completes immediately."
   (supervisor-test-with-unit-files
       '(("sleep 100" :id "a" :disabled t))
     (let* ((supervisor--invalid (make-hash-table :test 'equal))
@@ -1595,17 +1563,15 @@ Unit-file loader already deduplicates, so only one entry is loaded."
            (supervisor--entry-state (make-hash-table :test 'equal))
            (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
            (supervisor--computed-deps (make-hash-table :test 'equal))
-           (supervisor--current-stage nil)
-           (supervisor--completed-stages nil)
            (supervisor--shutting-down nil)
            (completed nil))
       ;; Parse entries
       (let ((entries (supervisor--all-parsed-entries)))
-        ;; Start stage with callback that sets completed flag
-        (supervisor--start-stage-async
-         'stage1 entries
+        ;; Start entries with callback that sets completed flag
+        (supervisor--start-entries-async
+         entries
          (lambda () (setq completed t)))
-        ;; Stage should complete immediately since all entries are disabled
+        ;; Should complete immediately since all entries are disabled
         (should completed)))))
 
 (ert-deftest supervisor-test-config-watch-timer-cleanup ()
@@ -1694,9 +1660,9 @@ Unit-file loader already deduplicates, so only one entry is loaded."
     ;; invalid is a hash table with reasons
     (should (hash-table-p (supervisor-plan-invalid plan)))
     (should (= 1 (hash-table-count (supervisor-plan-invalid plan))))
-    ;; by-stage is an alist of (stage-int . entries)
-    (should (listp (supervisor-plan-by-stage plan)))
-    (should (assq 2 (supervisor-plan-by-stage plan)))  ; stage3 = 2
+    ;; by-target is a flat list of entries (globally sorted)
+    (should (listp (supervisor-plan-by-target plan)))
+    (should (= 2 (length (supervisor-plan-by-target plan))))
     ;; deps is a hash table
     (should (hash-table-p (supervisor-plan-deps plan)))
     ;; dependents is a hash table
@@ -1720,15 +1686,9 @@ Unit-file loader already deduplicates, so only one entry is loaded."
     ;; Entries should be equal
     (should (equal (supervisor-plan-entries plan1)
                    (supervisor-plan-entries plan2)))
-    ;; By-stage should have same structure
-    (should (equal (length (supervisor-plan-by-stage plan1))
-                   (length (supervisor-plan-by-stage plan2))))
-    ;; Same stage should have same entries in same order
-    (dolist (stage-pair (supervisor-plan-by-stage plan1))
-      (let* ((stage-int (car stage-pair))
-             (entries1 (cdr stage-pair))
-             (entries2 (cdr (assq stage-int (supervisor-plan-by-stage plan2)))))
-        (should (equal entries1 entries2))))
+    ;; By-target should be equal
+    (should (equal (supervisor-plan-by-target plan1)
+                   (supervisor-plan-by-target plan2)))
     ;; Deps should be equal
     (should (= (hash-table-count (supervisor-plan-deps plan1))
                (hash-table-count (supervisor-plan-deps plan2))))
@@ -1795,9 +1755,9 @@ Regression test: duplicates must not overwrite order-index of kept entry."
     ;; Order index should reflect first occurrence: a=0, b=1
     (should (= 0 (gethash "a" (supervisor-plan-order-index plan))))
     (should (= 1 (gethash "b" (supervisor-plan-order-index plan))))
-    ;; Stage order should be a, b (not b, a)
-    (let* ((stage-entries (cdr (assq 2 (supervisor-plan-by-stage plan))))
-           (ids (mapcar #'car stage-entries)))
+    ;; Sorted order should be a, b (not b, a)
+    (let* ((sorted (supervisor-plan-by-target plan))
+           (ids (mapcar #'car sorted)))
       (should (equal '("a" "b") ids)))))
 
 ;;; Phase 2: Startup Uses Plan Tests
@@ -2401,13 +2361,13 @@ This tests the atomic boundary: invalid/empty plans cause no side effects."
 
 (ert-deftest supervisor-test-fsm-valid-states-defined ()
   "All valid states are defined in the state list."
-  (should (memq 'stage-not-started supervisor--valid-states))
+  (should (memq 'pending supervisor--valid-states))
   (should (memq 'waiting-on-deps supervisor--valid-states))
   (should (memq 'delayed supervisor--valid-states))
   (should (memq 'disabled supervisor--valid-states))
   (should (memq 'started supervisor--valid-states))
   (should (memq 'failed-to-spawn supervisor--valid-states))
-  (should (memq 'stage-timeout supervisor--valid-states)))
+  (should (memq 'startup-timeout supervisor--valid-states)))
 
 (ert-deftest supervisor-test-fsm-invalid-state-rejected ()
   "Transitioning to an invalid state signals an error."
@@ -2419,7 +2379,7 @@ This tests the atomic boundary: invalid/empty plans cause no side effects."
   "Invalid state transitions signal an error."
   (let ((supervisor--entry-state (make-hash-table :test 'equal)))
     ;; Set up valid path to terminal state
-    (supervisor--transition-state "test" 'stage-not-started)
+    (supervisor--transition-state "test" 'pending)
     (supervisor--transition-state "test" 'started)
     ;; Transition from terminal state should error
     (should-error (supervisor--transition-state "test" 'delayed)
@@ -2428,10 +2388,10 @@ This tests the atomic boundary: invalid/empty plans cause no side effects."
 (ert-deftest supervisor-test-fsm-valid-transitions ()
   "Valid state transitions succeed."
   (let ((supervisor--entry-state (make-hash-table :test 'equal)))
-    ;; nil -> stage-not-started
-    (should (supervisor--transition-state "a" 'stage-not-started))
-    (should (eq 'stage-not-started (gethash "a" supervisor--entry-state)))
-    ;; stage-not-started -> waiting-on-deps
+    ;; nil -> pending
+    (should (supervisor--transition-state "a" 'pending))
+    (should (eq 'pending (gethash "a" supervisor--entry-state)))
+    ;; pending -> waiting-on-deps
     (should (supervisor--transition-state "a" 'waiting-on-deps))
     (should (eq 'waiting-on-deps (gethash "a" supervisor--entry-state)))
     ;; waiting-on-deps -> delayed
@@ -2444,10 +2404,10 @@ This tests the atomic boundary: invalid/empty plans cause no side effects."
 (ert-deftest supervisor-test-fsm-self-transitions-allowed ()
   "Self-transitions are allowed for idempotent operations."
   (let ((supervisor--entry-state (make-hash-table :test 'equal)))
-    (supervisor--transition-state "a" 'stage-not-started)
+    (supervisor--transition-state "a" 'pending)
     ;; Self-transition should succeed
-    (should (supervisor--transition-state "a" 'stage-not-started))
-    (should (eq 'stage-not-started (gethash "a" supervisor--entry-state)))))
+    (should (supervisor--transition-state "a" 'pending))
+    (should (eq 'pending (gethash "a" supervisor--entry-state)))))
 
 (ert-deftest supervisor-test-fsm-force-invalid-transition ()
   "Force parameter allows invalid transitions with warning.
@@ -2455,7 +2415,7 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
   (let ((supervisor--entry-state (make-hash-table :test 'equal))
         (warnings nil))
     ;; Set up valid path to terminal state
-    (supervisor--transition-state "a" 'stage-not-started)
+    (supervisor--transition-state "a" 'pending)
     (supervisor--transition-state "a" 'started)
     (cl-letf (((symbol-function 'supervisor--log)
                (lambda (_level fmt &rest args)
@@ -2474,7 +2434,7 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
   "Test lifecycle path for successful simple process start."
   (let ((supervisor--entry-state (make-hash-table :test 'equal)))
     ;; Initial state
-    (supervisor--transition-state "proc" 'stage-not-started)
+    (supervisor--transition-state "proc" 'pending)
     ;; After delay
     (supervisor--transition-state "proc" 'delayed)
     ;; After successful spawn
@@ -2485,7 +2445,7 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
   "Test lifecycle path for spawn failure."
   (let ((supervisor--entry-state (make-hash-table :test 'equal)))
     ;; Initial state
-    (supervisor--transition-state "proc" 'stage-not-started)
+    (supervisor--transition-state "proc" 'pending)
     ;; Spawn fails
     (supervisor--transition-state "proc" 'failed-to-spawn)
     (should (eq 'failed-to-spawn (gethash "proc" supervisor--entry-state)))))
@@ -2496,8 +2456,8 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
     ;; Initial state with deps
     (supervisor--transition-state "proc" 'waiting-on-deps)
     ;; Stage times out before deps complete
-    (supervisor--transition-state "proc" 'stage-timeout)
-    (should (eq 'stage-timeout (gethash "proc" supervisor--entry-state)))))
+    (supervisor--transition-state "proc" 'startup-timeout)
+    (should (eq 'startup-timeout (gethash "proc" supervisor--entry-state)))))
 
 (ert-deftest supervisor-test-fsm-lifecycle-disabled ()
   "Test lifecycle path for disabled entry."
@@ -2510,7 +2470,7 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
   "Test lifecycle path for oneshot process."
   (let ((supervisor--entry-state (make-hash-table :test 'equal)))
     ;; Initial state
-    (supervisor--transition-state "oneshot" 'stage-not-started)
+    (supervisor--transition-state "oneshot" 'pending)
     ;; Started (oneshot still uses 'started state)
     (supervisor--transition-state "oneshot" 'started)
     (should (eq 'started (gethash "oneshot" supervisor--entry-state)))))
@@ -2612,10 +2572,10 @@ Regression test: process-ready was incorrectly emitted for failures."
         (supervisor--dag-started (make-hash-table :test 'equal))
         (supervisor--dag-active-starts 1)
         (supervisor--dag-pending-starts nil)
-        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--dag-complete-callback nil)
         (supervisor--dag-entries (make-hash-table :test 'equal)))
     ;; Set up initial state
-    (supervisor--transition-state "test" 'stage-not-started)
+    (supervisor--transition-state "test" 'pending)
     (puthash "test" '("test" "cmd" 0 t always t simple stage3 nil t 30 nil)
              supervisor--dag-entries)
     ;; Capture events
@@ -2641,7 +2601,7 @@ Regression test: process-ready was incorrectly emitted for disabled entries."
         (supervisor--dag-blocking (make-hash-table :test 'equal))
         (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
         (supervisor--dag-started (make-hash-table :test 'equal))
-        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--dag-complete-callback nil)
         (supervisor--dag-entries (make-hash-table :test 'equal))
         (supervisor--enabled-override (make-hash-table :test 'equal)))
     ;; Set up as disabled entry
@@ -2671,10 +2631,10 @@ Regression test: process-ready was incorrectly emitted for disabled entries."
         (supervisor--dag-started (make-hash-table :test 'equal))
         (supervisor--dag-active-starts 1)
         (supervisor--dag-pending-starts nil)
-        (supervisor--dag-stage-complete-callback nil)
+        (supervisor--dag-complete-callback nil)
         (supervisor--dag-entries (make-hash-table :test 'equal)))
     ;; Set up initial state
-    (supervisor--transition-state "test" 'stage-not-started)
+    (supervisor--transition-state "test" 'pending)
     (puthash "test" '("test" "sleep" 0 t always t simple stage3 nil t 30 nil)
              supervisor--dag-entries)
     ;; Capture events
@@ -3792,30 +3752,6 @@ configured timers must be visible for analysis."
              (substring-no-properties (supervisor--dashboard-header-line))))
         (should (equal header-no-timers header-with-timers))))))
 
-(ert-deftest supervisor-test-timer-section-not-hidden-by-stage-filter ()
-  "Stage filter does not hide timer section."
-  (supervisor-test-with-unit-files
-      '(("sleep 60" :id "svc" :type simple)
-        ("sleep 60" :id "svc2" :type simple))
-    (let ((supervisor--processes (make-hash-table :test 'equal))
-          (supervisor--entry-state (make-hash-table :test 'equal))
-          (supervisor--invalid (make-hash-table :test 'equal))
-          (supervisor--timer-list
-           (list (supervisor-timer--create :id "t1" :target "svc")))
-          (supervisor--timer-state (make-hash-table :test 'equal))
-          (supervisor--invalid-timers (make-hash-table :test 'equal))
-          (supervisor-dashboard-show-timers t)
-          (supervisor-timer-subsystem-mode t)
-          (supervisor--dashboard-stage-filter 'stage1))
-      (let* ((entries (supervisor--get-entries))
-             (ids (mapcar #'car entries)))
-        ;; Timer section still present even with non-matching stage filter
-        (should (cl-find '--timers-- ids))
-        ;; Timer row present
-        (should (cl-find (cons :timer "t1") ids :test #'equal))
-        ;; No services shown (all are stage3, filter is stage1)
-        (should-not (cl-find (cons :service "svc") ids :test #'equal))
-        (should-not (cl-find (cons :service "svc2") ids :test #'equal))))))
 
 (ert-deftest supervisor-test-timer-info-invalid-timer ()
   "Timer info shows details for invalid timers."
@@ -5513,14 +5449,13 @@ conflicting ID, proving precedence derives from list position."
                      ("sleep 200" :id "b" :after "a")
                      ("sleep 300" :id "c" :requires "a")))
          (plan (supervisor--build-plan programs))
-         (by-stage (supervisor-plan-by-stage plan))
-         (stage3-entries (cdr (assq 2 by-stage)))
-         (stage3-ids (mapcar #'car stage3-entries)))
+         (sorted (supervisor-plan-by-target plan))
+         (ids (mapcar #'car sorted)))
     ;; a should come before both b and c
-    (should (< (cl-position "a" stage3-ids :test #'equal)
-               (cl-position "b" stage3-ids :test #'equal)))
-    (should (< (cl-position "a" stage3-ids :test #'equal)
-               (cl-position "c" stage3-ids :test #'equal)))))
+    (should (< (cl-position "a" ids :test #'equal)
+               (cl-position "b" ids :test #'equal)))
+    (should (< (cl-position "a" ids :test #'equal)
+               (cl-position "c" ids :test #'equal)))))
 
 (ert-deftest supervisor-test-plan-requires-deps-populated ()
   "Plan includes separate requires-deps hash."
@@ -5755,12 +5690,12 @@ conflicting ID, proving precedence derives from list position."
   (let* ((programs '(("a" :id "a")
                      ("b" :id "b" :requires "a")))
          (plan (supervisor--build-plan programs))
-         (stage3-entries (cdr (assoc 2 (supervisor-plan-by-stage plan)))))
+         (sorted (supervisor-plan-by-target plan)))
     ;; Both should be valid
     (should-not (gethash "b" (supervisor-plan-invalid plan)))
-    ;; Both should appear in stage3
-    (should (cl-find "a" stage3-entries :key #'supervisor-entry-id :test #'equal))
-    (should (cl-find "b" stage3-entries :key #'supervisor-entry-id :test #'equal))))
+    ;; Both should appear in sorted entries
+    (should (cl-find "a" sorted :key #'supervisor-entry-id :test #'equal))
+    (should (cl-find "b" sorted :key #'supervisor-entry-id :test #'equal))))
 
 (ert-deftest supervisor-test-dag-uses-requires-edges ()
   "DAG scheduler uses :requires edges for in-degree calculation."
@@ -5862,11 +5797,11 @@ conflicting ID, proving precedence derives from list position."
     (should (stringp result))
     (should (string-match ":requires must be" result))))
 
-(ert-deftest supervisor-test-empty-programs-no-by-stage ()
-  "Empty program list produces empty by-stage."
+(ert-deftest supervisor-test-empty-programs-no-by-target ()
+  "Empty program list produces empty by-target."
   (let* ((programs nil)
          (plan (supervisor--build-plan programs)))
-    (should (null (supervisor-plan-by-stage plan)))))
+    (should (null (supervisor-plan-by-target plan)))))
 
 ;;; Timer Schema tests
 
@@ -6571,12 +6506,22 @@ timezone that `encode-time' and `decode-time' use is actually changed."
       '(("true" :id "s1" :type oneshot))
     (let ((supervisor--shutting-down t)
           (supervisor-timers '((:id "t1" :target "s1" :on-startup-sec 60)))
-          (scheduler-started nil))
+          (scheduler-started nil)
+          (callback-ran nil))
       ;; Mock the scheduler start function
       (cl-letf (((symbol-function 'supervisor-timer-scheduler-start)
                  (lambda () (setq scheduler-started t))))
-        ;; Simulate stage completion with no remaining stages
-        (supervisor--start-stages-from-plan nil)
+        ;; Simulate completion callback with no entries (immediate callback)
+        (supervisor--start-entries-async
+         nil
+         (lambda ()
+           (supervisor--dag-cleanup)
+           (when (and (not supervisor--shutting-down)
+                      (fboundp 'supervisor-timer-scheduler-start))
+             (supervisor-timer-scheduler-start))
+           (setq callback-ran t)))
+        ;; Callback should have fired
+        (should callback-ran)
         ;; Scheduler should NOT have been started
         (should-not scheduler-started)))))
 
@@ -11517,9 +11462,8 @@ could incorrectly preserve a non-running disabled unit."
                      ("cmd-b" :id "b")
                      ("cmd-c" :id "c")))
          (plan (supervisor--build-plan programs))
-         (by-stage (supervisor-plan-by-stage plan))
-         (stage3-entries (cdr (assq 2 by-stage)))
-         (ids (mapcar #'supervisor-entry-id stage3-entries)))
+         (sorted (supervisor-plan-by-target plan))
+         (ids (mapcar #'supervisor-entry-id sorted)))
     ;; a must come before b and c
     (should (< (cl-position "a" ids :test #'equal)
                (cl-position "b" ids :test #'equal)))
@@ -11532,9 +11476,8 @@ could incorrectly preserve a non-running disabled unit."
          (programs '(("cmd-a" :id "a" :before ("b"))
                      ("cmd-b" :id "b")))
          (plan (supervisor--build-plan programs))
-         (by-stage (supervisor-plan-by-stage plan))
-         (stage3-entries (cdr (assq 2 by-stage)))
-         (ids (mapcar #'supervisor-entry-id stage3-entries)))
+         (sorted (supervisor-plan-by-target plan))
+         (ids (mapcar #'supervisor-entry-id sorted)))
     ;; a :before b → a comes before b
     (should (< (cl-position "a" ids :test #'equal)
                (cl-position "b" ids :test #'equal)))))
@@ -11561,9 +11504,8 @@ could incorrectly preserve a non-running disabled unit."
                      ("cmd-b" :id "b" :after ("a"))
                      ("cmd-c" :id "c")))
          (plan (supervisor--build-plan programs))
-         (by-stage (supervisor-plan-by-stage plan))
-         (stage3-entries (cdr (assq 2 by-stage)))
-         (ids (mapcar #'supervisor-entry-id stage3-entries)))
+         (sorted (supervisor-plan-by-target plan))
+         (ids (mapcar #'supervisor-entry-id sorted)))
     (should (< (cl-position "a" ids :test #'equal)
                (cl-position "b" ids :test #'equal)))
     (should (< (cl-position "a" ids :test #'equal)
@@ -11590,9 +11532,8 @@ could incorrectly preserve a non-running disabled unit."
          (programs '(("cmd-a" :id "a")
                      ("cmd-b" :id "b" :wants ("a"))))
          (plan (supervisor--build-plan programs))
-         (by-stage (supervisor-plan-by-stage plan))
-         (stage3-entries (cdr (assq 2 by-stage)))
-         (ids (mapcar #'supervisor-entry-id stage3-entries)))
+         (sorted (supervisor-plan-by-target plan))
+         (ids (mapcar #'supervisor-entry-id sorted)))
     ;; a should come before b
     (should (< (cl-position "a" ids :test #'equal)
                (cl-position "b" ids :test #'equal)))))
@@ -11619,9 +11560,8 @@ could incorrectly preserve a non-running disabled unit."
          (programs '(("cmd-a" :id "a")
                      ("cmd-b" :id "b" :wants ("a"))))
          (plan (supervisor--build-plan programs))
-         (by-stage (supervisor-plan-by-stage plan))
-         (stage3-entries (cdr (assq 2 by-stage)))
-         (ids (mapcar #'supervisor-entry-id stage3-entries)))
+         (sorted (supervisor-plan-by-target plan))
+         (ids (mapcar #'supervisor-entry-id sorted)))
     ;; a should come before b
     (should (< (cl-position "a" ids :test #'equal)
                (cl-position "b" ids :test #'equal)))))
@@ -11632,10 +11572,9 @@ could incorrectly preserve a non-running disabled unit."
          (programs '(("cmd-a" :id "a" :disabled t)
                      ("cmd-b" :id "b" :wants ("a"))))
          (plan (supervisor--build-plan programs))
-         (by-stage (supervisor-plan-by-stage plan))
-         (stage3-entries (cdr (assq 2 by-stage))))
+         (sorted (supervisor-plan-by-target plan)))
     ;; Both entries should be in the plan
-    (should (= 2 (length stage3-entries)))))
+    (should (= 2 (length sorted)))))
 
 (ert-deftest supervisor-test-wants-participates-in-cycle-detection ()
   "Wants edges participate in cycle detection."
@@ -11656,9 +11595,8 @@ could incorrectly preserve a non-running disabled unit."
                      ("cmd-b" :id "b")
                      ("cmd-c" :id "c" :wants ("a") :after ("b"))))
          (plan (supervisor--build-plan programs))
-         (by-stage (supervisor-plan-by-stage plan))
-         (stage3-entries (cdr (assq 2 by-stage)))
-         (ids (mapcar #'supervisor-entry-id stage3-entries)))
+         (sorted (supervisor-plan-by-target plan))
+         (ids (mapcar #'supervisor-entry-id sorted)))
     (should (< (cl-position "a" ids :test #'equal)
                (cl-position "c" ids :test #'equal)))
     (should (< (cl-position "b" ids :test #'equal)
@@ -11704,15 +11642,14 @@ could incorrectly preserve a non-running disabled unit."
          (programs '(("cmd-a" :id "a" :wants ("b"))
                      ("cmd-b" :id "b" :wants ("a"))))
          (plan (supervisor--build-plan programs))
-         (by-stage (supervisor-plan-by-stage plan))
-         (stage3-entries (cdr (assq 2 by-stage))))
+         (sorted (supervisor-plan-by-target plan)))
     ;; Cycle fallback should have cleared :wants
-    (dolist (entry stage3-entries)
+    (dolist (entry sorted)
       (should (null (supervisor-entry-wants entry))))
     ;; DAG init should produce zero in-degree for both
     (let ((supervisor--entry-state (make-hash-table :test 'equal))
           (supervisor--mask-override (make-hash-table :test 'equal)))
-      (supervisor--dag-init stage3-entries)
+      (supervisor--dag-init sorted)
       (should (= 0 (gethash "a" supervisor--dag-in-degree)))
       (should (= 0 (gethash "b" supervisor--dag-in-degree))))))
 
@@ -16063,6 +16000,59 @@ PATH set to exclude fuser."
     ;; graphical.target not in valid-id-set
     (should-error (supervisor--resolve-startup-root valid-id-set)
                   :type 'user-error)))
+
+;;; Phase 2 Commit B: Hard cutover tests
+
+(ert-deftest supervisor-test-plan-version-2 ()
+  "Plan struct version is 2 after stage removal."
+  (should (= 2 supervisor-plan-version)))
+
+(ert-deftest supervisor-test-plan-by-target-global-sort ()
+  "Plan by-target is a flat list, not an alist keyed by stage."
+  (let* ((programs '(("true" :id "a")
+                     ("true" :id "b" :after "a")))
+         (plan (supervisor--build-plan programs)))
+    ;; by-target should be a flat list of entries
+    (let ((sorted (supervisor-plan-by-target plan)))
+      (should (listp sorted))
+      ;; Not an alist -- first element should be an entry, not a cons of (int . list)
+      (should (stringp (supervisor-entry-id (car sorted))))
+      ;; a before b (b depends on a)
+      (should (equal (mapcar #'supervisor-entry-id sorted) '("a" "b"))))))
+
+(ert-deftest supervisor-test-builtin-target-ordering-in-plan ()
+  "Built-in targets appear in dependency order in plan."
+  (let* ((programs
+          '((nil :id "basic.target" :type target)
+            (nil :id "multi-user.target" :type target
+                 :requires ("basic.target") :after ("basic.target"))
+            (nil :id "graphical.target" :type target
+                 :requires ("multi-user.target") :after ("multi-user.target"))
+            (nil :id "default.target" :type target)))
+         (plan (supervisor--build-plan programs)))
+    (let* ((sorted (supervisor-plan-by-target plan))
+           (ids (mapcar #'supervisor-entry-id sorted)))
+      ;; basic.target before multi-user.target before graphical.target
+      (should (< (cl-position "basic.target" ids :test #'equal)
+                 (cl-position "multi-user.target" ids :test #'equal)))
+      (should (< (cl-position "multi-user.target" ids :test #'equal)
+                 (cl-position "graphical.target" ids :test #'equal))))))
+
+(ert-deftest supervisor-test-no-cross-stage-concept ()
+  "Entries with different former stages can depend on each other."
+  (let* ((programs '(("true" :id "a")
+                     ("true" :id "b" :after "a")))
+         (plan (supervisor--build-plan programs)))
+    ;; Both entries are in a single flat list (no stage separation)
+    (let ((sorted (supervisor-plan-by-target plan)))
+      (should (= 2 (length sorted)))
+      (should (equal (mapcar #'supervisor-entry-id sorted) '("a" "b"))))))
+
+(ert-deftest supervisor-test-startup-timeout-defcustom ()
+  "Startup timeout defcustom exists with correct default."
+  (should (boundp 'supervisor-startup-timeout))
+  ;; Default is nil (no timeout)
+  (should-not (default-value 'supervisor-startup-timeout)))
 
 (ert-deftest supervisor-test-builtin-programs-overridden-by-disk ()
   "Disk unit file with same ID overrides the built-in entry."

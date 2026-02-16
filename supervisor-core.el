@@ -250,9 +250,9 @@ Set to nil for infinite wait."
   :type '(choice integer (const nil))
   :group 'supervisor)
 
-(defcustom supervisor-stage-timeout nil
-  "Timeout in seconds for each stage.
-If a stage takes longer than this, log a warning and proceed to the next stage.
+(defcustom supervisor-startup-timeout nil
+  "Timeout in seconds for startup.
+If startup takes longer than this, log a warning and force completion.
 Set to nil (default) for no timeout."
   :type '(choice integer (const nil))
   :group 'supervisor)
@@ -388,31 +388,6 @@ written to the supervisor log file."
     (when (or supervisor-verbose
               (memq level '(error warning)))
       (message "%s" msg))))
-
-;;; Stages
-
-(defconst supervisor-stages
-  '((stage1 . 0) (stage2 . 1) (stage3 . 2) (stage4 . 3))
-  "Stage name to priority mapping.  Lower numbers run first.")
-
-(defconst supervisor-stage-names
-  '(stage1 stage2 stage3 stage4)
-  "Ordered list of stage names.")
-
-(defun supervisor--stage-to-int (stage)
-  "Convert STAGE symbol to integer priority.  Default to stage3 (2)."
-  (cond
-   ((not (symbolp stage))
-    (supervisor--log 'warning ":stage must be a symbol, got %S" stage)
-    2)
-   ((not (assq stage supervisor-stages))
-    (supervisor--log 'warning "unknown :stage '%s', using stage3" stage)
-    2)
-   (t (alist-get stage supervisor-stages))))
-
-(defun supervisor--int-to-stage (n)
-  "Convert integer N to stage symbol."
-  (car (rassq n supervisor-stages)))
 
 (defun supervisor--normalize-after (after)
   "Normalize AFTER to a list of ID strings."
@@ -1115,31 +1090,28 @@ cycle fallback behavior.  Uses the pure plan builder internally."
                      (princ (format "  %s: %s\n" id reason)))
                    supervisor--invalid-timers)
           (princ "\n"))
-        ;; Display each stage from the plan's by-stage data
-        (dolist (stage-pair (supervisor-plan-by-stage plan))
-          (let* ((stage-int (car stage-pair))
-                 (stage-name (supervisor--int-to-stage stage-int))
-                 (sorted-entries (cdr stage-pair)))
-            (princ (format "--- Stage: %s (%d entries) ---\n"
-                           stage-name (length sorted-entries)))
-            (let ((order 1))
-              (dolist (entry sorted-entries)
-                (let* ((id (supervisor-entry-id entry))
-                       (type (supervisor-entry-type entry))
-                       (delay (supervisor-entry-delay entry))
-                       (enabled-p (supervisor-entry-enabled-p entry))
-                       (deps (gethash id (supervisor-plan-deps plan)))
-                       (cycle (gethash id (supervisor-plan-cycle-fallback-ids plan))))
-                  (princ (format "  %d. %s [%s]%s%s%s\n"
-                                 order id type
-                                 (if (not enabled-p) " DISABLED" "")
-                                 (if (> delay 0) (format " delay=%ds" delay) "")
-                                 (if cycle " (CYCLE FALLBACK)"
-                                   (if deps
-                                       (format " after=%s"
-                                               (mapconcat #'identity deps ","))
-                                     ""))))
-                  (cl-incf order))))
+        ;; Display startup order from the plan's global sort
+        (let ((sorted (supervisor-plan-by-target plan)))
+          (princ (format "--- Startup order (%d entries) ---\n"
+                         (length sorted)))
+          (let ((order 1))
+            (dolist (entry sorted)
+              (let* ((id (supervisor-entry-id entry))
+                     (type (supervisor-entry-type entry))
+                     (delay (supervisor-entry-delay entry))
+                     (enabled-p (supervisor-entry-enabled-p entry))
+                     (deps (gethash id (supervisor-plan-deps plan)))
+                     (cycle (gethash id (supervisor-plan-cycle-fallback-ids plan))))
+                (princ (format "  %d. %s [%s]%s%s%s\n"
+                               order id type
+                               (if (not enabled-p) " DISABLED" "")
+                               (if (> delay 0) (format " delay=%ds" delay) "")
+                               (if cycle " (CYCLE FALLBACK)"
+                                 (if deps
+                                     (format " after=%s"
+                                             (mapconcat #'identity deps ","))
+                                   ""))))
+                (cl-incf order)))
             (princ "\n")))
         ;; Show timer summary if any
         (when timers
@@ -1468,12 +1440,6 @@ Used for event-driven oneshot completion notification.")
 (defvar supervisor--ready-times (make-hash-table :test 'equal)
   "Hash table mapping entry IDs to ready timestamps (float-time).")
 
-(defvar supervisor--current-stage nil
-  "Currently executing stage symbol, or nil if not running.")
-
-(defvar supervisor--completed-stages nil
-  "List of completed stage symbols.")
-
 (defvar supervisor--cycle-fallback-ids (make-hash-table :test 'equal)
   "Hash table of entry IDs with deps cleared due to cycle fallback.
 When a cycle is detected, :after, :requires, and :wants edges are
@@ -1484,8 +1450,8 @@ all cleared for the affected entries.")
 
 (defvar supervisor--entry-state (make-hash-table :test 'equal)
   "Hash table of ID -> state symbol for detailed status.
-States: waiting-on-deps, delayed, disabled, stage-not-started,
-failed-to-spawn, stage-timeout, started.")
+States: waiting-on-deps, delayed, disabled, pending,
+failed-to-spawn, startup-timeout, started.")
 
 (defvar supervisor--spawn-failure-reason (make-hash-table :test 'equal)
   "Hash table of ID -> string with specific spawn failure reason.
@@ -1496,24 +1462,24 @@ identity or other precondition failures.  Consulted by
 ;;; Entry Lifecycle FSM (Phase 5)
 
 (defconst supervisor--valid-states
-  '(stage-not-started waiting-on-deps delayed disabled
-    started failed-to-spawn stage-timeout)
+  '(pending waiting-on-deps delayed disabled
+    started failed-to-spawn startup-timeout)
   "Valid entry lifecycle states.
-- `stage-not-started': initial state, stage hasn't started yet
+- `pending': initial state, not yet started
 - `waiting-on-deps': waiting for :after dependencies to complete
 - `delayed': waiting for :delay timer to expire
 - `disabled': entry is disabled (skipped)
 - `started': process successfully spawned
 - `failed-to-spawn': process failed to start
-- `stage-timeout': stage timed out before entry could start")
+- `startup-timeout': startup timed out before entry could start")
 
 (defconst supervisor--state-transitions
-  '((nil . (stage-not-started waiting-on-deps disabled stage-timeout))
-    (stage-not-started . (stage-not-started waiting-on-deps delayed disabled
-                          started failed-to-spawn stage-timeout))
+  '((nil . (pending waiting-on-deps disabled startup-timeout))
+    (pending . (pending waiting-on-deps delayed disabled
+                started failed-to-spawn startup-timeout))
     (waiting-on-deps . (waiting-on-deps delayed disabled started
-                        failed-to-spawn stage-timeout))
-    (delayed . (delayed started failed-to-spawn stage-timeout disabled)))
+                        failed-to-spawn startup-timeout))
+    (delayed . (delayed started failed-to-spawn startup-timeout disabled)))
   "Valid state transitions as alist of (from-state . allowed-to-states).
 Self-transitions are allowed for idempotent operations.
 States not listed as keys are terminal (no transitions out).
@@ -1588,11 +1554,11 @@ Runs `supervisor-event-hook' with the event plist."
     ;; Log stage transitions to *Messages*
     (pcase type
       ('stage-start
-       (message "Supervisor: %s starting" stage))
+       (message "Supervisor: starting"))
       ('stage-complete
-       (message "Supervisor: %s complete" stage)))))
+       (message "Supervisor: complete")))))
 
-;;; DAG Scheduler State (per-stage, reset between stages)
+;;; DAG Scheduler State
 
 (defvar supervisor--dag-in-degree nil
   "Hash table of ID -> remaining in-degree count.")
@@ -1621,11 +1587,11 @@ Runs `supervisor-event-hook' with the event plist."
 (defvar supervisor--dag-id-to-index nil
   "Hash table of ID -> original list index for stable ordering.")
 
-(defvar supervisor--dag-stage-complete-callback nil
-  "Callback to invoke when current stage is complete.")
+(defvar supervisor--dag-complete-callback nil
+  "Callback to invoke when all entries are complete.")
 
-(defvar supervisor--dag-stage-timeout-timer nil
-  "Timer for current stage timeout.")
+(defvar supervisor--dag-timeout-timer nil
+  "Timer for startup timeout.")
 
 (defvar supervisor--dag-pending-starts nil
   "Queue of entry IDs waiting to start (for max-concurrent-starts).")
@@ -1645,7 +1611,7 @@ identical input.  The `meta' field contains a wall-clock timestamp,
 so full struct equality requires excluding it."
   entries          ; list of parsed valid entries
   invalid          ; hash: id -> reason string
-  by-stage         ; alist of (stage-int . sorted-entries)
+  by-target        ; globally sorted entries list (topological order)
   deps             ; hash: id -> validated :after deps (ordering only)
   requires-deps    ; hash: id -> validated :requires deps (pull-in + ordering)
   dependents       ; hash: id -> list of dependent ids (combined)
@@ -1653,7 +1619,7 @@ so full struct equality requires excluding it."
   order-index      ; hash: id -> original index for stable ordering
   meta)            ; plist with :version, :timestamp (non-deterministic)
 
-(defconst supervisor-plan-version 1
+(defconst supervisor-plan-version 2
   "Schema version for supervisor-plan struct.")
 
 ;;; Service Definition Schema (v1)
@@ -2069,11 +2035,11 @@ If SNAPSHOT is provided, read from it; otherwise read from globals."
      ((eq entry-state 'disabled) "disabled")
      ((eq entry-state 'delayed) "delayed")
      ((eq entry-state 'waiting-on-deps) "waiting-on-deps")
-     ((eq entry-state 'stage-not-started) "stage-not-started")
+     ((eq entry-state 'pending) "pending")
      ((eq entry-state 'failed-to-spawn)
       (or (gethash id supervisor--spawn-failure-reason)
           "failed-to-spawn"))
-     ((eq entry-state 'stage-timeout) "stage-timeout")
+     ((eq entry-state 'startup-timeout) "startup-timeout")
      (failed "crash-loop")
      (t nil))))
 
@@ -2090,7 +2056,6 @@ This normalizes short-form entries to their explicit form."
          (id (supervisor-entry-id parsed))
          (cmd (supervisor-entry-command parsed))
          (type (supervisor-entry-type parsed))
-         (stage (supervisor-entry-stage parsed))
          (delay (supervisor-entry-delay parsed))
          (enabled (supervisor-entry-enabled-p parsed))
          (restart (supervisor-entry-restart-policy parsed))
@@ -2127,8 +2092,6 @@ This normalizes short-form entries to their explicit form."
       (setq plist (plist-put plist :disabled t)))
     (when (> delay 0)
       (setq plist (plist-put plist :delay delay)))
-    (when (not (eq stage 'stage3))
-      (setq plist (plist-put plist :stage stage)))
     (when (not (eq type 'simple))
       (setq plist (plist-put plist :type type)))
     ;; Only include :id if it differs from the derived ID
@@ -2402,174 +2365,131 @@ The plan includes:
     ;; Phase 1b: Validate cross-entry references
     (setq valid-entries
           (supervisor--validate-references valid-entries invalid))
-    ;; Phase 2: Partition by stage
-    (let ((by-stage-hash (make-hash-table))
-          (all-ids (mapcar #'car valid-entries)))
-      (dolist (entry valid-entries)
-        (let* ((stage (supervisor-entry-stage entry))
-               (stage-int (supervisor--stage-to-int stage)))
-          (puthash stage-int (cons entry (gethash stage-int by-stage-hash))
-                   by-stage-hash)))
-      ;; Phase 3: For each stage, validate deps and topo sort
-      (let ((by-stage nil)
-            (combined-deps (make-hash-table :test 'equal)))
-        (dolist (stage-int '(0 1 2 3))
-          (when-let* ((stage-entries (gethash stage-int by-stage-hash)))
-            (setq stage-entries (nreverse stage-entries))
-            (let* ((stage-ids (mapcar #'car stage-entries))
-                   ;; Pre-pass: build :before inversion map
-                   ;; For each entry A with :before ("B"), record that B
-                   ;; gets an implicit :after A edge.
-                   (before-map (make-hash-table :test 'equal))
-                   (_ (dolist (entry stage-entries)
-                        (let ((src-id (supervisor-entry-id entry))
-                              (before (supervisor-entry-before entry)))
-                          (dolist (target before)
-                            (cond
-                             ((not (member target stage-ids))
-                              (if (member target all-ids)
-                                  (supervisor--log 'warning
-                                    ":before '%s' for %s is in different stage, ignoring"
-                                    target src-id)
-                                (supervisor--log 'warning
-                                  ":before '%s' for %s does not exist, ignoring"
-                                  target src-id)))
-                             (t
-                              (puthash target
-                                       (cons src-id (gethash target before-map))
-                                       before-map)))))))
-                   ;; Validate :after, :requires, :wants references
-                   (validated-entries
-                    (mapcar
-                     (lambda (entry)
-                       (let* ((id (supervisor-entry-id entry))
-                              (after (supervisor-entry-after entry))
-                              (requires (supervisor-entry-requires entry))
-                              (wants (supervisor-entry-wants entry))
-                              ;; Validate :after - warn on cross-stage/missing
-                              (valid-after
-                               (cl-remove-if-not
-                                (lambda (dep)
-                                  (cond
-                                   ((not (member dep stage-ids))
-                                    (if (member dep all-ids)
-                                        (supervisor--log 'warning
-                                          ":after '%s' for %s is in different stage, ignoring"
-                                          dep id)
-                                      (supervisor--log 'warning
-                                        ":after '%s' for %s does not exist, ignoring"
-                                        dep id))
-                                    nil)
-                                   (t t)))
-                                after))
-                              ;; Merge inverted :before edges into valid-after
-                              (before-edges (gethash id before-map))
-                              (valid-after
-                               (supervisor--deduplicate-stable
-                                (append valid-after before-edges)))
-                              ;; Validate :requires - error on cross-stage, warn on missing
-                              (valid-requires
-                               (cl-remove-if-not
-                                (lambda (dep)
-                                  (cond
-                                   ((not (member dep all-ids))
-                                    (supervisor--log 'warning
-                                      ":requires '%s' for %s does not exist, ignoring"
-                                      dep id)
-                                    nil)
-                                   ((not (member dep stage-ids))
-                                    ;; Cross-stage :requires is an error
-                                    (puthash id
-                                             (format ":requires '%s' is in different stage (cross-stage requires not allowed)"
-                                                     dep)
-                                             invalid)
-                                    (supervisor--log 'error
-                                      ":requires '%s' for %s is in different stage (not allowed)"
-                                      dep id)
-                                    nil)
-                                   (t t)))
-                                requires))
-                              ;; Validate :wants - silently drop missing/cross-stage
-                              (valid-wants
-                               (cl-remove-if-not
-                                (lambda (dep)
-                                  (cond
-                                   ((not (member dep stage-ids))
-                                    (when (member dep all-ids)
-                                      (supervisor--log 'warning
-                                        ":wants '%s' for %s is in different stage, ignoring"
-                                        dep id))
-                                    nil)
-                                   (t t)))
-                                wants)))
-                         (puthash id valid-after deps)
-                         (puthash id valid-requires requires-deps)
-                         ;; Combined deps for topo sort
-                         ;; (union of after + requires + wants)
-                         (puthash id (supervisor--deduplicate-stable
-                                      (append
-                                       (cl-union valid-after valid-requires
-                                                 :test #'equal)
-                                       valid-wants))
-                                  combined-deps)
-                         ;; Return entry with validated deps
-                         (let ((new-entry entry))
-                           (unless (equal after valid-after)
-                             (setq new-entry
-                                   (append (cl-subseq new-entry 0 8)
-                                           (list valid-after)
-                                           (cl-subseq new-entry 9))))
-                           (unless (equal requires valid-requires)
-                             (setq new-entry
-                                   (append (cl-subseq new-entry 0 12)
-                                           (list valid-requires)
-                                           (cl-subseq new-entry 13))))
-                           new-entry)))
-                     stage-entries))
-                   ;; Filter out entries that were marked invalid during :requires validation
-                   (validated-entries
-                    (cl-remove-if (lambda (entry)
-                                    (gethash (supervisor-entry-id entry) invalid))
-                                  validated-entries))
-                   ;; Build dependents graph (combined :after + :requires)
-                   (_ (dolist (entry validated-entries)
-                        (let* ((id (supervisor-entry-id entry))
-                               (all-deps (gethash id combined-deps)))
-                          (puthash id nil dependents)
-                          (dolist (dep all-deps)
-                            (puthash dep (cons id (gethash dep dependents))
-                                     dependents)))))
-                   ;; Topo sort using combined deps
-                   (sorted-entries
-                    (supervisor--build-plan-topo-sort
-                     validated-entries combined-deps order-index cycle-fallback-ids))
-                   ;; If cycle was detected, also clear deps and requires-deps
-                   (_ (dolist (entry sorted-entries)
-                        (let ((id (supervisor-entry-id entry)))
-                          (when (gethash id cycle-fallback-ids)
-                            (puthash id nil deps)
-                            (puthash id nil requires-deps))))))
-              ;; Only push non-empty stages (Bug 4 fix)
-              (when sorted-entries
-                (push (cons stage-int sorted-entries) by-stage)))))
-        ;; Filter valid-entries to exclude entries invalidated in phase 2/3
-        ;; (Bug 2 fix: cross-stage :requires entries should not be in plan.entries)
-        (let ((final-entries (cl-remove-if
-                              (lambda (entry)
+    ;; Phase 2: Global dep validation and topo sort (single pass, no stage partitioning)
+    (let ((all-ids (mapcar #'car valid-entries))
+          (combined-deps (make-hash-table :test 'equal)))
+      ;; Pre-pass: build :before inversion map across ALL entries
+      (let ((before-map (make-hash-table :test 'equal)))
+        (dolist (entry valid-entries)
+          (let ((src-id (supervisor-entry-id entry))
+                (before (supervisor-entry-before entry)))
+            (dolist (target before)
+              (cond
+               ((not (member target all-ids))
+                (supervisor--log 'warning
+                  ":before '%s' for %s does not exist, ignoring"
+                  target src-id))
+               (t
+                (puthash target
+                         (cons src-id (gethash target before-map))
+                         before-map))))))
+        ;; Validate :after, :requires, :wants references globally
+        (let ((validated-entries
+               (mapcar
+                (lambda (entry)
+                  (let* ((id (supervisor-entry-id entry))
+                         (after (supervisor-entry-after entry))
+                         (requires (supervisor-entry-requires entry))
+                         (wants (supervisor-entry-wants entry))
+                         ;; Validate :after - warn + drop missing
+                         (valid-after
+                          (cl-remove-if-not
+                           (lambda (dep)
+                             (cond
+                              ((not (member dep all-ids))
+                               (supervisor--log 'warning
+                                 ":after '%s' for %s does not exist, ignoring"
+                                 dep id)
+                               nil)
+                              (t t)))
+                           after))
+                         ;; Merge inverted :before edges
+                         (before-edges (gethash id before-map))
+                         (valid-after
+                          (supervisor--deduplicate-stable
+                           (append valid-after before-edges)))
+                         ;; Validate :requires - warn + drop missing
+                         (valid-requires
+                          (cl-remove-if-not
+                           (lambda (dep)
+                             (cond
+                              ((not (member dep all-ids))
+                               (supervisor--log 'warning
+                                 ":requires '%s' for %s does not exist, ignoring"
+                                 dep id)
+                               nil)
+                              (t t)))
+                           requires))
+                         ;; Validate :wants - silently drop missing
+                         (valid-wants
+                          (cl-remove-if-not
+                           (lambda (dep)
+                             (member dep all-ids))
+                           wants)))
+                    (puthash id valid-after deps)
+                    (puthash id valid-requires requires-deps)
+                    ;; Combined deps for topo sort
+                    ;; (union of after + requires + wants)
+                    (puthash id (supervisor--deduplicate-stable
+                                 (append
+                                  (cl-union valid-after valid-requires
+                                            :test #'equal)
+                                  valid-wants))
+                             combined-deps)
+                    ;; Return entry with validated deps
+                    (let ((new-entry entry))
+                      (unless (equal after valid-after)
+                        (setq new-entry
+                              (append (cl-subseq new-entry 0 8)
+                                      (list valid-after)
+                                      (cl-subseq new-entry 9))))
+                      (unless (equal requires valid-requires)
+                        (setq new-entry
+                              (append (cl-subseq new-entry 0 12)
+                                      (list valid-requires)
+                                      (cl-subseq new-entry 13))))
+                      new-entry)))
+                valid-entries)))
+          ;; Filter out entries marked invalid during validation
+          (setq validated-entries
+                (cl-remove-if (lambda (entry)
                                 (gethash (supervisor-entry-id entry) invalid))
-                              valid-entries)))
-          ;; Return the plan struct
-          (supervisor-plan--create
-           :entries final-entries
-           :invalid invalid
-           :by-stage (nreverse by-stage)
-           :deps deps
-           :requires-deps requires-deps
-           :dependents dependents
-           :cycle-fallback-ids cycle-fallback-ids
-           :order-index order-index
-           :meta (list :version supervisor-plan-version
-                       :timestamp (float-time))))))))
+                              validated-entries))
+          ;; Build dependents graph (combined :after + :requires + :wants)
+          (dolist (entry validated-entries)
+            (let* ((id (supervisor-entry-id entry))
+                   (all-deps (gethash id combined-deps)))
+              (puthash id nil dependents)
+              (dolist (dep all-deps)
+                (puthash dep (cons id (gethash dep dependents))
+                         dependents))))
+          ;; Global topo sort
+          (let ((sorted-entries
+                 (supervisor--build-plan-topo-sort
+                  validated-entries combined-deps order-index cycle-fallback-ids)))
+            ;; If cycle was detected, also clear deps and requires-deps
+            (dolist (entry sorted-entries)
+              (let ((id (supervisor-entry-id entry)))
+                (when (gethash id cycle-fallback-ids)
+                  (puthash id nil deps)
+                  (puthash id nil requires-deps))))
+            ;; Filter valid-entries to exclude entries invalidated in phase 2
+            (let ((final-entries (cl-remove-if
+                                  (lambda (entry)
+                                    (gethash (supervisor-entry-id entry) invalid))
+                                  valid-entries)))
+              ;; Return the plan struct
+              (supervisor-plan--create
+               :entries final-entries
+               :invalid invalid
+               :by-target sorted-entries
+               :deps deps
+               :requires-deps requires-deps
+               :dependents dependents
+               :cycle-fallback-ids cycle-fallback-ids
+               :order-index order-index
+               :meta (list :version supervisor-plan-version
+                           :timestamp (float-time))))))))))
 
 (defun supervisor--build-plan-topo-sort (entries deps order-index cycle-fallback-ids)
   "Stable topological sort for plan building (pure helper).
@@ -2831,12 +2751,8 @@ Use accessor functions instead of direct indexing for new code."
                       t))
            (stdout-log-file (plist-get plist :stdout-log-file))
            (stderr-log-file (plist-get plist :stderr-log-file))
-           ;; :stage (default stage3)
-           (stage-raw (plist-get plist :stage))
-           (stage (if stage-raw
-                      (let ((s (supervisor--stage-to-int stage-raw)))
-                        (supervisor--int-to-stage s))
-                    'stage3))
+           ;; :stage is vestigial (always stage3)
+           (stage 'stage3)
            ;; :after - ordering dependencies (same stage only, start order)
            (after (supervisor--normalize-after (plist-get plist :after)))
            ;; :requires - requirement dependencies (pull-in + ordering)
@@ -3095,21 +3011,7 @@ to the first 20 descendants.  Returns nil if PID has no children."
           (bounded (cl-subseq descendants 0 (min 20 (length descendants)))))
       (list :count count :pids bounded))))
 
-;;; Staging and Dependency Resolution
-
-(defun supervisor--partition-by-stage (parsed-entries)
-  "Partition PARSED-ENTRIES by stage.  Return alist of (stage . entries)."
-  (let ((by-stage (make-hash-table)))
-    (dolist (entry parsed-entries)
-      (let* ((stage (supervisor-entry-stage entry))
-             (stage-int (supervisor--stage-to-int stage)))
-        (puthash stage-int (cons entry (gethash stage-int by-stage)) by-stage)))
-    ;; Convert to sorted alist, reverse each list to preserve original order
-    (let (result)
-      (dolist (stage-int '(0 1 2 3))
-        (when-let* ((entries (gethash stage-int by-stage)))
-          (push (cons stage-int (nreverse entries)) result)))
-      (nreverse result))))
+;;; Dependency Resolution
 
 (defun supervisor--validate-after (entries stage-ids all-ids)
   "Validate :after references in ENTRIES.
@@ -3630,7 +3532,7 @@ Disabled entries are marked ready immediately per spec."
          ((> (length all-deps) 0)
           (supervisor--transition-state id 'waiting-on-deps))
          (t
-          (supervisor--transition-state id 'stage-not-started)))))
+          (supervisor--transition-state id 'pending)))))
     ;; Build dependents graph from combined :after + :requires + :wants
     (dolist (entry entries)
       (let* ((id (supervisor-entry-id entry))
@@ -3688,7 +3590,7 @@ No-op if DAG scheduler is not active (e.g., manual starts)."
       (dolist (dep-id newly-ready)
         (supervisor--dag-try-start-entry dep-id)))
     ;; Check if stage is complete
-    (supervisor--dag-check-stage-complete)))
+    (supervisor--dag-check-complete)))
 
 (defun supervisor--dag-process-pending-starts ()
   "Process pending start queue if under max-concurrent-starts limit."
@@ -3848,9 +3750,9 @@ RESTART-SEC, UNIT-FILE-DIRECTORY, USER, and GROUP are passed through to
             (supervisor--dag-handle-spawn-failure id)
           (supervisor--dag-handle-spawn-success id type oneshot-timeout))))))
 
-(defun supervisor--dag-check-stage-complete ()
+(defun supervisor--dag-check-complete ()
   "Check if current stage is complete and invoke callback if so."
-  (when (and supervisor--dag-stage-complete-callback
+  (when (and supervisor--dag-complete-callback
              ;; All entries started (actually spawned, not just scheduled)
              (= (hash-table-count supervisor--dag-started)
                 (hash-table-count supervisor--dag-entries))
@@ -3858,9 +3760,9 @@ RESTART-SEC, UNIT-FILE-DIRECTORY, USER, and GROUP are passed through to
              (= 0 (hash-table-count supervisor--dag-delay-timers))
              ;; No blocking oneshots pending
              (= 0 (hash-table-count supervisor--dag-blocking)))
-    (supervisor--log 'info "stage complete")
-    (let ((callback supervisor--dag-stage-complete-callback))
-      (setq supervisor--dag-stage-complete-callback nil)
+    (supervisor--log 'info "all entries complete")
+    (let ((callback supervisor--dag-complete-callback))
+      (setq supervisor--dag-complete-callback nil)
       (funcall callback))))
 
 (defun supervisor--dag-cleanup ()
@@ -3878,8 +3780,8 @@ RESTART-SEC, UNIT-FILE-DIRECTORY, USER, and GROUP are passed through to
                  (cancel-timer timer)))
              supervisor--dag-delay-timers))
   ;; Cancel stage timeout timer
-  (when (timerp supervisor--dag-stage-timeout-timer)
-    (cancel-timer supervisor--dag-stage-timeout-timer))
+  (when (timerp supervisor--dag-timeout-timer)
+    (cancel-timer supervisor--dag-timeout-timer))
   (setq supervisor--dag-in-degree nil)
   (setq supervisor--dag-dependents nil)
   (setq supervisor--dag-entries nil)
@@ -3889,8 +3791,8 @@ RESTART-SEC, UNIT-FILE-DIRECTORY, USER, and GROUP are passed through to
   (setq supervisor--dag-timeout-timers nil)
   (setq supervisor--dag-delay-timers nil)
   (setq supervisor--dag-id-to-index nil)
-  (setq supervisor--dag-stage-complete-callback nil)
-  (setq supervisor--dag-stage-timeout-timer nil)
+  (setq supervisor--dag-complete-callback nil)
+  (setq supervisor--dag-timeout-timer nil)
   (setq supervisor--dag-pending-starts nil)
   (setq supervisor--dag-active-starts 0))
 
@@ -5101,16 +5003,15 @@ so the entry can be restarted."
         (remhash id supervisor--oneshot-completed)))
     (list :status 'reset :reason nil)))
 
-(defun supervisor--dag-force-stage-complete ()
-  "Force stage completion due to timeout.
+(defun supervisor--dag-force-complete ()
+  "Force startup completion due to timeout.
 Mark all unstarted entries as timed out and invoke the callback."
-  (supervisor--log 'warning "stage %s timed out, forcing completion"
-                   supervisor--current-stage)
+  (supervisor--log 'warning "startup timed out, forcing completion")
   ;; Mark all unstarted entries
   (maphash (lambda (id _entry)
              (unless (gethash id supervisor--dag-started)
                (puthash id t supervisor--dag-started)
-               (supervisor--transition-state id 'stage-timeout)))
+               (supervisor--transition-state id 'startup-timeout)))
            supervisor--dag-entries)
   ;; Clear blocking oneshots
   (clrhash supervisor--dag-blocking)
@@ -5121,27 +5022,23 @@ Mark all unstarted entries as timed out and invoke the callback."
            supervisor--dag-delay-timers)
   (clrhash supervisor--dag-delay-timers)
   ;; Invoke callback
-  (when supervisor--dag-stage-complete-callback
-    (let ((callback supervisor--dag-stage-complete-callback))
-      (setq supervisor--dag-stage-complete-callback nil)
+  (when supervisor--dag-complete-callback
+    (let ((callback supervisor--dag-complete-callback))
+      (setq supervisor--dag-complete-callback nil)
       (funcall callback))))
 
-(defun supervisor--start-stage-async (stage-name entries callback)
-  "Start ENTRIES for STAGE-NAME asynchronously.  Call CALLBACK when complete."
-  (supervisor--log 'info "=== Stage: %s ===" stage-name)
-  (setq supervisor--current-stage stage-name)
-  (supervisor--emit-event 'stage-start nil stage-name nil)
+(defun supervisor--start-entries-async (entries callback)
+  "Start ENTRIES asynchronously.  Call CALLBACK when complete."
   (if (null entries)
-      ;; Empty stage, proceed immediately (callback handles hook and tracking)
       (funcall callback)
     ;; Initialize DAG scheduler
     (supervisor--dag-init entries)
-    (setq supervisor--dag-stage-complete-callback callback)
-    ;; Set up stage timeout if configured
-    (when supervisor-stage-timeout
-      (setq supervisor--dag-stage-timeout-timer
-            (run-at-time supervisor-stage-timeout nil
-                         #'supervisor--dag-force-stage-complete)))
+    (setq supervisor--dag-complete-callback callback)
+    ;; Set up startup timeout if configured
+    (when supervisor-startup-timeout
+      (setq supervisor--dag-timeout-timer
+            (run-at-time supervisor-startup-timeout nil
+                         #'supervisor--dag-force-complete)))
     ;; Initialize pending starts queue for max-concurrent-starts
     (setq supervisor--dag-pending-starts nil)
     (setq supervisor--dag-active-starts 0)
@@ -5163,8 +5060,8 @@ Mark all unstarted entries as timed out and invoke the callback."
         ;; Start all ready entries
         (dolist (id ready-ids)
           (supervisor--dag-try-start-entry id))
-        ;; Check if stage is already complete (e.g., all entries were disabled)
-        (supervisor--dag-check-stage-complete)))))
+        ;; Check if already complete (e.g., all entries were disabled)
+        (supervisor--dag-check-complete)))))
 
 ;;; Default target resolution
 
@@ -5188,9 +5085,8 @@ Signal `user-error' if resolved target does not exist."
 
 ;;;###autoload
 (defun supervisor-start ()
-  "Start all programs defined in unit files by stage.
-Uses async DAG scheduler - stages run sequentially, but entries within
-a stage can run in parallel based on :after dependencies.
+  "Start all programs defined in unit files.
+Uses async DAG scheduler with global topological ordering.
 
 Ready semantics (when dependents are unblocked):
 - Simple process: spawned (process started)
@@ -5248,8 +5144,6 @@ Ready semantics (when dependents are unblocked):
     (setq supervisor--timer-list nil))
   (when (boundp 'supervisor--scheduler-startup-time)
     (setq supervisor--scheduler-startup-time nil))
-  (setq supervisor--current-stage nil)
-  (setq supervisor--completed-stages nil)
   (setq supervisor--current-plan nil)
   (setq supervisor--default-target-link-override nil)
   ;; Load persisted overrides (restores enabled/restart/logging overrides)
@@ -5276,38 +5170,18 @@ Ready semantics (when dependents are unblocked):
                (supervisor-timer-subsystem-active-p)
                (fboundp 'supervisor-timer-build-list))
       (supervisor-timer-build-list plan))
-    ;; Initialize all entry states to stage-not-started via FSM
+    ;; Initialize all entry states to pending via FSM
     (dolist (entry (supervisor-plan-entries plan))
-      (supervisor--transition-state (car entry) 'stage-not-started))
-    ;; Process stages asynchronously using plan's pre-sorted by-stage data
-    (supervisor--start-stages-from-plan (supervisor-plan-by-stage plan))))
-
-(defun supervisor--start-stages-from-plan (remaining-stages)
-  "Process REMAINING-STAGES from prebuilt plan asynchronously.
-REMAINING-STAGES is an alist of (stage-int . sorted-entries) from the plan.
-Entries are already validated and topologically sorted."
-  (if (or (null remaining-stages) supervisor--shutting-down)
-      (progn
-        (supervisor--dag-cleanup)
-        (setq supervisor--current-stage nil)
-        (supervisor--log 'info "startup complete")
-        ;; Start timer scheduler after all stages complete (if timer module loaded)
-        (when (and (not supervisor--shutting-down)
-                   (fboundp 'supervisor-timer-scheduler-start))
-          (supervisor-timer-scheduler-start)))
-    (let* ((stage-pair (car remaining-stages))
-           (rest (cdr remaining-stages))
-           (stage-int (car stage-pair))
-           (stage-name (supervisor--int-to-stage stage-int))
-           (entries (cdr stage-pair)))
-      ;; Entries are already sorted by plan builder - no recomputation needed
-      (supervisor--start-stage-async
-       stage-name entries
-       (lambda ()
-         (supervisor--emit-event 'stage-complete nil stage-name nil)
-         (push stage-name supervisor--completed-stages)
-         (supervisor--dag-cleanup)
-         (supervisor--start-stages-from-plan rest))))))
+      (supervisor--transition-state (car entry) 'pending))
+    ;; Start entries asynchronously using plan's globally sorted data
+    (supervisor--start-entries-async
+     (supervisor-plan-by-target plan)
+     (lambda ()
+       (supervisor--dag-cleanup)
+       (supervisor--log 'info "startup complete")
+       (when (and (not supervisor--shutting-down)
+                  (fboundp 'supervisor-timer-scheduler-start))
+         (supervisor-timer-scheduler-start))))))
 
 ;;;###autoload
 (defun supervisor-stop-now ()
