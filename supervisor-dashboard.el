@@ -474,17 +474,23 @@ Signal `user-error' if point is on a separator, timer, or empty row."
   "Return projected TIMER fields as a plist for display.
 Provides rendering parity with `list-timers' CLI output.
 Fields: :id, :target, :enabled, :last-run, :next-run, :last-exit,
-:result-reason, :target-type, :last-result."
+:result-reason, :target-type, :last-result.
+The :target-type is resolved from current config, not runtime state,
+so it is always current even for never-triggered timers."
   (let* ((id (supervisor-timer-id timer))
-         (state (gethash id supervisor--timer-state)))
+         (target-id (supervisor-timer-target timer))
+         (state (gethash id supervisor--timer-state))
+         (target-entry (supervisor--get-entry-for-id target-id))
+         (target-type (when target-entry
+                        (supervisor-entry-type target-entry))))
     (list :id id
-          :target (supervisor-timer-target timer)
+          :target target-id
           :enabled (supervisor-timer-enabled timer)
           :last-run (plist-get state :last-run-at)
           :next-run (plist-get state :next-run-at)
           :last-exit (plist-get state :last-exit)
           :result-reason (plist-get state :last-result-reason)
-          :target-type (plist-get state :last-target-type)
+          :target-type target-type
           :last-result (plist-get state :last-result))))
 
 (defun supervisor--make-dashboard-entry (id type parent-target enabled-p
@@ -662,19 +668,23 @@ Returns list of (typed-id vector) pairs with (:timer . ID) keys."
         (push (list (cons :timer id)
                     (supervisor--make-timer-dashboard-entry timer))
               entries)))
-    ;; Also show invalid timers with matching column layout
-    (maphash (lambda (id reason)
-               (push (list (cons :timer id)
-                           (vector (propertize id 'face 'supervisor-status-invalid)
-                                   "-"
-                                   "-"
-                                   "-"
-                                   (supervisor--propertize-status "invalid")
-                                   "-"
-                                   (propertize reason 'face 'supervisor-reason)
-                                   "" ""))
-                     entries))
-             supervisor--invalid-timers)
+    ;; Also show invalid timers with matching column layout.
+    ;; Collect and sort by ID for deterministic ordering.
+    (let ((invalid-ids nil))
+      (maphash (lambda (id _reason) (push id invalid-ids))
+               supervisor--invalid-timers)
+      (dolist (id (sort invalid-ids #'string<))
+        (let ((reason (gethash id supervisor--invalid-timers)))
+          (push (list (cons :timer id)
+                      (vector (propertize id 'face 'supervisor-status-invalid)
+                              "-"
+                              "-"
+                              "-"
+                              (supervisor--propertize-status "invalid")
+                              "-"
+                              (propertize reason 'face 'supervisor-reason)
+                              "" ""))
+                entries))))
     (nreverse entries)))
 
 (defun supervisor--get-entries (&optional snapshot programs)

@@ -1807,7 +1807,11 @@ Return a list of alists, one per timer."
              (retry-at (plist-get state :retry-next-at))
              (last-result (plist-get state :last-result))
              (last-result-reason (plist-get state :last-result-reason))
-             (last-target-type (plist-get state :last-target-type)))
+             ;; Resolve target type from current config, not runtime
+             ;; state, so it is always current even for fresh timers.
+             (target-entry (supervisor--get-entry-for-id target))
+             (target-type (when target-entry
+                            (supervisor-entry-type target-entry))))
         (push `((id . ,id)
                 (target . ,target)
                 (enabled . ,enabled)
@@ -1822,7 +1826,7 @@ Return a list of alists, one per timer."
                 (retry-at . ,retry-at)
                 (last-result . ,last-result)
                 (last-result-reason . ,last-result-reason)
-                (target-type . ,last-target-type))
+                (target-type . ,target-type))
               result)))
     (nreverse result)))
 
@@ -1956,12 +1960,16 @@ Return a list of alists, one per timer."
              ;; from current config so listing works even when mode is off.
              (timer-list (or supervisor--timer-list built-timers))
              (timers (supervisor--cli-gather-timer-info timer-list))
-             ;; Convert hash table entries (id -> reason) to plists
+             ;; Convert hash table entries (id -> reason) to plists,
+             ;; sorted by ID for deterministic output ordering.
              (invalid (let (result)
                           (maphash (lambda (id reason)
                                      (push (list :id id :reason reason) result))
                                    supervisor--invalid-timers)
-                          (nreverse result)))
+                          (sort result
+                                (lambda (a b)
+                                  (string< (plist-get a :id)
+                                           (plist-get b :id))))))
                (output (if json-p
                            (supervisor--cli-timers-json timers invalid)
                          (supervisor--cli-timers-human timers invalid))))

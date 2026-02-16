@@ -7891,89 +7891,129 @@ After catch-up, :next-run-at must not remain in the past."
         (should-not (plist-get state :retry-next-at))))))
 
 (ert-deftest supervisor-test-cli-list-timers-json-v2-fields ()
-  "CLI list-timers JSON includes v2 fields: target_type, last_result."
+  "CLI list-timers JSON includes v2 fields: target_type, last_result.
+Target type is resolved from current config, not runtime state."
   (let* ((supervisor-timer-subsystem-mode t)
          (supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc"
                                           :enabled t :persistent t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
-         (supervisor--invalid-timers (make-hash-table :test 'equal)))
+         (supervisor--invalid-timers (make-hash-table :test 'equal))
+         (mock-entry (list "svc" "echo hi" 0 t nil nil nil nil 'oneshot nil nil
+                           nil nil nil nil nil nil nil nil nil nil nil nil
+                           nil nil nil nil nil nil nil nil nil nil)))
     (puthash "t1" '(:last-result success
-                    :last-result-reason nil
-                    :last-target-type oneshot)
+                    :last-result-reason nil)
              supervisor--timer-state)
-    (let ((result (supervisor--cli-dispatch '("--json" "list-timers"))))
-      (let* ((json-object-type 'alist)
-             (json-array-type 'list)
-             (data (json-read-from-string
-                    (supervisor-cli-result-output result)))
-             (timers (alist-get 'timers data))
-             (entry (car timers)))
-        (should (equal "success" (alist-get 'last_result entry)))
-        (should (equal "oneshot" (alist-get 'target_type entry)))))))
+    (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) mock-entry)))
+      (let ((result (supervisor--cli-dispatch '("--json" "list-timers"))))
+        (let* ((json-object-type 'alist)
+               (json-array-type 'list)
+               (data (json-read-from-string
+                      (supervisor-cli-result-output result)))
+               (timers (alist-get 'timers data))
+               (entry (car timers)))
+          (should (equal "success" (alist-get 'last_result entry)))
+          (should (equal "oneshot" (alist-get 'target_type entry))))))))
 
 (ert-deftest supervisor-test-cli-list-timers-human-v2-columns ()
-  "CLI list-timers human output includes TYPE and RESULT columns."
+  "CLI list-timers human output includes TYPE and RESULT columns.
+TYPE is resolved from current config."
   (let* ((supervisor-timer-subsystem-mode t)
          (supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc"
                                           :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
-         (supervisor--invalid-timers (make-hash-table :test 'equal)))
-    (puthash "t1" '(:last-result failure
-                    :last-target-type simple)
+         (supervisor--invalid-timers (make-hash-table :test 'equal))
+         (mock-entry (list "svc" "echo hi" 0 t nil nil nil nil 'simple nil nil
+                           nil nil nil nil nil nil nil nil nil nil nil nil
+                           nil nil nil nil nil nil nil nil nil nil)))
+    (puthash "t1" '(:last-result failure)
              supervisor--timer-state)
-    (let ((result (supervisor--cli-dispatch '("list-timers"))))
-      (let ((output (supervisor-cli-result-output result)))
-        ;; Header should have TYPE and RESULT columns
-        (should (string-match-p "TYPE" output))
-        (should (string-match-p "RESULT" output))
-        ;; Data row should have the values
-        (should (string-match-p "simple" output))
-        (should (string-match-p "failure" output))))))
+    (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) mock-entry)))
+      (let ((result (supervisor--cli-dispatch '("list-timers"))))
+        (let ((output (supervisor-cli-result-output result)))
+          ;; Header should have TYPE and RESULT columns
+          (should (string-match-p "TYPE" output))
+          (should (string-match-p "RESULT" output))
+          ;; Data row should have the values
+          (should (string-match-p "simple" output))
+          (should (string-match-p "failure" output)))))))
 
 (ert-deftest supervisor-test-dashboard-timer-entry-v2-columns ()
-  "Dashboard timer entry vector includes TYPE, RESULT, and REASON columns."
+  "Dashboard timer entry vector includes TYPE, RESULT, and REASON columns.
+TYPE is resolved from current config, not runtime state."
   (let* ((timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
-         (supervisor--processes (make-hash-table :test 'equal)))
-    (puthash "t1" '(:last-target-type oneshot :last-result success
+         (supervisor--processes (make-hash-table :test 'equal))
+         (mock-entry (list "svc" "echo hi" 0 t nil nil nil nil 'oneshot nil nil
+                           nil nil nil nil nil nil nil nil nil nil nil nil
+                           nil nil nil nil nil nil nil nil nil nil)))
+    (puthash "t1" '(:last-result success
                     :last-result-reason already-active)
              supervisor--timer-state)
-    (let ((entry (supervisor--make-timer-dashboard-entry timer)))
-      ;; Column 6 is REASON, column 7 is TYPE, column 8 is RESULT
-      (should (string= "already-active" (aref entry 6)))
-      (should (string= "oneshot" (aref entry 7)))
-      (should (string-match-p "success" (aref entry 8))))))
+    (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) mock-entry)))
+      (let ((entry (supervisor--make-timer-dashboard-entry timer)))
+        ;; Column 6 is REASON, column 7 is TYPE, column 8 is RESULT
+        (should (string= "already-active" (aref entry 6)))
+        (should (string= "oneshot" (aref entry 7)))
+        (should (string-match-p "success" (aref entry 8)))))))
 
 (ert-deftest supervisor-test-dashboard-timer-entry-empty-v2-defaults ()
-  "Dashboard timer entry shows dash for missing REASON, TYPE, and RESULT."
+  "Dashboard timer entry shows dash for missing REASON and RESULT.
+TYPE is resolved from config; shows dash when target not found."
   (let* ((timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--processes (make-hash-table :test 'equal)))
-    ;; No state set -- columns default to "-"
-    (let ((entry (supervisor--make-timer-dashboard-entry timer)))
-      (should (string= "-" (aref entry 6)))
-      (should (string= "-" (aref entry 7)))
-      (should (string= "-" (aref entry 8))))))
+    ;; No state set, target not found in config
+    (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) nil)))
+      (let ((entry (supervisor--make-timer-dashboard-entry timer)))
+        (should (string= "-" (aref entry 6)))
+        (should (string= "-" (aref entry 7)))
+        (should (string= "-" (aref entry 8)))))))
 
 (ert-deftest supervisor-test-dashboard-timer-entry-failure-result-reason ()
   "Dashboard timer entry shows result-reason for failure outcomes."
   (let* ((timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
-         (supervisor--processes (make-hash-table :test 'equal)))
-    (puthash "t1" '(:last-target-type oneshot :last-result failure
+         (supervisor--processes (make-hash-table :test 'equal))
+         (mock-entry (list "svc" "echo hi" 0 t nil nil nil nil 'oneshot nil nil
+                           nil nil nil nil nil nil nil nil nil nil nil nil
+                           nil nil nil nil nil nil nil nil nil nil)))
+    (puthash "t1" '(:last-result failure
                     :last-result-reason spawn-failed)
              supervisor--timer-state)
-    (let ((entry (supervisor--make-timer-dashboard-entry timer)))
-      ;; Column 6 is REASON showing result-reason, not miss-reason
-      (should (string= "spawn-failed" (aref entry 6)))
-      (should (string-match-p "failure" (aref entry 8))))))
+    (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) mock-entry)))
+      (let ((entry (supervisor--make-timer-dashboard-entry timer)))
+        ;; Column 6 is REASON showing result-reason, not miss-reason
+        (should (string= "spawn-failed" (aref entry 6)))
+        (should (string-match-p "failure" (aref entry 8)))))))
+
+(ert-deftest supervisor-test-dashboard-timer-entry-fresh-timer-shows-type ()
+  "Fresh timer (never triggered) shows TYPE resolved from current config."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (mock-entry (list "svc" "echo hi" 0 t nil nil nil nil 'simple nil nil
+                           nil nil nil nil nil nil nil nil nil nil nil nil
+                           nil nil nil nil nil nil nil nil nil nil)))
+    ;; No state at all -- timer has never triggered
+    (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) mock-entry)))
+      (let ((entry (supervisor--make-timer-dashboard-entry timer)))
+        ;; TYPE column shows resolved type even without runtime state
+        (should (string= "simple" (aref entry 7)))))))
 
 ;;; CLI Control Plane tests
 
@@ -8914,20 +8954,26 @@ After catch-up, :next-run-at must not remain in the past."
          (supervisor--processes (make-hash-table :test 'equal)))
     ;; Simulate signal death stored as negative exit code
     (puthash "t1" '(:last-exit -9 :next-run-at 2000.0) supervisor--timer-state)
-    (let ((entry (supervisor--make-timer-dashboard-entry timer)))
-      ;; Entry is a vector: [id target enabled last-run next-run exit miss "" ""]
-      ;; Exit code is at index 5
-      (should (string= "-9" (aref entry 5))))))
+    (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) nil)))
+      (let ((entry (supervisor--make-timer-dashboard-entry timer)))
+        ;; Exit code is at index 5
+        (should (string= "-9" (aref entry 5)))))))
 
 (ert-deftest supervisor-test-cli-list-timers-full-field-mapping ()
-  "The `list-timers' output includes all required fields."
+  "The `list-timers' output includes all required fields.
+Target type is resolved from current config."
   (let* ((supervisor-timer-subsystem-mode t)
          (supervisor-mode t)
          (timer (supervisor-timer--create :id "test-timer" :target "test-target"
                                           :enabled t :persistent t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
-         (supervisor--invalid-timers (make-hash-table :test 'equal)))
+         (supervisor--invalid-timers (make-hash-table :test 'equal))
+         (mock-entry (list "test-target" "echo hi" 0 t nil nil nil nil
+                           'oneshot nil nil nil nil nil nil nil nil nil nil
+                           nil nil nil nil nil nil nil nil nil nil nil nil
+                           nil nil)))
     ;; Set up comprehensive state (note: :last-missed-at is the state key)
     (puthash "test-timer" '(:last-run-at 1000.0
                             :last-success-at 900.0
@@ -8939,40 +8985,45 @@ After catch-up, :next-run-at must not remain in the past."
                             :last-result skip
                             :last-result-reason overlap)
              supervisor--timer-state)
-    ;; Test human format includes all fields
-    (let ((result (supervisor--cli-dispatch '("list-timers"))))
-      (should (supervisor-cli-result-p result))
-      (let ((output (supervisor-cli-result-output result)))
-        ;; ID and target
-        (should (string-match-p "test-timer" output))
-        (should (string-match-p "test-target" output))
-        ;; Enabled (yes/no)
-        (should (string-match-p "yes" output))
-        ;; Exit code
-        (should (string-match-p "1" output))
-        ;; Result and reason
-        (should (string-match-p "skip" output))
-        (should (string-match-p "overlap" output))))
-    ;; Test JSON format includes all fields with correct values
-    (let ((result (supervisor--cli-dispatch '("--json" "list-timers"))))
-      (should (supervisor-cli-result-p result))
-      (let* ((json-object-type 'alist)
-             (json-array-type 'list)
-             (data (json-read-from-string (supervisor-cli-result-output result)))
-             (timers (alist-get 'timers data))
-             (entry (car timers)))
-        ;; Verify all required fields present and mapped correctly
-        (should (equal "test-timer" (alist-get 'id entry)))
-        (should (equal "test-target" (alist-get 'target entry)))
-        (should (eq t (alist-get 'enabled entry)))
-        (should (eq t (alist-get 'persistent entry)))
-        (should (= 1000.0 (alist-get 'last_run_at entry)))
-        (should (= 900.0 (alist-get 'last_success_at entry)))
-        (should (= 950.0 (alist-get 'last_failure_at entry)))
-        (should (= 1 (alist-get 'last_exit entry)))
-        (should (= 2000.0 (alist-get 'next_run_at entry)))
-        (should (= 850.0 (alist-get 'last_miss_at entry)))
-        (should (equal "overlap" (alist-get 'miss_reason entry)))))))
+    (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
+               (lambda (_id) mock-entry)))
+      ;; Test human format includes all fields
+      (let ((result (supervisor--cli-dispatch '("list-timers"))))
+        (should (supervisor-cli-result-p result))
+        (let ((output (supervisor-cli-result-output result)))
+          ;; ID and target
+          (should (string-match-p "test-timer" output))
+          (should (string-match-p "test-target" output))
+          ;; Enabled (yes/no)
+          (should (string-match-p "yes" output))
+          ;; Exit code
+          (should (string-match-p "1" output))
+          ;; Type resolved from config
+          (should (string-match-p "oneshot" output))
+          ;; Result and reason
+          (should (string-match-p "skip" output))
+          (should (string-match-p "overlap" output))))
+      ;; Test JSON format includes all fields with correct values
+      (let ((result (supervisor--cli-dispatch '("--json" "list-timers"))))
+        (should (supervisor-cli-result-p result))
+        (let* ((json-object-type 'alist)
+               (json-array-type 'list)
+               (data (json-read-from-string (supervisor-cli-result-output result)))
+               (timers (alist-get 'timers data))
+               (entry (car timers)))
+          ;; Verify all required fields present and mapped correctly
+          (should (equal "test-timer" (alist-get 'id entry)))
+          (should (equal "test-target" (alist-get 'target entry)))
+          (should (eq t (alist-get 'enabled entry)))
+          (should (eq t (alist-get 'persistent entry)))
+          (should (= 1000.0 (alist-get 'last_run_at entry)))
+          (should (= 900.0 (alist-get 'last_success_at entry)))
+          (should (= 950.0 (alist-get 'last_failure_at entry)))
+          (should (= 1 (alist-get 'last_exit entry)))
+          (should (= 2000.0 (alist-get 'next_run_at entry)))
+          (should (= 850.0 (alist-get 'last_miss_at entry)))
+          (should (equal "overlap" (alist-get 'miss_reason entry)))
+          (should (equal "oneshot" (alist-get 'target_type entry))))))))
 
 (ert-deftest supervisor-test-cli-list-timers-rejects-extra-args ()
   "The `list-timers' with extra args returns invalid-args exit code."
