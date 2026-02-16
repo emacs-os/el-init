@@ -455,11 +455,21 @@ Scan PLIST and collect any key that appears more than once."
     :exec-stop :exec-reload :restart-sec
     :description :documentation :before :wants
     :kill-signal :kill-mode :remain-after-exit :success-exit-status
-    :user :group)
+    :user :group
+    :wanted-by :required-by)
   "List of valid keywords for entry plists.")
 
-(defconst supervisor--valid-types '(simple oneshot)
+(defconst supervisor--valid-types '(simple oneshot target)
   "List of valid :type values.")
+
+(defconst supervisor--target-invalid-keywords
+  '(:delay :restart :no-restart :logging :stdout-log-file :stderr-log-file
+    :oneshot-blocking :oneshot-async :oneshot-timeout
+    :working-directory :environment :environment-file
+    :exec-stop :exec-reload :restart-sec
+    :kill-signal :kill-mode :remain-after-exit :success-exit-status
+    :user :group :stage :wanted-by :required-by)
+  "Keywords invalid for :type target entries.")
 
 (defconst supervisor--valid-restart-policies '(no on-success on-failure always)
   "List of valid restart policy symbols.
@@ -567,8 +577,9 @@ Return nil if valid, or a reason string if invalid."
    ;; Must be a list with command string first
    ((not (and (listp entry) (stringp (car entry))))
     "entry must be a string or list starting with command string")
-   ;; List entry: command must be non-empty/non-whitespace
-   ((string-empty-p (string-trim (car entry)))
+   ;; List entry: command must be non-empty/non-whitespace (except target type)
+   ((and (string-empty-p (string-trim (car entry)))
+         (not (eq (plist-get (cdr entry) :type) 'target)))
     "command must not be empty or whitespace-only")
    (t
     (let ((plist (cdr entry)))
@@ -599,14 +610,10 @@ Return nil if valid, or a reason string if invalid."
             (push ":type must be a symbol, not a string" errors))
            ((not (memq type-val supervisor--valid-types))
             (push (format ":type must be one of %s" supervisor--valid-types) errors)))))
-      ;; Check :stage is valid symbol
+      ;; :stage is deprecated
       (when (plist-member plist :stage)
-        (let ((stage (plist-get plist :stage)))
-          (cond
-           ((not (symbolp stage))
-            (push ":stage must be a symbol, not a string" errors))
-           ((not (assq stage supervisor-stages))
-            (push (format ":stage must be one of %s" supervisor-stage-names) errors)))))
+        (push ":stage is removed; use :wanted-by and :required-by to assign services to targets"
+              errors))
       ;; Check :id is a valid string when provided
       (when (plist-member plist :id)
         (let ((id (plist-get plist :id)))
@@ -617,6 +624,18 @@ Return nil if valid, or a reason string if invalid."
             (push ":id must not be empty" errors))
            ((not (string-match-p "\\`[A-Za-z0-9._:@-]+\\'" id))
             (push ":id contains invalid characters (allowed: A-Z a-z 0-9 . _ : @ -)" errors)))))
+      ;; Enforce .target suffix rules
+      (let ((eid (or (plist-get plist :id)
+                     (when (stringp (car entry))
+                       (file-name-nondirectory (car entry))))))
+        (when (stringp eid)
+          (cond
+           ((and (eq type 'target)
+                 (not (string-suffix-p ".target" eid)))
+            (push ":type target requires ID ending in .target" errors))
+           ((and (not (eq type 'target))
+                 (string-suffix-p ".target" eid))
+            (push "non-target ID must not end in .target" errors)))))
       ;; Check :delay is a non-negative number
       (when (plist-member plist :delay)
         (let ((delay (plist-get plist :delay)))
@@ -685,6 +704,20 @@ Return nil if valid, or a reason string if invalid."
         (dolist (kw supervisor--oneshot-only-keywords)
           (when (plist-member plist kw)
             (push (format "%s is invalid for :type simple" kw) errors))))
+      (when (eq type 'target)
+        (dolist (kw supervisor--target-invalid-keywords)
+          (when (plist-member plist kw)
+            (push (format "%s is invalid for :type target" kw) errors))))
+      ;; Check :wanted-by and :required-by shape
+      (dolist (spec '((:wanted-by . ":wanted-by")
+                      (:required-by . ":required-by")))
+        (when (plist-member plist (car spec))
+          (let ((val (plist-get plist (car spec))))
+            (unless (or (null val) (stringp val)
+                        (and (proper-list-p val) (cl-every #'stringp val)))
+              (push (format "%s must be a string or list of strings"
+                            (cdr spec))
+                    errors)))))
       ;; Check :tags is a symbol, string, or list of symbols/strings
       (when (plist-member plist :tags)
         (let ((val (plist-get plist :tags)))
@@ -845,7 +878,9 @@ Return nil if valid, or a reason string if invalid."
         (dolist (dep-spec '((:after . ":after")
                             (:requires . ":requires")
                             (:before . ":before")
-                            (:wants . ":wants")))
+                            (:wants . ":wants")
+                            (:wanted-by . ":wanted-by")
+                            (:required-by . ":required-by")))
           (when (plist-member plist (car dep-spec))
             (let* ((val (plist-get plist (car dep-spec)))
                    (items (cond ((null val) nil)
@@ -1598,8 +1633,8 @@ or legacy tuple indexing.
 Field documentation:
   id             - Unique identifier string (required)
   command        - Shell command string to execute (required)
-  type           - Process type: `simple' (daemon) or `oneshot' (run-once)
-                   Default: `simple'
+  type           - Entry type: `simple' (daemon), `oneshot' (run-once),
+                   or `target' (grouping unit).  Default: `simple'
   stage          - Startup stage: `stage1', `stage2', `stage3', or `stage4'
                    Default: `stage3'
   delay          - Seconds to wait before starting (non-negative number)
@@ -1658,7 +1693,11 @@ Field documentation:
   remain-after-exit - Oneshot active latch (boolean), oneshot only
                    Default: nil
   success-exit-status - Extra success criteria plist (:codes :signals)
-                   Simple only.  Default: nil"
+                   Simple only.  Default: nil
+  wanted-by      - List of target IDs this service belongs to (soft)
+                   Default: nil
+  required-by    - List of target IDs this service is required by
+                   Default: nil"
   (id nil :type string :documentation "Unique identifier (required)")
   (command nil :type string :documentation "Shell command to execute (required)")
   (type 'simple :type symbol :documentation "Process type: simple or oneshot")
@@ -1691,7 +1730,9 @@ Field documentation:
   (remain-after-exit nil :type boolean :documentation "Oneshot active latch")
   (success-exit-status nil :type list :documentation "Extra success criteria plist")
   (user nil :type (or null string integer) :documentation "Run-as user (root only)")
-  (group nil :type (or null string integer) :documentation "Run-as group (root only)"))
+  (group nil :type (or null string integer) :documentation "Run-as group (root only)")
+  (wanted-by nil :type list :documentation "Target IDs this service belongs to (soft)")
+  (required-by nil :type list :documentation "Target IDs this service is required by"))
 
 (defconst supervisor-service-required-fields '(id command)
   "List of required fields in a service record.")
@@ -1725,7 +1766,9 @@ Field documentation:
     (remain-after-exit . nil)
     (success-exit-status . nil)
     (user . nil)
-    (group . nil))
+    (group . nil)
+    (wanted-by . nil)
+    (required-by . nil))
   "Alist of optional fields with their default values.
 A value of :defer means the default is resolved at runtime.")
 
@@ -1742,7 +1785,7 @@ A value of :defer means the default is resolved at runtime.")
 ;;    exec-stop exec-reload restart-sec
 ;;    description documentation before wants
 ;;    kill-signal kill-mode remain-after-exit success-exit-status
-;;    user group)
+;;    user group wanted-by required-by)
 
 (defun supervisor-entry-id (entry)
   "Return the ID of parsed ENTRY."
@@ -1784,7 +1827,7 @@ Value is one of `always', `no', `on-success', or `on-failure'."
        (nth 7 entry)))
 
 (defun supervisor-entry-type (entry)
-  "Return the type (`simple' or `oneshot') of parsed ENTRY."
+  "Return the type (`simple', `oneshot', or `target') of parsed ENTRY."
   (nth (if (>= (length entry) 31) 8 6) entry))
 
 (defun supervisor-entry-stage (entry)
@@ -1874,6 +1917,14 @@ Value is one of `always', `no', `on-success', or `on-failure'."
 (defun supervisor-entry-group (entry)
   "Return the run-as group of parsed ENTRY, or nil."
   (nth (if (>= (length entry) 31) 30 28) entry))
+
+(defun supervisor-entry-wanted-by (entry)
+  "Return the wanted-by target list of parsed ENTRY."
+  (and (>= (length entry) 33) (nth 31 entry)))
+
+(defun supervisor-entry-required-by (entry)
+  "Return the required-by target list of parsed ENTRY."
+  (and (>= (length entry) 33) (nth 32 entry)))
 
 ;; Forward declarations for timer state variables (defined in supervisor-timer.el)
 ;; These are only accessed when timer module is loaded.
@@ -2167,6 +2218,99 @@ completion status, and overrides.  Safe to call at any time."
      :last-exit-info (copy-hash-table supervisor--last-exit-info)
      :timestamp (float-time))))
 
+(defun supervisor--validate-references (valid-entries invalid)
+  "Validate cross-entry references in VALID-ENTRIES.
+INVALID is a hash table to which newly invalid entries are added.
+Return the filtered list of valid entries with soft refs dropped."
+  (let ((id-type (make-hash-table :test 'equal)))
+    ;; Build ID-to-type lookup
+    (dolist (entry valid-entries)
+      (puthash (supervisor-entry-id entry)
+               (supervisor-entry-type entry)
+               id-type))
+    ;; Check :wanted-by/:required-by target references
+    (dolist (entry valid-entries)
+      (let ((id (supervisor-entry-id entry)))
+        (dolist (spec (list (cons (supervisor-entry-wanted-by entry) ":wanted-by")
+                            (cons (supervisor-entry-required-by entry) ":required-by")))
+          (dolist (target-id (car spec))
+            (let ((target-type (gethash target-id id-type)))
+              (cond
+               ((not target-type)
+                (puthash id (format "%s references non-existent target '%s'"
+                                    (cdr spec) target-id)
+                         invalid)
+                (supervisor--log 'error "%s '%s' for %s does not exist"
+                                 (cdr spec) target-id id))
+               ((not (eq target-type 'target))
+                (puthash id (format "%s references '%s' which is not a target"
+                                    (cdr spec) target-id)
+                         invalid)
+                (supervisor--log 'error "%s '%s' for %s is not :type target"
+                                 (cdr spec) target-id id))))))))
+    ;; Check target entries' :requires refs exist
+    (dolist (entry valid-entries)
+      (when (eq (supervisor-entry-type entry) 'target)
+        (let ((id (supervisor-entry-id entry)))
+          (dolist (req (supervisor-entry-requires entry))
+            (unless (gethash req id-type)
+              (puthash id (format ":requires '%s' does not exist" req)
+                       invalid)
+              (supervisor--log 'error
+                               "target %s :requires '%s' does not exist"
+                               id req)))
+          ;; Soft deps: drop missing :wants/:after/:before with warning
+          (dolist (dep-spec (list (cons (supervisor-entry-wants entry) ":wants")
+                                  (cons (supervisor-entry-after entry) ":after")
+                                  (cons (supervisor-entry-before entry) ":before")))
+            (dolist (dep (car dep-spec))
+              (unless (gethash dep id-type)
+                (supervisor--log 'warning
+                                 "target %s %s '%s' does not exist, dropping"
+                                 id (cdr dep-spec) dep)))))))
+    ;; Cycle detection on :requires graph among targets
+    (let ((target-requires (make-hash-table :test 'equal))
+          (cycle-ids nil))
+      (dolist (entry valid-entries)
+        (when (and (eq (supervisor-entry-type entry) 'target)
+                   (not (gethash (supervisor-entry-id entry) invalid)))
+          (puthash (supervisor-entry-id entry)
+                   (supervisor-entry-requires entry)
+                   target-requires)))
+      ;; DFS cycle detection
+      (let ((white (make-hash-table :test 'equal))
+            (gray (make-hash-table :test 'equal)))
+        (maphash (lambda (id _) (puthash id t white)) target-requires)
+        (cl-labels
+            ((dfs (node path)
+               (cond
+                ((gethash node gray)
+                 ;; Found a cycle
+                 (let ((cycle-start (cl-position node path :test #'equal)))
+                   (when cycle-start
+                     (dolist (cid (nthcdr cycle-start path))
+                       (push cid cycle-ids)))))
+                ((gethash node white)
+                 (remhash node white)
+                 (puthash node t gray)
+                 (dolist (dep (gethash node target-requires))
+                   (when (gethash dep target-requires)
+                     (dfs dep (append path (list node)))))
+                 (remhash node gray)))))
+          (maphash (lambda (id _)
+                     (when (gethash id white)
+                       (dfs id nil)))
+                   target-requires)))
+      ;; Mark cycle participants invalid
+      (dolist (cid (cl-remove-duplicates cycle-ids :test #'equal))
+        (puthash cid (format "target :requires cycle detected involving '%s'" cid)
+                 invalid)
+        (supervisor--log 'error "target :requires cycle: %s" cid)))
+    ;; Filter out newly-invalidated entries
+    (cl-remove-if (lambda (entry)
+                    (gethash (supervisor-entry-id entry) invalid))
+                  valid-entries)))
+
 (defun supervisor--build-plan (programs)
   "Build an immutable execution plan from PROGRAMS.
 This function does not modify global runtime state, but does emit
@@ -2215,6 +2359,9 @@ The plan includes:
           (push parsed valid-entries)))
         (cl-incf idx)))
     (setq valid-entries (nreverse valid-entries))
+    ;; Phase 1b: Validate cross-entry references
+    (setq valid-entries
+          (supervisor--validate-references valid-entries invalid))
     ;; Phase 2: Partition by stage
     (let ((by-stage-hash (make-hash-table))
           (all-ids (mapcar #'car valid-entries)))
@@ -2549,12 +2696,13 @@ or nil if VAL is nil."
 
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
-Return a 31-element list: (id cmd delay enabled-p restart-policy
+Return a 33-element list: (id cmd delay enabled-p restart-policy
 logging-p stdout-log-file stderr-log-file type stage after
 oneshot-blocking oneshot-timeout tags requires working-directory
 environment environment-file exec-stop exec-reload restart-sec
 description documentation before wants kill-signal kill-mode
-remain-after-exit success-exit-status user group).
+remain-after-exit success-exit-status user group wanted-by
+required-by).
 
 Indices (schema v1):
   0  id                  - unique identifier string
@@ -2565,7 +2713,7 @@ Indices (schema v1):
   5  logging-p           - whether to log stdout/stderr
   6  stdout-log-file     - explicit stdout log file path or nil
   7  stderr-log-file     - explicit stderr log file path or nil
-  8  type                - `simple' or `oneshot'
+  8  type                - `simple', `oneshot', or `target'
   9  stage               - startup stage symbol
   10 after               - ordering dependencies (same stage)
   11 oneshot-blocking    - block stage for oneshot exit
@@ -2588,6 +2736,8 @@ Indices (schema v1):
   28 success-exit-status - plist (:codes :signals) or nil
   29 user                - run-as user string/int or nil
   30 group               - run-as group string/int or nil
+  31 wanted-by           - target IDs (soft membership) or nil
+  32 required-by         - target IDs (hard requirement) or nil
 
 ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
@@ -2600,21 +2750,25 @@ Use accessor functions instead of direct indexing for new code."
               supervisor-oneshot-default-blocking supervisor-oneshot-timeout nil nil
               nil nil nil nil nil nil
               nil nil nil nil nil nil nil nil
-              nil nil))
+              nil nil nil nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
-           (cmd-tokens (split-string-and-unquote cmd))
-           (_ (unless cmd-tokens
-                (error "Supervisor: empty command in entry")))
-           (id (or (plist-get plist :id)
-                   (file-name-nondirectory (car cmd-tokens))))
-           (delay (or (plist-get plist :delay) 0))
            (type-raw (plist-get plist :type))
            (type (cond ((null type-raw) 'simple)
                        ((symbolp type-raw) type-raw)
                        ((stringp type-raw) (intern type-raw))
                        (t 'simple)))
-           (_ (unless (memq type '(simple oneshot))
+           (cmd-tokens (unless (eq type 'target)
+                         (split-string-and-unquote cmd)))
+           (_ (when (and (not (eq type 'target)) (not cmd-tokens))
+                (error "Supervisor: empty command in entry")))
+           (id (or (plist-get plist :id)
+                   (if (eq type 'target)
+                       (error "Supervisor: target entry requires :id")
+                     (file-name-nondirectory (car cmd-tokens)))))
+           (cmd (if (eq type 'target) nil cmd))
+           (delay (or (plist-get plist :delay) 0))
+           (_ (unless (memq type '(simple oneshot target))
                 (supervisor--log 'warning "unknown :type '%s' for %s, using simple" type id)))
            ;; :enabled t (default) or :disabled t (inverse) - whether to start at all
            (enabled (cond ((plist-member plist :enabled)
@@ -2692,7 +2846,14 @@ Use accessor functions instead of direct indexing for new code."
             (supervisor--normalize-success-exit-status success-exit-status-raw))
            ;; Identity fields (indices 27-28)
            (user (plist-get plist :user))
-           (group (plist-get plist :group)))
+           (group (plist-get plist :group))
+           ;; Target membership fields (indices 29-30)
+           (wanted-by
+            (supervisor--deduplicate-stable
+             (supervisor--normalize-after (plist-get plist :wanted-by))))
+           (required-by
+            (supervisor--deduplicate-stable
+             (supervisor--normalize-after (plist-get plist :required-by)))))
       (list id cmd delay enabled restart logging
             stdout-log-file stderr-log-file
             type stage after
@@ -2701,7 +2862,7 @@ Use accessor functions instead of direct indexing for new code."
             exec-stop exec-reload restart-sec
             description documentation before wants
             kill-signal kill-mode remain-after-exit success-exit-status
-            user group))))
+            user group wanted-by required-by))))
 
 ;;; Entry/Service Conversion Functions
 
@@ -2738,7 +2899,9 @@ Use accessor functions instead of direct indexing for new code."
    :remain-after-exit (supervisor-entry-remain-after-exit entry)
    :success-exit-status (supervisor-entry-success-exit-status entry)
    :user (supervisor-entry-user entry)
-   :group (supervisor-entry-group entry)))
+   :group (supervisor-entry-group entry)
+   :wanted-by (supervisor-entry-wanted-by entry)
+   :required-by (supervisor-entry-required-by entry)))
 
 (defun supervisor-service-to-entry (service)
   "Convert SERVICE struct to a parsed entry tuple."
@@ -2772,7 +2935,9 @@ Use accessor functions instead of direct indexing for new code."
         (supervisor-service-remain-after-exit service)
         (supervisor-service-success-exit-status service)
         (supervisor-service-user service)
-        (supervisor-service-group service)))
+        (supervisor-service-group service)
+        (supervisor-service-wanted-by service)
+        (supervisor-service-required-by service)))
 
 (defun supervisor--check-crash-loop (id)
   "Check if ID is crash-looping.  Return t if should NOT restart."
@@ -3351,12 +3516,10 @@ A user unit file with the same ID overrides the built-in entry."
    (cons (supervisor--builtin-logrotate-command)
          (list :id "logrotate"
                :type 'oneshot
-               :stage 'stage4
                :description "Rotate supervisor log files"))
    (cons (supervisor--builtin-log-prune-command)
          (list :id "log-prune"
                :type 'oneshot
-               :stage 'stage4
                :after '("logrotate")
                :requires '("logrotate")
                :description "Prune supervisor log files"))))

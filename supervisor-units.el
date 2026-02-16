@@ -227,7 +227,7 @@ Return a plist with keys:
     :exec-stop :exec-reload :restart-sec
     :description :documentation :before :wants
     :kill-signal :kill-mode :remain-after-exit :success-exit-status
-    :user :group)
+    :user :group :wanted-by :required-by)
   "Valid keywords in a unit-file plist.
 Includes `:command' which is unit-file specific.")
 
@@ -358,11 +358,18 @@ Return nil if valid, or a reason string with file:line context if invalid."
    ((not (string-match-p "\\`[A-Za-z0-9._:@-]+\\'" (plist-get plist :id)))
     (format "%s:%d: :id contains invalid characters (allowed: A-Z a-z 0-9 . _ : @ -)"
             path line))
-   ((not (plist-get plist :command))
-    (format "%s:%d: missing :command" path line))
-   ((not (stringp (plist-get plist :command)))
+   ((and (not (eq (plist-get plist :type) 'target))
+         (not (plist-get plist :command)))
+    (format "%s:%d: missing :command (required for non-target types)"
+            path line))
+   ((and (eq (plist-get plist :type) 'target)
+         (plist-get plist :command))
+    (format "%s:%d: :command is invalid for :type target" path line))
+   ((and (plist-get plist :command)
+         (not (stringp (plist-get plist :command))))
     (format "%s:%d: :command must be a string" path line))
-   ((string-empty-p (string-trim (plist-get plist :command)))
+   ((and (plist-get plist :command)
+         (string-empty-p (string-trim (plist-get plist :command))))
     (format "%s:%d: :command must not be empty or whitespace-only"
             path line))
    (t
@@ -385,8 +392,10 @@ Return nil if valid, or a reason string with file:line context if invalid."
   "Convert unit-file PLIST to program entry format.
 Input: (:id \"x\" :command \"cmd\" :type simple ...)
 Output: (\"cmd\" :id \"x\" :type simple ...)
-The `:command' key is consumed and becomes the car of the entry."
-  (let ((cmd (plist-get plist :command))
+The `:command' key is consumed and becomes the car of the entry.
+For target type entries without `:command', uses an empty string sentinel."
+  (let ((cmd (or (plist-get plist :command)
+                 (if (eq (plist-get plist :type) 'target) "" nil)))
         (rest nil))
     ;; Copy all keys except :command
     (let ((keys plist))
