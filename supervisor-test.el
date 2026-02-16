@@ -16670,6 +16670,16 @@ An invalid entry ID that happens to end in .target must not pass."
     (should (string-match-p "which is not a target"
                             (gethash "myapp" (supervisor-plan-invalid plan))))))
 
+(ert-deftest supervisor-test-required-by-non-target-invalidates-owner ()
+  ":required-by referencing a non-target entry invalidates the entry."
+  (let* ((programs '(("sleep 100" :id "svc-a")
+                     ("sleep 300" :id "myapp"
+                      :required-by "svc-a")))
+         (plan (supervisor--build-plan programs)))
+    (should (gethash "myapp" (supervisor-plan-invalid plan)))
+    (should (string-match-p "which is not a target"
+                            (gethash "myapp" (supervisor-plan-invalid plan))))))
+
 (ert-deftest supervisor-test-wanted-by-valid-target-accepted ()
   ":wanted-by referencing an existing target passes reference validation."
   (let* ((programs '(("" :type target :id "multi.target")
