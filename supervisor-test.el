@@ -14863,8 +14863,13 @@ PATH set to exclude fuser."
          (logd (expand-file-name "libexec/supervisor-logd" root))
          (dir (make-temp-file "logd-rotate-" t))
          (log-file (expand-file-name "log-svc.log" dir)))
-    (when (not (file-executable-p logd))
-      (ert-skip "supervisor-logd binary not built"))
+    ;; Build the binary if it is missing or stale.
+    (unless (file-executable-p logd)
+      (let ((result (supervisor-build-libexec-helpers t)))
+        (unless (file-executable-p logd)
+          (error "Cannot build supervisor-logd: %S"
+                 (or (plist-get result :failed)
+                     (plist-get result :missing-source))))))
     (unwind-protect
         (let* ((proc (make-process
                       :name "test-logd"
