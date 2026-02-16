@@ -1561,7 +1561,8 @@ Returns t if transition succeeded, nil if forced through invalid."
 (defconst supervisor--event-types
   '(startup-begin startup-complete process-started process-ready
     process-exit process-failed cleanup
-    timer-trigger timer-overlap timer-success timer-failure)
+    timer-trigger timer-overlap timer-success timer-failure
+    target-reached target-degraded)
   "Valid event types for the structured event system.
 - `startup-begin': startup begins processing
 - `startup-complete': startup finished processing
@@ -1573,7 +1574,9 @@ Returns t if transition succeeded, nil if forced through invalid."
 - `timer-trigger': timer fired its target oneshot
 - `timer-overlap': timer skipped due to target still running
 - `timer-success': timer's target completed successfully
-- `timer-failure': timer's target failed")
+- `timer-failure': timer's target failed
+- `target-reached': all required members of a target reached terminal state
+- `target-degraded': target converged but some required members failed")
 
 (defvar supervisor-event-hook nil
   "Hook run for all supervisor events.
@@ -1643,6 +1646,25 @@ Runs `supervisor-event-hook' with the event plist."
 
 (defvar supervisor--dag-active-starts 0
   "Count of currently starting processes (for max-concurrent-starts).")
+
+(defvar supervisor--target-convergence nil
+  "Hash table of target ID to convergence state symbol.
+Valid states: converging, reached, degraded.")
+
+(defvar supervisor--target-convergence-reasons nil
+  "Hash table of target ID to list of reason strings for degraded.")
+
+(defvar supervisor--target-converging nil
+  "Hash table of target ID to t for targets still converging.
+Used by `supervisor--dag-check-complete' to block premature completion.")
+
+(defvar supervisor--target-member-reverse nil
+  "Hash table of member ID to list of target IDs containing it.
+Built from `supervisor--target-members' inverse for convergence callbacks.")
+
+(defvar supervisor--target-members nil
+  "Hash table of target ID to plist (:requires (ids) :wants (ids)).
+Populated from plan during startup for convergence checks.")
 
 ;;; Plan Artifact (Phase 2 Data-Driven Architecture)
 
@@ -3717,6 +3739,11 @@ No-op if DAG scheduler is not active (e.g., manual starts)."
     (puthash id t supervisor--dag-ready)
     ;; Record ready time for blame view
     (puthash id (float-time) supervisor--ready-times)
+    ;; Check if this member's readiness unblocks any converging targets
+    (when supervisor--target-member-reverse
+      (dolist (target-id (gethash id supervisor--target-member-reverse))
+        (when (gethash target-id supervisor--target-converging)
+          (supervisor--target-check-convergence target-id))))
     ;; Cancel any timeout timer
     (when-let* ((timer (gethash id supervisor--dag-timeout-timers)))
       (when (timerp timer)
@@ -3774,6 +3801,75 @@ No-op if DAG scheduler is not active (e.g., manual starts)."
       (let ((entry (gethash id supervisor--dag-entries)))
         (supervisor--dag-start-entry-async entry)))))
 
+;;; Target Convergence Protocol
+
+(defun supervisor--target-init-convergence (target-members-hash)
+  "Initialize convergence state from TARGET-MEMBERS-HASH.
+TARGET-MEMBERS-HASH maps target ID to plist (:requires (ids) :wants (ids)).
+Builds the reverse index for convergence callbacks."
+  (setq supervisor--target-members target-members-hash)
+  (setq supervisor--target-convergence (make-hash-table :test 'equal))
+  (setq supervisor--target-convergence-reasons (make-hash-table :test 'equal))
+  (setq supervisor--target-converging (make-hash-table :test 'equal))
+  ;; Build reverse index: member-id -> list of target IDs
+  (setq supervisor--target-member-reverse (make-hash-table :test 'equal))
+  (maphash (lambda (target-id members)
+             (dolist (mid (plist-get members :requires))
+               (puthash mid (cons target-id
+                                  (gethash mid supervisor--target-member-reverse))
+                        supervisor--target-member-reverse))
+             (dolist (mid (plist-get members :wants))
+               (puthash mid (cons target-id
+                                  (gethash mid supervisor--target-member-reverse))
+                        supervisor--target-member-reverse)))
+           target-members-hash))
+
+(defun supervisor--target-begin-convergence (id)
+  "Begin convergence for target ID.
+Set state to converging and check for immediate resolution."
+  (puthash id 'converging supervisor--target-convergence)
+  (puthash id t supervisor--target-converging)
+  (supervisor--target-check-convergence id))
+
+(defun supervisor--target-check-convergence (id)
+  "Check convergence for target ID and resolve if all required members terminal.
+A required member is terminal when it appears in `supervisor--dag-ready'.
+If all required members are terminal, resolve as reached (all healthy) or
+degraded (any failed).  Wanted-member failures do not block convergence."
+  (let* ((members (gethash id supervisor--target-members))
+         (required (plist-get members :requires))
+         (all-terminal t)
+         (degraded-reasons nil))
+    ;; Empty required list -> immediate reached
+    (dolist (mid required)
+      (cond
+       ((gethash mid supervisor--dag-ready)
+        ;; Terminal -- check if failure state
+        (let ((state (gethash mid supervisor--entry-state)))
+          (when (memq state '(failed-to-spawn startup-timeout))
+            (push (format "%s: %s" mid state) degraded-reasons))))
+       (t
+        (setq all-terminal nil))))
+    (when all-terminal
+      (remhash id supervisor--target-converging)
+      (if degraded-reasons
+          (progn
+            (puthash id 'degraded supervisor--target-convergence)
+            (puthash id (nreverse degraded-reasons)
+                     supervisor--target-convergence-reasons)
+            (supervisor--log 'warning "target %s degraded: %s"
+                             id (mapconcat #'identity
+                                           (gethash id
+                                                    supervisor--target-convergence-reasons)
+                                           ", "))
+            (supervisor--emit-event 'target-degraded id nil
+                                    (list :reasons degraded-reasons)))
+        (puthash id 'reached supervisor--target-convergence)
+        (supervisor--log 'info "target %s reached" id)
+        (supervisor--emit-event 'target-reached id nil nil))
+      ;; Unlock dependents regardless of reached/degraded
+      (supervisor--dag-mark-ready id))))
+
 (defun supervisor--dag-start-entry-async (entry)
   "Start ENTRY asynchronously.
 Mark ready immediately for simple processes, on exit for oneshot."
@@ -3799,12 +3895,11 @@ Mark ready immediately for simple processes, on exit for oneshot."
     ;; Check effective enabled state (config + runtime override)
     (let ((effective-enabled (supervisor--get-effective-enabled id enabled-p)))
       (cond
-       ;; Target: passive node, immediately ready
+       ;; Target: passive node, begin convergence protocol
        ((eq type 'target)
-        (supervisor--log 'info "target %s reached" id)
         (supervisor--transition-state id 'started)
         (puthash id t supervisor--dag-started)
-        (supervisor--dag-mark-ready id))
+        (supervisor--target-begin-convergence id))
        ;; Disabled: mark started and ready immediately
        ((not effective-enabled)
         (supervisor--log 'info "%s disabled, skipping" id)
@@ -3917,7 +4012,10 @@ RESTART-SEC, UNIT-FILE-DIRECTORY, USER, and GROUP are passed through to
              ;; No delayed entries pending
              (= 0 (hash-table-count supervisor--dag-delay-timers))
              ;; No blocking oneshots pending
-             (= 0 (hash-table-count supervisor--dag-blocking)))
+             (= 0 (hash-table-count supervisor--dag-blocking))
+             ;; No targets still converging
+             (or (null supervisor--target-converging)
+                 (= 0 (hash-table-count supervisor--target-converging))))
     (supervisor--log 'info "all entries complete")
     (let ((callback supervisor--dag-complete-callback))
       (setq supervisor--dag-complete-callback nil)
@@ -3952,7 +4050,12 @@ RESTART-SEC, UNIT-FILE-DIRECTORY, USER, and GROUP are passed through to
   (setq supervisor--dag-complete-callback nil)
   (setq supervisor--dag-timeout-timer nil)
   (setq supervisor--dag-pending-starts nil)
-  (setq supervisor--dag-active-starts 0))
+  (setq supervisor--dag-active-starts 0)
+  (setq supervisor--target-convergence nil)
+  (setq supervisor--target-convergence-reasons nil)
+  (setq supervisor--target-converging nil)
+  (setq supervisor--target-member-reverse nil)
+  (setq supervisor--target-members nil))
 
 ;;; Process Management
 
@@ -5179,18 +5282,34 @@ Mark all unstarted entries as timed out and invoke the callback."
                (cancel-timer timer)))
            supervisor--dag-delay-timers)
   (clrhash supervisor--dag-delay-timers)
+  ;; Force-resolve any converging targets as degraded
+  (when (and supervisor--target-converging
+             (> (hash-table-count supervisor--target-converging) 0))
+    (maphash (lambda (id _)
+               (puthash id 'degraded supervisor--target-convergence)
+               (puthash id '("startup timeout")
+                        supervisor--target-convergence-reasons)
+               (supervisor--log 'warning
+                                "target %s degraded: startup timeout" id))
+             supervisor--target-converging)
+    (clrhash supervisor--target-converging))
   ;; Invoke callback
   (when supervisor--dag-complete-callback
     (let ((callback supervisor--dag-complete-callback))
       (setq supervisor--dag-complete-callback nil)
       (funcall callback))))
 
-(defun supervisor--start-entries-async (entries callback)
-  "Start ENTRIES asynchronously.  Call CALLBACK when complete."
+(defun supervisor--start-entries-async (entries callback
+                                       &optional target-members)
+  "Start ENTRIES asynchronously.  Call CALLBACK when complete.
+Optional TARGET-MEMBERS is a hash of target ID to member plists
+for convergence tracking."
   (if (null entries)
       (funcall callback)
     ;; Initialize DAG scheduler
     (supervisor--dag-init entries)
+    (supervisor--target-init-convergence (or target-members
+                                             (make-hash-table :test 'equal)))
     (setq supervisor--dag-complete-callback callback)
     ;; Set up startup timeout if configured
     (when supervisor-startup-timeout
@@ -5368,7 +5487,8 @@ Ready semantics (when dependents are unblocked):
        (supervisor--log 'info "startup complete")
        (when (and (not supervisor--shutting-down)
                   (fboundp 'supervisor-timer-scheduler-start))
-         (supervisor-timer-scheduler-start))))))
+         (supervisor-timer-scheduler-start)))
+     (supervisor-plan-target-members plan))))
 
 ;;;###autoload
 (defun supervisor-stop-now ()
