@@ -17627,5 +17627,82 @@ An invalid entry ID that happens to end in .target must not pass."
     (should (equal '("t1.target")
                    (gethash "svc-c" supervisor--target-member-reverse)))))
 
+(ert-deftest supervisor-test-materialize-target-members-includes-target-requires ()
+  "Target with :requires produces :requires membership from target itself."
+  (let* ((programs '(("sleep 1" :id "svc-a")
+                     (nil :id "app.target" :type target
+                          :requires ("svc-a"))))
+         (plan (supervisor--build-plan programs))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan))))
+    (let ((app (gethash "app.target" members)))
+      (should app)
+      (should (equal '("svc-a") (plist-get app :requires))))))
+
+(ert-deftest supervisor-test-materialize-target-members-deduplicates ()
+  "Service :required-by and target :requires for same service deduplicates."
+  (let* ((programs '(("sleep 1" :id "svc-a"
+                       :required-by ("app.target"))
+                     (nil :id "app.target" :type target
+                          :requires ("svc-a"))))
+         (plan (supervisor--build-plan programs))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan))))
+    (let ((app (gethash "app.target" members)))
+      (should app)
+      ;; Should have svc-a exactly once, not duplicated
+      (should (equal '("svc-a") (plist-get app :requires))))))
+
+(ert-deftest supervisor-test-target-requires-failure-produces-degraded ()
+  "Target with own :requires, member fails -> convergence is degraded."
+  (let ((supervisor--dag-ready (make-hash-table :test 'equal))
+        (supervisor--dag-started (make-hash-table :test 'equal))
+        (supervisor--dag-entries (make-hash-table :test 'equal))
+        (supervisor--dag-in-degree (make-hash-table :test 'equal))
+        (supervisor--dag-dependents (make-hash-table :test 'equal))
+        (supervisor--dag-id-to-index (make-hash-table :test 'equal))
+        (supervisor--dag-blocking (make-hash-table :test 'equal))
+        (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+        (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+        (supervisor--dag-complete-callback nil)
+        (supervisor--entry-state (make-hash-table :test 'equal))
+        (supervisor--target-convergence (make-hash-table :test 'equal))
+        (supervisor--target-convergence-reasons (make-hash-table :test 'equal))
+        (supervisor--target-converging (make-hash-table :test 'equal))
+        (supervisor--target-member-reverse (make-hash-table :test 'equal))
+        (supervisor--target-members (make-hash-table :test 'equal)))
+    ;; Build plan so materialize-target-members picks up
+    ;; target's own :requires
+    (let* ((programs '(("sleep 1" :id "svc-a")
+                       (nil :id "app.target" :type target
+                            :requires ("svc-a"))))
+           (plan (supervisor--build-plan programs))
+           (members (supervisor--materialize-target-members
+                     (supervisor-plan-entries plan))))
+      ;; Install membership from build
+      (setq supervisor--target-members members)
+      ;; svc-a is ready but failed
+      (puthash "svc-a" t supervisor--dag-ready)
+      (puthash "svc-a" 'failed-to-spawn supervisor--entry-state)
+      (puthash "app.target" t supervisor--dag-entries)
+      (puthash "app.target" 0 supervisor--dag-in-degree)
+      (puthash "app.target" nil supervisor--dag-dependents)
+      (supervisor--target-begin-convergence "app.target")
+      (should (eq 'degraded (gethash "app.target"
+                                     supervisor--target-convergence))))))
+
+(ert-deftest supervisor-test-target-requires-invalid-ref-invalidates-target ()
+  "Target :requires ref invalidated during validation -> target invalid."
+  (let* ((programs '(("sleep 1" :id "svc-a"
+                       :required-by ("nonexistent.target"))
+                     (nil :id "app.target" :type target
+                          :requires ("svc-a"))))
+         (plan (supervisor--build-plan programs)))
+    ;; svc-a is invalidated because its :required-by ref is invalid
+    ;; (nonexistent.target doesn't exist).  app.target :requires
+    ;; "svc-a" but svc-a was dropped, so dep normalization should
+    ;; invalidate the target.
+    (should (gethash "app.target" (supervisor-plan-invalid plan)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

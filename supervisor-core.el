@@ -2407,10 +2407,23 @@ Services declaring :wanted-by contribute to target wants-members."
                      (plist-put cur :wants
                                 (cons id (plist-get cur :wants)))
                      members)))))
-    ;; Reverse lists to preserve entry order
+    ;; Merge target's own :requires into membership (top-down direction)
+    (dolist (entry entries)
+      (when (eq (supervisor-entry-type entry) 'target)
+        (let ((id (supervisor-entry-id entry)))
+          (dolist (req (supervisor-entry-requires entry))
+            (let ((cur (gethash id members)))
+              (puthash id
+                       (plist-put cur :requires
+                                  (cons req (plist-get cur :requires)))
+                       members))))))
+    ;; Reverse lists to preserve entry order and deduplicate
     (maphash (lambda (tid plist)
                (puthash tid
-                        (list :requires (nreverse (plist-get plist :requires))
+                        (list :requires (cl-remove-duplicates
+                                         (nreverse
+                                          (plist-get plist :requires))
+                                         :test #'equal)
                               :wants (nreverse (plist-get plist :wants)))
                         members))
              members)
@@ -2568,14 +2581,26 @@ The plan includes:
                           (supervisor--deduplicate-stable
                            (append valid-after before-edges)))
                          ;; Validate :requires - warn + drop missing
+                         ;; For targets, a missing :requires invalidates
+                         ;; the target (consistent with early validation)
                          (valid-requires
                           (cl-remove-if-not
                            (lambda (dep)
                              (cond
                               ((not (member dep all-ids))
-                               (supervisor--log 'warning
-                                 ":requires '%s' for %s does not exist, ignoring"
-                                 dep id)
+                               (if (eq (supervisor-entry-type entry) 'target)
+                                   (progn
+                                     (puthash id
+                                              (format
+                                               ":requires '%s' does not exist"
+                                               dep)
+                                              invalid)
+                                     (supervisor--log 'error
+                                       "target %s :requires '%s' does not exist"
+                                       id dep))
+                                 (supervisor--log 'warning
+                                   ":requires '%s' for %s does not exist, ignoring"
+                                   dep id))
                                nil)
                               (t t)))
                            requires))
