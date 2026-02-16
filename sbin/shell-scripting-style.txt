@@ -1,0 +1,19 @@
+Stay POSIX shell; GNU coreutils assumptions are fine.
+
+No bashisms.
+
+CRITICAL: Must pass ShellCheck.
+
+Maintainer shell style:
+
+- Only environment variables should be uppercase.
+- Use set -eu by default; use pipefail only where supported and needed.
+- Use ${...} form for variable expansion.
+- Prefer short-circuit guards (for example: [ "${foo}" = "bar" ] && { ...; })
+  instead of if/then/fi when behavior is equivalent.
+- Prefer case/esac when there is more than one branch.
+- Prefer shell parameter expansion over sed/cut/awk when simple.
+- Use printf for messages and output (avoid echo for non-trivial output).
+- Check external dependencies early with command -v.
+- For temp files, use mktemp and cleanup with trap.
+- Use if/then/fi only when required for correctness or clarity.

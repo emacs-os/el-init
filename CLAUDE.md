@@ -138,7 +138,7 @@ A stage is complete only when:
   - **Human-readable**: Clear prose suitable for end users, not developer notes
   - **Keep in sync**: When modifying code, update the associated handbook documentation
   - **No fancy dashes or emojis**: Never use Unicode em-dashes, en-dashes, or
-    emojis in documentation files (README.org, sbin/README.md, CLAUDE.md).
+    emojis in documentation files (README.org, CLAUDE.md).
     Never use Org triple-dash `---` (GitHub renders it as an em-dash).
     Use `--` with spaces on both sides for inline separators, or rewrite
     with parentheses/commas.
