@@ -1559,7 +1559,8 @@ Three paths keep log growth bounded end-to-end:
    full maintenance sequence asynchronously: rotate all active logs,
    signal writers to reopen, then prune.
 
-The built-in ~logrotate~ unit appears in stage4 as a oneshot service.
+When the timer subsystem is enabled (the default), the built-in
+~logrotate~ unit appears in stage4 as a oneshot service.
 A user-created unit file with ~:id "logrotate"~ overrides the built-in
 entry.  Similarly, a user timer with ~:id "logrotate-daily"~ in
 ~supervisor-timers~ overrides the built-in timer schedule.
