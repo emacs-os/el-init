@@ -1,11 +1,11 @@
-# sbin — CLI and Maintenance Scripts
+# sbin --CLI and Maintenance Scripts
 
 This directory holds the CLI control shim (`supervisorctl`) and log
 maintenance scripts (`supervisor-logrotate`, `supervisor-log-prune`).
 The `libexec/` directory holds the per-service log writer binary
 (`supervisor-logd`).
 
-# supervisorctl — CLI Control Plane (Minimal Wrapper + Pure Elisp)
+# supervisorctl --CLI Control Plane (Minimal Wrapper + Pure Elisp)
 
 This folder will hold a single minimal CLI shim that controls `supervisor.el`
 via `emacsclient`. All command parsing, dispatch, output formatting, and
@@ -237,7 +237,7 @@ If needed, pass `-s NAME` or `--server-file PATH` for server selection.
 - `3` Emacs server unavailable
 - `4` validation failed
 
-# supervisor-logrotate — Log Rotation
+# supervisor-logrotate --Log Rotation
 
 Rotates active supervisor.el log files by renaming them with a
 timestamp suffix, optionally signals logd writers to reopen their files,
@@ -277,18 +277,18 @@ supervisor-logrotate [OPTIONS]
 
 ## Exit Codes
 
-- `0` — success
-- `1` — usage or runtime error
+- `0` --success
+- `1` --usage or runtime error
 
 ---
 
-# supervisor-log-prune — Directory Size Cap Enforcement
+# supervisor-log-prune --Directory Size Cap Enforcement
 
 Enforces a hard cap on total log directory size by deleting the oldest
 rotated log files first.  Active log files are never deleted.
 
 Uses an exclusive lock file to prevent concurrent prune races.  If the
-lock cannot be acquired, the script exits silently (exit 0) — another
+lock cannot be acquired, the script exits silently (exit 0) --another
 instance is already running.
 
 Designed to be invoked by `supervisor-logd` after local file rotation,
@@ -324,17 +324,17 @@ The script uses four confirmation layers before deleting any file:
    (the file may be an active log for a service whose ID contains a
    timestamp pattern).
 4. **Fuser**: files currently held open by a process (e.g., an active
-   logd writer) are skipped.  Soft dependency — falls back to the
+   logd writer) are skipped.  Soft dependency --falls back to the
    other guards when `fuser` is not available.
 
 ## Exit Codes
 
-- `0` — success (or nothing to do, or lock already held)
-- `1` — usage or runtime error
+- `0` --success (or nothing to do, or lock already held)
+- `1` --usage or runtime error
 
 ---
 
-# libexec/supervisor-logd — Per-Service Log Writer
+# libexec/supervisor-logd --Per-Service Log Writer
 
 A small C binary that reads service output from stdin and writes to a
 log file with append semantics.  Compiled from `libexec/supervisor-logd.c`.
@@ -363,8 +363,8 @@ supervisor-logd --file PATH --max-file-size-bytes N [OPTIONS]
 
 ## Signal Behavior
 
-- **SIGHUP** — close and reopen the target file (for log rotation)
-- **SIGTERM / SIGINT** — flush and exit cleanly
+- **SIGHUP** --close and reopen the target file (for log rotation)
+- **SIGTERM / SIGINT** --flush and exit cleanly
 
 ## Local Rotation
 
@@ -375,9 +375,9 @@ When the file exceeds the size cap, it is renamed to
 
 ## Exit Codes
 
-- `0` — clean exit (stdin EOF or TERM/INT)
-- `1` — usage error
-- `2` — file operation error
+- `0` --clean exit (stdin EOF or TERM/INT)
+- `1` --usage error
+- `2` --file operation error
 
 ---
 

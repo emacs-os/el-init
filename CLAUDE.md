@@ -155,7 +155,7 @@ See PLAN-INIT-followups.md for the authoritative spec. Key requirements:
 - Type-specific options must be enforced (`:restart` invalid for oneshot, `:oneshot-blocking` invalid for simple)
 
 ### Async Scheduling
-- No polling loops—use sentinels and timers only
+- No polling loops -- use sentinels and timers only
   - Exception: `supervisor-stop-now` uses a brief polling loop (max 0.5s) for synchronous
     shutdown in `kill-emacs-hook`, where async completion is not possible
 - Cycle detection must fall back to list order and clear `:after` edges
@@ -186,6 +186,13 @@ A stage is complete only when:
   - **No aspirational content**: Only document what currently exists in the code
   - **Human-readable**: Clear prose suitable for end users, not developer notes
   - **Keep in sync**: When modifying code, update the associated handbook documentation
+  - **No fancy Unicode**: Never use Unicode em-dashes, en-dashes, or emojis in
+    documentation files (README.org, sbin/README.md, CLAUDE.md).  Use ASCII
+    `--` or `---` for dashes.
+  - **Org verbatim and tilde paths**: GitHub's Org renderer mishandles adjacent
+    `~` boundaries.  Never write `~foo~/~bar~` (use `~foo/bar~` instead) or
+    `~~/.config/...~` (use `=~/.config/...=` instead).  The `=...=` verbatim
+    marker is safe for paths containing `~`.
 - **ROADMAP.md**: Future plans and ideas. Not yet implemented.
 - **CLAUDE.md**: Development guidance for AI assistants.
 

@@ -1611,6 +1611,7 @@ Run `supervisor-start' first to populate computed dependency data."
 (defun supervisor-dashboard-blame ()
   "Show startup timing blame view sorted by duration."
   (interactive)
+  (supervisor--require-service-row)
   (if (= 0 (hash-table-count supervisor--start-times))
       (message "No timing data available (run supervisor-start first)")
     (let ((entries nil))

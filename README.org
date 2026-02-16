@@ -9,11 +9,6 @@ familiar systemd-like interface --- service types, dependencies, restart
 policies --- adapted for Emacs.  ~M-x supervisor~ is the main interface:
 start, stop, inspect, and manage everything from inside Emacs.
 
-Core orchestration is in Emacs Lisp.  Two bundled ~libexec~ helpers are used
-for OS-level operations where direct process primitives are required:
-~supervisor-logd~ (high-frequency log writing/rotation path) and
-~supervisor-runas~ (privilege drop via ~setuid~/~setgid~).
-
 ** Features (at a glance)
 
 - *Dashboard*: ~M-x supervisor~ --- live view with lifecycle actions, policy
@@ -81,7 +76,7 @@ provides detailed reference material:
 #+end_src
 
 Services are defined as individual unit files in your authority roots (default
-~~/.config/supervisor.el/~).  For example:
+=~/.config/supervisor.el/=).  For example:
 
 #+begin_src emacs-lisp
 ;; ~/.config/supervisor.el/xhost.el
@@ -151,7 +146,7 @@ Each unit file is a single plist expression with ~:id~ and ~:command~ required.
 | ~:requires~ | string or list of strings | ~nil~ | Requirement + ordering dependency (same stage) |
 | ~:enabled~ | boolean | ~t~ | Enable/disable service |
 | ~:disabled~ | boolean | ~nil~ | Inverse form of ~:enabled~ |
-| ~:restart~ | boolean or policy symbol | ~always~ | For ~simple~ only; accepts ~t~/~nil~ or ~always~/~no~/~on-success~/~on-failure~ |
+| ~:restart~ | boolean or policy symbol | ~always~ | For ~simple~ only; accepts ~t/nil~ or ~always/no/on-success/on-failure~ |
 | ~:no-restart~ | boolean | ~nil~ | Inverse form of ~:restart~ (~t~ means policy ~no~) |
 | ~:logging~ | boolean | ~t~ | Per-process log capture |
 | ~:stdout-log-file~ | string or ~nil~ | ~nil~ | Optional stdout log path override |
@@ -194,8 +189,8 @@ Validation is performed by unit-file validation
 - ~:type~ must be symbol ~simple~ or ~oneshot~.
 - ~:stage~ must be symbol ~stage1..stage4~.
 - ~:delay~ must be non-negative number.
-- ~:restart~, when provided, must be ~t~/~nil~ or one of
-  ~always~/~no~/~on-success~/~on-failure~.
+- ~:restart~, when provided, must be ~t/nil~ or one of
+  ~always/no/on-success/on-failure~.
 - ~:oneshot-timeout~ must be a positive number or ~nil~.
 - Boolean flag keys (~:enabled~, ~:disabled~, ~:logging~, ~:no-restart~,
   ~:oneshot-blocking~, ~:oneshot-async~) must be exactly ~t~ or ~nil~.
@@ -456,7 +451,7 @@ valid lower-tier unit for the same ID.  This prevents surprising behavior where
 a broken override silently reverts to the vendor default:
 
 #+begin_src emacs-lisp
-;; /usr/lib/supervisor.el/backup.el  (Tier 1, vendor — valid)
+;; /usr/lib/supervisor.el/backup.el  (Tier 1, vendor -- valid)
 (:id "backup"
  :command "/usr/bin/backup-agent"
  :type simple
@@ -464,7 +459,7 @@ a broken override silently reverts to the vendor default:
 #+end_src
 
 #+begin_src emacs-lisp
-;; ~/.config/supervisor.el/backup.el  (Tier 3, user — INVALID: missing :command)
+;; ~/.config/supervisor.el/backup.el  (Tier 3, user -- INVALID: missing :command)
 (:id "backup"
  :type simple)
 #+end_src
@@ -526,7 +521,7 @@ exist.  With ~--json~, returns ~{"path": "...", "content": "..."}~.
 *** Step 1: Create the unit file
 
 Create a file in your highest-precedence authority root (default
-~~/.config/supervisor.el/~).  The filename should be ~ID.el~ (e.g.,
+=~/.config/supervisor.el/=).  The filename should be ~ID.el~ (e.g.,
 ~nm-applet.el~):
 
 #+begin_src emacs-lisp
@@ -652,7 +647,7 @@ delay applies.  ~simple~ only.
 Set ~:working-directory~ to a path string.  The process starts with that
 directory as its working directory.
 
-- ~"~"~ and ~~/...~ are expanded to the home directory.
+- ="~"= and =~/...= are expanded to the home directory.
 - Relative paths are resolved against the directory containing the
   authoritative unit file for that unit.
 - If the resolved directory does not exist, the process fails to start.
@@ -1543,7 +1538,7 @@ missing/stale helpers via ~supervisor-libexec-build-on-startup~.
 ~supervisor-logd~ and ~supervisor-runas~ are deliberately narrow helper
 executables.  ~supervisor-logd~ handles continuous append/rotate I/O outside
 the Emacs Lisp scheduler loop, and ~supervisor-runas~ performs privileged
-identity transitions (~setuid~/~setgid~/~initgroups~) when units request
+identity transitions (~setuid/setgid/initgroups~) when units request
 ~:user~ / ~:group~.
 
 *** Scheduled Rotation
@@ -1706,14 +1701,14 @@ Relevant customization variables:
 
 - Path: ~supervisor-overrides-file~
 - Default: ~${XDG_STATE_HOME}/supervisor/overrides.eld~ if ~XDG_STATE_HOME~ is
-  set, otherwise ~~/.local/state/supervisor/overrides.eld~
+  set, otherwise =~/.local/state/supervisor/overrides.eld=
 - Format: schema-versioned Elisp data
 
 ** Timer State File
 
 - Path: ~supervisor-timer-state-file~
 - Default: ~${XDG_STATE_HOME}/supervisor/timer-state.eld~ if ~XDG_STATE_HOME~ is
-  set, otherwise ~~/.local/state/supervisor/timer-state.eld~
+  set, otherwise =~/.local/state/supervisor/timer-state.eld=
 - Active only when timer subsystem is active
 
 * Customization Reference
@@ -1748,7 +1743,7 @@ All user options (defcustom) are listed below.
 | ~supervisor-log-prune-max-total-bytes~ | ~1073741824~ (1 GiB) | Total log directory size cap |
 | ~supervisor-logd-prune-min-interval~ | ~60~ | Throttle interval for logd-triggered prune (seconds) |
 | ~supervisor-logd-pid-directory~ | ~nil~ (falls back to effective log directory) | Writer PID file directory |
-| ~supervisor-libexec-build-on-startup~ | ~prompt~ | Build bundled helper binaries on startup (~prompt~/~automatic~/~never~) |
+| ~supervisor-libexec-build-on-startup~ | ~prompt~ | Build bundled helper binaries on startup (~prompt/automatic/never~) |
 | ~supervisor-libexec-compiler-candidates~ | ~("cc" "clang" "gcc")~ | Candidate compiler commands, checked in order |
 | ~supervisor-libexec-cflags~ | ~("-Wall" "-Wextra" "-Werror" "-pedantic" "-std=c99" "-O2")~ | C flags used when building bundled helpers |
 
@@ -2243,7 +2238,7 @@ owned by root and not world-writable.
 
 The manager is not running as root.  ~:user~ and ~:group~ require the Emacs
 process to have euid 0 so that the ~supervisor-runas~ helper can call
-~setuid~/~setgid~.
+~setuid/setgid~.
 
 Resolution: start Emacs (and its server) as root, or remove the ~:user~ /
 ~:group~ keys from the unit file.
