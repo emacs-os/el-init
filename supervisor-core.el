@@ -3078,13 +3078,16 @@ current configuration values."
 (defun supervisor--builtin-programs ()
   "Return list of built-in program entries.
 These are appended to disk-loaded programs at lowest priority.
-A user unit file with the same ID overrides the built-in entry."
-  (list
-   (cons (supervisor--builtin-maintenance-command)
-         (list :id "logrotate"
-               :type 'oneshot
-               :stage 'stage4
-               :description "Rotate and prune log files"))))
+A user unit file with the same ID overrides the built-in entry.
+Returns nil when `supervisor-timer-subsystem-mode' is disabled,
+so that no automatic maintenance runs without the timer subsystem."
+  (when supervisor-timer-subsystem-mode
+    (list
+     (cons (supervisor--builtin-maintenance-command)
+           (list :id "logrotate"
+                 :type 'oneshot
+                 :stage 'stage4
+                 :description "Rotate and prune log files")))))
 
 ;;; DAG Scheduler
 

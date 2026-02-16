@@ -14611,13 +14611,19 @@ PATH set to exclude fuser."
 
 (ert-deftest supervisor-test-builtin-programs-logrotate ()
   "Built-in programs include a logrotate oneshot in stage4."
-  (let ((builtins (supervisor--builtin-programs)))
-    (should (= 1 (length builtins)))
-    (let ((entry (car builtins)))
-      (should (stringp (car entry)))
-      (should (equal "logrotate" (plist-get (cdr entry) :id)))
-      (should (eq 'oneshot (plist-get (cdr entry) :type)))
-      (should (eq 'stage4 (plist-get (cdr entry) :stage))))))
+  (let ((supervisor-timer-subsystem-mode t))
+    (let ((builtins (supervisor--builtin-programs)))
+      (should (= 1 (length builtins)))
+      (let ((entry (car builtins)))
+        (should (stringp (car entry)))
+        (should (equal "logrotate" (plist-get (cdr entry) :id)))
+        (should (eq 'oneshot (plist-get (cdr entry) :type)))
+        (should (eq 'stage4 (plist-get (cdr entry) :stage)))))))
+
+(ert-deftest supervisor-test-builtin-programs-nil-when-timer-off ()
+  "Built-in programs returns nil when timer subsystem is disabled."
+  (let ((supervisor-timer-subsystem-mode nil))
+    (should (null (supervisor--builtin-programs)))))
 
 (ert-deftest supervisor-test-builtin-programs-overridden-by-disk ()
   "Disk unit file with same ID overrides the built-in entry."
