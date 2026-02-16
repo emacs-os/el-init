@@ -1180,7 +1180,9 @@ Checks if timer is persistent and missed a run within catch-up limit."
 
 (defun supervisor-timer--process-catch-ups ()
   "Process catch-up triggers for persistent timers after downtime.
-Called during scheduler start."
+Called during scheduler start.  After each trigger, advance
+`:next-run-at' past the current time to prevent the immediate
+scheduler tick from double-triggering the same timer."
   (let ((catch-up-count 0))
     (dolist (timer supervisor--timer-list)
       (when (and (supervisor-timer-enabled timer)
@@ -1188,6 +1190,17 @@ Called during scheduler start."
         (let ((id (supervisor-timer-id timer)))
           (supervisor--log 'info "timer %s: triggering catch-up run" id)
           (supervisor-timer--trigger timer 'catch-up)
+          ;; Re-compute next-run (trigger may have updated
+          ;; last-success-at synchronously for simple already-active).
+          ;; If still in the past (on-unit-active-sec with async
+          ;; completion), clear it; the completion callback will
+          ;; recompute via record-result -> update-next-run.
+          (supervisor-timer--update-next-run id)
+          (let* ((state (gethash id supervisor--timer-state))
+                 (next (plist-get state :next-run-at)))
+            (when (and next (<= next (float-time)))
+              (puthash id (plist-put state :next-run-at nil)
+                       supervisor--timer-state)))
           (cl-incf catch-up-count))))
     (when (> catch-up-count 0)
       (supervisor--log 'info "processed %d catch-up runs" catch-up-count))))
