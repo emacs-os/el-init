@@ -2508,12 +2508,12 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
                (lambda (hook &rest args) (when (eq hook 'supervisor-event-hook)
                                            (push (car args) events))))
               ((symbol-function 'run-hooks) #'ignore))
-      (supervisor--emit-event 'startup-begin nil 'stage1 nil)
+      (supervisor--emit-event 'startup-begin nil nil nil)
       (let ((event (car events)))
         (should (eq 'startup-begin (plist-get event :type)))
         (should (numberp (plist-get event :ts)))
         (should (null (plist-get event :id)))
-        (should (eq 'stage1 (plist-get event :stage)))))))
+        (should (null (plist-get event :stage)))))))
 
 (ert-deftest supervisor-test-emit-event-startup-begin ()
   "Startup-begin event is emitted with correct data."
@@ -2523,11 +2523,11 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
                  (when (eq hook 'supervisor-event-hook)
                    (push (car args) events))))
               ((symbol-function 'run-hooks) #'ignore))
-      (supervisor--emit-event 'startup-begin nil 'stage2 nil)
+      (supervisor--emit-event 'startup-begin nil nil nil)
       (should (= 1 (length events)))
       (let ((event (car events)))
         (should (eq 'startup-begin (plist-get event :type)))
-        (should (eq 'stage2 (plist-get event :stage)))))))
+        (should (null (plist-get event :stage)))))))
 
 (ert-deftest supervisor-test-emit-event-process-exit ()
   "Process-exit event carries status and code in data."
@@ -18898,6 +18898,172 @@ An invalid entry ID that happens to end in .target must not pass."
         ;; Should be a clean error, not "Internal error"
         (should-not (string-match "Internal error"
                                   (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-start-no-args-calls-supervisor-start ()
+  "Plain `start' with no arguments calls `supervisor-start'."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil)
+          (called nil))
+      (cl-letf (((symbol-function 'supervisor-start)
+                 (lambda () (setq called t))))
+        (let ((result (supervisor--cli-dispatch '("start"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (should called))))))
+
+(ert-deftest supervisor-test-cli-isolate-skips-running-entries ()
+  "Isolate does not submit already-running entries to DAG for starting."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc-a" :required-by ("app.target"))
+        ("sleep 300" :id "svc-b" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor--target-members nil)
+          (supervisor-default-target-link "app.target")
+          (supervisor--default-target-link-override nil)
+          (dag-entries nil)
+          (stopped nil))
+      ;; Simulate svc-a already running
+      (let ((fake-proc (start-process "fake-svc-a" nil "sleep" "300")))
+        (unwind-protect
+            (progn
+              (puthash "svc-a" fake-proc supervisor--processes)
+              (cl-letf (((symbol-function 'supervisor--dag-start-with-deps)
+                         (lambda (entries callback)
+                           (setq dag-entries
+                                 (mapcar #'supervisor-entry-id entries))
+                           (funcall callback)))
+                        ((symbol-function 'supervisor--manual-stop)
+                         (lambda (id) (push id stopped)
+                           (list :status 'stopped :reason nil))))
+                (let ((result (supervisor--cli-dispatch
+                               '("isolate" "--yes" "app.target"))))
+                  (should (= supervisor-cli-exit-success
+                              (supervisor-cli-result-exitcode result)))
+                  ;; svc-a should NOT be in DAG entries (already running)
+                  (should-not (member "svc-a" dag-entries))
+                  ;; svc-b should be in DAG entries (not running)
+                  (should (member "svc-b" dag-entries)))))
+          (when (process-live-p fake-proc)
+            (delete-process fake-proc)))))))
+
+(ert-deftest supervisor-test-cli-explain-target-converging ()
+  "Converging target lists non-terminal members."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :required-by ("app.target"))
+        ("sleep 1" :id "svc-b" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence (make-hash-table :test 'equal))
+          (supervisor--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (supervisor-default-target-link "app.target")
+          (supervisor--default-target-link-override nil))
+      (puthash "app.target" 'converging supervisor--target-convergence)
+      ;; svc-a is running, svc-b is pending (non-terminal)
+      (puthash "svc-a" 'started supervisor--entry-state)
+      (let ((result (supervisor--cli-dispatch
+                     '("explain-target" "app.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (should (string-match "converging"
+                              (supervisor-cli-result-output result)))
+        (should (string-match "not yet terminal"
+                              (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-explain-target-json ()
+  "Explain-target JSON output includes id, status, reasons, members."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence (make-hash-table :test 'equal))
+          (supervisor--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (supervisor-default-target-link "app.target")
+          (supervisor--default-target-link-override nil))
+      (puthash "app.target" 'reached supervisor--target-convergence)
+      (let ((result (supervisor--cli-dispatch
+                     '("--json" "explain-target" "app.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((json (json-read-from-string
+                     (supervisor-cli-result-output result))))
+          (should (equal "app.target" (alist-get 'id json)))
+          (should (equal "reached" (alist-get 'status json)))
+          (should (arrayp (alist-get 'reasons json)))
+          (should (arrayp (alist-get 'members json))))))))
+
+(ert-deftest supervisor-test-cli-isolate-json ()
+  "Isolate JSON output includes status, target, stopped, started counts."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc-a" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor--target-members nil)
+          (supervisor-default-target-link "app.target")
+          (supervisor--default-target-link-override nil))
+      (cl-letf (((symbol-function 'supervisor--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'supervisor--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        (let ((result (supervisor--cli-dispatch
+                       '("--json" "isolate" "--yes" "app.target"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (let ((json (json-read-from-string
+                       (supervisor-cli-result-output result))))
+            (should (equal "applied" (alist-get 'status json)))
+            (should (equal "app.target" (alist-get 'target json)))
+            (should (numberp (alist-get 'stopped json)))
+            (should (numberp (alist-get 'started json)))))))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
