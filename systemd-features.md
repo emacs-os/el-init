@@ -490,12 +490,7 @@ Where behavior diverges, parenthetical notes explain.
 | Feature | systemd | runit | s6 | supervisor.el |
 |---|---|---|---|---|
 | **Init System (PID 1)** | | | | |
-| Can run as PID 1 | yes (systemd is PID 1) | yes (runit-init, 3-stage boot) | yes (s6-linux-init, separate package) | no (runs inside Emacs) |
-| Shutdown / reboot orchestration | yes (targets, isolate) | yes (stage 3 script) | yes (s6-linux-init-shutdown) | no |
-| /dev, /proc, /sys early mount | yes (built-in) | yes (stage 1 script, manual) | yes (s6-linux-init, scripted) | no |
-| Getty / console spawning | yes (systemd-getty-generator) | yes (configured in stage 2) | yes (via s6-rc service) | no |
-| Subreaper for orphan processes | yes (PID 1 inherits orphans) | yes (PID 1 inherits orphans) | yes (PID 1 inherits orphans) | no (Emacs is not PID 1) |
-| Can run as non-init supervisor only | yes (systemd --user) | yes (runsvdir as regular user) | yes (s6-svscan as regular user) | yes (always this mode) |
+| Can run as PID 1 | yes (systemd is PID 1) | yes (runit-init, 3-stage boot) | yes (s6-linux-init, separate package) | no (needs sinit-style shim as PID 1, runs as PID 2) |
 | **Process Supervision** | | | | |
 | Restart crashed daemons | yes | yes | yes | yes |
 | Restart policies (always/on-failure/on-success/no) | yes (6 modes) | no (always or never) | no (always or never) | yes (4 modes) |
@@ -610,8 +605,3 @@ Where behavior diverges, parenthetical notes explain.
 | sudo replacement | yes (run0, v256+) | no | no | no |
 | Config override delta view | yes (systemd-delta) | no | no | no |
 | Unit file validation | yes (systemd-analyze verify) | no | no | yes (entry whitelist validation) |
-| **Design Philosophy** | | | | |
-| PID 1 scope | monolithic (250+ binaries) | minimal (3 binaries) | modular (small composable tools) | Emacs-hosted (not PID 1) |
-| Library dependencies on services | yes (sd_notify requires libsystemd) | none | none (notification-fd is just write()) | none (Emacs manages processes) |
-| Configuration format | INI-style unit files | shell scripts (run/finish) | execline or shell scripts | Emacs Lisp plists or unit files |
-| Composability | low (integrated suite) | medium | high (unix pipeline philosophy) | medium (Emacs ecosystem) |
