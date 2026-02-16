@@ -7476,7 +7476,7 @@ at minute boundaries."
                     (plist-get state :last-result-reason)))))))
 
 (ert-deftest supervisor-test-timer-trigger-target-converging-skips ()
-  "Timer trigger for converging target records miss."
+  "Timer trigger for converging target records miss and skip result."
   (let* ((supervisor-timer-subsystem-mode t)
          (supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "app.target"
@@ -7502,7 +7502,10 @@ at minute boundaries."
         (should-not result)
         (let ((state (gethash "t1" supervisor--timer-state)))
           (should (eq 'target-converging
-                      (plist-get state :last-miss-reason))))))))
+                      (plist-get state :last-miss-reason)))
+          (should (eq 'skip (plist-get state :last-result)))
+          (should (eq 'target-converging
+                      (plist-get state :last-result-reason))))))))
 
 (ert-deftest supervisor-test-timer-target-degraded-retries ()
   "Timer target convergence to degraded schedules retry."
@@ -7566,8 +7569,10 @@ at minute boundaries."
                     ((symbol-function 'supervisor--emit-event) #'ignore))
             (supervisor-timer--trigger timer 'scheduled)
             (let ((state (gethash "t1" supervisor--timer-state)))
-              ;; Overlap recorded as miss, no retry scheduled
+              ;; Overlap recorded as miss and skip result, no retry scheduled
               (should (eq 'overlap (plist-get state :last-miss-reason)))
+              (should (eq 'skip (plist-get state :last-result)))
+              (should (eq 'overlap (plist-get state :last-result-reason)))
               (should-not (plist-get state :retry-next-at)))))
       (delete-process mock-proc))))
 
@@ -7591,7 +7596,7 @@ at minute boundaries."
                     (plist-get state :last-result-reason)))))))
 
 (ert-deftest supervisor-test-timer-masked-target-skips ()
-  "Masked target skips with masked-target miss reason."
+  "Masked target skips with masked-target miss and skip result."
   (let* ((supervisor-timer-subsystem-mode t)
          (supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
@@ -7610,7 +7615,106 @@ at minute boundaries."
       (supervisor-timer--trigger timer 'scheduled)
       (let ((state (gethash "t1" supervisor--timer-state)))
         (should (eq 'masked-target
-                    (plist-get state :last-miss-reason)))))))
+                    (plist-get state :last-miss-reason)))
+        (should (eq 'skip (plist-get state :last-result)))
+        (should (eq 'masked-target
+                    (plist-get state :last-result-reason)))))))
+
+(ert-deftest supervisor-test-timer-convergence-nil-is-failure ()
+  "Nil convergence state is classified as failure, not success."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--target-convergence (make-hash-table :test 'equal)))
+    (puthash "t1" nil supervisor--timer-state)
+    ;; No convergence entry for app.target -- nil case
+    (cl-letf (((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
+              ((symbol-function 'supervisor-timer--update-next-run) #'ignore))
+      (supervisor-timer--on-target-converge "t1" "app.target")
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'failure (plist-get state :last-result)))
+        (should (eq 'convergence-unknown
+                    (plist-get state :last-result-reason)))))))
+
+(ert-deftest supervisor-test-timer-convergence-converging-is-failure ()
+  "Converging state at callback time is classified as failure."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor-timer-retry-intervals '(30)))
+    (puthash "t1" '(:retry-attempt 0) supervisor--timer-state)
+    (puthash "app.target" 'converging supervisor--target-convergence)
+    (cl-letf (((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
+              ((symbol-function 'supervisor-timer--update-next-run) #'ignore))
+      (supervisor-timer--on-target-converge "t1" "app.target")
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'failure (plist-get state :last-result)))
+        (should (eq 'target-not-converged
+                    (plist-get state :last-result-reason)))
+        ;; Should schedule retry
+        (should (= 1 (plist-get state :retry-attempt)))))))
+
+(ert-deftest supervisor-test-timer-target-trigger-uses-closure ()
+  "Target timer trigger only starts entries in the target's closure."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "app.target"
+                                          :enabled t))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--target-converging (make-hash-table :test 'equal))
+         (programs '(("echo a" :id "svc-a" :wanted-by ("app.target"))
+                     ("echo b" :id "svc-b" :wanted-by ("other.target"))
+                     (nil :id "app.target" :type target)
+                     (nil :id "other.target" :type target)))
+         (plan (supervisor--build-plan programs))
+         (supervisor--current-plan plan)
+         (started-ids nil)
+         (entry (list "app.target" nil 0 t nil nil nil nil 'target nil nil
+                      nil nil nil nil nil nil nil nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil nil nil)))
+    (puthash "t1" nil supervisor--timer-state)
+    (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
+               (lambda (_id) entry))
+              ((symbol-function 'supervisor--get-effective-enabled)
+               (lambda (_id _p) t))
+              ((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor--timer-scheduler-tick) #'ignore)
+              ((symbol-function 'supervisor-timer--update-next-run) #'ignore)
+              ((symbol-function 'supervisor--dag-start-with-deps)
+               (lambda (entries callback)
+                 (dolist (e entries)
+                   (push (supervisor-entry-id e) started-ids))
+                 (funcall callback))))
+      (supervisor-timer--trigger timer 'scheduled)
+      ;; Only svc-a should be started (in app.target closure),
+      ;; not svc-b (in other.target closure)
+      (should (member "svc-a" started-ids))
+      (should-not (member "svc-b" started-ids)))))
+
+(ert-deftest supervisor-test-timer-disabled-timer-records-skip-result ()
+  "Disabled timer records skip result alongside miss metadata."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (timer (supervisor-timer--create :id "t1" :target "svc"
+                                          :enabled nil))
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    (puthash "t1" nil supervisor--timer-state)
+    (cl-letf (((symbol-function 'supervisor-timer--save-state) #'ignore)
+              ((symbol-function 'supervisor--emit-event) #'ignore)
+              ((symbol-function 'supervisor--log) #'ignore))
+      (supervisor-timer--trigger timer 'scheduled)
+      (let ((state (gethash "t1" supervisor--timer-state)))
+        (should (eq 'disabled (plist-get state :last-miss-reason)))
+        (should (eq 'skip (plist-get state :last-result)))
+        (should (eq 'disabled (plist-get state :last-result-reason)))))))
 
 (ert-deftest supervisor-test-cli-list-timers-json-v2-fields ()
   "CLI list-timers JSON includes v2 fields: target_type, last_result."

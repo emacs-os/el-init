@@ -46,6 +46,10 @@
 (declare-function supervisor--get-entry-for-id "supervisor-core" (id))
 (declare-function supervisor--manual-start "supervisor-core" (id))
 (declare-function supervisor--dag-start-with-deps "supervisor-core" (entries callback))
+(declare-function supervisor--expand-transaction "supervisor-core"
+  (root entries-by-id target-members order-index))
+(declare-function supervisor--materialize-target-members "supervisor-core" (entries))
+(declare-function supervisor-plan-order-index "supervisor-core" (plan))
 
 ;; Forward declarations for variables from supervisor-core
 (defvar supervisor-mode)
@@ -746,6 +750,7 @@ Returns t if triggered, nil if skipped."
     ;; Check if timer is enabled
     (unless (supervisor-timer-enabled timer)
       (supervisor-timer--record-miss id 'disabled)
+      (supervisor-timer--record-result id 'skip 'disabled)
       (supervisor--log 'info "timer %s: skipped (disabled)" id)
       (cl-return-from supervisor-timer--trigger nil))
     ;; Mark startup trigger consumed early to prevent retry loops
@@ -769,10 +774,11 @@ Returns t if triggered, nil if skipped."
         ;; Check if target is disabled or masked
         (let ((enabled-p (supervisor-entry-enabled-p entry)))
           (unless (supervisor--get-effective-enabled target-id enabled-p)
-            (let ((masked (eq (gethash target-id supervisor--mask-override)
-                              'masked)))
-              (supervisor-timer--record-miss
-               id (if masked 'masked-target 'disabled-target))
+            (let* ((masked (eq (gethash target-id supervisor--mask-override)
+                               'masked))
+                   (reason (if masked 'masked-target 'disabled-target)))
+              (supervisor-timer--record-miss id reason)
+              (supervisor-timer--record-result id 'skip reason)
               (supervisor--log 'info "timer %s: skipped (target %s %s)"
                                id target-id
                                (if masked "masked" "disabled")))
@@ -796,6 +802,7 @@ Returns t if triggered, nil if skipped."
     ;; Check for overlap
     (when (supervisor-timer--target-active-p timer)
       (supervisor-timer--record-miss id 'overlap)
+      (supervisor-timer--record-result id 'skip 'overlap)
       (supervisor--log 'info "timer %s: skipped (target %s still active)"
                        id target-id)
       (supervisor--emit-event 'timer-overlap id nil
@@ -845,6 +852,7 @@ Returns t if triggered, nil if skipped."
     (when (and (hash-table-p supervisor--target-converging)
                (gethash target-id supervisor--target-converging))
       (supervisor-timer--record-miss id 'target-converging)
+      (supervisor-timer--record-result id 'skip 'target-converging)
       (supervisor--log 'info "timer %s: skipped (target %s converging)"
                        id target-id)
       (cl-return-from supervisor-timer--trigger-target nil))
@@ -856,18 +864,30 @@ Returns t if triggered, nil if skipped."
       (supervisor-timer--record-trigger id now reason target-id)
       (supervisor-timer--record-result id 'success 'already-reached)
       (cl-return-from supervisor-timer--trigger-target t))
-    ;; Start target activation: collect non-running members and DAG-start them
+    ;; Start target activation: compute closure and DAG-start members
     (supervisor--log 'info "timer %s: triggering target %s (%s)"
                      id target-id reason)
     (supervisor-timer--record-trigger id now reason target-id)
     (let* ((plan supervisor--current-plan)
-           (to-start
+           (closure
             (when plan
+              (let ((entries-by-id (make-hash-table :test 'equal)))
+                (dolist (e (supervisor-plan-entries plan))
+                  (puthash (supervisor-entry-id e) e entries-by-id))
+                (supervisor--expand-transaction
+                 target-id entries-by-id
+                 (or (supervisor-plan-target-members plan)
+                     (supervisor--materialize-target-members
+                      (supervisor-plan-entries plan)))
+                 (supervisor-plan-order-index plan)))))
+           (to-start
+            (when (and plan closure)
               (cl-remove-if
                (lambda (e)
                  (let* ((eid (supervisor-entry-id e))
                         (proc (gethash eid supervisor--processes)))
-                   (or (eq (supervisor-entry-type e) 'target)
+                   (or (not (gethash eid closure))
+                       (eq (supervisor-entry-type e) 'target)
                        (and proc (process-live-p proc)))))
                (supervisor-plan-by-target plan)))))
       (if (null to-start)
@@ -929,12 +949,14 @@ TARGET-ID is the simple service.  SUCCESS is t if spawned."
 
 (defun supervisor-timer--on-target-converge (timer-id target-id)
   "Handle convergence check after target activation for TIMER-ID.
-TARGET-ID is the target unit."
+TARGET-ID is the target unit.
+Only `reached' is classified as success.  `degraded' and nil/unknown
+convergence states are classified as failure."
   (let ((conv (when (hash-table-p supervisor--target-convergence)
                 (gethash target-id supervisor--target-convergence))))
     (pcase conv
       ('reached
-       (supervisor-timer--record-result timer-id 'success nil)
+       (supervisor-timer--record-result timer-id 'success 'target-reached)
        (supervisor--emit-event 'timer-success timer-id nil
                                (list :target target-id)))
       ('degraded
@@ -948,11 +970,27 @@ TARGET-ID is the target unit."
          (supervisor-timer--save-state))
        (supervisor--emit-event 'timer-failure timer-id nil
                                (list :target target-id :reason 'degraded)))
+      ('converging
+       ;; DAG completed but target still converging -- classify as failure
+       (supervisor-timer--record-result timer-id 'failure 'target-not-converged)
+       (let ((state (gethash timer-id supervisor--timer-state)))
+         (setq state (plist-put state :last-failure-at (float-time)))
+         (when-let* ((updated (supervisor-timer--schedule-retry timer-id state)))
+           (setq state updated))
+         (puthash timer-id state supervisor--timer-state)
+         (supervisor-timer--save-state))
+       (supervisor--emit-event 'timer-failure timer-id nil
+                               (list :target target-id :reason 'not-converged)))
       (_
-       ;; Still converging or unknown state -- treat as success
-       (supervisor-timer--record-result timer-id 'success nil)
-       (supervisor--emit-event 'timer-success timer-id nil
-                               (list :target target-id)))))
+       ;; nil or unknown -- convergence never initialized, treat as failure
+       (supervisor-timer--record-result timer-id 'failure 'convergence-unknown)
+       (let ((state (gethash timer-id supervisor--timer-state)))
+         (setq state (plist-put state :last-failure-at (float-time)))
+         (puthash timer-id state supervisor--timer-state)
+         (supervisor-timer--save-state))
+       (supervisor--emit-event 'timer-failure timer-id nil
+                               (list :target target-id
+                                     :reason 'convergence-unknown)))))
   (supervisor--timer-scheduler-tick))
 
 (defun supervisor-timer--failure-retryable-p (exit-code)

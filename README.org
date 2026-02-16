@@ -1000,9 +1000,10 @@ Persisted keys include:
 - ~:last-exit~
 - ~:last-missed-at~
 - ~:last-miss-reason~
-- ~:last-result~ (~success~ or ~failure~)
+- ~:last-result~ (~success~, ~failure~, or ~skip~)
 - ~:last-result-reason~ (type-specific reason symbol, e.g. ~exit-ok~,
-  ~spawn-failed~, ~target-degraded~, ~already-active~)
+  ~spawn-failed~, ~target-degraded~, ~already-active~, ~overlap~,
+  ~disabled~, ~masked-target~, ~target-converging~)
 - ~:last-target-type~ (~oneshot~, ~simple~, or ~target~)
 
 Transient keys (for example ~:next-run-at~, retry bookkeeping, startup-consumed
