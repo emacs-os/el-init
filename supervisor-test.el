@@ -7312,6 +7312,37 @@ After catch-up, :next-run-at must not remain in the past."
       (delete-file temp-file)
       (clrhash supervisor--timer-state))))
 
+(ert-deftest supervisor-test-timer-state-v1-load-saves-as-v2 ()
+  "Loading v1 state and saving writes v2 schema metadata."
+  (let* ((supervisor-timer-subsystem-mode t)
+         (supervisor-mode t)
+         (temp-file (make-temp-file "supervisor-test-v1-upgrade-" nil ".eld"))
+         (supervisor-timer-state-file temp-file)
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--timer-state-loaded nil))
+    (unwind-protect
+        (progn
+          ;; Write v1 state file
+          (with-temp-file temp-file
+            (pp '((version . 1)
+                  (timestamp . "2024-01-01T00:00:00")
+                  (timers . (("t1" :last-run-at 500.0
+                              :last-success-at 500.0))))
+                (current-buffer)))
+          ;; Load v1
+          (should (supervisor-timer--load-state))
+          ;; Save -- should write v2
+          (supervisor-timer--save-state)
+          ;; Re-read file and verify version
+          (let* ((data (with-temp-buffer
+                         (insert-file-contents temp-file)
+                         (read (current-buffer))))
+                 (version (alist-get 'version data)))
+            (should (= supervisor-timer-state-schema-version version))
+            (should (= 2 version))))
+      (delete-file temp-file)
+      (clrhash supervisor--timer-state))))
+
 (ert-deftest supervisor-test-timer-multiple-triggers-earliest-wins ()
   "Timer with multiple triggers uses earliest due time."
   (let* ((timer (supervisor-timer--create :id "t1" :target "s1"
@@ -7486,7 +7517,8 @@ After catch-up, :next-run-at must not remain in the past."
         (should (eq 'simple (plist-get state :last-target-type)))))))
 
 (ert-deftest supervisor-test-timer-trigger-simple-already-active ()
-  "Timer trigger for already-running simple service records success no-op."
+  "Timer trigger for already-running simple service records success no-op.
+Stale retry state from a prior failure must be cleared."
   (let* ((supervisor-timer-subsystem-mode t)
          (supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
@@ -7498,7 +7530,9 @@ After catch-up, :next-run-at must not remain in the past."
          (mock-proc (start-process "test" nil "sleep" "300")))
     (unwind-protect
         (progn
-          (puthash "t1" nil supervisor--timer-state)
+          ;; Seed with stale retry state from a prior failure
+          (puthash "t1" '(:retry-attempt 2 :retry-next-at 55555.0)
+                   supervisor--timer-state)
           (puthash "svc" mock-proc supervisor--processes)
           (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
                      (lambda (_id) entry))
@@ -7512,7 +7546,10 @@ After catch-up, :next-run-at must not remain in the past."
             (let ((state (gethash "t1" supervisor--timer-state)))
               (should (eq 'success (plist-get state :last-result)))
               (should (eq 'already-active
-                          (plist-get state :last-result-reason))))))
+                          (plist-get state :last-result-reason)))
+              ;; Stale retry state must be cleared (success clears retry)
+              (should (= 0 (plist-get state :retry-attempt)))
+              (should-not (plist-get state :retry-next-at)))))
       (delete-process mock-proc))))
 
 (ert-deftest supervisor-test-timer-trigger-simple-spawn-failure-retries ()
@@ -7549,7 +7586,8 @@ After catch-up, :next-run-at must not remain in the past."
         (should (plist-get state :retry-next-at))))))
 
 (ert-deftest supervisor-test-timer-trigger-target-reached ()
-  "Timer trigger for target records success on reached convergence."
+  "Timer trigger for target records success on reached convergence.
+Stale retry state from a prior failure must be cleared."
   (let* ((supervisor-timer-subsystem-mode t)
          (supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "app.target"
@@ -7564,7 +7602,9 @@ After catch-up, :next-run-at must not remain in the past."
                       nil nil nil nil nil nil nil nil nil nil)))
     ;; Target already reached -- no-op success
     (puthash "app.target" 'reached supervisor--target-convergence)
-    (puthash "t1" nil supervisor--timer-state)
+    ;; Seed with stale retry state from a prior failure
+    (puthash "t1" '(:retry-attempt 3 :retry-next-at 44444.0)
+             supervisor--timer-state)
     (cl-letf (((symbol-function 'supervisor-timer--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'supervisor--get-effective-enabled)
@@ -7577,7 +7617,10 @@ After catch-up, :next-run-at must not remain in the past."
       (let ((state (gethash "t1" supervisor--timer-state)))
         (should (eq 'success (plist-get state :last-result)))
         (should (eq 'already-reached
-                    (plist-get state :last-result-reason)))))))
+                    (plist-get state :last-result-reason)))
+        ;; Stale retry state must be cleared (success clears retry)
+        (should (= 0 (plist-get state :retry-attempt)))
+        (should-not (plist-get state :retry-next-at))))))
 
 (ert-deftest supervisor-test-timer-trigger-target-converging-skips ()
   "Timer trigger for converging target records miss and skip result."
@@ -7636,6 +7679,15 @@ After catch-up, :next-run-at must not remain in the past."
         ;; Retry should be scheduled
         (should (= 1 (plist-get state :retry-attempt)))
         (should (plist-get state :retry-next-at))))))
+
+(ert-deftest supervisor-test-timer-unit-active-oneshot-anchors-on-success ()
+  "on-unit-active for oneshot timer anchors on last success."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "svc" :enabled t
+                                          :on-unit-active-sec 120))
+         (supervisor--timer-state (make-hash-table :test 'equal)))
+    (puthash "t1" '(:last-success-at 800.0) supervisor--timer-state)
+    (let ((next (supervisor-timer--next-unit-active-time timer)))
+      (should (= 920.0 next)))))
 
 (ert-deftest supervisor-test-timer-unit-active-simple-anchors-on-success ()
   "on-unit-active for simple timer anchors on last success."
