@@ -564,7 +564,6 @@ Where behavior diverges, parenthetical notes explain.
 | Interactive dashboard | no (third-party cockpit) | no | no | yes (supervisor-dashboard-mode) |
 | CLI status/control | yes (systemctl) | yes (sv) | yes (s6-rc, s6-svc) | yes (supervisorctl) |
 | JSON output mode | yes (systemctl --output=json) | no | no | yes (supervisorctl --json) |
-| Telemetry (uptime, restarts, RSS, CPU) | partial (systemctl show, cgroup accounting) | no | no | yes (built-in telemetry model) |
 | **Boot Loader** | | | | |
 | UEFI boot manager | yes (systemd-boot) | no | no | no |
 | Unified Kernel Images | yes (ukify, sd-stub) | no | no | no |
