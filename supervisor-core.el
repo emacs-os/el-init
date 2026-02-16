@@ -1059,70 +1059,115 @@ cycle fallback behavior.  Uses the pure plan builder internally."
              (supervisor-plan-cycle-fallback-ids plan))
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
              (supervisor-plan-deps plan))
-    ;; Validate timers (only if timer module loaded)
-    (let ((timers (when (fboundp 'supervisor-timer-build-list)
-                    (supervisor-timer-build-list plan))))
-      ;; Display from plan artifact
-      (with-output-to-temp-buffer "*supervisor-dry-run*"
-        (princ "=== Supervisor Dry Run ===\n\n")
-        (princ (format "Services: %d valid, %d invalid\n"
-                       (length (supervisor-plan-entries plan))
-                       (hash-table-count supervisor--invalid)))
-        (when (and supervisor-timers (fboundp 'supervisor-timer-build-list))
-          (princ (format "Timers: %d valid, %d invalid\n"
-                         (length timers)
-                         (if (boundp 'supervisor--invalid-timers)
-                             (hash-table-count supervisor--invalid-timers)
-                           0))))
-        (princ "\n")
-        ;; Show invalid entries first (includes unit-file invalids)
-        (when (> (hash-table-count supervisor--invalid) 0)
-          (princ "--- Invalid Services (skipped) ---\n")
-          (maphash (lambda (id reason)
-                     (princ (format "  %s: %s\n" id reason)))
-                   supervisor--invalid)
-          (princ "\n"))
-        ;; Show invalid timers (only if timer module loaded)
-        (when (and (boundp 'supervisor--invalid-timers)
-                   (> (hash-table-count supervisor--invalid-timers) 0))
-          (princ "--- Invalid Timers (skipped) ---\n")
-          (maphash (lambda (id reason)
-                     (princ (format "  %s: %s\n" id reason)))
-                   supervisor--invalid-timers)
-          (princ "\n"))
-        ;; Display startup order from the plan's global sort
-        (let ((sorted (supervisor-plan-by-target plan)))
-          (princ (format "--- Startup order (%d entries) ---\n"
-                         (length sorted)))
-          (let ((order 1))
-            (dolist (entry sorted)
-              (let* ((id (supervisor-entry-id entry))
-                     (type (supervisor-entry-type entry))
-                     (delay (supervisor-entry-delay entry))
-                     (enabled-p (supervisor-entry-enabled-p entry))
-                     (deps (gethash id (supervisor-plan-deps plan)))
-                     (cycle (gethash id (supervisor-plan-cycle-fallback-ids plan))))
-                (princ (format "  %d. %s [%s]%s%s%s\n"
-                               order id type
-                               (if (not enabled-p) " DISABLED" "")
-                               (if (> delay 0) (format " delay=%ds" delay) "")
-                               (if cycle " (CYCLE FALLBACK)"
-                                 (if deps
-                                     (format " after=%s"
-                                             (mapconcat #'identity deps ","))
-                                   ""))))
-                (cl-incf order)))
-            (princ "\n")))
-        ;; Show timer summary if any
-        (when timers
-          (princ "--- Timers ---\n")
-          (dolist (timer timers)
-            (princ (format "  %s -> %s%s\n"
-                           (supervisor-timer-id timer)
-                           (supervisor-timer-target timer)
-                           (if (supervisor-timer-enabled timer) "" " DISABLED"))))
-          (princ "\n"))
-        (princ "=== End Dry Run ===\n")))))
+    ;; Compute activation closure for dry-run display
+    (let ((root-id nil)
+          (closure nil)
+          (all-sorted (supervisor-plan-by-target plan)))
+      (when (supervisor-plan-entries plan)
+        (let ((valid-ids (make-hash-table :test 'equal))
+              (entries-by-id (make-hash-table :test 'equal)))
+          (dolist (entry (supervisor-plan-entries plan))
+            (puthash (supervisor-entry-id entry) t valid-ids)
+            (puthash (supervisor-entry-id entry) entry entries-by-id))
+          (condition-case nil
+              (let* ((resolved (supervisor--resolve-startup-root valid-ids))
+                     (members (supervisor--materialize-target-members
+                               (supervisor-plan-entries plan)))
+                     (expanded (supervisor--expand-transaction
+                                resolved entries-by-id members
+                                (supervisor-plan-order-index plan))))
+                (setq root-id resolved)
+                (setq closure expanded))
+            (user-error nil))))
+      ;; Validate timers (only if timer module loaded)
+      (let ((timers (when (fboundp 'supervisor-timer-build-list)
+                      (supervisor-timer-build-list plan))))
+        ;; Display from plan artifact
+        (with-output-to-temp-buffer "*supervisor-dry-run*"
+          (princ "=== Supervisor Dry Run ===\n\n")
+          (princ (format "Services: %d valid, %d invalid\n"
+                         (length (supervisor-plan-entries plan))
+                         (hash-table-count supervisor--invalid)))
+          (when root-id
+            (princ (format "Activation root: %s\n" root-id)))
+          (when (and supervisor-timers (fboundp 'supervisor-timer-build-list))
+            (princ (format "Timers: %d valid, %d invalid\n"
+                           (length timers)
+                           (if (boundp 'supervisor--invalid-timers)
+                               (hash-table-count supervisor--invalid-timers)
+                             0))))
+          (princ "\n")
+          ;; Show invalid entries first (includes unit-file invalids)
+          (when (> (hash-table-count supervisor--invalid) 0)
+            (princ "--- Invalid Services (skipped) ---\n")
+            (maphash (lambda (id reason)
+                       (princ (format "  %s: %s\n" id reason)))
+                     supervisor--invalid)
+            (princ "\n"))
+          ;; Show invalid timers (only if timer module loaded)
+          (when (and (boundp 'supervisor--invalid-timers)
+                     (> (hash-table-count supervisor--invalid-timers) 0))
+            (princ "--- Invalid Timers (skipped) ---\n")
+            (maphash (lambda (id reason)
+                       (princ (format "  %s: %s\n" id reason)))
+                     supervisor--invalid-timers)
+            (princ "\n"))
+          ;; Display activated entries (closure) or full list if no root
+          (let ((activated (if closure
+                               (cl-remove-if-not
+                                (lambda (e)
+                                  (gethash (supervisor-entry-id e) closure))
+                                all-sorted)
+                             all-sorted)))
+            (princ (format "--- Activation order (%d entries) ---\n"
+                           (length activated)))
+            (let ((order 1))
+              (dolist (entry activated)
+                (let* ((id (supervisor-entry-id entry))
+                       (type (supervisor-entry-type entry))
+                       (delay (supervisor-entry-delay entry))
+                       (enabled-p (supervisor-entry-enabled-p entry))
+                       (deps (gethash id (supervisor-plan-deps plan)))
+                       (cycle (gethash id (supervisor-plan-cycle-fallback-ids
+                                           plan))))
+                  (princ (format "  %d. %s [%s]%s%s%s\n"
+                                 order id type
+                                 (if (not enabled-p) " DISABLED" "")
+                                 (if (> delay 0)
+                                     (format " delay=%ds" delay) "")
+                                 (if cycle " (CYCLE FALLBACK)"
+                                   (if deps
+                                       (format " after=%s"
+                                               (mapconcat #'identity deps ","))
+                                     ""))))
+                  (cl-incf order)))
+              (princ "\n"))
+            ;; Show non-activated entries when closure filtering is active
+            (when closure
+              (let ((not-activated (cl-remove-if
+                                    (lambda (e)
+                                      (gethash (supervisor-entry-id e)
+                                               closure))
+                                    all-sorted)))
+                (when not-activated
+                  (princ (format "--- Not activated (%d entries) ---\n"
+                                 (length not-activated)))
+                  (dolist (entry not-activated)
+                    (princ (format "  %s [%s]\n"
+                                   (supervisor-entry-id entry)
+                                   (supervisor-entry-type entry))))
+                  (princ "\n")))))
+          ;; Show timer summary if any
+          (when timers
+            (princ "--- Timers ---\n")
+            (dolist (timer timers)
+              (princ (format "  %s -> %s%s\n"
+                             (supervisor-timer-id timer)
+                             (supervisor-timer-target timer)
+                             (if (supervisor-timer-enabled timer)
+                                 "" " DISABLED"))))
+            (princ "\n"))
+          (princ "=== End Dry Run ===\n"))))))
 
 ;;; State Variables
 
@@ -1617,6 +1662,9 @@ so full struct equality requires excluding it."
   dependents       ; hash: id -> list of dependent ids (combined)
   cycle-fallback-ids ; hash: id -> t for entries with cleared edges
   order-index      ; hash: id -> original index for stable ordering
+  target-members   ; hash: target-id -> (:requires (ids) :wants (ids))
+  activation-root  ; resolved root target ID string, or nil
+  activation-closure ; hash: id -> t for entries in the closure, or nil
   meta)            ; plist with :version, :timestamp (non-deterministic)
 
 (defconst supervisor-plan-version 2
@@ -2314,6 +2362,94 @@ Return the filtered list of valid entries with soft refs dropped."
                     (gethash (supervisor-entry-id entry) invalid))
                   valid-entries)))
 
+(defun supervisor--materialize-target-members (entries)
+  "Build inverse membership map from service target declarations.
+ENTRIES is a list of parsed valid entries.
+Returns hash of TARGET-ID -> (:requires (IDS...) :wants (IDS...)).
+Services declaring :required-by contribute to target requires-members.
+Services declaring :wanted-by contribute to target wants-members."
+  (let ((members (make-hash-table :test 'equal)))
+    (dolist (entry entries)
+      (let ((id (supervisor-entry-id entry)))
+        ;; :required-by -> target's :requires member list
+        (dolist (target-id (supervisor-entry-required-by entry))
+          (let ((cur (gethash target-id members)))
+            (puthash target-id
+                     (plist-put cur :requires
+                                (cons id (plist-get cur :requires)))
+                     members)))
+        ;; :wanted-by -> target's :wants member list
+        (dolist (target-id (supervisor-entry-wanted-by entry))
+          (let ((cur (gethash target-id members)))
+            (puthash target-id
+                     (plist-put cur :wants
+                                (cons id (plist-get cur :wants)))
+                     members)))))
+    ;; Reverse lists to preserve entry order
+    (maphash (lambda (tid plist)
+               (puthash tid
+                        (list :requires (nreverse (plist-get plist :requires))
+                              :wants (nreverse (plist-get plist :wants)))
+                        members))
+             members)
+    members))
+
+(defun supervisor--expand-transaction (root entries-by-id
+                                            target-members order-index)
+  "Compute activation closure from ROOT target.
+ENTRIES-BY-ID is hash of id -> parsed entry.
+TARGET-MEMBERS is hash from `supervisor--materialize-target-members'.
+ORDER-INDEX is hash of id -> original index for deterministic ordering.
+Returns hash of id -> t for all IDs in the closure."
+  (let ((closure (make-hash-table :test 'equal))
+        (queue nil))
+    (when (gethash root entries-by-id)
+      (puthash root t closure)
+      (push root queue))
+    (while queue
+      (let* ((current-id (pop queue))
+             (entry (gethash current-id entries-by-id))
+             (new-ids nil))
+        (when entry
+          (let ((type (supervisor-entry-type entry)))
+            (if (eq type 'target)
+                ;; Target: pull in own :requires/:wants + membership edges
+                (progn
+                  (dolist (dep (supervisor-entry-requires entry))
+                    (push dep new-ids))
+                  (dolist (dep (supervisor-entry-wants entry))
+                    (push dep new-ids))
+                  ;; Membership edges (from :required-by/:wanted-by inverse)
+                  (let ((mem (gethash current-id target-members)))
+                    (when mem
+                      (dolist (dep (plist-get mem :requires))
+                        (push dep new-ids))
+                      (dolist (dep (plist-get mem :wants))
+                        (push dep new-ids)))))
+              ;; Service: pull in own :requires/:wants
+              (dolist (dep (supervisor-entry-requires entry))
+                (push dep new-ids))
+              (dolist (dep (supervisor-entry-wants entry))
+                (push dep new-ids))))
+          ;; Filter to existing, not-yet-in-closure entries
+          (setq new-ids
+                (cl-remove-if
+                 (lambda (id)
+                   (or (not (gethash id entries-by-id))
+                       (gethash id closure)))
+                 new-ids))
+          ;; Sort by order-index for determinism
+          (setq new-ids
+                (sort new-ids
+                      (lambda (a b)
+                        (< (or (gethash a order-index) 0)
+                           (or (gethash b order-index) 0)))))
+          ;; Add to closure and queue
+          (dolist (id new-ids)
+            (puthash id t closure)
+            (setq queue (append queue (list id)))))))
+    closure))
+
 (defun supervisor--build-plan (programs)
   "Build an immutable execution plan from PROGRAMS.
 This function does not modify global runtime state, but does emit
@@ -2488,6 +2624,9 @@ The plan includes:
                :dependents dependents
                :cycle-fallback-ids cycle-fallback-ids
                :order-index order-index
+               :target-members nil
+               :activation-root nil
+               :activation-closure nil
                :meta (list :version supervisor-plan-version
                            :timestamp (float-time))))))))))
 
@@ -3458,12 +3597,14 @@ A user unit file with the same ID overrides the built-in entry."
    (cons (supervisor--builtin-logrotate-command)
          (list :id "logrotate"
                :type 'oneshot
+               :wanted-by '("basic.target")
                :description "Rotate supervisor log files"))
    (cons (supervisor--builtin-log-prune-command)
          (list :id "log-prune"
                :type 'oneshot
                :after '("logrotate")
                :requires '("logrotate")
+               :wanted-by '("basic.target")
                :description "Prune supervisor log files"))
    ;; Built-in targets (lowest authority, user overrides win)
    (list nil :id "basic.target" :type 'target
@@ -3498,14 +3639,18 @@ Disabled entries are marked ready immediately per spec."
     ;; First pass: register all entries so we can filter :wants
     (dolist (entry entries)
       (puthash (supervisor-entry-id entry) entry supervisor--dag-entries))
-    ;; Second pass: build dep graph
+    ;; Second pass: build dep graph (all deps filtered to DAG entries)
     (dolist (entry entries)
       (let* ((id (supervisor-entry-id entry))
              (enabled-p (supervisor-entry-enabled-p entry))
              (type (supervisor-entry-type entry))
-             (after (supervisor-entry-after entry))
-             (requires (supervisor-entry-requires entry))
-             ;; Filter :wants to existing, non-masked stage entries (soft dep)
+             (after (cl-remove-if-not
+                     (lambda (dep) (gethash dep supervisor--dag-entries))
+                     (supervisor-entry-after entry)))
+             (requires (cl-remove-if-not
+                        (lambda (dep) (gethash dep supervisor--dag-entries))
+                        (supervisor-entry-requires entry)))
+             ;; Filter :wants to existing, non-masked entries (soft dep)
              (wants (cl-remove-if-not
                      (lambda (dep)
                        (and (gethash dep supervisor--dag-entries)
@@ -3533,11 +3678,15 @@ Disabled entries are marked ready immediately per spec."
           (supervisor--transition-state id 'waiting-on-deps))
          (t
           (supervisor--transition-state id 'pending)))))
-    ;; Build dependents graph from combined :after + :requires + :wants
+    ;; Build dependents graph (all deps filtered to DAG entries)
     (dolist (entry entries)
       (let* ((id (supervisor-entry-id entry))
-             (after (supervisor-entry-after entry))
-             (requires (supervisor-entry-requires entry))
+             (after (cl-remove-if-not
+                     (lambda (dep) (gethash dep supervisor--dag-entries))
+                     (supervisor-entry-after entry)))
+             (requires (cl-remove-if-not
+                        (lambda (dep) (gethash dep supervisor--dag-entries))
+                        (supervisor-entry-requires entry)))
              (wants (cl-remove-if-not
                      (lambda (dep)
                        (and (gethash dep supervisor--dag-entries)
@@ -3647,6 +3796,12 @@ Mark ready immediately for simple processes, on exit for oneshot."
     ;; Check effective enabled state (config + runtime override)
     (let ((effective-enabled (supervisor--get-effective-enabled id enabled-p)))
       (cond
+       ;; Target: passive node, immediately ready
+       ((eq type 'target)
+        (supervisor--log 'info "target %s reached" id)
+        (supervisor--transition-state id 'started)
+        (puthash id t supervisor--dag-started)
+        (supervisor--dag-mark-ready id))
        ;; Disabled: mark started and ready immediately
        ((not effective-enabled)
         (supervisor--log 'info "%s disabled, skipping" id)
@@ -5170,16 +5325,30 @@ Ready semantics (when dependents are unblocked):
              (supervisor-plan-cycle-fallback-ids plan))
     (maphash (lambda (k v) (puthash k v supervisor--computed-deps))
              (supervisor-plan-deps plan))
-    ;; Validate default-target resolution when plan has entries.
-    ;; Phase 3 (transaction expansion) will use the resolved root to
-    ;; filter the plan to the root closure; here we only validate that
-    ;; the configured target exists among valid entries.
+    ;; Resolve startup root and compute activation closure.
+    ;; Only entries reachable from the root target are activated.
     ;; Skip when plan is empty (standalone core mode).
     (when (supervisor-plan-entries plan)
-      (let ((valid-ids (make-hash-table :test 'equal)))
+      (let ((valid-ids (make-hash-table :test 'equal))
+            (entries-by-id (make-hash-table :test 'equal)))
         (dolist (entry (supervisor-plan-entries plan))
-          (puthash (supervisor-entry-id entry) t valid-ids))
-        (supervisor--resolve-startup-root valid-ids)))
+          (puthash (supervisor-entry-id entry) t valid-ids)
+          (puthash (supervisor-entry-id entry) entry entries-by-id))
+        (let* ((root (supervisor--resolve-startup-root valid-ids))
+               (members (supervisor--materialize-target-members
+                         (supervisor-plan-entries plan)))
+               (closure (supervisor--expand-transaction
+                         root entries-by-id members
+                         (supervisor-plan-order-index plan))))
+          (setf (supervisor-plan-target-members plan) members)
+          (setf (supervisor-plan-activation-root plan) root)
+          (setf (supervisor-plan-activation-closure plan) closure)
+          ;; Filter by-target to only closure entries
+          (setf (supervisor-plan-by-target plan)
+                (cl-remove-if-not
+                 (lambda (e)
+                   (gethash (supervisor-entry-id e) closure))
+                 (supervisor-plan-by-target plan))))))
     ;; Validate timers only when timer subsystem is active (and timer module loaded)
     (when (and (fboundp 'supervisor-timer-subsystem-active-p)
                (supervisor-timer-subsystem-active-p)

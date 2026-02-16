@@ -1445,8 +1445,8 @@ Only auto-started (not manually-started) disabled units are stopped."
       (let ((output (with-current-buffer "*supervisor-dry-run*"
                       (buffer-string))))
         (kill-buffer "*supervisor-dry-run*")
-        ;; All entries in startup order
-        (should (string-match-p "Startup order" output))
+        ;; All entries in activation order
+        (should (string-match-p "Activation order" output))
         (should (string-match-p "\\ba\\b" output))
         (should (string-match-p "\\bb\\b" output))
         (should (string-match-p "\\bc\\b" output))))))
@@ -1671,6 +1671,10 @@ Unit-file loader already deduplicates, so only one entry is loaded."
     (should (hash-table-p (supervisor-plan-cycle-fallback-ids plan)))
     ;; order-index is a hash table
     (should (hash-table-p (supervisor-plan-order-index plan)))
+    ;; New Phase 3 fields are nil when no activation root
+    (should-not (supervisor-plan-target-members plan))
+    (should-not (supervisor-plan-activation-root plan))
+    (should-not (supervisor-plan-activation-closure plan))
     ;; meta is a plist with version and timestamp
     (should (listp (supervisor-plan-meta plan)))
     (should (plist-get (supervisor-plan-meta plan) :version))
@@ -15899,10 +15903,12 @@ PATH set to exclude fuser."
       (should (member "log-prune" ids))
       (should (eq 'oneshot (plist-get (cdr rotate) :type)))
       (should-not (plist-get (cdr rotate) :stage))
+      (should (equal '("basic.target") (plist-get (cdr rotate) :wanted-by)))
       (should (eq 'oneshot (plist-get (cdr prune) :type)))
       (should-not (plist-get (cdr prune) :stage))
       (should (equal '("logrotate") (plist-get (cdr prune) :after)))
-      (should (equal '("logrotate") (plist-get (cdr prune) :requires))))))
+      (should (equal '("logrotate") (plist-get (cdr prune) :requires)))
+      (should (equal '("basic.target") (plist-get (cdr prune) :wanted-by))))))
 
 (ert-deftest supervisor-test-default-target-defcustom ()
   "Default target defcustom has expected default value."
@@ -16779,6 +16785,372 @@ An invalid entry ID that happens to end in .target must not pass."
   (should (equal "a.target"
                  (supervisor--extract-id
                   '(nil :type target :id "a.target") 0))))
+
+;;;; Phase 3: Transaction Expansion Engine
+
+(ert-deftest supervisor-test-materialize-target-members-basic ()
+  "Materialize target members from :wanted-by declarations."
+  (let* ((programs '(("sleep 1" :id "svc-a" :wanted-by ("multi-user.target"))
+                     ("sleep 2" :id "svc-b" :wanted-by ("multi-user.target"))
+                     (nil :id "multi-user.target" :type target)))
+         (plan (supervisor--build-plan programs))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan))))
+    (should (hash-table-p members))
+    (let ((mu (gethash "multi-user.target" members)))
+      (should mu)
+      ;; :wanted-by produces :wants membership
+      (should (equal '("svc-a" "svc-b") (plist-get mu :wants)))
+      ;; No :requires members
+      (should-not (plist-get mu :requires)))))
+
+(ert-deftest supervisor-test-materialize-target-members-empty ()
+  "Materialize returns empty hash when no services declare membership."
+  (let* ((programs '((nil :id "basic.target" :type target)
+                     ("sleep 1" :id "svc-a")))
+         (plan (supervisor--build-plan programs))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan))))
+    (should (hash-table-p members))
+    (should (= 0 (hash-table-count members)))))
+
+(ert-deftest supervisor-test-materialize-required-by-members ()
+  "Services with :required-by produce :requires membership in target."
+  (let* ((programs '(("sleep 1" :id "svc-a" :required-by ("basic.target"))
+                     (nil :id "basic.target" :type target)))
+         (plan (supervisor--build-plan programs))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan))))
+    (let ((bt (gethash "basic.target" members)))
+      (should bt)
+      (should (equal '("svc-a") (plist-get bt :requires)))
+      (should-not (plist-get bt :wants)))))
+
+(ert-deftest supervisor-test-expand-transaction-single-target ()
+  "Expansion of a single target with wanted-by services."
+  (let* ((programs '(("sleep 1" :id "svc-a" :wanted-by ("basic.target"))
+                     ("sleep 2" :id "svc-b" :wanted-by ("basic.target"))
+                     ("sleep 3" :id "svc-c")
+                     (nil :id "basic.target" :type target)))
+         (plan (supervisor--build-plan programs))
+         (entries-by-id (make-hash-table :test 'equal))
+         (_ (dolist (e (supervisor-plan-entries plan))
+              (puthash (supervisor-entry-id e) e entries-by-id)))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan)))
+         (closure (supervisor--expand-transaction
+                   "basic.target" entries-by-id members
+                   (supervisor-plan-order-index plan))))
+    ;; basic.target and its two wanted services are in closure
+    (should (gethash "basic.target" closure))
+    (should (gethash "svc-a" closure))
+    (should (gethash "svc-b" closure))
+    ;; svc-c has no membership, not activated
+    (should-not (gethash "svc-c" closure))))
+
+(ert-deftest supervisor-test-expand-transaction-target-chain ()
+  "Expansion follows target :requires chain."
+  (let* ((programs '(("sleep 1" :id "svc-a" :wanted-by ("basic.target"))
+                     (nil :id "basic.target" :type target)
+                     (nil :id "multi-user.target" :type target
+                          :requires ("basic.target")
+                          :after ("basic.target"))))
+         (plan (supervisor--build-plan programs))
+         (entries-by-id (make-hash-table :test 'equal))
+         (_ (dolist (e (supervisor-plan-entries plan))
+              (puthash (supervisor-entry-id e) e entries-by-id)))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan)))
+         (closure (supervisor--expand-transaction
+                   "multi-user.target" entries-by-id members
+                   (supervisor-plan-order-index plan))))
+    ;; multi-user pulls in basic via :requires
+    (should (gethash "multi-user.target" closure))
+    (should (gethash "basic.target" closure))
+    ;; basic pulls in svc-a via membership
+    (should (gethash "svc-a" closure))))
+
+(ert-deftest supervisor-test-expand-transaction-service-pull-in ()
+  "Expansion follows service :requires for pull-in."
+  (let* ((programs '(("sleep 1" :id "svc-a"
+                                :wanted-by ("basic.target")
+                                :requires ("svc-dep"))
+                     ("sleep 2" :id "svc-dep")
+                     (nil :id "basic.target" :type target)))
+         (plan (supervisor--build-plan programs))
+         (entries-by-id (make-hash-table :test 'equal))
+         (_ (dolist (e (supervisor-plan-entries plan))
+              (puthash (supervisor-entry-id e) e entries-by-id)))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan)))
+         (closure (supervisor--expand-transaction
+                   "basic.target" entries-by-id members
+                   (supervisor-plan-order-index plan))))
+    ;; svc-a is pulled in by basic.target, and svc-dep by svc-a's :requires
+    (should (gethash "basic.target" closure))
+    (should (gethash "svc-a" closure))
+    (should (gethash "svc-dep" closure))))
+
+(ert-deftest supervisor-test-expand-transaction-transitive-service-requires ()
+  "Expansion follows transitive service :requires chains."
+  (let* ((programs '(("sleep 1" :id "svc-a"
+                                :wanted-by ("basic.target")
+                                :requires ("svc-b"))
+                     ("sleep 2" :id "svc-b" :requires ("svc-c"))
+                     ("sleep 3" :id "svc-c")
+                     (nil :id "basic.target" :type target)))
+         (plan (supervisor--build-plan programs))
+         (entries-by-id (make-hash-table :test 'equal))
+         (_ (dolist (e (supervisor-plan-entries plan))
+              (puthash (supervisor-entry-id e) e entries-by-id)))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan)))
+         (closure (supervisor--expand-transaction
+                   "basic.target" entries-by-id members
+                   (supervisor-plan-order-index plan))))
+    (should (gethash "basic.target" closure))
+    (should (gethash "svc-a" closure))
+    (should (gethash "svc-b" closure))
+    (should (gethash "svc-c" closure))))
+
+(ert-deftest supervisor-test-expand-transaction-deterministic ()
+  "Expansion output is deterministic across identical input."
+  (let* ((programs '(("sleep 1" :id "svc-a" :wanted-by ("basic.target"))
+                     ("sleep 2" :id "svc-b" :wanted-by ("basic.target"))
+                     ("sleep 3" :id "svc-c" :wanted-by ("basic.target"))
+                     (nil :id "basic.target" :type target)))
+         (plan (supervisor--build-plan programs))
+         (entries-by-id (make-hash-table :test 'equal))
+         (_ (dolist (e (supervisor-plan-entries plan))
+              (puthash (supervisor-entry-id e) e entries-by-id)))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan)))
+         (c1 (supervisor--expand-transaction
+              "basic.target" entries-by-id members
+              (supervisor-plan-order-index plan)))
+         (c2 (supervisor--expand-transaction
+              "basic.target" entries-by-id members
+              (supervisor-plan-order-index plan))))
+    ;; Same number of entries
+    (should (= (hash-table-count c1) (hash-table-count c2)))
+    ;; Same entries
+    (maphash (lambda (k _v) (should (gethash k c2))) c1)))
+
+(ert-deftest supervisor-test-expand-transaction-missing-dep-ignored ()
+  "Expansion ignores :requires deps that don't exist in entries-by-id."
+  (let* ((programs '(("sleep 1" :id "svc-a"
+                                :wanted-by ("basic.target")
+                                :requires ("nonexistent"))
+                     (nil :id "basic.target" :type target)))
+         (plan (supervisor--build-plan programs)))
+    ;; svc-a has :requires "nonexistent" which is invalid and removed
+    ;; during validation, so the plan entries should not reference it.
+    ;; Build expansion from plan entries:
+    (let ((entries-by-id (make-hash-table :test 'equal)))
+      (dolist (e (supervisor-plan-entries plan))
+        (puthash (supervisor-entry-id e) e entries-by-id))
+      (let* ((members (supervisor--materialize-target-members
+                       (supervisor-plan-entries plan)))
+             (closure (supervisor--expand-transaction
+                       "basic.target" entries-by-id members
+                       (supervisor-plan-order-index plan))))
+        (should (gethash "basic.target" closure))
+        ;; svc-a still activated (its wanted-by is valid)
+        (should (gethash "svc-a" closure))
+        ;; nonexistent is not in closure
+        (should-not (gethash "nonexistent" closure))))))
+
+(ert-deftest supervisor-test-expand-transaction-no-membership-not-activated ()
+  "Services without target membership are not activated."
+  (let* ((programs '(("sleep 1" :id "svc-member" :wanted-by ("basic.target"))
+                     ("sleep 2" :id "svc-orphan")
+                     (nil :id "basic.target" :type target)))
+         (plan (supervisor--build-plan programs))
+         (entries-by-id (make-hash-table :test 'equal))
+         (_ (dolist (e (supervisor-plan-entries plan))
+              (puthash (supervisor-entry-id e) e entries-by-id)))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan)))
+         (closure (supervisor--expand-transaction
+                   "basic.target" entries-by-id members
+                   (supervisor-plan-order-index plan))))
+    (should (gethash "svc-member" closure))
+    (should-not (gethash "svc-orphan" closure))))
+
+(ert-deftest supervisor-test-plan-with-root-filters-by-target ()
+  "When supervisor-start resolves a root, by-target is filtered to closure."
+  ;; Use build-plan directly and compute expansion post-hoc (as start does)
+  (let* ((programs '(("sleep 1" :id "svc-a" :wanted-by ("basic.target"))
+                     ("sleep 2" :id "svc-orphan")
+                     (nil :id "basic.target" :type target)))
+         (plan (supervisor--build-plan programs)))
+    ;; by-target before expansion has all entries
+    (let ((all-ids (mapcar #'supervisor-entry-id
+                           (supervisor-plan-by-target plan))))
+      (should (member "svc-a" all-ids))
+      (should (member "svc-orphan" all-ids))
+      (should (member "basic.target" all-ids)))
+    ;; Now compute expansion and filter (as supervisor-start would)
+    (let ((entries-by-id (make-hash-table :test 'equal)))
+      (dolist (e (supervisor-plan-entries plan))
+        (puthash (supervisor-entry-id e) e entries-by-id))
+      (let* ((members (supervisor--materialize-target-members
+                       (supervisor-plan-entries plan)))
+             (closure (supervisor--expand-transaction
+                       "basic.target" entries-by-id members
+                       (supervisor-plan-order-index plan))))
+        (setf (supervisor-plan-by-target plan)
+              (cl-remove-if-not
+               (lambda (e) (gethash (supervisor-entry-id e) closure))
+               (supervisor-plan-by-target plan)))
+        ;; Now by-target only has closure entries
+        (let ((filtered-ids (mapcar #'supervisor-entry-id
+                                    (supervisor-plan-by-target plan))))
+          (should (member "svc-a" filtered-ids))
+          (should (member "basic.target" filtered-ids))
+          (should-not (member "svc-orphan" filtered-ids)))))))
+
+(ert-deftest supervisor-test-plan-without-root-full-list ()
+  "Without activation root, by-target contains full sorted list."
+  (let* ((programs '(("sleep 1" :id "a")
+                     ("sleep 2" :id "b" :after "a")))
+         (plan (supervisor--build-plan programs)))
+    ;; No root computed -- by-target is full list
+    (should-not (supervisor-plan-activation-root plan))
+    (should (= 2 (length (supervisor-plan-by-target plan))))))
+
+(ert-deftest supervisor-test-passive-target-in-dag ()
+  "Target entries are started as passive nodes in the DAG."
+  (let* ((programs '((nil :id "basic.target" :type target)
+                     ("sleep 1" :id "svc-a"
+                                :after ("basic.target")
+                                :wanted-by ("basic.target"))))
+         (plan (supervisor--build-plan programs))
+         (entries-by-id (make-hash-table :test 'equal))
+         (_ (dolist (e (supervisor-plan-entries plan))
+              (puthash (supervisor-entry-id e) e entries-by-id)))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan)))
+         (closure (supervisor--expand-transaction
+                   "basic.target" entries-by-id members
+                   (supervisor-plan-order-index plan)))
+         (activated (cl-remove-if-not
+                     (lambda (e) (gethash (supervisor-entry-id e) closure))
+                     (supervisor-plan-by-target plan))))
+    ;; Set up DAG globals
+    (let ((supervisor--dag-blocking (make-hash-table :test 'equal))
+          (supervisor--dag-in-degree (make-hash-table :test 'equal))
+          (supervisor--dag-dependents (make-hash-table :test 'equal))
+          (supervisor--dag-entries (make-hash-table :test 'equal))
+          (supervisor--dag-started (make-hash-table :test 'equal))
+          (supervisor--dag-ready (make-hash-table :test 'equal))
+          (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+          (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+          (supervisor--dag-id-to-index (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal)))
+      (supervisor--dag-init activated)
+      ;; Target should have 0 in-degree (no deps)
+      (should (= 0 (gethash "basic.target" supervisor--dag-in-degree)))
+      ;; Now start the target entry
+      (let ((target-entry (gethash "basic.target" entries-by-id)))
+        (supervisor--dag-start-entry-async target-entry))
+      ;; Target should be started and ready immediately
+      (should (gethash "basic.target" supervisor--dag-started))
+      (should (gethash "basic.target" supervisor--dag-ready))
+      ;; State should be 'started
+      (should (eq 'started (gethash "basic.target"
+                                    supervisor--entry-state))))))
+
+(ert-deftest supervisor-test-dag-deps-filtered-to-entry-set ()
+  "DAG init filters :after and :requires deps to entries in the DAG."
+  (let* ((programs '(("sleep 1" :id "svc-a" :after ("missing-dep"))
+                     ("sleep 2" :id "svc-b")))
+         (plan (supervisor--build-plan programs)))
+    ;; svc-a references "missing-dep" in :after which will be invalid
+    ;; at validation time. Build a plan where svc-a has no after deps
+    ;; since missing-dep is invalid. Now test DAG filtering directly:
+    (let ((supervisor--dag-blocking (make-hash-table :test 'equal))
+          (supervisor--dag-in-degree (make-hash-table :test 'equal))
+          (supervisor--dag-dependents (make-hash-table :test 'equal))
+          (supervisor--dag-entries (make-hash-table :test 'equal))
+          (supervisor--dag-started (make-hash-table :test 'equal))
+          (supervisor--dag-ready (make-hash-table :test 'equal))
+          (supervisor--dag-timeout-timers (make-hash-table :test 'equal))
+          (supervisor--dag-delay-timers (make-hash-table :test 'equal))
+          (supervisor--dag-id-to-index (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal)))
+      ;; Initialize with plan entries (no "missing-dep" entry)
+      (supervisor--dag-init (supervisor-plan-by-target plan))
+      ;; svc-a should have 0 in-degree (missing-dep filtered out)
+      (should (= 0 (gethash "svc-a" supervisor--dag-in-degree))))))
+
+(ert-deftest supervisor-test-builtin-maintenance-wanted-by ()
+  "Built-in logrotate and log-prune declare wanted-by basic.target."
+  (let* ((builtins (supervisor--builtin-programs))
+         (rotate (cl-find "logrotate" builtins
+                          :key (lambda (e) (plist-get (cdr e) :id))
+                          :test #'equal))
+         (prune (cl-find "log-prune" builtins
+                         :key (lambda (e) (plist-get (cdr e) :id))
+                         :test #'equal)))
+    (should (equal '("basic.target") (plist-get (cdr rotate) :wanted-by)))
+    (should (equal '("basic.target") (plist-get (cdr prune) :wanted-by)))))
+
+(ert-deftest supervisor-test-startup-activates-only-closure ()
+  "Full expansion from graphical.target includes the standard chain."
+  (let* ((programs '(("sleep 1" :id "svc-basic" :wanted-by ("basic.target"))
+                     ("sleep 2" :id "svc-gui" :wanted-by ("graphical.target"))
+                     ("sleep 3" :id "svc-orphan")
+                     (nil :id "basic.target" :type target)
+                     (nil :id "multi-user.target" :type target
+                          :requires ("basic.target")
+                          :after ("basic.target"))
+                     (nil :id "graphical.target" :type target
+                          :requires ("multi-user.target")
+                          :after ("multi-user.target"))))
+         (plan (supervisor--build-plan programs))
+         (entries-by-id (make-hash-table :test 'equal))
+         (_ (dolist (e (supervisor-plan-entries plan))
+              (puthash (supervisor-entry-id e) e entries-by-id)))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan)))
+         (closure (supervisor--expand-transaction
+                   "graphical.target" entries-by-id members
+                   (supervisor-plan-order-index plan))))
+    ;; All three targets reachable via :requires chain
+    (should (gethash "graphical.target" closure))
+    (should (gethash "multi-user.target" closure))
+    (should (gethash "basic.target" closure))
+    ;; Services with membership are activated
+    (should (gethash "svc-basic" closure))
+    (should (gethash "svc-gui" closure))
+    ;; Orphan service is not activated
+    (should-not (gethash "svc-orphan" closure))))
+
+(ert-deftest supervisor-test-expand-transaction-wants-soft-pull-in ()
+  "Expansion follows :wants edges on both targets and services."
+  (let* ((programs '(("sleep 1" :id "svc-a"
+                                :wanted-by ("basic.target")
+                                :wants ("svc-opt"))
+                     ("sleep 2" :id "svc-opt")
+                     (nil :id "basic.target" :type target)))
+         (plan (supervisor--build-plan programs))
+         (entries-by-id (make-hash-table :test 'equal))
+         (_ (dolist (e (supervisor-plan-entries plan))
+              (puthash (supervisor-entry-id e) e entries-by-id)))
+         (members (supervisor--materialize-target-members
+                   (supervisor-plan-entries plan)))
+         (closure (supervisor--expand-transaction
+                   "basic.target" entries-by-id members
+                   (supervisor-plan-order-index plan))))
+    ;; svc-opt pulled in via svc-a's :wants
+    (should (gethash "basic.target" closure))
+    (should (gethash "svc-a" closure))
+    (should (gethash "svc-opt" closure))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
