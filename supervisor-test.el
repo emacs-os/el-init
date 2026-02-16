@@ -16395,19 +16395,22 @@ PATH set to exclude fuser."
 ;;; Target entry tests
 
 (ert-deftest supervisor-test-target-entry-without-command-valid ()
-  "Target entry with empty command and valid :id passes validation."
+  "Target entry with empty or nil command and valid :id passes validation."
+  ;; Empty string sentinel form
   (should-not (supervisor--validate-entry
-               '("" :type target :id "multi.target"))))
+               '("" :type target :id "multi.target")))
+  ;; Nil car form (first-class inline target)
+  (should-not (supervisor--validate-entry
+               '(nil :type target :id "multi.target"))))
 
 (ert-deftest supervisor-test-target-entry-with-command-invalid ()
-  "Target entry with a non-empty command is rejected.
-Target-invalid keywords include :delay etc., but the command position
-being non-empty is caught by the .target suffix rule on derived ID."
-  ;; A target with a command string will derive ID from command,
-  ;; and that ID won't end in .target
-  (should (string-match-p ":type target requires ID ending in .target"
+  "Target entry with a non-empty command is rejected."
+  ;; Even with a valid .target ID, a non-empty command is rejected
+  (should (string-match-p "target entry must not have a command"
                           (supervisor--validate-entry
-                           '("my-app" :type target)))))
+                           '("my-app" :type target :id "foo.target"))))
+  ;; Without explicit :id, the suffix rule also catches it
+  (should (supervisor--validate-entry '("my-app" :type target))))
 
 (ert-deftest supervisor-test-target-invalid-keywords-rejected ()
   "Keywords invalid for :type target produce errors."
@@ -16444,9 +16447,17 @@ being non-empty is caught by the .target suffix rule on derived ID."
                            '("sleep 300" :id "oops.target")))))
 
 (ert-deftest supervisor-test-target-parses-to-nil-command ()
-  "Target entry parses with nil command."
+  "Target entry parses with nil command from both entry forms."
+  ;; Empty string sentinel form
   (let ((entry (supervisor--parse-entry
                 '("" :type target :id "multi.target"))))
+    (should (equal (supervisor-entry-id entry) "multi.target"))
+    (should (null (supervisor-entry-command entry)))
+    (should (eq (supervisor-entry-type entry) 'target))
+    (should (= (length entry) 33)))
+  ;; Nil car form
+  (let ((entry (supervisor--parse-entry
+                '(nil :type target :id "multi.target"))))
     (should (equal (supervisor-entry-id entry) "multi.target"))
     (should (null (supervisor-entry-command entry)))
     (should (eq (supervisor-entry-type entry) 'target))

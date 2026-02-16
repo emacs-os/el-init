@@ -574,11 +574,15 @@ Return nil if valid, or a reason string if invalid."
    ((stringp entry)
     (when (string-empty-p (string-trim entry))
       "command string must not be empty or whitespace-only"))
-   ;; Must be a list with command string first
-   ((not (and (listp entry) (stringp (car entry))))
+   ;; Must be a list; car is command string (or nil for target type)
+   ((not (and (listp entry)
+              (or (stringp (car entry))
+                  (and (null (car entry))
+                       (eq (plist-get (cdr entry) :type) 'target)))))
     "entry must be a string or list starting with command string")
-   ;; List entry: command must be non-empty/non-whitespace (except target type)
-   ((and (string-empty-p (string-trim (car entry)))
+   ;; List entry: non-target command must be non-empty/non-whitespace
+   ((and (stringp (car entry))
+         (string-empty-p (string-trim (car entry)))
          (not (eq (plist-get (cdr entry) :type) 'target)))
     "command must not be empty or whitespace-only")
    (t
@@ -707,7 +711,11 @@ Return nil if valid, or a reason string if invalid."
       (when (eq type 'target)
         (dolist (kw supervisor--target-invalid-keywords)
           (when (plist-member plist kw)
-            (push (format "%s is invalid for :type target" kw) errors))))
+            (push (format "%s is invalid for :type target" kw) errors)))
+        ;; Target must not have a non-empty command
+        (when (and (listp entry) (stringp (car entry))
+                   (not (string-empty-p (string-trim (car entry)))))
+          (push "target entry must not have a command" errors)))
       ;; Check :wanted-by and :required-by shape
       (dolist (spec '((:wanted-by . ":wanted-by")
                       (:required-by . ":required-by")))
@@ -2758,7 +2766,7 @@ Use accessor functions instead of direct indexing for new code."
                        ((symbolp type-raw) type-raw)
                        ((stringp type-raw) (intern type-raw))
                        (t 'simple)))
-           (cmd-tokens (unless (eq type 'target)
+           (cmd-tokens (unless (or (eq type 'target) (null cmd))
                          (split-string-and-unquote cmd)))
            (_ (when (and (not (eq type 'target)) (not cmd-tokens))
                 (error "Supervisor: empty command in entry")))
