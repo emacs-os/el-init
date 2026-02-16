@@ -2972,9 +2972,37 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
 
 ;;;; Log writer lifecycle
 
+(defun supervisor--logd-pid-dir ()
+  "Return the directory for logd PID files.
+Use `supervisor-logd-pid-directory' when set, otherwise
+`supervisor-log-directory'."
+  (or supervisor-logd-pid-directory supervisor-log-directory))
+
+(defun supervisor--write-logd-pid-file (id proc)
+  "Write a PID file for log writer PROC serving service ID.
+The file is named `logd-ID.pid' in `supervisor--logd-pid-dir'.
+The rotation script reads these files when `--signal-reopen' is
+given to send SIGHUP to all active writers."
+  (let ((pid-file (expand-file-name (format "logd-%s.pid" id)
+                                    (supervisor--logd-pid-dir))))
+    (condition-case err
+        (write-region (number-to-string (process-id proc))
+                      nil pid-file nil 'silent)
+      (error
+       (supervisor--log 'warning "%s: could not write PID file: %s"
+                        id (error-message-string err))))))
+
+(defun supervisor--remove-logd-pid-file (id)
+  "Remove the PID file for log writer serving service ID."
+  (let ((pid-file (expand-file-name (format "logd-%s.pid" id)
+                                    (supervisor--logd-pid-dir))))
+    (when (file-exists-p pid-file)
+      (delete-file pid-file))))
+
 (defun supervisor--start-writer (id log-file)
   "Start a log writer process for service ID writing to LOG-FILE.
 Spawn `supervisor-logd' with the configured size cap and log directory.
+Write a PID file for the writer so the rotation script can signal it.
 Return the writer process, or nil if the writer could not be started.
 Store it in `supervisor--writers' on success."
   (condition-case err
@@ -2995,6 +3023,7 @@ Store it in `supervisor--writers' on success."
                     :noquery t)))
         (set-process-query-on-exit-flag proc nil)
         (puthash id proc supervisor--writers)
+        (supervisor--write-logd-pid-file id proc)
         proc)
     (error
      (supervisor--log 'warning "%s: log writer failed to start: %s"
@@ -3003,17 +3032,20 @@ Store it in `supervisor--writers' on success."
 
 (defun supervisor--stop-writer (id)
   "Stop the log writer process for service ID.
-Send SIGTERM if the writer is alive, then remove from `supervisor--writers'."
+Send SIGTERM if the writer is alive, remove PID file, then remove
+from `supervisor--writers'."
   (when-let* ((writer (gethash id supervisor--writers)))
     (when (process-live-p writer)
       (signal-process writer 'SIGTERM))
+    (supervisor--remove-logd-pid-file id)
     (remhash id supervisor--writers)))
 
 (defun supervisor--stop-all-writers ()
   "Stop all log writer processes and clear `supervisor--writers'."
-  (maphash (lambda (_id writer)
+  (maphash (lambda (id writer)
              (when (process-live-p writer)
-               (signal-process writer 'SIGTERM)))
+               (signal-process writer 'SIGTERM))
+             (supervisor--remove-logd-pid-file id))
            supervisor--writers)
   (clrhash supervisor--writers))
 
@@ -3065,12 +3097,13 @@ Execute the scheduled maintenance path asynchronously:
 
 (defun supervisor--builtin-maintenance-command ()
   "Build the shell command for the built-in logrotate oneshot unit.
-Return a command string that runs logrotate then prune using
-current configuration values."
-  (format "%s --log-dir %s --keep-days %d && %s --log-dir %s --max-total-bytes %d"
+Return a command string that runs logrotate (with writer reopen
+signaling) then prune, using current configuration values."
+  (format "%s --log-dir %s --keep-days %d --signal-reopen --pid-dir %s && %s --log-dir %s --max-total-bytes %d"
           (shell-quote-argument supervisor-logrotate-command)
           (shell-quote-argument supervisor-log-directory)
           supervisor-logrotate-keep-days
+          (shell-quote-argument (supervisor--logd-pid-dir))
           (shell-quote-argument supervisor-log-prune-command)
           (shell-quote-argument supervisor-log-directory)
           supervisor-log-prune-max-total-bytes))

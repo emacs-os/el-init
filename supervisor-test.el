@@ -13761,6 +13761,70 @@ No warning is emitted when there are simply no child processes."
     (supervisor--stop-writer "nonexistent")
     (should (zerop (hash-table-count supervisor--writers)))))
 
+(ert-deftest supervisor-test-writer-pid-file-written ()
+  "Start-writer writes a PID file for the logd process."
+  (let* ((pid-dir (make-temp-file "sv-pid-" t))
+         (supervisor--writers (make-hash-table :test 'equal))
+         (supervisor-logd-pid-directory pid-dir)
+         (supervisor-logd-command "sleep")
+         (supervisor-logd-max-file-size 1000)
+         (supervisor-log-directory pid-dir)
+         (supervisor-logd-prune-min-interval 60)
+         (supervisor-log-prune-command "/bin/true")
+         (supervisor-log-prune-max-total-bytes 1000000)
+         (fake-proc (start-process "fake-logd" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest _args) fake-proc)))
+          (supervisor--start-writer "svc1" "/tmp/log-svc1.log")
+          (let ((pid-file (expand-file-name "logd-svc1.pid" pid-dir)))
+            (should (file-exists-p pid-file))
+            (should (equal (string-trim
+                            (with-temp-buffer
+                              (insert-file-contents pid-file)
+                              (buffer-string)))
+                           (number-to-string (process-id fake-proc))))))
+      (when (process-live-p fake-proc) (delete-process fake-proc))
+      (delete-directory pid-dir t))))
+
+(ert-deftest supervisor-test-stop-writer-removes-pid-file ()
+  "Stop-writer removes the PID file."
+  (let* ((pid-dir (make-temp-file "sv-pid-" t))
+         (supervisor--writers (make-hash-table :test 'equal))
+         (supervisor-logd-pid-directory pid-dir))
+    (let ((w (start-process "logd-y" nil "sleep" "300")))
+      (puthash "y" w supervisor--writers)
+      (let ((pid-file (expand-file-name "logd-y.pid" pid-dir)))
+        (write-region "12345" nil pid-file nil 'silent)
+        (unwind-protect
+            (progn
+              (supervisor--stop-writer "y")
+              (should-not (file-exists-p pid-file))
+              (should (zerop (hash-table-count supervisor--writers))))
+          (when (process-live-p w) (delete-process w))
+          (delete-directory pid-dir t))))))
+
+(ert-deftest supervisor-test-stop-all-writers-removes-pid-files ()
+  "Stop-all-writers removes PID files for all writers."
+  (let* ((pid-dir (make-temp-file "sv-pid-" t))
+         (supervisor--writers (make-hash-table :test 'equal))
+         (supervisor-logd-pid-directory pid-dir)
+         (w1 (start-process "logd-a" nil "sleep" "300"))
+         (w2 (start-process "logd-b" nil "sleep" "300")))
+    (puthash "a" w1 supervisor--writers)
+    (puthash "b" w2 supervisor--writers)
+    (write-region "111" nil (expand-file-name "logd-a.pid" pid-dir) nil 'silent)
+    (write-region "222" nil (expand-file-name "logd-b.pid" pid-dir) nil 'silent)
+    (unwind-protect
+        (progn
+          (supervisor--stop-all-writers)
+          (should-not (file-exists-p (expand-file-name "logd-a.pid" pid-dir)))
+          (should-not (file-exists-p (expand-file-name "logd-b.pid" pid-dir)))
+          (should (zerop (hash-table-count supervisor--writers))))
+      (when (process-live-p w1) (delete-process w1))
+      (when (process-live-p w2) (delete-process w2))
+      (delete-directory pid-dir t))))
+
 (ert-deftest supervisor-test-writer-failure-degrades-gracefully ()
   "Start-writer returns nil and logs warning when make-process signals."
   (let ((supervisor--writers (make-hash-table :test 'equal))

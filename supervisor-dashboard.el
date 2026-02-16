@@ -1290,7 +1290,7 @@ buffer and switch to the `*supervisor*' dashboard."
 
 (defun supervisor-dashboard-edit ()
   "Edit unit file for entry at point.
-If the unit file does not exist, create a scaffold template.
+If the unit file does not exist, prompt to create a scaffold template.
 On save, validate the unit file and report errors.
 Press `q' or \\[supervisor-edit-finish] to return to the dashboard."
   (interactive)
@@ -1308,8 +1308,9 @@ Press `q' or \\[supervisor-edit-finish] to return to the dashboard."
       (unless path
         (user-error "No active authority roots configured"))
       (let ((created (not (file-exists-p path))))
-        ;; Create scaffold if file doesn't exist
         (when created
+          (unless (y-or-n-p (format "No unit file for %s.  Create override? " id))
+            (user-error "Cancelled"))
           (make-directory (file-name-directory path) t)
           (write-region (supervisor--unit-file-scaffold id) nil path))
         ;; Open the file and activate edit mode
