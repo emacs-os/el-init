@@ -1,6 +1,11 @@
-# FIXME: this is probably out of date.
+# sbin — CLI and Maintenance Scripts
 
-# CLI Control Plane Plan (Minimal Wrapper + Pure Elisp)
+This directory holds the CLI control shim (`supervisorctl`) and log
+maintenance scripts (`supervisor-logrotate`, `supervisor-log-prune`).
+The `libexec/` directory holds the per-service log writer binary
+(`supervisor-logd`).
+
+# supervisorctl — CLI Control Plane (Minimal Wrapper + Pure Elisp)
 
 This folder will hold a single minimal CLI shim that controls `supervisor.el`
 via `emacsclient`. All command parsing, dispatch, output formatting, and
@@ -231,6 +236,150 @@ If needed, pass `-s NAME` or `--server-file PATH` for server selection.
 - `2` invalid args
 - `3` Emacs server unavailable
 - `4` validation failed
+
+# supervisor-logrotate — Log Rotation
+
+Rotates active supervisor.el log files by renaming them with a
+timestamp suffix, optionally signals logd writers to reopen their files,
+and prunes old rotated files beyond a configurable age.
+
+Designed to be called periodically by the supervisor timer subsystem or
+an external scheduler (cron, systemd timer).
+
+## Usage
+
+```
+supervisor-logrotate [OPTIONS]
+```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--log-dir DIR` | Log directory to operate on (required) |
+| `--keep-days N` | Prune rotated files older than N days (default: 14) |
+| `--signal-reopen` | Send SIGHUP to logd writers after rotation |
+| `--pid-dir DIR` | Directory for writer PID files (default: same as `--log-dir`) |
+| `--dry-run` | Print actions without executing |
+| `--help` | Show help message |
+
+## Behavior
+
+1. Rotates `supervisor.log` and all active `log-<id>.log` files by
+   renaming them to `<base>.YYYYMMDD-HHMMSS.log`.  Already-rotated
+   files (identified by timestamp suffix) are skipped.
+2. If `--signal-reopen` is given, sends SIGHUP to each logd writer
+   whose PID file is found in `--pid-dir`, causing them to close and
+   reopen their log files.
+3. Prunes rotated files older than `--keep-days` days.  Uses
+   `is_rotated()` pattern matching to distinguish rotated files from
+   active logs whose service ID happens to contain dots.
+
+## Exit Codes
+
+- `0` — success
+- `1` — usage or runtime error
+
+---
+
+# supervisor-log-prune — Directory Size Cap Enforcement
+
+Enforces a hard cap on total log directory size by deleting the oldest
+rotated log files first.  Active log files are never deleted.
+
+Uses an exclusive lock file to prevent concurrent prune races.  If the
+lock cannot be acquired, the script exits silently (exit 0) — another
+instance is already running.
+
+Designed to be invoked by `supervisor-logd` after local file rotation,
+or directly by the supervisor timer subsystem.
+
+## Usage
+
+```
+supervisor-log-prune [OPTIONS]
+```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--log-dir DIR` | Log directory to operate on (required) |
+| `--max-total-bytes N` | Hard cap on total directory size in bytes (default: 1073741824 / 1 GiB) |
+| `--lock-file PATH` | Exclusive lock file path (default: `<log-dir>/.prune.lock`) |
+| `--protect-id ID` | Never delete `log-<ID>.log` (repeatable) |
+| `--dry-run` | Print actions without executing |
+| `--help` | Show help message |
+
+## Safety Model
+
+The script uses four confirmation layers before deleting any file:
+
+1. **Parent-exists**: the rotated file's parent active log
+   (`log-<id>.log`) exists in the directory.
+2. **Sibling**: the rotated file shares a parent with at least one
+   other rotated file (confirms a now-removed service once existed).
+3. **Children**: lone orphan files matching the timestamp pattern are
+   preserved when neither parent nor sibling confirmation succeeds
+   (the file may be an active log for a service whose ID contains a
+   timestamp pattern).
+4. **Fuser**: files currently held open by a process (e.g., an active
+   logd writer) are skipped.  Soft dependency — falls back to the
+   other guards when `fuser` is not available.
+
+## Exit Codes
+
+- `0` — success (or nothing to do, or lock already held)
+- `1` — usage or runtime error
+
+---
+
+# libexec/supervisor-logd — Per-Service Log Writer
+
+A small C binary that reads service output from stdin and writes to a
+log file with append semantics.  Compiled from `libexec/supervisor-logd.c`.
+
+## Compilation
+
+```
+cd libexec && make
+```
+
+## Usage
+
+```
+supervisor-logd --file PATH --max-file-size-bytes N [OPTIONS]
+```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--file PATH` | Target log file (required) |
+| `--max-file-size-bytes N` | Rotate when file exceeds N bytes (required) |
+| `--log-dir DIR` | Directory for prune trigger context |
+| `--prune-cmd CMD` | Command to run after local rotation |
+| `--prune-min-interval-sec N` | Minimum seconds between prune calls |
+
+## Signal Behavior
+
+- **SIGHUP** — close and reopen the target file (for log rotation)
+- **SIGTERM / SIGINT** — flush and exit cleanly
+
+## Local Rotation
+
+When the file exceeds the size cap, it is renamed to
+`<base>.YYYYMMDD-HHMMSS.log` and a fresh file is opened.  If
+`--prune-cmd` is set, the prune command is spawned after rotation
+(throttled by `--prune-min-interval-sec`).
+
+## Exit Codes
+
+- `0` — clean exit (stdin EOF or TERM/INT)
+- `1` — usage error
+- `2` — file operation error
+
+---
 
 ## Notes
 
