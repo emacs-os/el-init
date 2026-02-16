@@ -18270,5 +18270,500 @@ An invalid entry ID that happens to end in .target must not pass."
         (should (member "graphical.target" ids))
         (should (member "default.target" ids))))))
 
+;;;; CLI Target Command Tests
+
+(ert-deftest supervisor-test-cli-get-default ()
+  "The `get-default' command returns effective default-target-link."
+  (let ((supervisor-default-target-link "graphical.target")
+        (supervisor--default-target-link-override nil))
+    (let ((result (supervisor--cli-dispatch '("get-default"))))
+      (should (= supervisor-cli-exit-success
+                  (supervisor-cli-result-exitcode result)))
+      (should (string-match "graphical\\.target"
+                            (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-get-default-json ()
+  "The `get-default --json' returns JSON with default-target key."
+  (let ((supervisor-default-target-link "graphical.target")
+        (supervisor--default-target-link-override nil))
+    (let ((result (supervisor--cli-dispatch '("get-default" "--json"))))
+      (should (= supervisor-cli-exit-success
+                  (supervisor-cli-result-exitcode result)))
+      (should (eq 'json (supervisor-cli-result-format result)))
+      (let ((parsed (json-read-from-string
+                     (supervisor-cli-result-output result))))
+        (should (equal "graphical.target"
+                       (alist-get 'default-target parsed)))))))
+
+(ert-deftest supervisor-test-cli-get-default-with-override ()
+  "The `get-default' returns override when set."
+  (let ((supervisor-default-target-link "graphical.target")
+        (supervisor--default-target-link-override "basic.target"))
+    (let ((result (supervisor--cli-dispatch '("get-default"))))
+      (should (= supervisor-cli-exit-success
+                  (supervisor-cli-result-exitcode result)))
+      (should (string-match "basic\\.target"
+                            (supervisor-cli-result-output result))))))
+
+(ert-deftest supervisor-test-cli-set-default-persists ()
+  "The `set-default' sets override and persists."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target
+             :after ("basic.target"))
+        (nil :id "graphical.target" :type target
+             :after ("multi-user.target"))
+        (nil :id "default.target" :type target))
+    (let ((supervisor--default-target-link-override nil)
+          (supervisor-overrides-file nil)
+          (supervisor-default-target-link "graphical.target"))
+      (let ((result (supervisor--cli-dispatch
+                     '("set-default" "multi-user.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (should (equal "multi-user.target"
+                       supervisor--default-target-link-override))
+        ;; get-default should now return the new value
+        (let ((get-result (supervisor--cli-dispatch '("get-default"))))
+          (should (string-match "multi-user\\.target"
+                                (supervisor-cli-result-output
+                                 get-result))))))))
+
+(ert-deftest supervisor-test-cli-set-default-rejects-default-target ()
+  "Setting default to \"default.target\" is rejected."
+  (let ((result (supervisor--cli-dispatch
+                 '("set-default" "default.target"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))
+    (should (string-match "circular"
+                          (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-set-default-rejects-non-target ()
+  "Setting default to a non-.target ID is rejected."
+  (let ((result (supervisor--cli-dispatch
+                 '("set-default" "my-service"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))
+    (should (string-match "\\.target"
+                          (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-set-default-rejects-nonexistent ()
+  "Setting default to a nonexistent target is rejected with exit code 4."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--default-target-link-override nil)
+          (supervisor-default-target-link "basic.target"))
+      (let ((result (supervisor--cli-dispatch
+                     '("set-default" "nonexistent.target"))))
+        (should (= supervisor-cli-exit-no-such-unit
+                    (supervisor-cli-result-exitcode result)))))))
+
+(ert-deftest supervisor-test-cli-list-targets ()
+  "The `list-targets' command lists all targets with convergence state."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("multi-user.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target
+             :after ("basic.target"))
+        (nil :id "graphical.target" :type target
+             :after ("multi-user.target"))
+        (nil :id "default.target" :type target))
+    (let ((supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target-link "graphical.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch '("list-targets"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((output (supervisor-cli-result-output result)))
+          (should (string-match "basic\\.target" output))
+          (should (string-match "multi-user\\.target" output))
+          (should (string-match "graphical\\.target" output))
+          (should (string-match "default\\.target" output))
+          ;; default.target should show resolved link
+          (should (string-match "graphical\\.target" output)))))))
+
+(ert-deftest supervisor-test-cli-list-targets-json ()
+  "The `list-targets --json' returns JSON array."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("list-targets" "--json"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (should (eq 'json (supervisor-cli-result-format result)))
+        (let ((parsed (json-read-from-string
+                       (supervisor-cli-result-output result))))
+          (should (vectorp parsed))
+          (should (> (length parsed) 0)))))))
+
+(ert-deftest supervisor-test-cli-list-targets-includes-empty-targets ()
+  "Targets with no members still appear in list-targets."
+  (supervisor-test-with-unit-files
+      '((nil :id "empty.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target-link "empty.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch '("list-targets"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (should (string-match "empty\\.target"
+                              (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-target-status ()
+  "The `target-status' shows convergence and member lists for a target."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("multi-user.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target
+             :after ("basic.target"))
+        (nil :id "default.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target-link "multi-user.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("target-status" "multi-user.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((output (supervisor-cli-result-output result)))
+          (should (string-match "multi-user\\.target" output))
+          (should (string-match "Status:" output))
+          (should (string-match "Wants:" output)))))))
+
+(ert-deftest supervisor-test-cli-target-status-default-shows-link ()
+  "The `target-status default.target' shows resolved link."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("target-status" "default.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (should (string-match "basic\\.target"
+                              (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-target-status-nonexistent ()
+  "Unknown target returns exit code 4."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("target-status" "nonexistent.target"))))
+        (should (= supervisor-cli-exit-no-such-unit
+                    (supervisor-cli-result-exitcode result)))))))
+
+(ert-deftest supervisor-test-cli-target-status-json ()
+  "The `target-status --json' returns structured JSON."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target-link "app.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("target-status" "app.target" "--json"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (should (eq 'json (supervisor-cli-result-format result)))
+        (let ((parsed (json-read-from-string
+                       (supervisor-cli-result-output result))))
+          (should (equal "app.target" (alist-get 'id parsed)))
+          (should (assoc 'status parsed))
+          (should (assoc 'requires parsed))
+          (should (assoc 'wants parsed)))))))
+
+(ert-deftest supervisor-test-cli-explain-target-reached ()
+  "Reached target shows all members healthy message."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence (make-hash-table :test 'equal))
+          (supervisor--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (supervisor-default-target-link "app.target")
+          (supervisor--default-target-link-override nil))
+      (puthash "app.target" 'reached supervisor--target-convergence)
+      (let ((result (supervisor--cli-dispatch
+                     '("explain-target" "app.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (should (string-match "reached"
+                              (supervisor-cli-result-output result)))
+        (should (string-match "healthy"
+                              (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-explain-target-degraded ()
+  "Degraded target lists failed members."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence (make-hash-table :test 'equal))
+          (supervisor--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (supervisor-default-target-link "app.target")
+          (supervisor--default-target-link-override nil))
+      (puthash "app.target" 'degraded supervisor--target-convergence)
+      (puthash "app.target" '("svc-a: failed-to-spawn")
+               supervisor--target-convergence-reasons)
+      (puthash "svc-a" t supervisor--failed)
+      (let ((result (supervisor--cli-dispatch
+                     '("explain-target" "app.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (should (string-match "degraded"
+                              (supervisor-cli-result-output result)))
+        (should (string-match "svc-a"
+                              (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-explain-target-pending ()
+  "Pending target shows appropriate message."
+  (supervisor-test-with-unit-files
+      '((nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target-link "app.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("explain-target" "app.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (should (string-match "pending"
+                              (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-explain-target-nonexistent ()
+  "Explain-target with nonexistent target returns exit code 4."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("explain-target" "nonexistent.target"))))
+        (should (= supervisor-cli-exit-no-such-unit
+                    (supervisor-cli-result-exitcode result)))))))
+
+(ert-deftest supervisor-test-cli-isolate-requires-yes ()
+  "Isolate without --yes returns error."
+  (supervisor-test-with-unit-files
+      '((nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor-default-target-link "app.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("isolate" "app.target"))))
+        (should (= supervisor-cli-exit-invalid-args
+                    (supervisor-cli-result-exitcode result)))
+        (should (string-match "--yes"
+                              (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-isolate-stops-and-starts ()
+  "Isolate with --yes stops non-closure entries and starts closure entries."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc-a" :required-by ("app.target"))
+        ("sleep 300" :id "svc-b" :required-by ("other.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "other.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor--target-members nil)
+          (supervisor-default-target-link "app.target")
+          (supervisor--default-target-link-override nil)
+          (started nil)
+          (stopped nil))
+      ;; Mock manual-start and manual-stop to track calls
+      (cl-letf (((symbol-function 'supervisor--manual-start)
+                 (lambda (id) (push id started)
+                   (list :status 'started :reason nil)))
+                ((symbol-function 'supervisor--manual-stop)
+                 (lambda (id) (push id stopped)
+                   (list :status 'stopped :reason nil))))
+        (let ((result (supervisor--cli-dispatch
+                       '("isolate" "--yes" "app.target"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (should (string-match "Isolated"
+                                (supervisor-cli-result-output result)))
+          ;; svc-a should be started (in app.target closure)
+          (should (member "svc-a" started)))))))
+
+(ert-deftest supervisor-test-cli-isolate-nonexistent ()
+  "Isolate with nonexistent target returns exit code 4."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor-default-target-link "basic.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("isolate" "--yes" "nonexistent.target"))))
+        (should (= supervisor-cli-exit-no-such-unit
+                    (supervisor-cli-result-exitcode result)))))))
+
+(ert-deftest supervisor-test-cli-start-target-override ()
+  "The `start --target' uses specified root via let-bind."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :required-by ("basic.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "graphical.target" :type target
+             :after ("basic.target"))
+        (nil :id "default.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+          (supervisor--computed-deps (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--writers (make-hash-table :test 'equal))
+          (supervisor--stderr-writers (make-hash-table :test 'equal))
+          (supervisor--stderr-pipes (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--restart-timers (make-hash-table :test 'equal))
+          (supervisor--last-exit-info (make-hash-table :test 'equal))
+          (supervisor--start-times (make-hash-table :test 'equal))
+          (supervisor--ready-times (make-hash-table :test 'equal))
+          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor--target-members nil)
+          (supervisor--timers nil)
+          (supervisor--current-plan nil)
+          (supervisor--shutting-down nil)
+          (supervisor--overrides-loaded nil)
+          (supervisor-overrides-file nil)
+          (supervisor-default-target "default.target")
+          (supervisor-default-target-link "graphical.target")
+          (supervisor--default-target-link-override nil)
+          (captured-target nil))
+      ;; Mock supervisor-start to capture what target was used
+      (cl-letf (((symbol-function 'supervisor-start)
+                 (lambda ()
+                   (setq captured-target supervisor-default-target))))
+        (let ((result (supervisor--cli-dispatch
+                       '("start" "--target" "basic.target"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          ;; The let-binding should have set supervisor-default-target
+          ;; to basic.target during the call
+          (should (equal "basic.target" captured-target)))))))
+
+(ert-deftest supervisor-test-cli-start-target-invalid ()
+  "The `start --target' with non-.target suffix returns error."
+  (let ((result (supervisor--cli-dispatch
+                 '("start" "--target" "my-service"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))
+    (should (string-match "\\.target"
+                          (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-start-target-missing-value ()
+  "The `start --target' without a value returns error."
+  (let ((result (supervisor--cli-dispatch '("start" "--target"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-start-target-with-ids-rejected ()
+  "The `start --target T ID' is rejected -- cannot combine."
+  (let ((result (supervisor--cli-dispatch
+                 '("start" "--target" "basic.target" "svc-a"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))
+    (should (string-match "cannot be combined"
+                          (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-help-text-includes-target-commands ()
+  "Help text includes target command section."
+  (let ((result (supervisor--cli-dispatch '())))
+    (should (= supervisor-cli-exit-success
+                (supervisor-cli-result-exitcode result)))
+    (let ((output (supervisor-cli-result-output result)))
+      (should (string-match "Target commands:" output))
+      (should (string-match "list-targets" output))
+      (should (string-match "target-status" output))
+      (should (string-match "explain-target" output))
+      (should (string-match "isolate" output))
+      (should (string-match "get-default" output))
+      (should (string-match "set-default" output)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
