@@ -4108,6 +4108,13 @@ INTERACTIVE-INVOCATION is non-nil when startup was user-invoked."
             (supervisor--libexec-target-names pending))))
         (_ nil)))))
 
+(defun supervisor--shell-metachar-p (cmd)
+  "Return non-nil if CMD contain shell metacharacters.
+When present, CMD must be run via `sh -c' rather than split
+directly, because `split-string-and-unquote' does not interpret
+shell operators like `&&', `||', pipes, or redirections."
+  (string-match-p "[&|;<>$`\n]" cmd))
+
 (defun supervisor--build-launch-command (cmd &optional user group)
   "Build the command argument list for launching CMD.
 CMD is a shell command string.  USER and GROUP are optional
@@ -4115,8 +4122,12 @@ identity parameters for privilege drop.  When either is non-nil,
 `supervisor-runas-command' is prepended with identity arguments
 and the target program is resolved to an absolute path (the helper
 uses direct execv without PATH search).
+When CMD contains shell metacharacters (`&&', pipes, etc.), it is
+wrapped as `sh -c CMD' so the shell interprets operators correctly.
 Return a list suitable for the `make-process' :command keyword."
-  (let ((args (split-string-and-unquote cmd)))
+  (let ((args (if (supervisor--shell-metachar-p cmd)
+                  (list shell-file-name shell-command-switch cmd)
+                (split-string-and-unquote cmd))))
     (if (or user group)
         (let ((helper-args (list supervisor-runas-command))
               (resolved (executable-find (car args))))

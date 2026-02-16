@@ -12725,6 +12725,37 @@ No warning is emitted when there are simply no child processes."
   (should (equal (supervisor--build-launch-command "sleep 300" nil nil)
                  '("sleep" "300"))))
 
+(ert-deftest supervisor-test-shell-metachar-p ()
+  "Detect shell metacharacters in command strings."
+  (should (supervisor--shell-metachar-p "cmd1 && cmd2"))
+  (should (supervisor--shell-metachar-p "cmd1 || cmd2"))
+  (should (supervisor--shell-metachar-p "cmd1 | cmd2"))
+  (should (supervisor--shell-metachar-p "cmd1 ; cmd2"))
+  (should (supervisor--shell-metachar-p "cmd > file"))
+  (should (supervisor--shell-metachar-p "cmd < file"))
+  (should (supervisor--shell-metachar-p "echo $HOME"))
+  (should (supervisor--shell-metachar-p "echo `date`"))
+  (should-not (supervisor--shell-metachar-p "sleep 300"))
+  (should-not (supervisor--shell-metachar-p "/usr/bin/logrotate --log-dir /tmp")))
+
+(ert-deftest supervisor-test-build-launch-command-shell-metachar ()
+  "Build launch command wraps in sh -c when shell operators present."
+  (let ((result (supervisor--build-launch-command "cmd1 && cmd2")))
+    (should (equal (car result) shell-file-name))
+    (should (equal (nth 1 result) shell-command-switch))
+    (should (equal (nth 2 result) "cmd1 && cmd2"))))
+
+(ert-deftest supervisor-test-build-launch-command-pipe ()
+  "Build launch command wraps piped commands in sh -c."
+  (let ((result (supervisor--build-launch-command "ls | grep foo")))
+    (should (equal (car result) shell-file-name))
+    (should (equal (nth 2 result) "ls | grep foo"))))
+
+(ert-deftest supervisor-test-build-launch-command-no-shell-for-simple ()
+  "Build launch command does not wrap simple commands in sh -c."
+  (let ((result (supervisor--build-launch-command "sleep 300")))
+    (should (equal result '("sleep" "300")))))
+
 ;;; supervisor-runas Helper Tests (Phase 3)
 ;;
 ;; These tests exercise the helper binary's error paths.
