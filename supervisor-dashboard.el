@@ -175,9 +175,9 @@ Used in dashboard stage separators for better readability."
   :group 'supervisor)
 
 (defcustom supervisor-dashboard-show-header-hints nil
-  "When non-nil, show key hints in dashboard header line.
-When nil (default), the header shows columns only.
-Press \\`h' in the dashboard for full keybinding help."
+  "Reserved compatibility option for dashboard header hints.
+This option is currently inert; the header line shows only service
+counters.  Press `h' in the dashboard for full keybinding help."
   :type 'boolean
   :group 'supervisor)
 
@@ -590,6 +590,19 @@ If SNAPSHOT is provided, read runtime state from it."
                 (propertize "MISS" 'face 'supervisor-stage-separator)
                 "" "")))
 
+(defun supervisor--make-services-separator ()
+  "Create a header row for the Services section with column labels."
+  (list '--services--
+        (vector (propertize "── Services" 'face 'supervisor-stage-separator)
+                (propertize "TYPE" 'face 'supervisor-stage-separator)
+                (propertize "STAGE" 'face 'supervisor-stage-separator)
+                (propertize "ENABLED" 'face 'supervisor-stage-separator)
+                (propertize "STATUS" 'face 'supervisor-stage-separator)
+                (propertize "RESTART" 'face 'supervisor-stage-separator)
+                (propertize "LOG" 'face 'supervisor-stage-separator)
+                (propertize "PID" 'face 'supervisor-stage-separator)
+                (propertize "REASON" 'face 'supervisor-stage-separator))))
+
 (defun supervisor--make-timer-separator-disabled ()
   "Create a timer section header showing disabled state."
   (list '--timers--
@@ -681,8 +694,8 @@ If SNAPSHOT is provided, read runtime state from it.
 If PROGRAMS is provided, use it instead of calling
 `supervisor--effective-programs'.
 
-Layout order: service rows, blank lines, health summary, blank lines,
-timer section (when `supervisor-dashboard-show-timers' is non-nil)."
+Layout order: services section header, service rows, then timer section
+if `supervisor-dashboard-show-timers' is non-nil."
   (let* ((snapshot (or snapshot (supervisor--build-snapshot)))
          (programs (or programs (supervisor--effective-programs)))
          (entries nil)
@@ -740,14 +753,9 @@ timer section (when `supervisor-dashboard-show-timers' is non-nil)."
            (if (and supervisor-dashboard-group-by-stage (null stage-filter))
                (supervisor--group-entries-by-stage entries)
              (mapcar (lambda (e) (list (car e) (cadr e))) entries))))
-      ;; Health summary between services and timers with blank-line spacing
+      ;; Services section header is always first row in buffer body.
       (setq final-entries
-            (append final-entries
-                    (list (supervisor--make-blank-row 1)
-                          (supervisor--make-blank-row 2)
-                          (supervisor--make-health-summary-row snapshot programs)
-                          (supervisor--make-blank-row 3)
-                          (supervisor--make-blank-row 4))))
+            (cons (supervisor--make-services-separator) final-entries))
       ;; Timer section (stage/tag filters do not hide timers)
       (when supervisor-dashboard-show-timers
         (setq final-entries
@@ -887,13 +895,24 @@ other contexts where the tabulated header string is empty."
           "")))))
 
 (defun supervisor--dashboard-header-line (&optional snapshot programs)
-  "Return dashboard header line text.
-The header always includes the tabulated-list column labels.
-SNAPSHOT and PROGRAMS are ignored."
-  (ignore snapshot programs)
-  (concat (supervisor--dashboard-column-header)
-          (when supervisor-dashboard-show-header-hints
-            (concat "  " supervisor--help-text))))
+  "Return dashboard header line text with service health counters.
+SNAPSHOT and PROGRAMS are forwarded to `supervisor--health-counts'."
+  (let* ((counts (supervisor--health-counts snapshot programs))
+         (running (plist-get counts :running))
+         (done (plist-get counts :done))
+         (pending (plist-get counts :pending))
+         (failed (plist-get counts :failed))
+         (invalid (plist-get counts :invalid)))
+    (concat (propertize (format "%d" running) 'face 'supervisor-status-running)
+            " run    "
+            (propertize (format "%d" done) 'face 'supervisor-status-done)
+            " done   "
+            (propertize (format "%d" pending) 'face 'supervisor-status-pending)
+            " pend  "
+            (propertize (format "%d" failed) 'face 'supervisor-status-failed)
+            " fail     "
+            (propertize (format "%d" invalid) 'face 'supervisor-status-invalid)
+            " inv")))
 
 (defun supervisor--refresh-dashboard ()
   "Refresh the dashboard buffer if it exists.
@@ -977,29 +996,18 @@ to entries and health summary for consistency within a single refresh."
 
 (defun supervisor-dashboard-describe-entry ()
   "Show detailed information about entry at point.
-For service rows, show service details.  For timer rows, delegate
-to `supervisor-dashboard-timer-info'.
 With prefix argument, show status legend instead."
   (interactive)
   (if current-prefix-arg
       (message "%s" supervisor--status-legend)
-    (let ((raw-id (tabulated-list-get-id)))
-      (cond
-       ((null raw-id)
-        (message "%s" supervisor--status-legend))
-       ((supervisor--separator-row-p raw-id)
-        (message "Separator row"))
-       ((supervisor--timer-row-p raw-id)
-        (supervisor-dashboard-timer-info))
-       (t
-        (let ((id (supervisor--row-id raw-id)))
-          (let ((invalid-reason (gethash id supervisor--invalid)))
-            (if invalid-reason
-                (message "INVALID: %s" invalid-reason)
-              (let ((entry (supervisor--get-entry-for-id id)))
-                (if (not entry)
-                    (message "Entry not found: %s" id)
-                  (supervisor--describe-entry-detail id entry)))))))))))
+    (let* ((id (supervisor--require-service-row))
+           (invalid-reason (gethash id supervisor--invalid)))
+      (if invalid-reason
+          (message "INVALID: %s" invalid-reason)
+        (let ((entry (supervisor--get-entry-for-id id)))
+          (if (not entry)
+              (message "Entry not found: %s" id)
+            (supervisor--describe-entry-detail id entry)))))))
 
 (defun supervisor--describe-entry-detail (id entry)
   "Show detailed telemetry for ID with parsed ENTRY in a help window."
@@ -1648,6 +1656,7 @@ Run `supervisor-start' first to populate computed dependency data."
   "Show full dependency graph for all entries.
 Displays computed dependencies after validation and cycle fallback."
   (interactive)
+  (supervisor--require-service-row)
   (if (= 0 (hash-table-count supervisor--computed-deps))
       (message "No dependency data available (run supervisor-start first)")
     (with-help-window "*supervisor-deps*"

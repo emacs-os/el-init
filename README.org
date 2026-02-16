@@ -5,13 +5,13 @@
 *A real service supervisor for Emacs.*
 
 ~supervisor.el~ is an Emacs Lisp-based service supervisor.  It follows a
-familiar systemd-like interface --- service types, dependencies, restart
-policies --- adapted for Emacs.  ~M-x supervisor~ is the main interface:
+familiar systemd-like interface (service types, dependencies, restart
+policies) adapted for Emacs.  ~M-x supervisor~ is the main interface:
 start, stop, inspect, and manage everything from inside Emacs.
 
 ** Features (at a glance)
 
-- *Dashboard*: ~M-x supervisor~ --- live view with lifecycle actions, policy
+- *Dashboard*: ~M-x supervisor~ -- live view with lifecycle actions, policy
   changes, dependency inspection, and log viewing.
 - *Staged startup and dependencies*: four startup stages with ordering
   (~:after~, ~:before~) and pull-in (~:requires~, ~:wants~).
@@ -1073,21 +1073,20 @@ Service-only commands (lifecycle, policy, inspect) reject timer rows
 with the message: "Not available for timer rows: use timer actions
 (y or ? -> Timers)".
 
-A service health summary row appears between the service section and the
-timer section, labeled "services" to indicate it counts only service
-rows (not timers).
+The first body row is a services section header:
+~── Services  TYPE  STAGE  ENABLED  STATUS  RESTART  LOG  PID  REASON~.
+Service rows follow under their stage separators.
 
-Timer row status values:
+Service counters (~run/done/pend/fail/inv~) are shown in the Emacs
+header line.  These counters are service-only and do not include timer rows.
 
-- ~active~ (target currently running)
-- ~done~ (last exit ~0~)
-- ~failed~ (last exit non-zero)
-- ~pending~ (no completion yet)
+Timer rows do not use service ~STATUS~/~REASON~ semantics.  They show
+timer-specific runtime fields:
 
-Timer reason column shows either:
-
-- ~missed: <reason>~, or
-- ~next: <relative time>~
+- ~LAST-RUN~: relative time since the most recent trigger (or ~-~)
+- ~NEXT-RUN~: relative time until next scheduled trigger (or ~-~)
+- ~EXIT~: last target exit code (or ~-~)
+- ~MISS~: last miss reason (or ~-~)
 
 ** Dashboard Keymap
 
@@ -1179,8 +1178,7 @@ Limitations in this version:
 - *Stop vs Kill*: ~l t~ (stop) gracefully terminates and suppresses
   auto-restart; ~l k~ (kill) sends a signal without changing restart policy.
   Use ~l s~ to start a stopped service again.
-- *Restart*: ~l r~ performs a stop-then-start cycle.  Only for ~simple~
-  entries.
+- *Restart*: ~l r~ performs a stop-then-start cycle for service rows.
 
 ** Mode Interaction and Buffer-Local State
 
@@ -1553,13 +1551,13 @@ sbin/supervisor-logrotate --log-dir /path/to/logs --keep-days 14
 #+end_example
 
 Options:
-- ~--log-dir DIR~ (required) --- the log directory to operate on
-- ~--keep-days N~ (default: 14) --- prune rotated files older than N days
-- ~--signal-reopen~ --- send SIGHUP to logd writers after rotation
-- ~--pid-dir DIR~ (default: same as ~--log-dir~) --- directory for writer
+- ~--log-dir DIR~ (required) -- the log directory to operate on
+- ~--keep-days N~ (default: 14) -- prune rotated files older than N days
+- ~--signal-reopen~ -- send SIGHUP to logd writers after rotation
+- ~--pid-dir DIR~ (default: same as ~--log-dir~) -- directory for writer
   PID file discovery
-- ~--dry-run~ --- print actions without executing
-- ~--help~ --- show usage
+- ~--dry-run~ -- print actions without executing
+- ~--help~ -- show usage
 
 Script output behavior:
 - progress/action lines are written to stdout
@@ -1583,17 +1581,17 @@ sbin/supervisor-log-prune --log-dir /path/to/logs --max-total-bytes 1073741824
 #+end_example
 
 Options:
-- ~--log-dir DIR~ (required) --- the log directory to operate on
-- ~--max-total-bytes N~ (default: 1073741824, i.e. 1 GiB) --- hard cap on
+- ~--log-dir DIR~ (required) -- the log directory to operate on
+- ~--max-total-bytes N~ (default: 1073741824, i.e. 1 GiB) -- hard cap on
   total directory size in bytes
-- ~--lock-file PATH~ (default: ~<log-dir>/.prune.lock~) --- exclusive lock
+- ~--lock-file PATH~ (default: ~<log-dir>/.prune.lock~) -- exclusive lock
   file path to prevent concurrent prune races
-- ~--protect-id ID~ (repeatable) --- never delete ~log-<ID>.log~; use this
+- ~--protect-id ID~ (repeatable) -- never delete ~log-<ID>.log~; use this
   for services whose ID contains a timestamp pattern (e.g.
   ~svc.20250101-120000~) to prevent their active log from being
   misidentified as rotated
-- ~--dry-run~ --- print actions without executing
-- ~--help~ --- show usage
+- ~--dry-run~ -- print actions without executing
+- ~--help~ -- show usage
 
 Script output behavior:
 - progress/action lines are written to stdout
@@ -1608,16 +1606,16 @@ Active logs whose service ID contains a timestamp pattern (e.g.
 the rotated-file naming pattern is only deleted when the script can
 confirm it is genuinely rotated.  Confirmation requires at least one of:
 
-1. *Parent-exists guard* --- the parent active log exists in the
+1. *Parent-exists guard* -- the parent active log exists in the
    directory (e.g. ~log-svc.log~ confirms ~log-svc.20250101-120000.log~
    is a rotated child of service ~svc~).
-2. *Sibling guard* --- multiple rotated files share the same parent name,
+2. *Sibling guard* -- multiple rotated files share the same parent name,
    confirming they are rotated children of a now-removed service (e.g.
    ~log-svc.20240101-120000.log~ and ~log-svc.20240201-120000.log~ both
    map to parent ~log-svc.log~, confirming each other).
-3. *Children guard* --- the file has its own rotated children, confirming
+3. *Children guard* -- the file has its own rotated children, confirming
    it as an active parent (protects the file from deletion).
-4. *Open-file guard* --- when ~fuser~ is available, files currently held
+4. *Open-file guard* -- when ~fuser~ is available, files currently held
    open by a process (e.g. the logd writer) are never deleted.
 
 A lone file with no parent, no siblings, and no children is preserved
@@ -1634,19 +1632,19 @@ A typical cron entry for periodic pruning (e.g. hourly):
 
 Three paths keep log growth bounded end-to-end:
 
-1. *logd path* --- each logd writer rotates its own file when the
+1. *logd path* -- each logd writer rotates its own file when the
    per-file size cap is reached, then triggers the prune script
    (throttled by ~supervisor-logd-prune-min-interval~ seconds) to keep
    the directory within the total size cap.
 
-2. *Daily automatic path* --- a built-in ~logrotate~ oneshot unit and
+2. *Daily automatic path* -- a built-in ~logrotate~ oneshot unit and
    a built-in ~log-prune~ oneshot unit are scheduled by separate timers:
    ~logrotate-daily~ at 03:00 and ~log-prune-daily~ at 03:05.
    This runs automatically when the timer subsystem is enabled
    (the default).  The rotate unit uses ~--signal-reopen~, so log writers
    reopen after rotation.
 
-3. *Manual path* --- ~M-x supervisor-run-log-maintenance~ runs the
+3. *Manual path* -- ~M-x supervisor-run-log-maintenance~ runs the
    full maintenance sequence asynchronously: rotate all active logs,
    signal writers to reopen, then prune.
 
@@ -1766,7 +1764,7 @@ All user options (defcustom) are listed below.
 | Variable | Default | Purpose |
 | ~supervisor-stage-descriptions~ | ~((stage1 . "X Setup") (stage2 . "System") (stage3 . "Services") (stage4 . "Applets"))~ | Stage labels |
 | ~supervisor-dashboard-group-by-stage~ | ~t~ | Group rows by stage |
-| ~supervisor-dashboard-show-header-hints~ | ~nil~ | Show header key hint line |
+| ~supervisor-dashboard-show-header-hints~ | ~nil~ | Reserved compatibility option (currently no effect); use ~h~ for key help |
 | ~supervisor-dashboard-show-timers~ | ~t~ | Show timer section |
 | ~supervisor-auto-refresh-interval~ | ~2~ | Auto-refresh cadence |
 
@@ -1825,6 +1823,12 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-view-log~ | Open selected service log |
 | ~M-x supervisor-dashboard-cat~ | View unit file (read-only) |
 | ~M-x supervisor-dashboard-edit~ | Edit unit file (scaffold if missing) |
+| ~M-x supervisor-dashboard-timer-actions~ | Open timer submenu |
+| ~M-x supervisor-dashboard-timer-trigger~ | Trigger selected timer now |
+| ~M-x supervisor-dashboard-timer-info~ | Show selected timer details |
+| ~M-x supervisor-dashboard-timer-jump~ | Jump to selected timer target service |
+| ~M-x supervisor-dashboard-timer-reset~ | Reset selected timer runtime state |
+| ~M-x supervisor-dashboard-timer-refresh~ | Refresh timer section |
 | ~M-x supervisor-dashboard-help~ | Open dashboard help |
 | ~M-x supervisor-dashboard-menu-open~ | Open transient menu |
 

@@ -2052,8 +2052,8 @@ Regression test: M-x supervisor must use shared snapshot like refresh does."
           (when-let* ((buf (get-buffer "*supervisor*")))
             (kill-buffer buf)))))))
 
-(ert-deftest supervisor-test-dashboard-header-and-summary-row ()
-  "Dashboard keeps columns in header and moves health into a row."
+(ert-deftest supervisor-test-dashboard-header-and-services-row ()
+  "Dashboard shows counters in header and services columns in body row 1."
   (supervisor-test-with-unit-files
       '(("true" :id "svc" :type oneshot))
     (let ((supervisor--processes (make-hash-table :test 'equal))
@@ -2072,25 +2072,22 @@ Regression test: M-x supervisor must use shared snapshot like refresh does."
                      (header (if (stringp raw)
                                  (substring-no-properties raw)
                                (format "%s" raw))))
-                (should (string-match-p "ID" header))
-                (should (string-match-p "RESTART" header))
-                (should-not (string-match-p "run" header)))
-              (let* ((summary-row
-                      (cl-find-if (lambda (row)
-                                    (eq '--health-- (car row)))
-                                  tabulated-list-entries))
-                     (summary-vec (cadr summary-row)))
-                (should summary-row)
-                (should (string-match-p "run" (substring-no-properties
-                                               (aref summary-vec 1))))
-                (should (string-match-p "done" (substring-no-properties
-                                                (aref summary-vec 2))))
-                (should (string-match-p "pend" (substring-no-properties
-                                                (aref summary-vec 3))))
-                (should (string-match-p "fail" (substring-no-properties
-                                                (aref summary-vec 4))))
-                (should (string-match-p "inv" (substring-no-properties
-                                               (aref summary-vec 5)))))))
+                (should (string-match-p "\\brun\\b" header))
+                (should (string-match-p "\\bdone\\b" header))
+                (should (string-match-p "\\bpend\\b" header))
+                (should (string-match-p "\\bfail\\b" header))
+                (should (string-match-p "\\binv\\b" header))
+                (should-not (string-match-p "\\bID\\b" header)))
+              (let* ((first-row (car tabulated-list-entries))
+                     (first-id (car first-row))
+                     (first-vec (cadr first-row)))
+                (should (eq '--services-- first-id))
+                (should (string-match-p "TYPE"
+                                        (substring-no-properties (aref first-vec 1))))
+                (should (string-match-p "STAGE"
+                                        (substring-no-properties (aref first-vec 2))))
+                (should (string-match-p "PID"
+                                        (substring-no-properties (aref first-vec 7)))))))
         (when-let* ((buf (get-buffer "*supervisor*")))
           (kill-buffer buf))))))
 
@@ -2930,7 +2927,7 @@ proceed to call start unconditionally."
             (should (equal "my-oneshot" started))))))))
 
 (ert-deftest supervisor-test-stop-rejects-timer-row ()
-  "Stop rejects timer rows."
+  "Stop rejects timer rows with stable message."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
@@ -2940,11 +2937,12 @@ proceed to call start unconditionally."
       (tabulated-list-init-header)
       (tabulated-list-print)
       (goto-char (point-min))
-      (should-error (supervisor-dashboard-stop)
-                    :type 'user-error))))
+      (let ((err (should-error (supervisor-dashboard-stop)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
 
 (ert-deftest supervisor-test-restart-rejects-timer-row ()
-  "Restart rejects timer rows."
+  "Restart rejects timer rows with stable message."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
@@ -2954,8 +2952,9 @@ proceed to call start unconditionally."
       (tabulated-list-init-header)
       (tabulated-list-print)
       (goto-char (point-min))
-      (should-error (supervisor-dashboard-restart)
-                    :type 'user-error))))
+      (let ((err (should-error (supervisor-dashboard-restart)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
 
 (ert-deftest supervisor-test-restart-accepts-not-running ()
   "Restart starts non-running entries (parity with CLI).
@@ -3469,8 +3468,50 @@ configured timers must be visible for analysis."
                                :type 'user-error)))
         (should (string-match-p "timer rows" (cadr err)))))))
 
+(ert-deftest supervisor-test-service-only-reject-on-timer-blame ()
+  "Blame rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-blame)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-graph ()
+  "Show-graph rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-show-graph)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-describe ()
+  "Describe-entry rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-describe-entry)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
 (ert-deftest supervisor-test-transient-menu-has-timer-group ()
-  "Transient menu definition includes Timers group."
+  "Transient menu definition includes Timers group with y-prefixed suffixes."
   ;; The transient menu is defined lazily; we trigger it via the definer
   (let ((supervisor--dashboard-menu-defined nil))
     (require 'transient)
@@ -3482,7 +3523,37 @@ configured timers must be visible for analysis."
     (should (commandp 'supervisor-dashboard-timer-info))
     (should (commandp 'supervisor-dashboard-timer-jump))
     (should (commandp 'supervisor-dashboard-timer-reset))
-    (should (commandp 'supervisor-dashboard-timer-refresh))))
+    (should (commandp 'supervisor-dashboard-timer-refresh))
+    ;; Verify transient layout has Timers group with correct key bindings
+    ;; Layout is stored as property: (get SYM 'transient--layout)
+    ;; Structure: ([1 transient-columns (:description ...) (column-vectors...)])
+    ;; Each column: [1 transient-column (:description "Timers") (suffix-specs...)]
+    ;; Each suffix: (1 transient-suffix (:key "y t" :command ...))
+    (let* ((layout (get 'supervisor-dashboard-menu 'transient--layout))
+           (columns-vec (car layout))
+           ;; columns-vec is [1 transient-columns (:description ...) (col1 col2 ...)]
+           ;; The column vectors start at index 3
+           (col-list (aref columns-vec 3))
+           ;; Find the Timers column
+           (timer-col
+            (cl-find-if
+             (lambda (col)
+               (let ((props (aref col 2)))
+                 (equal "Timers" (plist-get props :description))))
+             col-list)))
+      (should timer-col)
+      ;; Extract suffix specs from timer column (index 3 is the suffix list)
+      (let* ((suffixes (aref timer-col 3))
+             (keys (mapcar (lambda (s)
+                             ;; Each suffix is (1 transient-suffix (:key K ...))
+                             (plist-get (nth 2 s) :key))
+                           suffixes)))
+        (should (= 5 (length suffixes)))
+        (should (member "y t" keys))
+        (should (member "y i" keys))
+        (should (member "y j" keys))
+        (should (member "y r" keys))
+        (should (member "y g" keys))))))
 
 (ert-deftest supervisor-test-timer-actions-dispatcher-key ()
   "Timer actions dispatcher is bound to y in dashboard keymap."
@@ -3490,8 +3561,149 @@ configured timers must be visible for analysis."
     (supervisor-dashboard-mode)
     (should (eq (key-binding "y") #'supervisor-dashboard-timer-actions))))
 
-(ert-deftest supervisor-test-service-summary-not-in-header-line ()
-  "Service health summary is in body, not header-line-format."
+(ert-deftest supervisor-test-service-only-reject-on-timer-reload-unit ()
+  "Reload-unit rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-reload-unit)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-reset-failed ()
+  "Reset-failed rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-reset-failed)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-unmask ()
+  "Unmask rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-unmask)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-set-restart ()
+  "Set-restart-policy rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-set-restart-policy)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-set-logging ()
+  "Set-logging rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-set-logging)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-edit ()
+  "Edit rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-edit)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-show-deps ()
+  "Show-deps rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-show-deps)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-view-log ()
+  "View-log rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-view-log)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-start ()
+  "Start rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-start)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-timer-refresh-calls-dashboard-refresh ()
+  "Timer refresh command invokes dashboard refresh and messages."
+  (let ((refreshed nil)
+        (msg nil))
+    (with-temp-buffer
+      (supervisor-dashboard-mode)
+      (cl-letf (((symbol-function 'supervisor--refresh-dashboard)
+                 (lambda () (setq refreshed t)))
+                ((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (setq msg (apply #'format fmt args)))))
+        (supervisor-dashboard-timer-refresh)
+        (should refreshed)
+        (should (string-match-p "refreshed" msg))))))
+
+(ert-deftest supervisor-test-service-counters-in-header-line ()
+  "Service counters are shown in `header-line-format'."
   (supervisor-test-with-unit-files
       '(("sleep 60" :id "svc" :type simple))
     (let ((supervisor--processes (make-hash-table :test 'equal))
@@ -3502,39 +3714,50 @@ configured timers must be visible for analysis."
           (supervisor--invalid-timers (make-hash-table :test 'equal))
           (supervisor-dashboard-show-timers nil))
       (let ((header (supervisor--dashboard-header-line)))
-        ;; Header must not contain health count keywords
-        (should-not (string-match-p "\\brun\\b" header))
-        (should-not (string-match-p "\\bfail\\b" header))
-        (should-not (string-match-p "\\bpend\\b" header))))))
+        (should (string-match-p "\\brun\\b" header))
+        (should (string-match-p "\\bdone\\b" header))
+        (should (string-match-p "\\bpend\\b" header))
+        (should (string-match-p "\\bfail\\b" header))
+        (should (string-match-p "\\binv\\b" header))
+        ;; Header no longer carries column labels.
+        (should-not (string-match-p "\\bID\\b" header))
+        ;; No pipe filler separators in this compact format.
+        (should-not (string-match-p "|" header))))))
 
-(ert-deftest supervisor-test-service-summary-between-services-and-timers ()
-  "Service health summary is positioned between services and timers."
+(ert-deftest supervisor-test-services-header-precedes-service-and-timer-rows ()
+  "Services section header appears first, then services, then timers."
   (supervisor-test-with-unit-files
       '(("sleep 60" :id "svc" :type simple))
     (let ((supervisor--processes (make-hash-table :test 'equal))
           (supervisor--entry-state (make-hash-table :test 'equal))
           (supervisor--invalid (make-hash-table :test 'equal))
-          (supervisor--timer-list nil)
+          (supervisor--timer-list
+           (list (supervisor-timer--create :id "t1" :target "svc")))
           (supervisor--timer-state (make-hash-table :test 'equal))
           (supervisor--invalid-timers (make-hash-table :test 'equal))
           (supervisor-dashboard-show-timers t)
           (supervisor-timer-subsystem-mode t))
       (let* ((entries (supervisor--get-entries))
              (ids (mapcar #'car entries))
-             (health-pos (cl-position '--health-- ids))
-             (timer-pos (cl-position '--timers-- ids))
+             (services-pos (cl-position '--services-- ids))
              (svc-pos (cl-position-if
-                       (lambda (id) (supervisor--service-row-p id)) ids)))
-        ;; All three exist
+                       (lambda (id) (supervisor--service-row-p id)) ids))
+             (timer-pos (cl-position '--timers-- ids))
+             (tmr-pos (cl-position-if
+                       (lambda (id) (supervisor--timer-row-p id)) ids)))
         (should svc-pos)
-        (should health-pos)
+        (should services-pos)
         (should timer-pos)
-        ;; Service < health < timer
-        (should (< svc-pos health-pos))
-        (should (< health-pos timer-pos))))))
+        (should tmr-pos)
+        ;; Services header is first body row.
+        (should (= 0 services-pos))
+        ;; Services section header precedes service rows and timers section.
+        (should (< services-pos svc-pos))
+        (should (< svc-pos timer-pos))
+        (should (< timer-pos tmr-pos))))))
 
-(ert-deftest supervisor-test-service-summary-blank-line-spacing ()
-  "Service health summary has exactly 2 blank lines above and below."
+(ert-deftest supervisor-test-no-blank-summary-spacers-in-body ()
+  "Dashboard body has no blank summary spacer rows."
   (supervisor-test-with-unit-files
       '(("sleep 60" :id "svc" :type simple))
     (let ((supervisor--processes (make-hash-table :test 'equal))
@@ -3546,23 +3769,16 @@ configured timers must be visible for analysis."
           (supervisor-dashboard-show-timers t)
           (supervisor-timer-subsystem-mode t))
       (let* ((entries (supervisor--get-entries))
-             (ids (mapcar #'car entries))
-             (health-pos (cl-position '--health-- ids)))
-        (should health-pos)
-        ;; Two blank rows above
-        (should (supervisor--separator-row-p (nth (- health-pos 1) ids)))
-        (should (supervisor--separator-row-p (nth (- health-pos 2) ids)))
-        ;; Two blank rows below
-        (should (supervisor--separator-row-p (nth (+ health-pos 1) ids)))
-        (should (supervisor--separator-row-p (nth (+ health-pos 2) ids)))
-        ;; The blank rows should be --blank-N-- symbols
-        (should (string-match-p "blank" (symbol-name (nth (- health-pos 1) ids))))
-        (should (string-match-p "blank" (symbol-name (nth (- health-pos 2) ids))))
-        (should (string-match-p "blank" (symbol-name (nth (+ health-pos 1) ids))))
-        (should (string-match-p "blank" (symbol-name (nth (+ health-pos 2) ids))))))))
+             (ids (mapcar #'car entries)))
+        (should-not
+         (cl-find-if
+          (lambda (id)
+            (and (symbolp id)
+                 (string-match-p "^--blank-" (symbol-name id))))
+          ids))))))
 
-(ert-deftest supervisor-test-service-summary-counts-service-only ()
-  "Service health summary counts only services, not timers."
+(ert-deftest supervisor-test-header-counters-count-services-only ()
+  "Header counters aggregate services only, never timer rows."
   (supervisor-test-with-unit-files
       '(("sleep 60" :id "svc" :type simple))
     (let* ((supervisor--processes (make-hash-table :test 'equal))
@@ -3571,11 +3787,15 @@ configured timers must be visible for analysis."
            (supervisor--timer-list nil)
            (supervisor--timer-state (make-hash-table :test 'equal))
            (supervisor--invalid-timers (make-hash-table :test 'equal))
-           (supervisor-dashboard-show-timers t))
-      ;; Health summary label says "services"
-      (let* ((row (supervisor--make-health-summary-row))
-             (vec (cadr row)))
-        (should (string-match-p "services" (aref vec 0)))))))
+           (supervisor-dashboard-show-timers t)
+           (supervisor-timer-subsystem-mode t)
+           (header-no-timers
+            (substring-no-properties (supervisor--dashboard-header-line))))
+      (setq supervisor--timer-list
+            (list (supervisor-timer--create :id "t1" :target "svc")))
+      (let ((header-with-timers
+             (substring-no-properties (supervisor--dashboard-header-line))))
+        (should (equal header-no-timers header-with-timers))))))
 
 (ert-deftest supervisor-test-timer-section-not-hidden-by-stage-filter ()
   "Stage filter does not hide timer section."
@@ -3656,8 +3876,8 @@ configured timers must be visible for analysis."
             (should (string-match-p "Persistent: yes" (buffer-string))))
           (kill-buffer info-buf))))))
 
-(ert-deftest supervisor-test-service-summary-not-first-row ()
-  "Service health summary is not the first content row."
+(ert-deftest supervisor-test-services-header-is-first-row ()
+  "Services section header is the first content row."
   (supervisor-test-with-unit-files
       '(("sleep 60" :id "svc" :type simple))
     (let ((supervisor--processes (make-hash-table :test 'equal))
@@ -3669,7 +3889,7 @@ configured timers must be visible for analysis."
           (supervisor-dashboard-show-timers nil))
       (let* ((entries (supervisor--get-entries))
              (first-id (car (car entries))))
-        (should-not (eq '--health-- first-id))))))
+        (should (eq '--services-- first-id))))))
 
 ;;; Unit-File Tests
 

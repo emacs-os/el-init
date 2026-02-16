@@ -186,13 +186,18 @@ A stage is complete only when:
   - **No aspirational content**: Only document what currently exists in the code
   - **Human-readable**: Clear prose suitable for end users, not developer notes
   - **Keep in sync**: When modifying code, update the associated handbook documentation
-  - **No fancy Unicode**: Never use Unicode em-dashes, en-dashes, or emojis in
-    documentation files (README.org, sbin/README.md, CLAUDE.md).  Use ASCII
-    `--` or `---` for dashes.
+  - **No fancy dashes or emojis**: Never use Unicode em-dashes, en-dashes, or
+    emojis in documentation files (README.org, sbin/README.md, CLAUDE.md).
+    Never use Org triple-dash `---` (GitHub renders it as an em-dash).
+    Use `--` with spaces on both sides for inline separators, or rewrite
+    with parentheses/commas.
   - **Org verbatim and tilde paths**: GitHub's Org renderer mishandles adjacent
-    `~` boundaries.  Never write `~foo~/~bar~` (use `~foo/bar~` instead) or
-    `~~/.config/...~` (use `=~/.config/...=` instead).  The `=...=` verbatim
-    marker is safe for paths containing `~`.
+    `~` boundaries.  Rules:
+    - Never write `~foo~/~bar~` (use `~foo/bar~` instead).
+    - Never write `~~/.config/...~` (use `=~/.config/...=` instead).
+    - Never place `--` immediately before `~` (e.g. `--~M-x ...~` breaks;
+      write `-- ~M-x ...~` with a space).
+    - The `=...=` verbatim marker is safe for paths containing `~`.
 - **ROADMAP.md**: Future plans and ideas. Not yet implemented.
 - **CLAUDE.md**: Development guidance for AI assistants.
 
