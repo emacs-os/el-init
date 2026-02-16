@@ -149,7 +149,6 @@ A stage is complete only when:
     - Never place `--` immediately before `~` (e.g. `--~M-x ...~` breaks;
       write `-- ~M-x ...~` with a space).
     - The `=...=` verbatim marker is safe for paths containing `~`.
-- **ROADMAP.md**: Future plans and ideas. Not yet implemented.
 - **CLAUDE.md**: Development guidance for AI assistants.
 
 ## MELPA Standards
