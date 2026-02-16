@@ -531,7 +531,8 @@ restart-timer cancellation on `no'."
                   (cl-flet ((goto-svc ()
                               (goto-char (point-min))
                               (while (and (not (eobp))
-                                          (not (equal "svc" (tabulated-list-get-id))))
+                                          (not (equal (cons :service "svc")
+                                                      (tabulated-list-get-id))))
                                 (forward-line 1))))
                     ;; Initial refresh to populate entries from unit file
                     (supervisor--refresh-dashboard)
@@ -1510,13 +1511,16 @@ Only auto-started (not manually-started) disabled units are stopped."
 ;;; Dashboard UI tests
 
 (ert-deftest supervisor-test-separator-row-detection ()
-  "Separator rows are correctly identified."
+  "Separator rows are correctly identified as symbol IDs."
   (should (supervisor--separator-row-p '--stage1--))
   (should (supervisor--separator-row-p '--stage4--))
   (should (supervisor--separator-row-p '--health--))
+  (should (supervisor--separator-row-p '--timers--))
+  (should (supervisor--separator-row-p '--blank-1--))
   (should-not (supervisor--separator-row-p "nm-applet"))
   (should-not (supervisor--separator-row-p nil))
-  (should-not (supervisor--separator-row-p 'some-symbol)))
+  (should-not (supervisor--separator-row-p (cons :service "foo")))
+  (should-not (supervisor--separator-row-p (cons :timer "bar"))))
 
 (ert-deftest supervisor-test-health-summary-format ()
   "Health summary includes all required counts."
@@ -2814,7 +2818,7 @@ Regression test: stderr pipe processes used to pollute the process list."
           (with-temp-buffer
             (supervisor-dashboard-mode)
             (let ((tabulated-list-entries
-                   (list (list "test-svc"
+                   (list (list (cons :service "test-svc")
                                (vector "test-svc" "simple" "stage3"
                                        "yes" "running" "yes" "yes"
                                        "1234" "-")))))
@@ -2834,16 +2838,12 @@ Regression test: stderr pipe processes used to pollute the process list."
   (should (string-match "\\[i\\]nspect" supervisor--help-text)))
 
 (ert-deftest supervisor-test-timer-row-p-detects-timer ()
-  "Timer row predicate detects timer rows by Type column content."
-  (with-temp-buffer
-    (supervisor-dashboard-mode)
-    (let ((tabulated-list-entries
-           (list (list "my-timer" (vector "my-timer" "timer" "-"
-                                         "-" "pending" "-" "-" "-" "-")))))
-      (tabulated-list-init-header)
-      (tabulated-list-print)
-      (goto-char (point-min))
-      (should (supervisor--timer-row-p "my-timer")))))
+  "Timer row predicate detects timer rows by typed cons cell ID."
+  (should (supervisor--timer-row-p (cons :timer "my-timer")))
+  (should-not (supervisor--timer-row-p (cons :service "my-svc")))
+  (should-not (supervisor--timer-row-p "my-timer"))
+  (should-not (supervisor--timer-row-p nil))
+  (should-not (supervisor--timer-row-p '--timers--)))
 
 (ert-deftest supervisor-test-timer-row-p-rejects-service-row ()
   "Timer row predicate returns nil for service rows."
@@ -2912,8 +2912,9 @@ proceed to call start unconditionally."
       (with-temp-buffer
         (supervisor-dashboard-mode)
         (let ((tabulated-list-entries
-               (list (list "my-oneshot" (vector "my-oneshot" "oneshot" "stage3"
-                                               "yes" "done" "n/a" "yes" "-" "-")))))
+               (list (list (cons :service "my-oneshot")
+                           (vector "my-oneshot" "oneshot" "stage3"
+                                   "yes" "done" "n/a" "yes" "-" "-")))))
           (tabulated-list-init-header)
           (tabulated-list-print)
           (goto-char (point-min))
@@ -2933,8 +2934,9 @@ proceed to call start unconditionally."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
-           (list (list "my-timer" (vector "my-timer" "timer" "-"
-                                         "-" "pending" "-" "-" "-" "-")))))
+           (list (list (cons :timer "my-timer")
+                       (vector "my-timer" "timer" "-"
+                               "-" "pending" "-" "-" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
       (goto-char (point-min))
@@ -2946,8 +2948,9 @@ proceed to call start unconditionally."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
-           (list (list "my-timer" (vector "my-timer" "timer" "-"
-                                         "-" "pending" "-" "-" "-" "-")))))
+           (list (list (cons :timer "my-timer")
+                       (vector "my-timer" "timer" "-"
+                               "-" "pending" "-" "-" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
       (goto-char (point-min))
@@ -2967,8 +2970,9 @@ proceed to call start unconditionally."
       (with-temp-buffer
         (supervisor-dashboard-mode)
         (let ((tabulated-list-entries
-               (list (list "my-svc" (vector "my-svc" "simple" "stage3"
-                                           "yes" "stopped" "yes" "yes" "-" "-")))))
+               (list (list (cons :service "my-svc")
+                           (vector "my-svc" "simple" "stage3"
+                                   "yes" "stopped" "yes" "yes" "-" "-")))))
           (tabulated-list-init-header)
           (tabulated-list-print)
           (goto-char (point-min))
@@ -2982,6 +2986,690 @@ proceed to call start unconditionally."
                     ((symbol-function 'supervisor--refresh-dashboard) #'ignore))
             (supervisor-dashboard-restart)
             (should (equal "my-svc" started))))))))
+
+;;; Interactive Dashboard Timer Section Tests (PLAN-interactive Phase 5)
+
+(ert-deftest supervisor-test-typed-row-id-service ()
+  "Service row IDs are typed cons cells."
+  (should (supervisor--service-row-p (cons :service "foo")))
+  (should-not (supervisor--service-row-p (cons :timer "foo")))
+  (should-not (supervisor--service-row-p "foo"))
+  (should-not (supervisor--service-row-p nil)))
+
+(ert-deftest supervisor-test-typed-row-id-timer ()
+  "Timer row IDs are typed cons cells."
+  (should (supervisor--timer-row-p (cons :timer "foo")))
+  (should-not (supervisor--timer-row-p (cons :service "foo")))
+  (should-not (supervisor--timer-row-p "foo"))
+  (should-not (supervisor--timer-row-p nil)))
+
+(ert-deftest supervisor-test-typed-row-id-separator ()
+  "Separator row IDs are symbols."
+  (should (supervisor--separator-row-p '--stage1--))
+  (should (supervisor--separator-row-p '--health--))
+  (should (supervisor--separator-row-p '--timers--))
+  (should-not (supervisor--separator-row-p (cons :service "foo")))
+  (should-not (supervisor--separator-row-p nil)))
+
+(ert-deftest supervisor-test-row-kind-dispatch ()
+  "Row kind returns correct kind for all ID types."
+  (should (eq :service (supervisor--row-kind (cons :service "x"))))
+  (should (eq :timer (supervisor--row-kind (cons :timer "x"))))
+  (should (eq :separator (supervisor--row-kind '--stage1--)))
+  (should-not (supervisor--row-kind nil)))
+
+(ert-deftest supervisor-test-row-id-extraction ()
+  "Row ID extraction returns string from typed IDs."
+  (should (equal "foo" (supervisor--row-id (cons :service "foo"))))
+  (should (equal "bar" (supervisor--row-id (cons :timer "bar"))))
+  (should-not (supervisor--row-id '--separator--))
+  (should-not (supervisor--row-id nil)))
+
+(ert-deftest supervisor-test-collision-service-timer-same-id ()
+  "Service and timer with same ID string do not collide in row dispatch."
+  (let ((svc-id (cons :service "backup"))
+        (tmr-id (cons :timer "backup")))
+    ;; They are distinct
+    (should-not (equal svc-id tmr-id))
+    ;; Each detects correctly
+    (should (supervisor--service-row-p svc-id))
+    (should-not (supervisor--timer-row-p svc-id))
+    (should (supervisor--timer-row-p tmr-id))
+    (should-not (supervisor--service-row-p tmr-id))
+    ;; Both extract same string
+    (should (equal "backup" (supervisor--row-id svc-id)))
+    (should (equal "backup" (supervisor--row-id tmr-id)))))
+
+(ert-deftest supervisor-test-collision-dashboard-rows-coexist ()
+  "Service and timer rows with same ID coexist in tabulated-list."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :service "backup")
+                       (vector "backup" "simple" "stage1"
+                               "yes" "running" "yes" "yes" "-" "-"))
+                 (list (cons :timer "backup")
+                       (vector "backup" "backup-svc" "yes"
+                               "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      ;; First row is service
+      (should (supervisor--service-row-p (tabulated-list-get-id)))
+      ;; Second row is timer
+      (forward-line 1)
+      (should (supervisor--timer-row-p (tabulated-list-get-id))))))
+
+(ert-deftest supervisor-test-require-service-row-on-service ()
+  "Require-service-row returns string ID on service row."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :service "svc")
+                       (vector "svc" "simple" "stage1"
+                               "yes" "running" "yes" "yes" "-" "-")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should (equal "svc" (supervisor--require-service-row))))))
+
+(ert-deftest supervisor-test-require-service-row-rejects-timer ()
+  "Require-service-row signals user-error on timer row."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "my-timer")
+                       (vector "my-timer" "target" "yes"
+                               "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should-error (supervisor--require-service-row)
+                    :type 'user-error))))
+
+(ert-deftest supervisor-test-require-service-row-rejects-separator ()
+  "Require-service-row signals user-error on separator row."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list '--stage1--
+                       (vector "── stage1" "" "" "" "" "" "" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should-error (supervisor--require-service-row)
+                    :type 'user-error))))
+
+(ert-deftest supervisor-test-timer-section-disabled-mode ()
+  "Timer section shows disabled state when timer-subsystem-mode is nil."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal))
+          (supervisor-dashboard-show-timers t)
+          (supervisor-timer-subsystem-mode nil))
+      (let ((entries (supervisor--get-entries)))
+        (let ((tmr-sep (cl-find '--timers-- entries :key #'car)))
+          (should tmr-sep)
+          (should (string-match-p "disabled"
+                                  (aref (cadr tmr-sep) 0))))))))
+
+(ert-deftest supervisor-test-timer-section-mode-on-supervisor-off ()
+  "Timer section shows timers when timer-mode is on but supervisor-mode is off.
+The disabled gate is `supervisor-timer-subsystem-mode', not
+`supervisor-timer-subsystem-active-p' (which also requires `supervisor-mode').
+When `supervisor-timer-subsystem-mode' is t but `supervisor-mode' is nil,
+configured timers must be visible for analysis."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--timer-state (make-hash-table :test 'equal))
+           (supervisor--invalid-timers (make-hash-table :test 'equal))
+           (supervisor-dashboard-show-timers t)
+           (supervisor-timer-subsystem-mode t)
+           (supervisor-mode nil)
+           (supervisor--timer-list
+            (list (supervisor-timer--create :id "t1" :target "svc"))))
+      (let ((entries (supervisor--get-entries)))
+        ;; Timer section present and NOT disabled
+        (let ((tmr-sep (cl-find '--timers-- entries :key #'car)))
+          (should tmr-sep)
+          (should-not (string-match-p "disabled" (aref (cadr tmr-sep) 0)))
+          ;; Column headers visible
+          (should (string-match-p "TARGET" (aref (cadr tmr-sep) 1))))
+        ;; Timer row visible
+        (let ((tmr-row (cl-find (cons :timer "t1") entries
+                                :key #'car :test #'equal)))
+          (should tmr-row))))))
+
+(ert-deftest supervisor-test-timer-section-empty-state ()
+  "Timer section shows empty state when no timers configured."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal))
+          (supervisor-dashboard-show-timers t)
+          (supervisor-timer-subsystem-mode t))
+      (let ((entries (supervisor--get-entries)))
+        (let ((tmr-sep (cl-find '--timers-- entries :key #'car)))
+          (should tmr-sep)
+          (should (string-match-p "no timers configured"
+                                  (aref (cadr tmr-sep) 1))))))))
+
+(ert-deftest supervisor-test-timer-section-valid-state ()
+  "Timer section shows valid timer rows when timers are configured."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--timer-state (make-hash-table :test 'equal))
+           (supervisor--invalid-timers (make-hash-table :test 'equal))
+           (supervisor-dashboard-show-timers t)
+           (supervisor-timer-subsystem-mode t)
+           (supervisor--timer-list
+            (list (supervisor-timer--create :id "t1" :target "svc"))))
+      (let ((entries (supervisor--get-entries)))
+        ;; Timers header present
+        (let ((tmr-sep (cl-find '--timers-- entries :key #'car)))
+          (should tmr-sep)
+          (should (string-match-p "TARGET" (aref (cadr tmr-sep) 1))))
+        ;; Timer row present with typed ID
+        (let ((tmr-row (cl-find (cons :timer "t1") entries
+                                :key #'car :test #'equal)))
+          (should tmr-row))))))
+
+(ert-deftest supervisor-test-timer-section-invalid-timers ()
+  "Timer section shows invalid timer rows."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--timer-state (make-hash-table :test 'equal))
+           (supervisor--invalid-timers (make-hash-table :test 'equal))
+           (supervisor-dashboard-show-timers t)
+           (supervisor-timer-subsystem-mode t)
+           (supervisor--timer-list nil))
+      (puthash "bad-timer" "missing target" supervisor--invalid-timers)
+      (let ((entries (supervisor--get-entries)))
+        (let ((bad-row (cl-find (cons :timer "bad-timer") entries
+                                :key #'car :test #'equal)))
+          (should bad-row)
+          ;; Check invalid status
+          (should (string-match-p "invalid"
+                                  (aref (cadr bad-row) 4))))))))
+
+(ert-deftest supervisor-test-timer-section-hidden-when-show-timers-nil ()
+  "Timer section not rendered when show-timers is nil."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal))
+          (supervisor-dashboard-show-timers nil))
+      (let ((entries (supervisor--get-entries)))
+        (should-not (cl-find '--timers-- entries :key #'car))))))
+
+(ert-deftest supervisor-test-timer-trigger-rejects-service-row ()
+  "Timer trigger rejects service rows."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :service "svc")
+                       (vector "svc" "simple" "stage1"
+                               "yes" "running" "yes" "yes" "-" "-")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should-error (supervisor-dashboard-timer-trigger)
+                    :type 'user-error))))
+
+(ert-deftest supervisor-test-timer-info-rejects-service-row ()
+  "Timer info rejects service rows."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :service "svc")
+                       (vector "svc" "simple" "stage1"
+                               "yes" "running" "yes" "yes" "-" "-")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should-error (supervisor-dashboard-timer-info)
+                    :type 'user-error))))
+
+(ert-deftest supervisor-test-timer-jump-rejects-service-row ()
+  "Timer jump rejects service rows."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :service "svc")
+                       (vector "svc" "simple" "stage1"
+                               "yes" "running" "yes" "yes" "-" "-")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should-error (supervisor-dashboard-timer-jump)
+                    :type 'user-error))))
+
+(ert-deftest supervisor-test-timer-reset-rejects-service-row ()
+  "Timer reset rejects service rows."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :service "svc")
+                       (vector "svc" "simple" "stage1"
+                               "yes" "running" "yes" "yes" "-" "-")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (should-error (supervisor-dashboard-timer-reset)
+                    :type 'user-error))))
+
+(ert-deftest supervisor-test-timer-jump-finds-target ()
+  "Timer jump moves point to target service row."
+  (let ((supervisor--timer-list
+         (list (supervisor-timer--create :id "t1" :target "my-svc"))))
+    (with-temp-buffer
+      (supervisor-dashboard-mode)
+      (let ((tabulated-list-entries
+             (list (list (cons :service "my-svc")
+                         (vector "my-svc" "simple" "stage1"
+                                 "yes" "running" "yes" "yes" "-" "-"))
+                   (list (cons :timer "t1")
+                         (vector "t1" "my-svc" "yes"
+                                 "-" "-" "-" "-" "" "")))))
+        (tabulated-list-init-header)
+        (tabulated-list-print)
+        ;; Go to timer row
+        (goto-char (point-min))
+        (forward-line 1)
+        (should (supervisor--timer-row-p (tabulated-list-get-id)))
+        ;; Jump
+        (supervisor-dashboard-timer-jump)
+        ;; Should be on service row now
+        (should (supervisor--service-row-p (tabulated-list-get-id)))
+        (should (equal "my-svc" (supervisor--row-id (tabulated-list-get-id))))))))
+
+(ert-deftest supervisor-test-timer-jump-absent-target-message ()
+  "Timer jump shows message when target not visible."
+  (let ((supervisor--timer-list
+         (list (supervisor-timer--create :id "t1" :target "missing-svc")))
+        (last-msg nil))
+    (with-temp-buffer
+      (supervisor-dashboard-mode)
+      (let ((tabulated-list-entries
+             (list (list (cons :timer "t1")
+                         (vector "t1" "missing-svc" "yes"
+                                 "-" "-" "-" "-" "" "")))))
+        (tabulated-list-init-header)
+        (tabulated-list-print)
+        (goto-char (point-min))
+        (cl-letf (((symbol-function 'message)
+                   (lambda (fmt &rest args)
+                     (setq last-msg (apply #'format fmt args)))))
+          (supervisor-dashboard-timer-jump)
+          (should (string-match-p "not visible" last-msg)))))))
+
+(ert-deftest supervisor-test-timer-trigger-rejects-disabled-subsystem ()
+  "Timer trigger rejects when subsystem is disabled."
+  (let ((supervisor--timer-list
+         (list (supervisor-timer--create :id "t1" :target "svc")))
+        (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    (with-temp-buffer
+      (supervisor-dashboard-mode)
+      (let ((tabulated-list-entries
+             (list (list (cons :timer "t1")
+                         (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+        (tabulated-list-init-header)
+        (tabulated-list-print)
+        (goto-char (point-min))
+        (cl-letf (((symbol-function 'supervisor-timer-subsystem-active-p)
+                   (lambda () nil)))
+          (should-error (supervisor-dashboard-timer-trigger)
+                        :type 'user-error))))))
+
+(ert-deftest supervisor-test-timer-trigger-rejects-invalid-timer ()
+  "Timer trigger rejects invalid timers."
+  (let ((supervisor--timer-list
+         (list (supervisor-timer--create :id "t1" :target "svc")))
+        (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    (puthash "t1" "bad config" supervisor--invalid-timers)
+    (with-temp-buffer
+      (supervisor-dashboard-mode)
+      (let ((tabulated-list-entries
+             (list (list (cons :timer "t1")
+                         (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+        (tabulated-list-init-header)
+        (tabulated-list-print)
+        (goto-char (point-min))
+        (cl-letf (((symbol-function 'supervisor-timer-subsystem-active-p)
+                   (lambda () t)))
+          (should-error (supervisor-dashboard-timer-trigger)
+                        :type 'user-error))))))
+
+(ert-deftest supervisor-test-timer-reset-clears-state ()
+  "Timer reset clears runtime state fields."
+  (let* ((supervisor--timer-list
+          (list (supervisor-timer--create :id "t1" :target "svc")))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--invalid-timers (make-hash-table :test 'equal))
+         (update-called nil))
+    ;; Seed runtime state
+    (puthash "t1" (list :last-run-at 1000 :last-exit 0
+                        :retry-attempt 2 :next-run-at 2000
+                        :startup-triggered t)
+             supervisor--timer-state)
+    (with-temp-buffer
+      (supervisor-dashboard-mode)
+      (let ((tabulated-list-entries
+             (list (list (cons :timer "t1")
+                         (vector "t1" "svc" "yes" "-" "-" "0" "-" "" "")))))
+        (tabulated-list-init-header)
+        (tabulated-list-print)
+        (goto-char (point-min))
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t))
+                  ((symbol-function 'supervisor-timer--update-next-run)
+                   (lambda (_id) (setq update-called t)))
+                  ((symbol-function 'supervisor-timer-subsystem-active-p)
+                   (lambda () nil))
+                  ((symbol-function 'supervisor--refresh-dashboard) #'ignore))
+          (supervisor-dashboard-timer-reset)
+          (let ((state (gethash "t1" supervisor--timer-state)))
+            ;; All runtime fields cleared
+            (should-not (plist-get state :last-run-at))
+            (should-not (plist-get state :last-exit))
+            (should-not (plist-get state :retry-attempt))
+            (should-not (plist-get state :next-run-at))
+            (should-not (plist-get state :startup-triggered))
+            ;; Update-next-run was called
+            (should update-called)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-enable ()
+  "Enable rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-enable)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-disable ()
+  "Disable rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-disable)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-mask ()
+  "Mask rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-mask)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-cat ()
+  "Cat rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-cat)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-service-only-reject-on-timer-kill ()
+  "Kill rejects timer rows with stable message."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (let ((tabulated-list-entries
+           (list (list (cons :timer "t1")
+                       (vector "t1" "svc" "yes" "-" "-" "-" "-" "" "")))))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (goto-char (point-min))
+      (let ((err (should-error (supervisor-dashboard-kill)
+                               :type 'user-error)))
+        (should (string-match-p "timer rows" (cadr err)))))))
+
+(ert-deftest supervisor-test-transient-menu-has-timer-group ()
+  "Transient menu definition includes Timers group."
+  ;; The transient menu is defined lazily; we trigger it via the definer
+  (let ((supervisor--dashboard-menu-defined nil))
+    (require 'transient)
+    (supervisor--define-dashboard-menu)
+    ;; The transient prefix should be defined now
+    (should (fboundp 'supervisor-dashboard-menu))
+    ;; Verify timer commands are interactive
+    (should (commandp 'supervisor-dashboard-timer-trigger))
+    (should (commandp 'supervisor-dashboard-timer-info))
+    (should (commandp 'supervisor-dashboard-timer-jump))
+    (should (commandp 'supervisor-dashboard-timer-reset))
+    (should (commandp 'supervisor-dashboard-timer-refresh))))
+
+(ert-deftest supervisor-test-timer-actions-dispatcher-key ()
+  "Timer actions dispatcher is bound to y in dashboard keymap."
+  (with-temp-buffer
+    (supervisor-dashboard-mode)
+    (should (eq (key-binding "y") #'supervisor-dashboard-timer-actions))))
+
+(ert-deftest supervisor-test-service-summary-not-in-header-line ()
+  "Service health summary is in body, not header-line-format."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal))
+          (supervisor-dashboard-show-timers nil))
+      (let ((header (supervisor--dashboard-header-line)))
+        ;; Header must not contain health count keywords
+        (should-not (string-match-p "\\brun\\b" header))
+        (should-not (string-match-p "\\bfail\\b" header))
+        (should-not (string-match-p "\\bpend\\b" header))))))
+
+(ert-deftest supervisor-test-service-summary-between-services-and-timers ()
+  "Service health summary is positioned between services and timers."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal))
+          (supervisor-dashboard-show-timers t)
+          (supervisor-timer-subsystem-mode t))
+      (let* ((entries (supervisor--get-entries))
+             (ids (mapcar #'car entries))
+             (health-pos (cl-position '--health-- ids))
+             (timer-pos (cl-position '--timers-- ids))
+             (svc-pos (cl-position-if
+                       (lambda (id) (supervisor--service-row-p id)) ids)))
+        ;; All three exist
+        (should svc-pos)
+        (should health-pos)
+        (should timer-pos)
+        ;; Service < health < timer
+        (should (< svc-pos health-pos))
+        (should (< health-pos timer-pos))))))
+
+(ert-deftest supervisor-test-service-summary-blank-line-spacing ()
+  "Service health summary has exactly 2 blank lines above and below."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal))
+          (supervisor-dashboard-show-timers t)
+          (supervisor-timer-subsystem-mode t))
+      (let* ((entries (supervisor--get-entries))
+             (ids (mapcar #'car entries))
+             (health-pos (cl-position '--health-- ids)))
+        (should health-pos)
+        ;; Two blank rows above
+        (should (supervisor--separator-row-p (nth (- health-pos 1) ids)))
+        (should (supervisor--separator-row-p (nth (- health-pos 2) ids)))
+        ;; Two blank rows below
+        (should (supervisor--separator-row-p (nth (+ health-pos 1) ids)))
+        (should (supervisor--separator-row-p (nth (+ health-pos 2) ids)))
+        ;; The blank rows should be --blank-N-- symbols
+        (should (string-match-p "blank" (symbol-name (nth (- health-pos 1) ids))))
+        (should (string-match-p "blank" (symbol-name (nth (- health-pos 2) ids))))
+        (should (string-match-p "blank" (symbol-name (nth (+ health-pos 1) ids))))
+        (should (string-match-p "blank" (symbol-name (nth (+ health-pos 2) ids))))))))
+
+(ert-deftest supervisor-test-service-summary-counts-service-only ()
+  "Service health summary counts only services, not timers."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--timer-list nil)
+           (supervisor--timer-state (make-hash-table :test 'equal))
+           (supervisor--invalid-timers (make-hash-table :test 'equal))
+           (supervisor-dashboard-show-timers t))
+      ;; Health summary label says "services"
+      (let* ((row (supervisor--make-health-summary-row))
+             (vec (cadr row)))
+        (should (string-match-p "services" (aref vec 0)))))))
+
+(ert-deftest supervisor-test-timer-section-not-hidden-by-stage-filter ()
+  "Stage filter does not hide timer section."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple :stage stage1)
+        ("sleep 60" :id "svc2" :type simple :stage stage2))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--timer-list
+           (list (supervisor-timer--create :id "t1" :target "svc")))
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal))
+          (supervisor-dashboard-show-timers t)
+          (supervisor-timer-subsystem-mode t)
+          (supervisor--dashboard-stage-filter 'stage1))
+      (let* ((entries (supervisor--get-entries))
+             (ids (mapcar #'car entries)))
+        ;; Timer section still present
+        (should (cl-find '--timers-- ids))
+        ;; Timer row present
+        (should (cl-find (cons :timer "t1") ids :test #'equal))
+        ;; Only stage1 service shown (not stage2)
+        (should (cl-find (cons :service "svc") ids :test #'equal))
+        (should-not (cl-find (cons :service "svc2") ids :test #'equal))))))
+
+(ert-deftest supervisor-test-timer-info-invalid-timer ()
+  "Timer info shows details for invalid timers."
+  (let ((supervisor--timer-list nil)
+        (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    (puthash "bad-t" "missing target field" supervisor--invalid-timers)
+    (with-temp-buffer
+      (supervisor-dashboard-mode)
+      (let ((tabulated-list-entries
+             (list (list (cons :timer "bad-t")
+                         (vector "bad-t" "-" "-" "-"
+                                 (propertize "invalid" 'face 'error)
+                                 "-" "missing target field" "" "")))))
+        (tabulated-list-init-header)
+        (tabulated-list-print)
+        (goto-char (point-min))
+        (supervisor-dashboard-timer-info)
+        ;; Help window should be open
+        (let ((info-buf (get-buffer "*supervisor-timer-info*")))
+          (should info-buf)
+          (with-current-buffer info-buf
+            (should (string-match-p "INVALID" (buffer-string)))
+            (should (string-match-p "missing target field" (buffer-string))))
+          (kill-buffer info-buf))))))
+
+(ert-deftest supervisor-test-timer-info-valid-timer ()
+  "Timer info shows details for valid timers."
+  (let* ((supervisor--timer-list
+          (list (supervisor-timer--create
+                 :id "t1" :target "svc"
+                 :on-startup-sec 30
+                 :persistent t)))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--invalid-timers (make-hash-table :test 'equal)))
+    (puthash "t1" (list :last-run-at (float-time) :last-exit 0
+                        :next-run-at (+ (float-time) 60))
+             supervisor--timer-state)
+    (with-temp-buffer
+      (supervisor-dashboard-mode)
+      (let ((tabulated-list-entries
+             (list (list (cons :timer "t1")
+                         (vector "t1" "svc" "yes" "-" "-" "0" "-" "" "")))))
+        (tabulated-list-init-header)
+        (tabulated-list-print)
+        (goto-char (point-min))
+        (supervisor-dashboard-timer-info)
+        (let ((info-buf (get-buffer "*supervisor-timer-info*")))
+          (should info-buf)
+          (with-current-buffer info-buf
+            (should (string-match-p "Timer: t1" (buffer-string)))
+            (should (string-match-p "Target: svc" (buffer-string)))
+            (should (string-match-p "Startup: 30" (buffer-string)))
+            (should (string-match-p "Persistent: yes" (buffer-string))))
+          (kill-buffer info-buf))))))
+
+(ert-deftest supervisor-test-service-summary-not-first-row ()
+  "Service health summary is not the first content row."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal))
+          (supervisor-dashboard-show-timers nil))
+      (let* ((entries (supervisor--get-entries))
+             (first-id (car (car entries))))
+        (should-not (eq '--health-- first-id))))))
 
 ;;; Unit-File Tests
 
@@ -3648,9 +4336,9 @@ prior snapshot, lookup returns the correct root and actual file path."
           (let* ((programs (supervisor--effective-programs))
                  (snapshot (supervisor--build-snapshot))
                  (entries (supervisor--get-entries snapshot programs)))
-            ;; Should have entries for both good and bad
-            (should (cl-some (lambda (e) (equal "good" (car e))) entries))
-            (should (cl-some (lambda (e) (equal "bad" (car e))) entries))))
+            ;; Should have entries for both good and bad (typed IDs)
+            (should (cl-some (lambda (e) (equal (cons :service "good") (car e))) entries))
+            (should (cl-some (lambda (e) (equal (cons :service "bad") (car e))) entries))))
       (delete-directory dir t))))
 
 (ert-deftest supervisor-test-health-summary-counts-invalid-authority ()
@@ -4295,7 +4983,7 @@ conflicting ID, proving precedence derives from list position."
         (with-temp-buffer
           (supervisor-dashboard-mode)
           (let ((tabulated-list-entries
-                 (list (list "logrotate"
+                 (list (list (cons :service "logrotate")
                              (vector "logrotate" "oneshot" "stage4"
                                      "yes" "pending" "n/a" "yes" "-" "-")))))
             (tabulated-list-init-header)
@@ -4391,7 +5079,7 @@ conflicting ID, proving precedence derives from list position."
           (with-temp-buffer
             (supervisor-dashboard-mode)
             (let ((tabulated-list-entries
-                   (list (list "test-svc"
+                   (list (list (cons :service "test-svc")
                                (vector "test-svc" "simple" "stage3"
                                        "yes" "running" "yes" "---"
                                        "-" "-")))))
@@ -4446,7 +5134,7 @@ conflicting ID, proving precedence derives from list position."
           (with-temp-buffer
             (supervisor-dashboard-mode)
             (let ((tabulated-list-entries
-                   (list (list "hook-svc"
+                   (list (list (cons :service "hook-svc")
                                (vector "hook-svc" "simple" "stage3"
                                        "yes" "running" "yes" "---"
                                        "-" "-")))))
@@ -7327,7 +8015,7 @@ at minute boundaries."
           (should (string-match-p "target" (alist-get 'reason entry))))))))
 
 (ert-deftest supervisor-test-dashboard-timer-signal-exit-is-failed ()
-  "Dashboard timer status classifies signal exits as failed."
+  "Dashboard timer entry shows signal exit code in EXIT column."
   (let* ((timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
@@ -7335,9 +8023,9 @@ at minute boundaries."
     ;; Simulate signal death stored as negative exit code
     (puthash "t1" '(:last-exit -9 :next-run-at 2000.0) supervisor--timer-state)
     (let ((entry (supervisor--make-timer-dashboard-entry timer)))
-      ;; Entry is a vector: [id type target enabled status restart log pid reason]
-      ;; Status is at index 4
-      (should (string-match-p "failed" (aref entry 4))))))
+      ;; Entry is a vector: [id target enabled last-run next-run exit miss "" ""]
+      ;; Exit code is at index 5
+      (should (string= "-9" (aref entry 5))))))
 
 (ert-deftest supervisor-test-cli-list-timers-full-field-mapping ()
   "The `list-timers' output includes all required fields."
@@ -11498,11 +12186,7 @@ No warning is emitted when there are simply no child processes."
       (puthash "svc1" 0 supervisor--oneshot-completed)
       (puthash "svc1" t supervisor--remain-active)
       (cl-letf (((symbol-function 'tabulated-list-get-id)
-                 (lambda () "svc1"))
-                ((symbol-function 'supervisor--separator-row-p)
-                 (lambda (_id) nil))
-                ((symbol-function 'supervisor--timer-row-p)
-                 (lambda (_id) nil))
+                 (lambda () (cons :service "svc1")))
                 ((symbol-function 'yes-or-no-p)
                  (lambda (_prompt) t))
                 ((symbol-function 'supervisor--refresh-dashboard)
@@ -11538,11 +12222,7 @@ No warning is emitted when there are simply no child processes."
       (puthash "svc1" 0 supervisor--oneshot-completed)
       (puthash "svc1" t supervisor--remain-active)
       (cl-letf (((symbol-function 'tabulated-list-get-id)
-                 (lambda () "svc1"))
-                ((symbol-function 'supervisor--separator-row-p)
-                 (lambda (_id) nil))
-                ((symbol-function 'supervisor--timer-row-p)
-                 (lambda (_id) nil))
+                 (lambda () (cons :service "svc1")))
                 ((symbol-function 'yes-or-no-p)
                  (lambda (_prompt) t))
                 ((symbol-function 'supervisor--refresh-dashboard)
@@ -12046,7 +12726,7 @@ No warning is emitted when there are simply no child processes."
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor-overrides-file nil)
          (msg nil))
-    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () (cons :service "svc")))
               ((symbol-function 'supervisor--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'supervisor--save-overrides) #'ignore)
@@ -12065,7 +12745,7 @@ No warning is emitted when there are simply no child processes."
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor-overrides-file nil)
          (msg nil))
-    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () (cons :service "svc")))
               ((symbol-function 'supervisor--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'supervisor--save-overrides) #'ignore)
@@ -12084,7 +12764,7 @@ No warning is emitted when there are simply no child processes."
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor-overrides-file nil)
          (msg nil))
-    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () (cons :service "svc")))
               ((symbol-function 'supervisor--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'message)
@@ -12099,9 +12779,7 @@ No warning is emitted when there are simply no child processes."
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor-overrides-file nil)
          (msg nil))
-    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
-              ((symbol-function 'supervisor--separator-row-p) (lambda (_) nil))
-              ((symbol-function 'supervisor--timer-row-p) (lambda (_) nil))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () (cons :service "svc")))
               ((symbol-function 'supervisor--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'supervisor--save-overrides) #'ignore)
@@ -12120,9 +12798,7 @@ No warning is emitted when there are simply no child processes."
          (supervisor-overrides-file nil)
          (msg nil))
     (puthash "svc" 'masked supervisor--mask-override)
-    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
-              ((symbol-function 'supervisor--separator-row-p) (lambda (_) nil))
-              ((symbol-function 'supervisor--timer-row-p) (lambda (_) nil))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () (cons :service "svc")))
               ((symbol-function 'supervisor--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'supervisor--save-overrides) #'ignore)
@@ -12140,9 +12816,7 @@ No warning is emitted when there are simply no child processes."
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor-overrides-file nil)
          (msg nil))
-    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
-              ((symbol-function 'supervisor--separator-row-p) (lambda (_) nil))
-              ((symbol-function 'supervisor--timer-row-p) (lambda (_) nil))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () (cons :service "svc")))
               ((symbol-function 'supervisor--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'message)
@@ -12158,7 +12832,7 @@ No warning is emitted when there are simply no child processes."
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor-overrides-file nil)
          (msg nil))
-    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () (cons :service "svc")))
               ((symbol-function 'supervisor--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'completing-read)
@@ -12180,7 +12854,7 @@ No warning is emitted when there are simply no child processes."
          (supervisor-overrides-file nil))
     ;; Pre-set an override
     (puthash "svc" 'always supervisor--restart-override)
-    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () (cons :service "svc")))
               ((symbol-function 'supervisor--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'completing-read)
@@ -12199,7 +12873,7 @@ No warning is emitted when there are simply no child processes."
          (supervisor--invalid (make-hash-table :test 'equal))
          (supervisor-overrides-file nil)
          (msg nil))
-    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () (cons :service "svc")))
               ((symbol-function 'supervisor--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'completing-read)
@@ -12394,7 +13068,7 @@ No warning is emitted when there are simply no child processes."
          (saved nil)
          (entry (supervisor--parse-entry
                  '("cmd" :id "svc" :type simple :logging))))
-    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () "svc"))
+    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () (cons :service "svc")))
               ((symbol-function 'supervisor--get-entry-for-id)
                (lambda (_id) entry))
               ((symbol-function 'supervisor--save-overrides)

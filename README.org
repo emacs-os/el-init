@@ -1007,16 +1007,17 @@ state) are recomputed each session.
 
 Dashboard:
 
-- Timer section is shown only when
-- ~supervisor-dashboard-show-timers~ is non-nil
-- timer subsystem is active
-- no stage filter is active
-- there are timer rows or invalid timer definitions
+- Timer section is shown when ~supervisor-dashboard-show-timers~ is non-nil.
+- Stage and tag filters apply only to the service section; the timer section
+  is always visible when ~supervisor-dashboard-show-timers~ is non-nil.
+- When the timer subsystem is disabled, the timer section renders with
+  an explicit "(disabled)" label and no interactive timer actions.
+- When no timers are configured, the section shows "no timers configured".
 
 CLI:
 
-- ~supervisorctl list-timers~ shows timer runtime/invalid definitions
-- If subsystem is gated off, command returns explicit disabled status
+- ~supervisorctl list-timers~ shows timer runtime/invalid definitions.
+- If subsystem is gated off, command returns explicit disabled status.
 
 * Dashboard (~M-x supervisor~)
 :PROPERTIES:
@@ -1068,7 +1069,18 @@ latched active until explicitly stopped.
 
 ** Timer Rows in Dashboard
 
-Timer rows are informational and use timer runtime state.
+Timer rows appear in a dedicated section below services with their own
+column layout: ~ID~, ~TARGET~, ~ENABLED~, ~LAST-RUN~, ~NEXT-RUN~,
+~EXIT~, ~MISS~.  This matches the columns of ~supervisorctl list-timers~.
+
+Timer rows support interactive timer actions via the ~y~ submenu.
+Service-only commands (lifecycle, policy, inspect) reject timer rows
+with the message: "Not available for timer rows: use timer actions
+(y or ? -> Timers)".
+
+A service health summary row appears between the service section and the
+timer section, labeled "services" to indicate it counts only service
+rows (not timers).
 
 Timer row status values:
 
@@ -1085,8 +1097,9 @@ Timer reason column shows either:
 ** Dashboard Keymap
 
 The dashboard uses a Magit-style nested menu model.  Top-level keys handle
-navigation, filtering, and system controls.  Actions are grouped into three
-submenus accessed by a prefix key followed by a second key.
+navigation, filtering, and system controls.  Service actions are grouped into
+three submenus (lifecycle, policy, inspect) accessed by a prefix key followed
+by a second key.  Timer actions use the ~y~ prefix.
 
 *** Top-Level Keys
 
@@ -1097,9 +1110,10 @@ submenus accessed by a prefix key followed by a second key.
 | ~G~ | Toggle auto-refresh (live monitoring) |
 | ~t~ | Open ~proced~ (system process list) |
 | ~T~ | Toggle proced auto-update mode |
-| ~l~ | Open *Lifecycle* submenu |
-| ~p~ | Open *Policy* submenu |
-| ~i~ | Open *Inspect* submenu |
+| ~l~ | Open *Lifecycle* submenu (service rows only) |
+| ~p~ | Open *Policy* submenu (service rows only) |
+| ~i~ | Open *Inspect* submenu (service rows only) |
+| ~y~ | Open *Timers* submenu (timer rows only) |
 | ~?~ | Open transient action menu |
 | ~h~ | Open dashboard help buffer |
 | ~q~ | Quit dashboard |
@@ -1139,9 +1153,32 @@ All inspect actions are read-only.
 | ~c~ | View unit file (read-only) |
 | ~e~ | Edit unit file (create scaffold if missing) |
 
+*** Timers (~y~)
+
+Timer actions operate on timer rows only.  Service rows reject these
+actions.
+
+| Key | Function |
+| ~t~ | Trigger timer now (manual reason) |
+| ~i~ | Show timer details (schedule, state, retry info) |
+| ~j~ | Jump to target service row |
+| ~r~ | Reset timer runtime state and recompute next run |
+| ~g~ | Refresh timer section |
+
+Timer actions are also available via the ~?~ transient menu under
+the "Timers" group.
+
+Limitations in this version:
+
+- ~cat~ and ~edit~ are not available for timer definitions (timers do
+  not have unit files).
+- Timer enable/disable policy overrides are not yet supported.
+
 *** Notes
 
 - Separator rows reject service actions.
+- Timer rows reject service-only commands (lifecycle, policy, inspect).
+- Service rows reject timer-only commands.
 - ~?~ requires the ~transient~ package.
 - Full ID is echoed in minibuffer when current row ID exceeds table width.
 - *Stop vs Kill*: ~l t~ (stop) gracefully terminates and suppresses

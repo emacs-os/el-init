@@ -41,7 +41,14 @@
 (declare-function supervisor-timer-id "supervisor-timer" (timer))
 (declare-function supervisor-timer-target "supervisor-timer" (timer))
 (declare-function supervisor-timer-enabled "supervisor-timer" (timer))
+(declare-function supervisor-timer-persistent "supervisor-timer" (timer))
+(declare-function supervisor-timer-on-calendar "supervisor-timer" (timer))
+(declare-function supervisor-timer-on-startup-sec "supervisor-timer" (timer))
+(declare-function supervisor-timer-on-unit-active-sec "supervisor-timer" (timer))
 (declare-function supervisor-timer--target-active-p "supervisor-timer" (timer))
+(declare-function supervisor-timer--trigger "supervisor-timer" (timer reason))
+(declare-function supervisor-timer--update-next-run "supervisor-timer" (timer-id))
+(declare-function supervisor-timer--save-state "supervisor-timer" ())
 
 ;; Forward declarations for unit-file module (optional)
 (declare-function supervisor--unit-file-path "supervisor-units" (id))
@@ -55,6 +62,7 @@
 (defvar supervisor--timer-state)
 (defvar supervisor--timer-list)
 (defvar supervisor--invalid-timers)
+(defvar supervisor-timer-retry-intervals)
 ;; Forward declaration for tabulated-list internals
 (defvar tabulated-list-header-string nil)
 
@@ -204,6 +212,7 @@ nil means show all entries, otherwise a tag symbol or string.")
     (define-key map "l" #'supervisor-dashboard-lifecycle)
     (define-key map "p" #'supervisor-dashboard-policy)
     (define-key map "i" #'supervisor-dashboard-inspect)
+    (define-key map "y" #'supervisor-dashboard-timer-actions)
     ;; Help / quit
     (define-key map "h" #'supervisor-dashboard-help)
     (define-key map "?" #'supervisor-dashboard-menu-open)
@@ -256,6 +265,19 @@ Inspect actions are read-only presentation workflows."
     (?e (call-interactively #'supervisor-dashboard-edit))
     (_ (message "Inspect: cancelled"))))
 
+(defun supervisor-dashboard-timer-actions ()
+  "Open timer actions submenu.
+Timer actions operate on timer rows in the dashboard."
+  (interactive)
+  (pcase (read-char
+          "Timer: [t]rigger [i]nfo [j]ump [r]eset [g]refresh ")
+    (?t (call-interactively #'supervisor-dashboard-timer-trigger))
+    (?i (call-interactively #'supervisor-dashboard-timer-info))
+    (?j (call-interactively #'supervisor-dashboard-timer-jump))
+    (?r (call-interactively #'supervisor-dashboard-timer-reset))
+    (?g (call-interactively #'supervisor-dashboard-timer-refresh))
+    (_ (message "Timer: cancelled"))))
+
 ;;; Transient Menu
 
 (defvar supervisor--dashboard-menu-defined nil
@@ -272,10 +294,16 @@ This is called on first use to avoid loading transient at package load time."
         [:description
          (lambda ()
            (supervisor--health-summary (supervisor--build-snapshot)))
-         ["Actions"
+         ["Service Actions"
           ("l" "Lifecycle..." supervisor-dashboard-lifecycle)
           ("p" "Policy..." supervisor-dashboard-policy)
           ("i" "Inspect..." supervisor-dashboard-inspect)]
+         ["Timers"
+          ("y t" "Trigger" supervisor-dashboard-timer-trigger)
+          ("y i" "Info" supervisor-dashboard-timer-info)
+          ("y j" "Jump to target" supervisor-dashboard-timer-jump)
+          ("y r" "Reset state" supervisor-dashboard-timer-reset)
+          ("y g" "Refresh timers" supervisor-dashboard-timer-refresh)]
          ["Navigation"
           ("f" "Stage filter" supervisor-dashboard-cycle-filter)
           ("F" "Tag filter" supervisor-dashboard-cycle-tag-filter)
@@ -304,13 +332,13 @@ Requires the `transient' package to be installed."
 
 (defun supervisor--dashboard-echo-id ()
   "Echo full entry ID in minibuffer if point moved to new row."
-  (when-let* ((id (tabulated-list-get-id)))
-    (unless (equal id supervisor--dashboard-last-id)
-      (setq supervisor--dashboard-last-id id)
-      ;; Only echo string IDs longer than column width (15)
-      ;; Skip separator rows (symbol IDs)
-      (when (and (stringp id) (> (length id) 15))
-        (message "%s" id)))))
+  (when-let* ((raw-id (tabulated-list-get-id)))
+    (unless (equal raw-id supervisor--dashboard-last-id)
+      (setq supervisor--dashboard-last-id raw-id)
+      ;; Only echo typed row IDs longer than column width (15)
+      (when-let* ((id (supervisor--row-id raw-id)))
+        (when (> (length id) 15)
+          (message "%s" id))))))
 
 (define-derived-mode supervisor-dashboard-mode tabulated-list-mode "Supervisor"
   "Major mode for the supervisor dashboard."
@@ -360,8 +388,15 @@ Requires the `transient' package to be installed."
     (list (intern (format "--%s--" stage))  ; Use symbol for separator ID
           (vector label "" "" "" "" "" "" "" ""))))
 
+(defun supervisor--make-blank-row (n)
+  "Create a blank row for visual spacing.
+N makes the symbol ID unique."
+  (list (intern (format "--blank-%d--" n))
+        (vector "" "" "" "" "" "" "" "" "")))
+
 (defun supervisor--make-health-summary-row (&optional snapshot programs)
-  "Return a non-interactive row that summarizes dashboard health.
+  "Return a non-interactive row that summarizes service health.
+Counts are service-scoped and do not include timer rows.
 SNAPSHOT and PROGRAMS are forwarded to `supervisor--health-counts'."
   (let* ((counts (supervisor--health-counts snapshot programs))
          (running (plist-get counts :running))
@@ -376,7 +411,7 @@ SNAPSHOT and PROGRAMS are forwarded to `supervisor--health-counts'."
                                   " active")
                         "-")))
     (list '--health--
-          (vector (propertize "status" 'face 'supervisor-stage-separator)
+          (vector (propertize "services" 'face 'supervisor-stage-separator)
                   (concat (propertize (format "%d" running)
                                       'face 'supervisor-status-running)
                           " run")
@@ -397,15 +432,66 @@ SNAPSHOT and PROGRAMS are forwarded to `supervisor--health-counts'."
                   active-text))))
 
 (defun supervisor--separator-row-p (id)
-  "Return non-nil if ID represents a stage separator row."
-  (and id (symbolp id) (string-prefix-p "--" (symbol-name id))))
+  "Return non-nil if ID represents a separator or summary row."
+  (and id (symbolp id)))
 
-(defun supervisor--timer-row-p (_id)
-  "Return non-nil if the dashboard row at point is a timer row.
-Checks the Type column of the current `tabulated-list' entry.
-_ID is accepted for signature consistency but ignored."
-  (when-let* ((entry (tabulated-list-get-entry)))
-    (string= "timer" (substring-no-properties (aref entry 1)))))
+(defun supervisor--timer-row-p (id)
+  "Return non-nil if ID represents a timer row."
+  (and (consp id) (eq (car id) :timer)))
+
+(defun supervisor--service-row-p (id)
+  "Return non-nil if ID represents a service row."
+  (and (consp id) (eq (car id) :service)))
+
+(defun supervisor--row-kind (id)
+  "Return the kind of dashboard row for ID.
+Return `:service', `:timer', or `:separator'."
+  (cond
+   ((supervisor--service-row-p id) :service)
+   ((supervisor--timer-row-p id) :timer)
+   ((supervisor--separator-row-p id) :separator)
+   (t nil)))
+
+(defun supervisor--row-id (id)
+  "Extract the string ID from a typed row ID.
+For cons cell IDs like (:service . \"foo\"), return \"foo\".
+For symbol IDs (separators), return nil."
+  (when (consp id)
+    (cdr id)))
+
+(defconst supervisor--timer-row-rejection
+  "Not available for timer rows: use timer actions (y or ? -> Timers)"
+  "Stable error message for service-only commands on timer rows.")
+
+(defun supervisor--require-service-row ()
+  "Return the string ID of the service row at point.
+Signal `user-error' if point is on a separator, timer, or empty row."
+  (let ((raw-id (tabulated-list-get-id)))
+    (cond
+     ((null raw-id)
+      (user-error "No entry at point"))
+     ((supervisor--separator-row-p raw-id)
+      (user-error "Not available on separator row"))
+     ((supervisor--timer-row-p raw-id)
+      (user-error "%s" supervisor--timer-row-rejection))
+     (t
+      (or (supervisor--row-id raw-id)
+          (user-error "No entry at point"))))))
+
+(defun supervisor--timer-projection (timer)
+  "Return projected TIMER fields as a plist for display.
+Provides rendering parity with `list-timers' CLI output.
+Fields: :id, :target, :enabled, :last-run, :next-run, :last-exit,
+:miss-reason."
+  (let* ((id (supervisor-timer-id timer))
+         (state (gethash id supervisor--timer-state)))
+    (list :id id
+          :target (supervisor-timer-target timer)
+          :enabled (supervisor-timer-enabled timer)
+          :last-run (plist-get state :last-run-at)
+          :next-run (plist-get state :next-run-at)
+          :last-exit (plist-get state :last-exit)
+          :miss-reason (plist-get state :last-miss-reason))))
 
 (defun supervisor--make-dashboard-entry (id type stage enabled-p restart-policy logging-p
                                             &optional snapshot)
@@ -493,65 +579,75 @@ If SNAPSHOT is provided, read runtime state from it."
        (t (format "%s%dd%s" prefix (round (/ abs-diff 86400)) suffix))))))
 
 (defun supervisor--make-timer-separator ()
-  "Create a separator row for the Timers section."
-  (let ((label (propertize "── Timers "
-                           'face 'supervisor-stage-separator)))
-    (list '--timers--
-          (vector label "" "" "" "" "" "" "" ""))))
+  "Create a header row for the Timers section with column labels."
+  (list '--timers--
+        (vector (propertize "── Timers" 'face 'supervisor-stage-separator)
+                (propertize "TARGET" 'face 'supervisor-stage-separator)
+                (propertize "ENABLED" 'face 'supervisor-stage-separator)
+                (propertize "LAST-RUN" 'face 'supervisor-stage-separator)
+                (propertize "NEXT-RUN" 'face 'supervisor-stage-separator)
+                (propertize "EXIT" 'face 'supervisor-stage-separator)
+                (propertize "MISS" 'face 'supervisor-stage-separator)
+                "" "")))
+
+(defun supervisor--make-timer-separator-disabled ()
+  "Create a timer section header showing disabled state."
+  (list '--timers--
+        (vector (propertize "── Timers (disabled)" 'face 'supervisor-stage-separator)
+                "" "" "" "" "" "" "" "")))
+
+(defun supervisor--make-timer-separator-empty ()
+  "Create a timer section header showing no timers configured."
+  (list '--timers--
+        (vector (propertize "── Timers" 'face 'supervisor-stage-separator)
+                (propertize "no timers configured" 'face 'supervisor-status-stopped)
+                "" "" "" "" "" "" "")))
 
 (defun supervisor--make-timer-dashboard-entry (timer)
-  "Create a dashboard entry vector for TIMER."
-  (let* ((id (supervisor-timer-id timer))
-         (target (supervisor-timer-target timer))
-         (enabled (supervisor-timer-enabled timer))
-         (state (gethash id supervisor--timer-state))
-         (next-run (plist-get state :next-run-at))
-         (last-exit (plist-get state :last-exit))
-         (miss-reason (plist-get state :last-miss-reason))
-         ;; Compute status: pending, active (target running), or based on last result
-         (target-active (supervisor-timer--target-active-p timer))
-         (status (cond
-                  (target-active "active")
-                  ((and last-exit (= last-exit 0)) "done")
-                  ((and last-exit (/= last-exit 0)) "failed")
-                  (t "pending")))
-         ;; Reason shows next run time or last miss
-         (reason (cond
-                  (miss-reason (format "missed: %s" miss-reason))
-                  (next-run (format "next: %s"
-                                    (supervisor--format-timer-relative-time next-run)))
-                  (t "-"))))
+  "Create a dashboard entry vector for TIMER.
+Columns are mapped to match `list-timers' semantics:
+ID, TARGET, ENABLED, LAST-RUN, NEXT-RUN, EXIT, MISS."
+  (let* ((proj (supervisor--timer-projection timer))
+         (id (plist-get proj :id))
+         (target (plist-get proj :target))
+         (enabled (plist-get proj :enabled))
+         (last-run (plist-get proj :last-run))
+         (next-run (plist-get proj :next-run))
+         (last-exit (plist-get proj :last-exit))
+         (miss-reason (plist-get proj :miss-reason)))
     (vector (propertize id 'face 'supervisor-type-timer)
-            (propertize "timer" 'face 'supervisor-type-timer)
-            (propertize target 'face 'supervisor-type-oneshot)
+            (propertize (or target "-") 'face 'supervisor-type-oneshot)
             (propertize (if enabled "yes" "no")
                         'face (if enabled
                                   'supervisor-enabled-yes
                                 'supervisor-enabled-no))
-            (supervisor--propertize-status status)
-            "n/a"  ; restart (N/A for timers)
-            "n/a"  ; logging (N/A for timers)
-            "-"  ; PID (N/A for timers)
-            (if (string-empty-p reason)
-                ""
-              (propertize reason 'face 'supervisor-reason)))))
+            (supervisor--format-timer-relative-time last-run)
+            (supervisor--format-timer-relative-time next-run)
+            (if (null last-exit) "-" (number-to-string last-exit))
+            (if miss-reason (symbol-name miss-reason) "-")
+            ""
+            "")))
 
 (defun supervisor--get-timer-entries ()
   "Generate timer entries for the dashboard.
-Returns list of (id vector) pairs."
+Returns list of (typed-id vector) pairs with (:timer . ID) keys."
   (let ((entries nil))
     (dolist (timer supervisor--timer-list)
       (let ((id (supervisor-timer-id timer)))
-        (push (list id (supervisor--make-timer-dashboard-entry timer)) entries)))
-    ;; Also show invalid timers
+        (push (list (cons :timer id)
+                    (supervisor--make-timer-dashboard-entry timer))
+              entries)))
+    ;; Also show invalid timers with matching column layout
     (maphash (lambda (id reason)
-               (push (list id
+               (push (list (cons :timer id)
                            (vector (propertize id 'face 'supervisor-status-invalid)
-                                   (propertize "timer" 'face 'supervisor-type-timer)
-                                   "-" "-"
+                                   "-"
+                                   "-"
+                                   "-"
                                    (supervisor--propertize-status "invalid")
-                                   "-" "-" "-"
-                                   (propertize reason 'face 'supervisor-reason)))
+                                   "-"
+                                   (propertize reason 'face 'supervisor-reason)
+                                   "" ""))
                      entries))
              supervisor--invalid-timers)
     (nreverse entries)))
@@ -583,7 +679,10 @@ When `supervisor-dashboard-group-by-stage' is non-nil and no stage filter
 is active, entries are grouped by stage with separator rows.
 If SNAPSHOT is provided, read runtime state from it.
 If PROGRAMS is provided, use it instead of calling
-`supervisor--effective-programs'."
+`supervisor--effective-programs'.
+
+Layout order: service rows, blank lines, health summary, blank lines,
+timer section (when `supervisor-dashboard-show-timers' is non-nil)."
   (let* ((snapshot (or snapshot (supervisor--build-snapshot)))
          (programs (or programs (supervisor--effective-programs)))
          (entries nil)
@@ -600,7 +699,7 @@ If PROGRAMS is provided, use it instead of calling
           (puthash raw-id t seen)
           (if invalid-reason
               (unless stage-filter
-                (push (list raw-id
+                (push (list (cons :service raw-id)
                             (vector raw-id "-" "-" "-"
                                     (supervisor--propertize-status "invalid")
                                     "-" "-" "-"
@@ -617,7 +716,7 @@ If PROGRAMS is provided, use it instead of calling
                    (tags (supervisor-entry-tags parsed)))
               (when (and (or (null stage-filter) (eq stage stage-filter))
                          (or (null tag-filter) (member tag-filter tags)))
-                (push (list id
+                (push (list (cons :service id)
                             (supervisor--make-dashboard-entry
                              id type stage enabled-p restart-policy logging-p snapshot)
                             stage)
@@ -628,7 +727,7 @@ If PROGRAMS is provided, use it instead of calling
       (maphash (lambda (id reason)
                  (unless (gethash id seen)
                    (puthash id t seen)
-                   (push (list id
+                   (push (list (cons :service id)
                                (vector id "-" "-" "-"
                                        (supervisor--propertize-status "invalid")
                                        "-" "-" "-"
@@ -641,18 +740,31 @@ If PROGRAMS is provided, use it instead of calling
            (if (and supervisor-dashboard-group-by-stage (null stage-filter))
                (supervisor--group-entries-by-stage entries)
              (mapcar (lambda (e) (list (car e) (cadr e))) entries))))
-      ;; Append timers section if enabled, subsystem active, and no stage filter
-      (when (and supervisor-dashboard-show-timers
-                 (supervisor-timer-subsystem-active-p)
-                 (null stage-filter)
-                 (or supervisor--timer-list
-                     (> (hash-table-count supervisor--invalid-timers) 0)))
+      ;; Health summary between services and timers with blank-line spacing
+      (setq final-entries
+            (append final-entries
+                    (list (supervisor--make-blank-row 1)
+                          (supervisor--make-blank-row 2)
+                          (supervisor--make-health-summary-row snapshot programs)
+                          (supervisor--make-blank-row 3)
+                          (supervisor--make-blank-row 4))))
+      ;; Timer section (stage/tag filters do not hide timers)
+      (when supervisor-dashboard-show-timers
         (setq final-entries
               (append final-entries
-                      (list (supervisor--make-timer-separator))
-                      (supervisor--get-timer-entries))))
-      (cons (supervisor--make-health-summary-row snapshot programs)
-            final-entries))))
+                      (cond
+                       ;; Timer mode gate off
+                       ((not supervisor-timer-subsystem-mode)
+                        (list (supervisor--make-timer-separator-disabled)))
+                       ;; No timers configured
+                       ((and (null supervisor--timer-list)
+                             (= 0 (hash-table-count supervisor--invalid-timers)))
+                        (list (supervisor--make-timer-separator-empty)))
+                       ;; Timers present
+                       (t
+                        (cons (supervisor--make-timer-separator)
+                              (supervisor--get-timer-entries)))))))
+      final-entries)))
 
 (defun supervisor--health-counts (&optional snapshot programs)
   "Return dashboard health counters as a plist.
@@ -747,7 +859,7 @@ If PROGRAMS is provided, use it instead of calling
 
 (defvar supervisor--help-text
   (concat "[f]ilter [g]refresh [G]live [t]proced [T]auto "
-          "[l]ifecycle [p]olicy [i]nspect [?]menu [h]elp [q]uit")
+          "[l]ifecycle [p]olicy [i]nspect [y]timers [?]menu [h]elp [q]uit")
   "Key hints displayed in dashboard header.")
 
 (defun supervisor--dashboard-column-header ()
@@ -865,24 +977,29 @@ to entries and health summary for consistency within a single refresh."
 
 (defun supervisor-dashboard-describe-entry ()
   "Show detailed information about entry at point.
+For service rows, show service details.  For timer rows, delegate
+to `supervisor-dashboard-timer-info'.
 With prefix argument, show status legend instead."
   (interactive)
   (if current-prefix-arg
       (message "%s" supervisor--status-legend)
-    (let ((id (tabulated-list-get-id)))
+    (let ((raw-id (tabulated-list-get-id)))
       (cond
-       ((null id)
+       ((null raw-id)
         (message "%s" supervisor--status-legend))
-       ((supervisor--separator-row-p id)
-        (message "Stage separator row"))
+       ((supervisor--separator-row-p raw-id)
+        (message "Separator row"))
+       ((supervisor--timer-row-p raw-id)
+        (supervisor-dashboard-timer-info))
        (t
-        (let ((invalid-reason (gethash id supervisor--invalid)))
-          (if invalid-reason
-              (message "INVALID: %s" invalid-reason)
-            (let ((entry (supervisor--get-entry-for-id id)))
-              (if (not entry)
-                  (message "Entry not found: %s" id)
-                (supervisor--describe-entry-detail id entry))))))))))
+        (let ((id (supervisor--row-id raw-id)))
+          (let ((invalid-reason (gethash id supervisor--invalid)))
+            (if invalid-reason
+                (message "INVALID: %s" invalid-reason)
+              (let ((entry (supervisor--get-entry-for-id id)))
+                (if (not entry)
+                    (message "Entry not found: %s" id)
+                  (supervisor--describe-entry-detail id entry)))))))))))
 
 (defun supervisor--describe-entry-detail (id entry)
   "Show detailed telemetry for ID with parsed ENTRY in a help window."
@@ -1043,30 +1160,31 @@ With prefix argument, show status legend instead."
     (princ "  G     Toggle auto-refresh (live monitoring)\n")
     (princ "  t     Open proced (system process list)\n")
     (princ "  T     Toggle proced auto-update mode\n")
-    (princ "  l     Lifecycle submenu\n")
-    (princ "  p     Policy submenu\n")
-    (princ "  i     Inspect submenu\n")
+    (princ "  l     Lifecycle submenu (service rows only)\n")
+    (princ "  p     Policy submenu (service rows only)\n")
+    (princ "  i     Inspect submenu (service rows only)\n")
+    (princ "  y     Timer actions submenu (timer rows only)\n")
     (princ "  ?     Open action menu (transient)\n")
     (princ "  h     Show this help\n")
     (princ "  q     Quit dashboard\n\n")
-    (princ "LIFECYCLE (l)\n")
-    (princ "-------------\n")
+    (princ "LIFECYCLE (l) - service rows only\n")
+    (princ "---------------------------------\n")
     (princ "  s     Start process\n")
     (princ "  t     Stop process (graceful, suppresses restart)\n")
     (princ "  r     Restart process (stop + start)\n")
     (princ "  k     Kill process (send signal, restart policy unchanged)\n")
     (princ "  u     Reload unit (re-read config and restart)\n")
     (princ "  f     Reset failed state\n\n")
-    (princ "POLICY (p)\n")
-    (princ "----------\n")
+    (princ "POLICY (p) - service rows only\n")
+    (princ "------------------------------\n")
     (princ "  e     Enable entry\n")
     (princ "  d     Disable entry\n")
     (princ "  m     Mask entry (always disabled)\n")
     (princ "  u     Unmask entry\n")
     (princ "  r     Set restart policy (selection)\n")
     (princ "  l     Set logging (selection)\n\n")
-    (princ "INSPECT (i)\n")
-    (princ "-----------\n")
+    (princ "INSPECT (i) - service rows only\n")
+    (princ "-------------------------------\n")
     (princ "  i     Show entry details (C-u for status legend)\n")
     (princ "  d     Show dependencies for entry\n")
     (princ "  g     Show dependency graph\n")
@@ -1074,6 +1192,18 @@ With prefix argument, show status legend instead."
     (princ "  l     View log file\n")
     (princ "  c     View unit file (read-only)\n")
     (princ "  e     Edit unit file (create scaffold if missing)\n\n")
+    (princ "TIMERS (y) - timer rows only\n")
+    (princ "----------------------------\n")
+    (princ "  t     Trigger timer now (manual)\n")
+    (princ "  i     Show timer details\n")
+    (princ "  j     Jump to target service row\n")
+    (princ "  r     Reset timer runtime state\n")
+    (princ "  g     Refresh timer section\n\n")
+    (princ "TIMER LIMITATIONS\n")
+    (princ "-----------------\n")
+    (princ "Timer rows are not unit files.  Lifecycle, policy, cat, and edit\n")
+    (princ "commands are not available for timer rows.  Use `y' for timer\n")
+    (princ "actions or `?' -> Timers in the transient menu.\n\n")
     (princ "STATUS VALUES\n")
     (princ "-------------\n")
     (princ "  running   Process is alive and running\n")
@@ -1085,7 +1215,7 @@ With prefix argument, show status legend instead."
     (princ "  stopped   Process terminated or active oneshot explicitly stopped\n")
     (princ "  masked    Entry is masked (always disabled)\n")
     (princ "  invalid   Config entry has errors\n\n")
-    (princ "COLUMN MEANINGS\n")
+    (princ "SERVICE COLUMNS\n")
     (princ "---------------\n")
     (princ "  ID        Process identifier (from :id or command)\n")
     (princ "  Type      simple (daemon) or oneshot (run-once)\n")
@@ -1095,7 +1225,16 @@ With prefix argument, show status legend instead."
     (princ "  Restart   Restart policy: no, on-success, on-failure, always (simple only)\n")
     (princ "  Log       Whether output is logged to file\n")
     (princ "  PID       Process ID or exit code (exit:N)\n")
-    (princ "  Reason    Why process is in current state\n")))
+    (princ "  Reason    Why process is in current state\n\n")
+    (princ "TIMER COLUMNS\n")
+    (princ "-------------\n")
+    (princ "  ID        Timer identifier\n")
+    (princ "  Target    Target oneshot service ID\n")
+    (princ "  Enabled   Whether timer is active (yes/no)\n")
+    (princ "  Last-Run  Time since last trigger\n")
+    (princ "  Next-Run  Time until next trigger\n")
+    (princ "  Exit      Last exit code (0 = success)\n")
+    (princ "  Miss      Last miss reason (overlap, downtime, disabled)\n")))
 
 (defvar-local supervisor--auto-refresh-timer nil
   "Timer for auto-refresh in dashboard buffer.")
@@ -1140,11 +1279,7 @@ Rejects separator rows, timer rows, and non-active oneshot entries.
 Oneshot entries with `:remain-after-exit' in active state can be stopped.
 Use `s' to start the process again later."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot stop separator row"))
-    (when (supervisor--timer-row-p id)
-      (user-error "Cannot stop timer '%s'" id))
+  (let ((id (supervisor--require-service-row)))
     (let ((entry (supervisor--get-entry-for-id id)))
       (when (and entry (eq (supervisor-entry-type entry) 'oneshot)
                  (not (gethash id supervisor--remain-active)))
@@ -1160,11 +1295,7 @@ Use `s' to start the process again later."
 Stop the process gracefully, then start it again.
 If the entry is not running, this is equivalent to start."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot restart separator row"))
-    (when (supervisor--timer-row-p id)
-      (user-error "Cannot restart timer '%s'" id))
+  (let ((id (supervisor--require-service-row)))
     (when (yes-or-no-p (format "Restart process '%s'? " id))
       ;; Stop first (ignore result — entry may not be running)
       (supervisor--manual-stop id)
@@ -1184,9 +1315,7 @@ If the entry is not running, this is equivalent to start."
 Sends kill signal and leaves restart policy unchanged.
 With prefix argument FORCE, skip confirmation."
   (interactive "P")
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot kill separator row"))
+  (let ((id (supervisor--require-service-row)))
     (when (or force
               (yes-or-no-p (format "Kill process '%s'? " id)))
       (let ((result (supervisor--manual-kill id)))
@@ -1204,9 +1333,7 @@ Sends kill signal immediately and leaves restart policy unchanged."
   "Reset failed state for entry at point.
 Clears crash-loop tracking so the entry can be restarted."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot reset failed on separator row"))
+  (let ((id (supervisor--require-service-row)))
     (let ((result (supervisor--reset-failed id)))
       (pcase (plist-get result :status)
         ('reset
@@ -1218,9 +1345,7 @@ Clears crash-loop tracking so the entry can be restarted."
   "Start process at point if stopped.
 Disabled units can be started (session-only); only mask blocks."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot start separator row"))
+  (let ((id (supervisor--require-service-row)))
     (let ((result (supervisor--manual-start id)))
       (pcase (plist-get result :status)
         ('started (supervisor--refresh-dashboard))
@@ -1233,9 +1358,7 @@ Disabled units can be started (session-only); only mask blocks."
   "Enable the entry at point.
 Set an enabled override if the config default is disabled."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot enable separator row"))
+  (let ((id (supervisor--require-service-row)))
     (let ((result (supervisor--policy-enable id)))
       (message "%s" (plist-get result :message))
       (when (eq (plist-get result :status) 'applied)
@@ -1246,9 +1369,7 @@ Set an enabled override if the config default is disabled."
   "Disable the entry at point.
 Set a disabled override if the config default is enabled."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot disable separator row"))
+  (let ((id (supervisor--require-service-row)))
     (let ((result (supervisor--policy-disable id)))
       (message "%s" (plist-get result :message))
       (when (eq (plist-get result :status) 'applied)
@@ -1259,11 +1380,7 @@ Set a disabled override if the config default is enabled."
   "Mask the entry at point.
 Masked entries are always disabled regardless of enabled overrides."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot mask separator row"))
-    (when (supervisor--timer-row-p id)
-      (user-error "Cannot mask timer '%s'" id))
+  (let ((id (supervisor--require-service-row)))
     (let ((result (supervisor--policy-mask id)))
       (message "%s" (plist-get result :message))
       (when (eq (plist-get result :status) 'applied)
@@ -1274,11 +1391,7 @@ Masked entries are always disabled regardless of enabled overrides."
   "Unmask the entry at point.
 Remove the mask override so the enabled state takes effect again."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot unmask separator row"))
-    (when (supervisor--timer-row-p id)
-      (user-error "Cannot unmask timer '%s'" id))
+  (let ((id (supervisor--require-service-row)))
     (let ((result (supervisor--policy-unmask id)))
       (message "%s" (plist-get result :message))
       (when (eq (plist-get result :status) 'applied)
@@ -1289,9 +1402,7 @@ Remove the mask override so the enabled state takes effect again."
   "Set restart policy for entry at point via selection.
 Prompt with `completing-read' to choose the target policy explicitly."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot set restart on separator row"))
+  (let ((id (supervisor--require-service-row)))
     (let* ((choices '("always" "on-success" "on-failure" "no"))
            (choice (completing-read "Restart policy: " choices nil t))
            (policy (intern choice))
@@ -1305,9 +1416,7 @@ Prompt with `completing-read' to choose the target policy explicitly."
   "Set logging for entry at point via selection.
 Prompt with `completing-read' to choose on or off explicitly."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot set logging on separator row"))
+  (let ((id (supervisor--require-service-row)))
     (let* ((choice (completing-read "Logging: " '("on" "off") nil t))
            (enabled-p (string= choice "on"))
            (result (supervisor--policy-set-logging id enabled-p)))
@@ -1319,9 +1428,7 @@ Prompt with `completing-read' to choose on or off explicitly."
 (defun supervisor-dashboard-view-log ()
   "Open the log file for process at point."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "No log file for separator row"))
+  (let ((id (supervisor--require-service-row)))
     (let ((log-file (supervisor--log-file id)))
       (if (file-exists-p log-file)
           (find-file log-file)
@@ -1331,11 +1438,7 @@ Prompt with `completing-read' to choose on or off explicitly."
   "View unit file for entry at point in read-only mode.
 Opens the unit file with `view-mode' so `q' returns to the dashboard."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "No unit file for separator row"))
-    (when (supervisor--timer-row-p id)
-      (user-error "No unit file for timer row"))
+  (let ((id (supervisor--require-service-row)))
     (let ((path (supervisor--unit-file-path id)))
       (cond
        ((not path)
@@ -1401,11 +1504,7 @@ If the unit file does not exist, prompt to create a scaffold template.
 On save, validate the unit file and report errors.
 Press `q' or \\[supervisor-edit-finish] to return to the dashboard."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot edit separator row"))
-    (when (supervisor--timer-row-p id)
-      (user-error "Cannot edit timer row"))
+  (let ((id (supervisor--require-service-row)))
     (let* ((path (supervisor--unit-file-path id))
            (root (or (when (fboundp 'supervisor--authority-root-for-id)
                        (supervisor--authority-root-for-id id))
@@ -1461,9 +1560,7 @@ Intended as `kill-buffer-hook' for edited unit files."
   "Hot-reload the unit at point.
 Re-reads config and restarts if running."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "Cannot reload separator row"))
+  (let ((id (supervisor--require-service-row)))
     (let ((result (supervisor--reload-unit id)))
       (supervisor-dashboard-refresh)
       (message "Reload %s: %s" id (plist-get result :action)))))
@@ -1483,9 +1580,7 @@ Calls `supervisor-daemon-reload' and refreshes the dashboard."
 Shows post-validation edges: after cycle fallback and stage filtering.
 Run `supervisor-start' first to populate computed dependency data."
   (interactive)
-  (when-let* ((id (tabulated-list-get-id)))
-    (when (supervisor--separator-row-p id)
-      (user-error "No dependencies for separator row"))
+  (let ((id (supervisor--require-service-row)))
     (if (gethash id supervisor--invalid)
         (message "Cannot show dependencies for invalid entry: %s" id)
       (let ((entry (supervisor--get-entry-for-id id)))
@@ -1607,6 +1702,152 @@ Builds a single snapshot for both entries and header to ensure consistency."
     (pop-to-buffer buf)))
 
 
+
+;;; Timer Dashboard Commands
+
+(defun supervisor-dashboard-timer-trigger ()
+  "Trigger the timer at point manually.
+Reject invalid timers and when timer mode gate is off."
+  (interactive)
+  (let ((raw-id (tabulated-list-get-id)))
+    (cond
+     ((null raw-id)
+      (user-error "No entry at point"))
+     ((not (supervisor--timer-row-p raw-id))
+      (user-error "Not a timer row; use on timer rows only"))
+     (t
+      (let ((timer-id (supervisor--row-id raw-id)))
+        (unless (supervisor-timer-subsystem-active-p)
+          (user-error "Timer subsystem is disabled"))
+        (when (gethash timer-id supervisor--invalid-timers)
+          (user-error "Cannot trigger invalid timer '%s'" timer-id))
+        (let ((timer (cl-find timer-id supervisor--timer-list
+                              :key #'supervisor-timer-id :test #'equal)))
+          (unless timer
+            (user-error "Timer not found: %s" timer-id))
+          (if (supervisor-timer--trigger timer 'manual)
+              (progn
+                (message "Triggered timer '%s'" timer-id)
+                (supervisor--refresh-dashboard))
+            (message "Timer '%s' skipped (check logs)" timer-id))))))))
+
+(defun supervisor-dashboard-timer-info ()
+  "Show detailed information about the timer at point."
+  (interactive)
+  (let ((raw-id (tabulated-list-get-id)))
+    (cond
+     ((null raw-id) (user-error "No entry at point"))
+     ((not (supervisor--timer-row-p raw-id)) (user-error "Not a timer row"))
+     (t
+      (let* ((timer-id (supervisor--row-id raw-id))
+             (timer (cl-find timer-id supervisor--timer-list
+                             :key #'supervisor-timer-id :test #'equal))
+             (state (gethash timer-id supervisor--timer-state)))
+        (with-help-window "*supervisor-timer-info*"
+          (if (null timer)
+              ;; Invalid timer
+              (let ((reason (gethash timer-id supervisor--invalid-timers)))
+                (princ (format "Timer: %s (INVALID)\n" timer-id))
+                (princ (make-string 40 ?-))
+                (princ (format "\n\nReason: %s\n" (or reason "unknown"))))
+            ;; Valid timer detail
+            (princ (format "Timer: %s\n" timer-id))
+            (princ (make-string (+ 8 (length timer-id)) ?-))
+            (princ "\n\n")
+            (princ (format "     Target: %s\n" (supervisor-timer-target timer)))
+            (princ (format "    Enabled: %s\n"
+                           (if (supervisor-timer-enabled timer) "yes" "no")))
+            (princ (format " Persistent: %s\n"
+                           (if (supervisor-timer-persistent timer) "yes" "no")))
+            (when-let* ((cal (supervisor-timer-on-calendar timer)))
+              (princ (format "   Calendar: %S\n" cal)))
+            (when-let* ((startup (supervisor-timer-on-startup-sec timer)))
+              (princ (format "    Startup: %ds\n" startup)))
+            (when-let* ((active (supervisor-timer-on-unit-active-sec timer)))
+              (princ (format " UnitActive: %ds\n" active)))
+            ;; Runtime state
+            (when state
+              (princ "\n")
+              (when-let* ((last-run (plist-get state :last-run-at)))
+                (princ (format "   Last run: %s (%s)\n"
+                               (format-time-string "%Y-%m-%d %H:%M:%S" last-run)
+                               (supervisor--format-timer-relative-time last-run))))
+              (when-let* ((next-run (plist-get state :next-run-at)))
+                (princ (format "   Next run: %s (%s)\n"
+                               (format-time-string "%Y-%m-%d %H:%M:%S" next-run)
+                               (supervisor--format-timer-relative-time next-run))))
+              (when-let* ((last-exit (plist-get state :last-exit)))
+                (princ (format "  Last exit: %s\n" last-exit)))
+              (when-let* ((retry (plist-get state :retry-attempt)))
+                (when (> retry 0)
+                  (princ (format "      Retry: %d/%d\n" retry
+                                 (length supervisor-timer-retry-intervals)))))
+              (when-let* ((retry-at (plist-get state :retry-next-at)))
+                (princ (format "   Retry at: %s\n"
+                               (supervisor--format-timer-relative-time retry-at))))
+              (when-let* ((miss (plist-get state :last-miss-reason)))
+                (princ (format "  Last miss: %s\n" (symbol-name miss))))))))))))
+
+(defun supervisor-dashboard-timer-jump ()
+  "Jump to the target service row for the timer at point."
+  (interactive)
+  (let ((raw-id (tabulated-list-get-id)))
+    (cond
+     ((null raw-id) (user-error "No entry at point"))
+     ((not (supervisor--timer-row-p raw-id)) (user-error "Not a timer row"))
+     (t
+      (let* ((timer-id (supervisor--row-id raw-id))
+             (timer (cl-find timer-id supervisor--timer-list
+                             :key #'supervisor-timer-id :test #'equal)))
+        (if (null timer)
+            (user-error "Timer not found: %s" timer-id)
+          (let ((target-id (supervisor-timer-target timer))
+                (found nil))
+            (save-excursion
+              (goto-char (point-min))
+              (while (and (not found) (not (eobp)))
+                (when-let* ((row-id (tabulated-list-get-id)))
+                  (when (and (supervisor--service-row-p row-id)
+                             (string= (supervisor--row-id row-id) target-id))
+                    (setq found (point))))
+                (forward-line 1)))
+            (if found
+                (progn
+                  (goto-char found)
+                  (message "Target: %s" target-id))
+              (message "Target service '%s' not visible in current view"
+                       target-id)))))))))
+
+(defun supervisor-dashboard-timer-reset ()
+  "Reset runtime state for the timer at point.
+Clear runtime fields and recompute next run time."
+  (interactive)
+  (let ((raw-id (tabulated-list-get-id)))
+    (cond
+     ((null raw-id) (user-error "No entry at point"))
+     ((not (supervisor--timer-row-p raw-id)) (user-error "Not a timer row"))
+     (t
+      (let ((timer-id (supervisor--row-id raw-id)))
+        (when (yes-or-no-p (format "Reset runtime state for timer '%s'? " timer-id))
+          (let ((state (or (gethash timer-id supervisor--timer-state) nil)))
+            (dolist (key '(:last-run-at :last-success-at :last-failure-at :last-exit
+                           :retry-attempt :retry-next-at :last-missed-at
+                           :last-miss-reason :next-run-at :startup-triggered))
+              (setq state (plist-put state key nil)))
+            (puthash timer-id state supervisor--timer-state)
+            ;; Recompute next-run
+            (supervisor-timer--update-next-run timer-id)
+            ;; Persist
+            (when (supervisor-timer-subsystem-active-p)
+              (supervisor-timer--save-state))
+            (message "Reset timer state for '%s'" timer-id)
+            (supervisor--refresh-dashboard))))))))
+
+(defun supervisor-dashboard-timer-refresh ()
+  "Refresh the timer section of the dashboard."
+  (interactive)
+  (supervisor--refresh-dashboard)
+  (message "Timer section refreshed"))
 
 (provide 'supervisor-dashboard)
 
