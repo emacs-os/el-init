@@ -42,6 +42,8 @@
 (defvar supervisor-logrotate-command)
 (defvar supervisor-log-prune-command)
 (defvar supervisor-log-directory)
+(defvar supervisor--mask-override)
+(defvar supervisor--enabled-override)
 (defvar supervisor-logrotate-keep-days)
 (defvar supervisor-log-prune-max-total-bytes)
 ;;; Customization
@@ -520,15 +522,22 @@ seed default unit files into the highest-precedence root."
             (let* ((id (plist-get spec :id))
                    (path (expand-file-name (concat id ".el") root)))
               (unless (gethash id winners)
-                (unless (file-exists-p path)
-                  (condition-case err
-                      (write-region (supervisor--maintenance-unit-content spec)
-                                    nil path nil 'silent)
-                    (error
-                     (supervisor--log
-                      'warning
-                      "cannot seed default maintenance unit %s at %s: %s"
-                      id path (error-message-string err)))))))))))))
+                ;; Skip seeding if user has explicitly disabled or masked
+                ;; this unit via runtime overrides.  This prevents
+                ;; re-seeding a unit the user intentionally removed.
+                (unless (or (eq (gethash id supervisor--mask-override) 'masked)
+                            (eq (gethash id supervisor--enabled-override)
+                                'disabled))
+                  (unless (file-exists-p path)
+                    (condition-case err
+                        (write-region
+                         (supervisor--maintenance-unit-content spec)
+                         nil path nil 'silent)
+                      (error
+                       (supervisor--log
+                        'warning
+                        "cannot seed default maintenance unit %s at %s: %s"
+                        id path (error-message-string err))))))))))))))
 
 (defun supervisor--load-programs ()
   "Reload programs from disk and update the cache.

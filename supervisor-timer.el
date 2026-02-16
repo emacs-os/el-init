@@ -280,9 +280,6 @@ Does nothing if timer subsystem is not active."
                 (insert ";; Schema version: "
                         (number-to-string supervisor-timer-state-schema-version)
                         "\n")
-                (insert ";; Written: "
-                        (format-time-string "%Y-%m-%dT%H:%M:%S%z")
-                        "\n")
                 (pp data (current-buffer)))
               (rename-file temp-file path t)
               t)

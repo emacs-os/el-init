@@ -1668,14 +1668,30 @@ Three paths keep log growth bounded end-to-end:
    full maintenance sequence asynchronously: rotate all active logs,
    signal writers to reopen, then prune.
 
-Built-in ~logrotate~ and ~log-prune~ units appear in stage4 as oneshot
-services.  When the timer subsystem is enabled (the default), timers
-~logrotate-daily~ and ~log-prune-daily~ schedule those units automatically.
+Built-in ~logrotate~ and ~log-prune~ units are inert fallback
+definitions -- they do not declare ~:wanted-by~ and are not activated
+during startup.  They exist solely so that the built-in timers
+~logrotate-daily~ and ~log-prune-daily~ can find the target entry at
+runtime.  When ~supervisor-seed-default-maintenance-units~ is enabled
+(the default), the first startup seeds unit files for these IDs into
+the highest-precedence authority root.
+
 A user-created unit file with ~:id "logrotate"~ overrides the built-in
 entry, and a user-created unit file with ~:id "log-prune"~ overrides
 that built-in entry.  Similarly, user timers with IDs
 ~logrotate-daily~ or ~log-prune-daily~ in ~supervisor-timers~ override
 the built-in timer schedules.
+
+Seeded unit files are write-once: once created, they are never
+overwritten by supervisor.  This means improvements to default
+commands will not propagate to already-seeded units.  To pick up
+updated defaults, delete the seeded unit file and call
+~supervisor-daemon-reload~ (or restart supervisor) -- the seeder will
+create a fresh file with current defaults.
+
+Seeding respects runtime overrides: if a maintenance unit is masked
+(via ~supervisorctl mask~) or disabled (via ~supervisorctl disable~),
+its unit file will not be re-seeded after deletion.
 
 To disable automatic daily maintenance, either disable the timer
 subsystem entirely:

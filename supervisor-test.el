@@ -4839,6 +4839,51 @@ conflicting ID, proving precedence derives from list position."
           (should (file-exists-p (expand-file-name "log-prune.el" dir))))
       (delete-directory dir t))))
 
+(ert-deftest supervisor-test-seed-skips-masked-units ()
+  "Seeding does not create units that are masked via runtime override."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-logrotate-command "/usr/bin/rotate-stub")
+         (supervisor-log-prune-command "/usr/bin/prune-stub")
+         (supervisor-log-directory "/tmp/sv-test-logs")
+         (supervisor-logrotate-keep-days 14)
+         (supervisor-log-prune-max-total-bytes 999)
+         (supervisor--mask-override (make-hash-table :test 'equal)))
+    (puthash "logrotate" 'masked supervisor--mask-override)
+    (unwind-protect
+        (progn
+          (supervisor--ensure-default-maintenance-units)
+          ;; logrotate masked: should NOT be seeded
+          (should-not (file-exists-p
+                       (expand-file-name "logrotate.el" dir)))
+          ;; log-prune not masked: should be seeded
+          (should (file-exists-p
+                   (expand-file-name "log-prune.el" dir))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-seed-skips-disabled-units ()
+  "Seeding does not create units that are disabled via runtime override."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-logrotate-command "/usr/bin/rotate-stub")
+         (supervisor-log-prune-command "/usr/bin/prune-stub")
+         (supervisor-log-directory "/tmp/sv-test-logs")
+         (supervisor-logrotate-keep-days 14)
+         (supervisor-log-prune-max-total-bytes 999)
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal)))
+    (puthash "log-prune" 'disabled supervisor--enabled-override)
+    (unwind-protect
+        (progn
+          (supervisor--ensure-default-maintenance-units)
+          ;; logrotate not disabled: should be seeded
+          (should (file-exists-p
+                   (expand-file-name "logrotate.el" dir)))
+          ;; log-prune disabled: should NOT be seeded
+          (should-not (file-exists-p
+                       (expand-file-name "log-prune.el" dir))))
+      (delete-directory dir t))))
+
 (ert-deftest supervisor-test-cli-cat-existing-unit-file ()
   "CLI cat outputs raw content of existing unit file."
   (let* ((dir (make-temp-file "units-" t))
@@ -16292,12 +16337,12 @@ PATH set to exclude fuser."
       (should (member "log-prune" ids))
       (should (eq 'oneshot (plist-get (cdr rotate) :type)))
       (should-not (plist-get (cdr rotate) :stage))
-      (should (equal '("basic.target") (plist-get (cdr rotate) :wanted-by)))
+      (should-not (plist-member (cdr rotate) :wanted-by))
       (should (eq 'oneshot (plist-get (cdr prune) :type)))
       (should-not (plist-get (cdr prune) :stage))
       (should (equal '("logrotate") (plist-get (cdr prune) :after)))
       (should (equal '("logrotate") (plist-get (cdr prune) :requires)))
-      (should (equal '("basic.target") (plist-get (cdr prune) :wanted-by))))))
+      (should-not (plist-member (cdr prune) :wanted-by)))))
 
 (ert-deftest supervisor-test-default-target-defcustom ()
   "Default target defcustom has expected default value."
@@ -17492,8 +17537,9 @@ An invalid entry ID that happens to end in .target must not pass."
       ;; svc-a should have 0 in-degree (missing-dep filtered out)
       (should (= 0 (gethash "svc-a" supervisor--dag-in-degree))))))
 
-(ert-deftest supervisor-test-builtin-maintenance-wanted-by ()
-  "Built-in logrotate and log-prune declare wanted-by basic.target."
+(ert-deftest supervisor-test-builtin-maintenance-no-wanted-by ()
+  "Built-in logrotate and log-prune do not declare wanted-by.
+They are inert fallback definitions activated only by timers."
   (let* ((builtins (supervisor--builtin-programs))
          (rotate (cl-find "logrotate" builtins
                           :key (lambda (e) (plist-get (cdr e) :id))
@@ -17501,8 +17547,8 @@ An invalid entry ID that happens to end in .target must not pass."
          (prune (cl-find "log-prune" builtins
                          :key (lambda (e) (plist-get (cdr e) :id))
                          :test #'equal)))
-    (should (equal '("basic.target") (plist-get (cdr rotate) :wanted-by)))
-    (should (equal '("basic.target") (plist-get (cdr prune) :wanted-by)))))
+    (should-not (plist-member (cdr rotate) :wanted-by))
+    (should-not (plist-member (cdr prune) :wanted-by))))
 
 (ert-deftest supervisor-test-startup-activates-only-closure ()
   "Full expansion from graphical.target includes the standard chain."

@@ -3683,14 +3683,12 @@ A user unit file with the same ID overrides the built-in entry."
    (cons (supervisor--builtin-logrotate-command)
          (list :id "logrotate"
                :type 'oneshot
-               :wanted-by '("basic.target")
                :description "Rotate supervisor log files"))
    (cons (supervisor--builtin-log-prune-command)
          (list :id "log-prune"
                :type 'oneshot
                :after '("logrotate")
                :requires '("logrotate")
-               :wanted-by '("basic.target")
                :description "Prune supervisor log files"))
    ;; Built-in targets (lowest authority, user overrides win)
    (list nil :id "basic.target" :type 'target
