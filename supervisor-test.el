@@ -1041,8 +1041,8 @@ restart-timer cancellation on `no'."
       ;; Async oneshot should NOT be in blocking set
       (should-not (gethash "async-oneshot" supervisor--dag-blocking)))))
 
-(ert-deftest supervisor-test-stage-complete-blocked-by-delay ()
-  "Delayed entries prevent stage completion until they start."
+(ert-deftest supervisor-test-startup-complete-blocked-by-delay ()
+  "Delayed entries prevent startup completion until they start."
   (let ((supervisor--dag-blocking (make-hash-table :test 'equal))
         (supervisor--dag-in-degree (make-hash-table :test 'equal))
         (supervisor--dag-dependents (make-hash-table :test 'equal))
@@ -1069,8 +1069,8 @@ restart-timer cancellation on `no'."
     (supervisor--dag-check-complete)
     (should-not callback-called)))
 
-(ert-deftest supervisor-test-stage-complete-blocked-by-blocking-oneshot ()
-  "Blocking oneshots prevent stage completion until they exit."
+(ert-deftest supervisor-test-startup-complete-blocked-by-blocking-oneshot ()
+  "Blocking oneshots prevent startup completion until they exit."
   (let ((supervisor--dag-blocking (make-hash-table :test 'equal))
         (supervisor--dag-in-degree (make-hash-table :test 'equal))
         (supervisor--dag-dependents (make-hash-table :test 'equal))
@@ -1293,8 +1293,8 @@ restart-timer cancellation on `no'."
     (puthash "b" 'enabled supervisor--enabled-override)
     (should (supervisor--get-effective-enabled "b" nil))))
 
-(ert-deftest supervisor-test-stage-timeout-sets-entry-state ()
-  "Stage timeout marks unstarted entries with stage-timeout state."
+(ert-deftest supervisor-test-startup-timeout-sets-entry-state ()
+  "Startup timeout marks unstarted entries with startup-timeout state."
   (let ((supervisor--dag-entries (make-hash-table :test 'equal))
         (supervisor--dag-started (make-hash-table :test 'equal))
         (supervisor--dag-blocking (make-hash-table :test 'equal))
@@ -1476,7 +1476,7 @@ Only auto-started (not manually-started) disabled units are stopped."
     (let ((supervisor--invalid (make-hash-table :test 'equal))
           (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
           (supervisor--computed-deps (make-hash-table :test 'equal)))
-      ;; This should call supervisor--validate-after which populates computed-deps
+      ;; This should populate computed-deps via plan building
       (supervisor-dry-run)
       (kill-buffer "*supervisor-dry-run*")
       ;; b's computed deps should be empty since nonexistent doesn't exist
@@ -2454,8 +2454,8 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
     (supervisor--transition-state "proc" 'failed-to-spawn)
     (should (eq 'failed-to-spawn (gethash "proc" supervisor--entry-state)))))
 
-(ert-deftest supervisor-test-fsm-lifecycle-stage-timeout ()
-  "Test lifecycle path for stage timeout."
+(ert-deftest supervisor-test-fsm-lifecycle-startup-timeout ()
+  "Test lifecycle path for startup timeout."
   (let ((supervisor--entry-state (make-hash-table :test 'equal)))
     ;; Initial state with deps
     (supervisor--transition-state "proc" 'waiting-on-deps)
@@ -2483,8 +2483,8 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
 
 (ert-deftest supervisor-test-event-types-defined ()
   "All event types are defined in the event type list."
-  (should (memq 'stage-start supervisor--event-types))
-  (should (memq 'stage-complete supervisor--event-types))
+  (should (memq 'startup-begin supervisor--event-types))
+  (should (memq 'startup-complete supervisor--event-types))
   (should (memq 'process-started supervisor--event-types))
   (should (memq 'process-ready supervisor--event-types))
   (should (memq 'process-exit supervisor--event-types))
@@ -2508,25 +2508,25 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
                (lambda (hook &rest args) (when (eq hook 'supervisor-event-hook)
                                            (push (car args) events))))
               ((symbol-function 'run-hooks) #'ignore))
-      (supervisor--emit-event 'stage-start nil 'stage1 nil)
+      (supervisor--emit-event 'startup-begin nil 'stage1 nil)
       (let ((event (car events)))
-        (should (eq 'stage-start (plist-get event :type)))
+        (should (eq 'startup-begin (plist-get event :type)))
         (should (numberp (plist-get event :ts)))
         (should (null (plist-get event :id)))
         (should (eq 'stage1 (plist-get event :stage)))))))
 
-(ert-deftest supervisor-test-emit-event-stage-start ()
-  "Stage-start event is emitted with correct data."
+(ert-deftest supervisor-test-emit-event-startup-begin ()
+  "Startup-begin event is emitted with correct data."
   (let ((events nil))
     (cl-letf (((symbol-function 'run-hook-with-args)
                (lambda (hook &rest args)
                  (when (eq hook 'supervisor-event-hook)
                    (push (car args) events))))
               ((symbol-function 'run-hooks) #'ignore))
-      (supervisor--emit-event 'stage-start nil 'stage2 nil)
+      (supervisor--emit-event 'startup-begin nil 'stage2 nil)
       (should (= 1 (length events)))
       (let ((event (car events)))
-        (should (eq 'stage-start (plist-get event :type)))
+        (should (eq 'startup-begin (plist-get event :type)))
         (should (eq 'stage2 (plist-get event :stage)))))))
 
 (ert-deftest supervisor-test-emit-event-process-exit ()
@@ -5689,8 +5689,8 @@ conflicting ID, proving precedence derives from list position."
   (should (string-match ":requires must be"
                         (supervisor--validate-entry '("foo" :requires (1 2 3))))))
 
-(ert-deftest supervisor-test-same-stage-requires-valid ()
-  "Same-stage :requires entries are valid and ordered."
+(ert-deftest supervisor-test-requires-valid-ordering ()
+  "Entries with :requires are valid and ordered."
   (let* ((programs '(("a" :id "a")
                      ("b" :id "b" :requires "a")))
          (plan (supervisor--build-plan programs))
@@ -5777,8 +5777,8 @@ conflicting ID, proving precedence derives from list position."
     ;; The ID should NOT be in the invalid hash (valid cleared stale invalid)
     (should-not (gethash "test" (supervisor-plan-invalid plan)))))
 
-(ert-deftest supervisor-test-same-stage-requires-included-in-plan-entries ()
-  "Entries with same-stage :requires are included in plan.entries."
+(ert-deftest supervisor-test-requires-included-in-plan-entries ()
+  "Entries with :requires are included in plan.entries."
   (let* ((programs '(("a" :id "a")
                      ("b" :id "b" :requires "a")))
          (plan (supervisor--build-plan programs)))
@@ -11474,8 +11474,8 @@ could incorrectly preserve a non-running disabled unit."
     (should (< (cl-position "a" ids :test #'equal)
                (cl-position "c" ids :test #'equal)))))
 
-(ert-deftest supervisor-test-before-same-stage-ordering ()
-  "Same-stage :before creates ordering edge."
+(ert-deftest supervisor-test-before-ordering ()
+  "The :before directive creates ordering edge."
   (let* ((supervisor--authority-snapshot nil)
          (programs '(("cmd-a" :id "a" :before ("b"))
                      ("cmd-b" :id "b")))
@@ -11558,8 +11558,8 @@ could incorrectly preserve a non-running disabled unit."
                                (string-match-p "nonexistent" msg))
                              logged))))))
 
-(ert-deftest supervisor-test-wants-same-stage-ordering ()
-  "Same-stage :wants creates ordering edge."
+(ert-deftest supervisor-test-wants-ordering-position ()
+  "The :wants directive creates ordering edge."
   (let* ((supervisor--authority-snapshot nil)
          (programs '(("cmd-a" :id "a")
                      ("cmd-b" :id "b" :wants ("a"))))
@@ -15957,12 +15957,12 @@ PATH set to exclude fuser."
     ;; basic.target has no deps
     (should-not (plist-get (cdr basic) :requires))
     (should-not (plist-get (cdr basic) :after))
-    ;; multi-user.target depends on basic.target
+    ;; multi-user.target depends on basic.target via :requires (no explicit :after)
     (should (equal '("basic.target") (plist-get (cdr multi) :requires)))
-    (should (equal '("basic.target") (plist-get (cdr multi) :after)))
-    ;; graphical.target depends on multi-user.target
+    (should-not (plist-get (cdr multi) :after))
+    ;; graphical.target depends on multi-user.target via :requires (no explicit :after)
     (should (equal '("multi-user.target") (plist-get (cdr graphical) :requires)))
-    (should (equal '("multi-user.target") (plist-get (cdr graphical) :after)))
+    (should-not (plist-get (cdr graphical) :after))
     ;; default.target has no static edges
     (should-not (plist-get (cdr default-tgt) :requires))
     (should-not (plist-get (cdr default-tgt) :after))))
@@ -17151,6 +17151,106 @@ An invalid entry ID that happens to end in .target must not pass."
     (should (gethash "basic.target" closure))
     (should (gethash "svc-a" closure))
     (should (gethash "svc-opt" closure))))
+
+;;; Phase 4: Target-Aware Plan Builder Tests
+
+(ert-deftest supervisor-test-target-auto-ordering-requires-implies-after ()
+  "Target :requires automatically implies :after ordering edge."
+  (let* ((programs '((nil :id "basic.target" :type target)
+                     ("true" :id "svc-a")
+                     (nil :id "multi.target" :type target
+                          :requires ("basic.target" "svc-a"))))
+         (plan (supervisor--build-plan programs))
+         (after-deps (gethash "multi.target"
+                              (supervisor-plan-deps plan))))
+    ;; Target's :requires should appear in :after deps
+    (should (member "basic.target" after-deps))
+    (should (member "svc-a" after-deps))))
+
+(ert-deftest supervisor-test-target-auto-ordering-wants-implies-after ()
+  "Target :wants automatically implies :after ordering edge."
+  (let* ((programs '((nil :id "basic.target" :type target)
+                     ("true" :id "svc-opt")
+                     (nil :id "multi.target" :type target
+                          :wants ("basic.target" "svc-opt"))))
+         (plan (supervisor--build-plan programs))
+         (after-deps (gethash "multi.target"
+                              (supervisor-plan-deps plan))))
+    ;; Target's :wants should appear in :after deps
+    (should (member "basic.target" after-deps))
+    (should (member "svc-opt" after-deps))))
+
+(ert-deftest supervisor-test-service-requires-no-auto-after ()
+  "Service :requires does NOT auto-inject :after (only targets do)."
+  (let* ((programs '(("true" :id "svc-a")
+                     ("true" :id "svc-b" :requires ("svc-a"))))
+         (plan (supervisor--build-plan programs))
+         (after-deps (gethash "svc-b"
+                              (supervisor-plan-deps plan))))
+    ;; Service :requires should NOT appear in :after deps
+    (should-not (member "svc-a" after-deps))))
+
+(ert-deftest supervisor-test-builtin-targets-no-redundant-after ()
+  "Built-in targets rely on auto-ordering, no explicit :after."
+  (let* ((builtins (supervisor--builtin-programs)))
+    (dolist (entry builtins)
+      (when (eq (plist-get (cdr entry) :type) 'target)
+        (should-not (plist-get (cdr entry) :after))))))
+
+(ert-deftest supervisor-test-plan-fingerprint-deterministic ()
+  "Plan fingerprint is deterministic for same input."
+  (let* ((programs '(("cmd-a" :id "a")
+                     ("cmd-b" :id "b" :after ("a"))))
+         (plan1 (supervisor--build-plan programs))
+         (plan2 (supervisor--build-plan programs)))
+    (should (equal (plist-get (supervisor-plan-meta plan1) :fingerprint)
+                   (plist-get (supervisor-plan-meta plan2) :fingerprint)))))
+
+(ert-deftest supervisor-test-plan-fingerprint-changes-with-input ()
+  "Plan fingerprint changes when input changes."
+  (let* ((programs1 '(("cmd-a" :id "a")
+                      ("cmd-b" :id "b" :after ("a"))))
+         (programs2 '(("cmd-a" :id "a")
+                      ("cmd-c" :id "c" :after ("a"))))
+         (plan1 (supervisor--build-plan programs1))
+         (plan2 (supervisor--build-plan programs2)))
+    (should-not (equal (plist-get (supervisor-plan-meta plan1) :fingerprint)
+                       (plist-get (supervisor-plan-meta plan2) :fingerprint)))))
+
+(ert-deftest supervisor-test-default-target-alias-and-closure-combined ()
+  "Default target alias resolution and closure exactness combined."
+  (let* ((programs '((nil :id "basic.target" :type target)
+                     (nil :id "graphical.target" :type target
+                          :requires ("basic.target"))
+                     (nil :id "default.target" :type target)
+                     ("cmd-a" :id "svc-a" :wanted-by ("basic.target"))
+                     ("cmd-b" :id "svc-b" :wanted-by ("graphical.target"))
+                     ("cmd-c" :id "svc-orphan")))
+         (plan (supervisor--build-plan programs))
+         (entries-by-id (make-hash-table :test 'equal))
+         (valid-ids (make-hash-table :test 'equal)))
+    (dolist (e (supervisor-plan-entries plan))
+      (puthash (supervisor-entry-id e) e entries-by-id)
+      (puthash (supervisor-entry-id e) t valid-ids))
+    ;; Resolve via default.target -> graphical.target alias
+    (let* ((supervisor-default-target "default.target")
+           (supervisor-default-target-link "graphical.target")
+           (supervisor--default-target-link-override nil)
+           (root (supervisor--resolve-startup-root valid-ids))
+           (members (supervisor--materialize-target-members
+                     (supervisor-plan-entries plan)))
+           (closure (supervisor--expand-transaction
+                     root entries-by-id members
+                     (supervisor-plan-order-index plan))))
+      ;; Root resolved to graphical.target
+      (should (equal "graphical.target" root))
+      ;; Closure includes graphical.target and its transitive deps
+      (should (gethash "graphical.target" closure))
+      (should (gethash "basic.target" closure))
+      (should (gethash "svc-a" closure))
+      (should (gethash "svc-b" closure))
+      ;; Orphan service not in any target's closure
+      (should-not (gethash "svc-orphan" closure)))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

@@ -1559,12 +1559,12 @@ Returns t if transition succeeded, nil if forced through invalid."
 ;;; Structured Event Dispatcher (Phase 6)
 
 (defconst supervisor--event-types
-  '(stage-start stage-complete process-started process-ready
+  '(startup-begin startup-complete process-started process-ready
     process-exit process-failed cleanup
     timer-trigger timer-overlap timer-success timer-failure)
   "Valid event types for the structured event system.
-- `stage-start': stage begins processing
-- `stage-complete': stage finished processing
+- `startup-begin': startup begins processing
+- `startup-complete': startup finished processing
 - `process-started': process successfully spawned
 - `process-ready': process became ready (simple=spawned, oneshot=exited)
 - `process-exit': supervised process exited
@@ -1580,8 +1580,8 @@ Returns t if transition succeeded, nil if forced through invalid."
 Called with one argument: an event plist with the following keys:
   :type  - event type symbol (see `supervisor--event-types')
   :ts    - timestamp (float-time)
-  :id    - entry ID string (for process events, nil for stage/global)
-  :stage - stage name symbol (for stage events, nil otherwise)
+  :id    - entry ID string (for process events, nil for startup/global)
+  :stage - stage name symbol (for startup events, nil otherwise)
   :data  - additional payload plist (event-type specific)")
 
 (defun supervisor--emit-event (type &optional id stage data)
@@ -1596,11 +1596,11 @@ Runs `supervisor-event-hook' with the event plist."
                      :stage stage
                      :data data)))
     (run-hook-with-args 'supervisor-event-hook event)
-    ;; Log stage transitions to *Messages*
+    ;; Log startup transitions to *Messages*
     (pcase type
-      ('stage-start
+      ('startup-begin
        (message "Supervisor: starting"))
-      ('stage-complete
+      ('startup-complete
        (message "Supervisor: complete")))))
 
 ;;; DAG Scheduler State
@@ -1652,8 +1652,8 @@ This struct represents the validated, deterministic plan computed from
 configuration.  It is pure data with no side effects on global state.
 
 Determinism note: All fields except `meta' are deterministic for
-identical input.  The `meta' field contains a wall-clock timestamp,
-so full struct equality requires excluding it."
+identical input.  Within `meta', only `:timestamp' is non-deterministic;
+`:version' and `:fingerprint' are deterministic for identical input."
   entries          ; list of parsed valid entries
   invalid          ; hash: id -> reason string
   by-target        ; globally sorted entries list (topological order)
@@ -2459,12 +2459,13 @@ Returns a `supervisor-plan' struct with all computed scheduling data.
 The plan includes:
 - Parsed and validated entries
 - Invalid entries with reasons
-- Entries grouped and sorted by stage
-- Validated :after dependencies (ordering only, same-stage)
-- Validated :requires dependencies (pull-in + ordering, same-stage)
+- Globally sorted entries (topological order)
+- Validated :after dependencies (ordering only)
+- Validated :requires dependencies (pull-in + ordering)
 - Reverse dependency index (combined)
 - Cycle fallback tracking
-- Stable ordering index"
+- Stable ordering index
+- Deterministic fingerprint (SHA-1 of plan content)"
   (let ((seen (make-hash-table :test 'equal))
         (invalid (make-hash-table :test 'equal))
         (order-index (make-hash-table :test 'equal))
@@ -2561,7 +2562,16 @@ The plan includes:
                           (cl-remove-if-not
                            (lambda (dep)
                              (member dep all-ids))
-                           wants)))
+                           wants))
+                         ;; Auto-order rule: for target entries, :requires
+                         ;; and :wants imply :after (ordering edges)
+                         (valid-after
+                          (if (eq (supervisor-entry-type entry) 'target)
+                              (supervisor--deduplicate-stable
+                               (append valid-after
+                                       (cl-union valid-requires valid-wants
+                                                 :test #'equal)))
+                            valid-after)))
                     (puthash id valid-after deps)
                     (puthash id valid-requires requires-deps)
                     ;; Combined deps for topo sort
@@ -2628,7 +2638,29 @@ The plan includes:
                :activation-root nil
                :activation-closure nil
                :meta (list :version supervisor-plan-version
-                           :timestamp (float-time))))))))))
+                           :timestamp (float-time)
+                           :fingerprint
+                           (supervisor--plan-fingerprint
+                            sorted-entries deps requires-deps
+                            order-index))))))))))
+
+(defun supervisor--plan-fingerprint (entries deps requires-deps order-index)
+  "Compute deterministic fingerprint of plan content.
+ENTRIES is the sorted entry list.  DEPS and REQUIRES-DEPS are hashes
+of id to dependency lists.  ORDER-INDEX is hash of id to original index.
+Returns a hex string (SHA-1 of serialized plan data)."
+  (let ((parts nil))
+    (dolist (entry entries)
+      (let* ((id (supervisor-entry-id entry))
+             (d (gethash id deps))
+             (r (gethash id requires-deps))
+             (idx (gethash id order-index)))
+        (push (format "%s:%s:%s:%s" id
+                      (prin1-to-string d)
+                      (prin1-to-string r)
+                      idx)
+              parts)))
+    (sha1 (mapconcat #'identity (nreverse parts) "\n"))))
 
 (defun supervisor--build-plan-topo-sort (entries deps order-index cycle-fallback-ids)
   "Stable topological sort for plan building (pure helper).
@@ -3150,36 +3182,6 @@ to the first 20 descendants.  Returns nil if PID has no children."
           (bounded (cl-subseq descendants 0 (min 20 (length descendants)))))
       (list :count count :pids bounded))))
 
-;;; Dependency Resolution
-
-(defun supervisor--validate-after (entries stage-ids all-ids)
-  "Validate :after references in ENTRIES.
-STAGE-IDS is the set of valid IDs in this stage.  ALL-IDS is the set of
-all valid IDs across all stages.  Return ENTRIES with invalid :after
-edges removed.  Stores computed deps in `supervisor--computed-deps'."
-  (mapcar
-   (lambda (entry)
-     (let* ((id (supervisor-entry-id entry))
-            (after (supervisor-entry-after entry))
-            (valid-after
-             (cl-remove-if-not
-              (lambda (dep)
-                (cond
-                 ((not (member dep stage-ids))
-                  (if (member dep all-ids)
-                      (supervisor--log 'warning ":after '%s' for %s is in different stage, ignoring" dep id)
-                    (supervisor--log 'warning ":after '%s' for %s does not exist, ignoring" dep id))
-                  nil)
-                 (t t)))
-              after)))
-       ;; Store the computed valid dependencies
-       (puthash id valid-after supervisor--computed-deps)
-       (if (equal after valid-after)
-           entry
-         ;; Return entry with filtered :after (index 10), preserving others.
-         (append (cl-subseq entry 0 10) (list valid-after) (cl-subseq entry 11)))))
-   entries))
-
 (defun supervisor--all-parsed-entries ()
   "Parse and validate all entries, returning list of valid parsed entries.
 Invalid entries are stored in `supervisor--invalid' with reason strings.
@@ -3610,10 +3612,10 @@ A user unit file with the same ID overrides the built-in entry."
    (list nil :id "basic.target" :type 'target
          :description "Basic system initialization target")
    (list nil :id "multi-user.target" :type 'target
-         :requires '("basic.target") :after '("basic.target")
+         :requires '("basic.target")
          :description "Multi-user services target")
    (list nil :id "graphical.target" :type 'target
-         :requires '("multi-user.target") :after '("multi-user.target")
+         :requires '("multi-user.target")
          :description "Graphical session target")
    (list nil :id "default.target" :type 'target
          :description "Default startup target (alias)")))
