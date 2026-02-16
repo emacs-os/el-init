@@ -490,7 +490,7 @@ Where behavior diverges, parenthetical notes explain.
 | Feature | systemd | runit | s6 | supervisor.el |
 |---|---|---|---|---|
 | **Init System (PID 1)** | | | | |
-| Can run as PID 1 | yes (systemd is PID 1) | yes (runit-init, 3-stage boot) | yes (s6-linux-init, separate package) | no (needs sinit-style shim as PID 1, runs as PID 2) |
+| Can run as PID 1 | yes (systemd is PID 1) | yes (runit-init, 3-stage boot) | yes (s6-linux-init, separate package) | no (needs sinit-style shim as PID 1, may run as PID 2+) |
 | **Process Supervision** | | | | |
 | Restart crashed daemons | yes | yes | yes | yes |
 | Restart policies (always/on-failure/on-success/no) | yes (6 modes) | no (always or never) | no (always or never) | yes (4 modes) |

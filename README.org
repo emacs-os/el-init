@@ -51,7 +51,7 @@ provides detailed reference material:
 - [[#events-and-hooks][Events and Hooks]] - programmatic integration
 - [[#customization-reference][Customization Reference]] - all variables and faces
 - [[#command-reference][Command Reference]] - every interactive command
-- [[#service-management-comparison][Systems Comparison]] - supervisor vs systemd vs runit vs s6
+- [[#service-management-systems-comparison][Systems Comparison]] - supervisor vs systemd vs runit vs s6
 
 * Quick Start
 :PROPERTIES:
@@ -1773,11 +1773,11 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
-- Mutator inventory and classification (explicit verb / unit-definition): [[#service-management-comparison][Service Management Systems Comparison]]
-- Stage model comparison (supervisor vs systemd targets vs runit stages): [[#service-management-comparison][Service Management Systems Comparison]]
-- Systemd command mapping (supervisorctl vs systemctl vs sv): [[#service-management-comparison][Service Management Systems Comparison]]
-- Systemd example conversions (unit file to supervisor config): [[#service-management-comparison][Service Management Systems Comparison]]
-- Systemd feature support matrix: [[#service-management-comparison][Service Management Systems Comparison]]
+- Mutator inventory and classification (explicit verb / unit-definition): [[#service-management-systems-comparison][Service Management Systems Comparison]]
+- Stage model comparison (supervisor vs systemd targets vs runit stages): [[#service-management-systems-comparison][Service Management Systems Comparison]]
+- Systemd command mapping (supervisorctl vs systemctl vs sv): [[#service-management-systems-comparison][Service Management Systems Comparison]]
+- Systemd example conversions (unit file to supervisor config): [[#service-management-systems-comparison][Service Management Systems Comparison]]
+- Systemd feature support matrix: [[#service-management-systems-comparison][Service Management Systems Comparison]]
 - Systemd oneshot comparison (~:oneshot-blocking~, ~:oneshot-timeout~ mapping): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Timer catch-up window (~supervisor-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
 - Timer disabled/gated behavior (~supervisor-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook][Timer Subsystem]], [[#command-reference][Command Reference]]
@@ -1856,7 +1856,7 @@ unprivileged users from escalating through writable unit files.
 
 * Service Management Systems Comparison
 :PROPERTIES:
-:CUSTOM_ID: service-management-comparison
+:CUSTOM_ID: service-management-systems-comparison
 :END:
 
 This section provides explicit comparison between supervisor's design and
@@ -1942,7 +1942,7 @@ Where behavior diverges across systems, parenthetical notes explain.
 | Feature | systemd | runit | s6 | supervisor |
 |---------+---------+-------+----+------------|
 | *Init System (PID 1)* | | | | |
-| Can run as PID 1 | yes (systemd is PID 1) | yes (runit-init, 3-stage boot) | yes (s6-linux-init, separate package) | no (needs sinit-style shim as PID 1, runs as PID 2) |
+| Can run as PID 1 | yes (systemd is PID 1) | yes (runit-init, 3-stage boot) | yes (s6-linux-init, separate package) | no (needs sinit-style shim as PID 1, may run as PID 2+) |
 | *Process Supervision* | | | | |
 | Restart crashed daemons | yes | yes | yes | yes |
 | Restart policies (always/on-failure/on-success/no) | yes (6 modes) | no (always or never) | no (always or never) | yes (4 modes) |
