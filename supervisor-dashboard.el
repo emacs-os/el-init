@@ -474,7 +474,7 @@ Signal `user-error' if point is on a separator, timer, or empty row."
   "Return projected TIMER fields as a plist for display.
 Provides rendering parity with `list-timers' CLI output.
 Fields: :id, :target, :enabled, :last-run, :next-run, :last-exit,
-:miss-reason, :target-type, :last-result."
+:result-reason, :target-type, :last-result."
   (let* ((id (supervisor-timer-id timer))
          (state (gethash id supervisor--timer-state)))
     (list :id id
@@ -483,7 +483,7 @@ Fields: :id, :target, :enabled, :last-run, :next-run, :last-exit,
           :last-run (plist-get state :last-run-at)
           :next-run (plist-get state :next-run-at)
           :last-exit (plist-get state :last-exit)
-          :miss-reason (plist-get state :last-miss-reason)
+          :result-reason (plist-get state :last-result-reason)
           :target-type (plist-get state :last-target-type)
           :last-result (plist-get state :last-result))))
 
@@ -593,7 +593,7 @@ If SNAPSHOT is provided, read runtime state from it."
                 (propertize "LAST-RUN" 'face 'supervisor-stage-separator)
                 (propertize "NEXT-RUN" 'face 'supervisor-stage-separator)
                 (propertize "EXIT" 'face 'supervisor-stage-separator)
-                (propertize "MISS" 'face 'supervisor-stage-separator)
+                (propertize "REASON" 'face 'supervisor-stage-separator)
                 (propertize "TYPE" 'face 'supervisor-stage-separator)
                 (propertize "RESULT" 'face 'supervisor-stage-separator))))
 
@@ -626,7 +626,7 @@ If SNAPSHOT is provided, read runtime state from it."
 (defun supervisor--make-timer-dashboard-entry (timer)
   "Create a dashboard entry vector for TIMER.
 Columns are mapped to match `list-timers' semantics:
-ID, TARGET, ENABLED, LAST-RUN, NEXT-RUN, EXIT, MISS, TYPE, RESULT."
+ID, TARGET, ENABLED, LAST-RUN, NEXT-RUN, EXIT, REASON, TYPE, RESULT."
   (let* ((proj (supervisor--timer-projection timer))
          (id (plist-get proj :id))
          (target (plist-get proj :target))
@@ -634,7 +634,7 @@ ID, TARGET, ENABLED, LAST-RUN, NEXT-RUN, EXIT, MISS, TYPE, RESULT."
          (last-run (plist-get proj :last-run))
          (next-run (plist-get proj :next-run))
          (last-exit (plist-get proj :last-exit))
-         (miss-reason (plist-get proj :miss-reason))
+         (result-reason (plist-get proj :result-reason))
          (target-type (plist-get proj :target-type))
          (last-result (plist-get proj :last-result)))
     (vector (propertize id 'face 'supervisor-type-timer)
@@ -646,7 +646,7 @@ ID, TARGET, ENABLED, LAST-RUN, NEXT-RUN, EXIT, MISS, TYPE, RESULT."
             (supervisor--format-timer-relative-time last-run)
             (supervisor--format-timer-relative-time next-run)
             (if (null last-exit) "-" (number-to-string last-exit))
-            (if miss-reason (symbol-name miss-reason) "-")
+            (if result-reason (symbol-name result-reason) "-")
             (if target-type (symbol-name target-type) "-")
             (if last-result
                 (supervisor--propertize-status

@@ -7935,28 +7935,45 @@ After catch-up, :next-run-at must not remain in the past."
         (should (string-match-p "failure" output))))))
 
 (ert-deftest supervisor-test-dashboard-timer-entry-v2-columns ()
-  "Dashboard timer entry vector includes TYPE and RESULT columns."
+  "Dashboard timer entry vector includes TYPE, RESULT, and REASON columns."
   (let* ((timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--processes (make-hash-table :test 'equal)))
-    (puthash "t1" '(:last-target-type oneshot :last-result success)
+    (puthash "t1" '(:last-target-type oneshot :last-result success
+                    :last-result-reason already-active)
              supervisor--timer-state)
     (let ((entry (supervisor--make-timer-dashboard-entry timer)))
-      ;; Column 7 is TYPE, column 8 is RESULT
+      ;; Column 6 is REASON, column 7 is TYPE, column 8 is RESULT
+      (should (string= "already-active" (aref entry 6)))
       (should (string= "oneshot" (aref entry 7)))
       (should (string-match-p "success" (aref entry 8))))))
 
 (ert-deftest supervisor-test-dashboard-timer-entry-empty-v2-defaults ()
-  "Dashboard timer entry shows dash for missing TYPE and RESULT."
+  "Dashboard timer entry shows dash for missing REASON, TYPE, and RESULT."
   (let* ((timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--processes (make-hash-table :test 'equal)))
     ;; No state set -- columns default to "-"
     (let ((entry (supervisor--make-timer-dashboard-entry timer)))
+      (should (string= "-" (aref entry 6)))
       (should (string= "-" (aref entry 7)))
       (should (string= "-" (aref entry 8))))))
+
+(ert-deftest supervisor-test-dashboard-timer-entry-failure-result-reason ()
+  "Dashboard timer entry shows result-reason for failure outcomes."
+  (let* ((timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
+         (supervisor--timer-list (list timer))
+         (supervisor--timer-state (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal)))
+    (puthash "t1" '(:last-target-type oneshot :last-result failure
+                    :last-result-reason spawn-failed)
+             supervisor--timer-state)
+    (let ((entry (supervisor--make-timer-dashboard-entry timer)))
+      ;; Column 6 is REASON showing result-reason, not miss-reason
+      (should (string= "spawn-failed" (aref entry 6)))
+      (should (string-match-p "failure" (aref entry 8))))))
 
 ;;; CLI Control Plane tests
 
@@ -8918,7 +8935,9 @@ After catch-up, :next-run-at must not remain in the past."
                             :last-exit 1
                             :next-run-at 2000.0
                             :last-missed-at 850.0
-                            :last-miss-reason overlap)
+                            :last-miss-reason overlap
+                            :last-result skip
+                            :last-result-reason overlap)
              supervisor--timer-state)
     ;; Test human format includes all fields
     (let ((result (supervisor--cli-dispatch '("list-timers"))))
@@ -8931,7 +8950,8 @@ After catch-up, :next-run-at must not remain in the past."
         (should (string-match-p "yes" output))
         ;; Exit code
         (should (string-match-p "1" output))
-        ;; Miss reason
+        ;; Result and reason
+        (should (string-match-p "skip" output))
         (should (string-match-p "overlap" output))))
     ;; Test JSON format includes all fields with correct values
     (let ((result (supervisor--cli-dispatch '("--json" "list-timers"))))

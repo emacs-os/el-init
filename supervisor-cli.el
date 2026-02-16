@@ -1859,7 +1859,7 @@ Return a list of alists, one per timer."
         (next-run (alist-get 'next-run info))
         (last-exit (alist-get 'last-exit info))
         (last-result (alist-get 'last-result info))
-        (miss-reason (alist-get 'miss-reason info)))
+        (result-reason (alist-get 'last-result-reason info)))
     (format "%-16s %-16s %-8s %-8s %-12s %-12s %-8s %-8s %s\n"
             (or id "-")
             (or target "-")
@@ -1869,7 +1869,7 @@ Return a list of alists, one per timer."
             (supervisor--cli-format-relative-time next-run)
             (if (null last-exit) "-" (number-to-string last-exit))
             (if last-result (symbol-name last-result) "-")
-            (if miss-reason (symbol-name miss-reason) "-"))))
+            (if result-reason (symbol-name result-reason) "-"))))
 
 (defun supervisor--cli-timers-human (timers invalid)
   "Format TIMERS and INVALID as human-readable timer status table."
@@ -1877,7 +1877,7 @@ Return a list of alists, one per timer."
       "No timers configured.\n"
     (let ((header (format "%-16s %-16s %-8s %-8s %-12s %-12s %-8s %-8s %s\n"
                           "ID" "TARGET" "ENABLED" "TYPE"
-                          "LAST-RUN" "NEXT-RUN" "EXIT" "RESULT" "MISS"))
+                          "LAST-RUN" "NEXT-RUN" "EXIT" "RESULT" "REASON"))
           (sep (make-string 106 ?-)))
       (concat header sep "\n"
               (mapconcat #'supervisor--cli-format-timer-line timers "")
