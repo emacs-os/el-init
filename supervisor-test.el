@@ -14857,5 +14857,78 @@ PATH set to exclude fuser."
       ;; The guard should have returned early without building timers
       (should-not build-list-called))))
 
+(ert-deftest supervisor-test-logd-rotates-on-size-cap-exceed ()
+  "Logd rotates the log file when it exceeds the size cap."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (logd (expand-file-name "libexec/supervisor-logd" root))
+         (dir (make-temp-file "logd-rotate-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (when (not (file-executable-p logd))
+      (ert-skip "supervisor-logd binary not built"))
+    (unwind-protect
+        (let* ((proc (make-process
+                      :name "test-logd"
+                      :command (list logd
+                                    "--file" log-file
+                                    "--max-file-size-bytes" "50")
+                      :connection-type 'pipe))
+               (wrote nil))
+          (unwind-protect
+              (progn
+                ;; Write enough data to exceed the 50-byte cap
+                (process-send-string proc (make-string 80 ?x))
+                (setq wrote t)
+                ;; Give logd time to write and rotate
+                (sleep-for 0.3)
+                ;; Close stdin to trigger clean exit
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                ;; A rotated file should exist alongside the fresh log
+                (let ((rotated (directory-files dir nil
+                                               "^log-svc\\.[0-9].*\\.log$")))
+                  (should (>= (length rotated) 1)))
+                ;; The active log file should exist (reopened after rotation)
+                (should (file-exists-p log-file))
+                ;; Active log should be smaller than the cap (fresh after rotate)
+                (let ((size (nth 7 (file-attributes log-file))))
+                  (should (< size 50))))
+            (when (process-live-p proc)
+              (delete-process proc))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-timer-enabled-triggers-maintenance ()
+  "Enabled logrotate-daily timer triggers target oneshot on schedule."
+  (supervisor-test-with-unit-files
+      '(("echo maintenance" :id "logrotate" :type oneshot :stage stage4))
+    (let* ((supervisor-timer-subsystem-mode t)
+           (supervisor-mode t)
+           (timer (supervisor-timer--create :id "logrotate-daily"
+                                            :target "logrotate"
+                                            :enabled t))
+           (supervisor--timer-state (make-hash-table :test 'equal))
+           (supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--scheduler-startup-time (float-time))
+           (triggered-target nil))
+      (cl-letf (((symbol-function 'supervisor--start-entry-async)
+                 (lambda (entry callback)
+                   (setq triggered-target (supervisor-entry-id entry))
+                   ;; Simulate success
+                   (when callback (funcall callback t))))
+                ((symbol-function 'supervisor--signal-writers-reopen) #'ignore)
+                ((symbol-function 'supervisor-timer--on-target-complete)
+                 (lambda (_id _target-id _success) nil))
+                ((symbol-function 'supervisor-timer--save-state) #'ignore))
+        (unwind-protect
+            (progn
+              (supervisor-timer--trigger timer 'scheduled)
+              ;; The trigger should have started the "logrotate" target
+              (should (equal "logrotate" triggered-target)))
+          (clrhash supervisor--invalid)
+          (clrhash supervisor--timer-state)
+          (clrhash supervisor--processes)
+          (clrhash supervisor--enabled-override))))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
