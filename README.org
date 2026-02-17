@@ -1,8 +1,8 @@
 [[https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml][https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml/badge.svg]]
 
-* supervisor.el Handbook
+* supervisor.el
 
-*A real service supervisor for Emacs.*
+*A proper process supervisor with a systemd-inspired dependency model.*
 
 ~supervisor.el~ is an Emacs Lisp-based service supervisor.  It follows a
 familiar systemd-like interface (service types, dependencies, restart
@@ -46,7 +46,6 @@ start, stop, inspect, and manage everything from inside Emacs.
   bounded growth (configurable per-file and total size caps).
 - *Sandbox* -- optional bubblewrap integration with curated profiles for
   process isolation (Linux only).
-- *22,000 lines of tests* -- comprehensive test suite.
 
 ** Requirements
 
