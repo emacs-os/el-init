@@ -2642,8 +2642,11 @@ Requires --yes flag.  Transaction-scoped (does not persist default change)."
 (defun supervisor--cli-cmd-init (args json-p)
   "Handle `init N' command with ARGS.  JSON-P for JSON output.
 Map numeric runlevel N (0-6) to a target and isolate to it.
-Runlevels 0 and 6 require --yes for destructive confirmation.
-Does not persist default-target changes."
+Runlevels 0 and 6 are destructive transitions: in interactive
+Emacs sessions they prompt for confirmation via `y-or-n-p'; in
+batch mode (or JSON mode) the --yes flag is required.
+Does not persist default-target changes.
+Result summary includes both numeric runlevel and resolved target."
   (let* ((split (supervisor--cli-split-at-separator args))
          (before (car split))
          (after (cdr split))
@@ -2681,18 +2684,44 @@ Does not persist default-target changes."
            supervisor-cli-exit-invalid-args
            (format "Runlevel %d is out of range (must be 0-6)" n)
            (if json-p 'json 'human)))
-         ;; Destructive transitions (0=poweroff, 6=reboot) need --yes
+         ;; Destructive transitions (0=poweroff, 6=reboot) need confirmation.
+         ;; Interactive Emacs: prompt via y-or-n-p.
+         ;; Batch/JSON: require --yes flag.
          ((and (memq n '(0 6)) (not yes-flag))
-          (supervisor--cli-error
-           supervisor-cli-exit-invalid-args
-           (format "init %d (%s) is destructive; use --yes to confirm"
-                   n (cdr mapping))
-           (if json-p 'json 'human)))
+          (if (and (not noninteractive) (not json-p)
+                   (y-or-n-p
+                    (format "Init %d (%s) is destructive.  Proceed? "
+                            n (cdr mapping))))
+              (supervisor--cli-init-execute n mapping json-p)
+            (supervisor--cli-error
+             supervisor-cli-exit-invalid-args
+             (format "init %d (%s) is destructive; use --yes to confirm"
+                     n (cdr mapping))
+             (if json-p 'json 'human))))
          (t
-          ;; Route through isolate with --yes already confirmed
-          (let ((target (cdr mapping)))
-            (supervisor--cli-cmd-isolate
-             (list "--yes" target) json-p)))))))))
+          (supervisor--cli-init-execute n mapping json-p))))))))
+
+(defun supervisor--cli-init-execute (runlevel mapping json-p)
+  "Execute init transition for RUNLEVEL using MAPPING.
+MAPPING is a cons cell from `supervisor--runlevel-map'.
+JSON-P selects output format.
+Route through isolate and wrap the result to include both numeric
+runlevel and resolved target identity per plan requirement."
+  (let* ((target (cdr mapping))
+         (result (supervisor--cli-cmd-isolate
+                  (list "--yes" target) json-p)))
+    (if (= supervisor-cli-exit-success
+           (supervisor-cli-result-exitcode result))
+        (let ((inner (supervisor-cli-result-output result)))
+          (supervisor--cli-success
+           (if json-p
+               (let ((obj (json-read-from-string inner)))
+                 (json-encode
+                  (append `((runlevel . ,runlevel)) obj)))
+             (format "init %d (runlevel %d -> %s): %s"
+                     runlevel runlevel target inner))
+           (if json-p 'json 'human)))
+      result)))
 
 (defun supervisor--cli-dispatch (argv)
   "Dispatch CLI command from ARGV.

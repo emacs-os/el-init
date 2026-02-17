@@ -20300,48 +20300,26 @@ the invalid-hash must not contain the alias ID."
                  (lambda (_entries callback) (funcall callback)))
                 ((symbol-function 'supervisor--manual-stop)
                  (lambda (_id) (list :status 'stopped :reason nil))))
-        ;; init 0 -> poweroff.target (destructive, needs --yes)
-        (let ((result (supervisor--cli-dispatch '("init" "--yes" "0"))))
-          (should (= supervisor-cli-exit-success
-                      (supervisor-cli-result-exitcode result)))
-          (should (string-match "poweroff\\.target"
-                                (supervisor-cli-result-output result))))
-        ;; init 1 -> rescue.target
-        (let ((result (supervisor--cli-dispatch '("init" "--yes" "1"))))
-          (should (= supervisor-cli-exit-success
-                      (supervisor-cli-result-exitcode result)))
-          (should (string-match "rescue\\.target"
-                                (supervisor-cli-result-output result))))
-        ;; init 2 -> multi-user.target
-        (let ((result (supervisor--cli-dispatch '("init" "--yes" "2"))))
-          (should (= supervisor-cli-exit-success
-                      (supervisor-cli-result-exitcode result)))
-          (should (string-match "multi-user\\.target"
-                                (supervisor-cli-result-output result))))
-        ;; init 3 -> multi-user.target
-        (let ((result (supervisor--cli-dispatch '("init" "--yes" "3"))))
-          (should (= supervisor-cli-exit-success
-                      (supervisor-cli-result-exitcode result)))
-          (should (string-match "multi-user\\.target"
-                                (supervisor-cli-result-output result))))
-        ;; init 4 -> multi-user.target
-        (let ((result (supervisor--cli-dispatch '("init" "--yes" "4"))))
-          (should (= supervisor-cli-exit-success
-                      (supervisor-cli-result-exitcode result)))
-          (should (string-match "multi-user\\.target"
-                                (supervisor-cli-result-output result))))
-        ;; init 5 -> graphical.target
-        (let ((result (supervisor--cli-dispatch '("init" "--yes" "5"))))
-          (should (= supervisor-cli-exit-success
-                      (supervisor-cli-result-exitcode result)))
-          (should (string-match "graphical\\.target"
-                                (supervisor-cli-result-output result))))
-        ;; init 6 -> reboot.target (destructive, needs --yes)
-        (let ((result (supervisor--cli-dispatch '("init" "--yes" "6"))))
-          (should (= supervisor-cli-exit-success
-                      (supervisor-cli-result-exitcode result)))
-          (should (string-match "reboot\\.target"
-                                (supervisor-cli-result-output result))))))))
+        ;; Test all runlevels with both target and runlevel identity
+        (dolist (spec '((0 "poweroff\\.target" "runlevel 0")
+                        (1 "rescue\\.target" "runlevel 1")
+                        (2 "multi-user\\.target" "runlevel 2")
+                        (3 "multi-user\\.target" "runlevel 3")
+                        (4 "multi-user\\.target" "runlevel 4")
+                        (5 "graphical\\.target" "runlevel 5")
+                        (6 "reboot\\.target" "runlevel 6")))
+          (let* ((rl (number-to-string (car spec)))
+                 (target-pattern (nth 1 spec))
+                 (runlevel-pattern (nth 2 spec))
+                 (result (supervisor--cli-dispatch
+                          (list "init" "--yes" rl)))
+                 (output (supervisor-cli-result-output result)))
+            (should (= supervisor-cli-exit-success
+                        (supervisor-cli-result-exitcode result)))
+            ;; Target identity in output
+            (should (string-match target-pattern output))
+            ;; Numeric runlevel identity in output
+            (should (string-match runlevel-pattern output))))))))
 
 (ert-deftest supervisor-test-cli-init-out-of-range ()
   "The `init' command rejects runlevels outside 0-6."
@@ -20381,6 +20359,97 @@ the invalid-hash must not contain the alias ID."
                 (supervisor-cli-result-exitcode result)))
     (should (string-match "destructive"
                           (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-init-interactive-prompt-accepts ()
+  "Interactive destructive init succeeds when user confirms via y-or-n-p."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "shutdown.target" :type target)
+        (nil :id "poweroff.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor--target-members nil)
+          (supervisor-default-target-link "poweroff.target")
+          (supervisor--default-target-link-override nil)
+          ;; Simulate interactive Emacs
+          (noninteractive nil))
+      (cl-letf (((symbol-function 'supervisor--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'supervisor--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil)))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (_prompt) t)))
+        ;; init 0 without --yes, but y-or-n-p returns t
+        (let ((result (supervisor--cli-dispatch '("init" "0"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (should (string-match "poweroff\\.target"
+                                (supervisor-cli-result-output result))))))))
+
+(ert-deftest supervisor-test-cli-init-interactive-prompt-declines ()
+  "Interactive destructive init fails when user declines via y-or-n-p."
+  (let ((noninteractive nil))
+    (cl-letf (((symbol-function 'y-or-n-p)
+               (lambda (_prompt) nil)))
+      ;; init 0 without --yes, y-or-n-p returns nil
+      (let ((result (supervisor--cli-dispatch '("init" "0"))))
+        (should (= supervisor-cli-exit-invalid-args
+                    (supervisor-cli-result-exitcode result)))
+        (should (string-match "destructive"
+                              (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-init-json-includes-runlevel ()
+  "JSON output from init includes runlevel field."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor--target-members nil)
+          (supervisor-default-target-link "multi-user.target")
+          (supervisor--default-target-link-override nil))
+      (cl-letf (((symbol-function 'supervisor--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'supervisor--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        (let ((result (supervisor--cli-dispatch '("--json" "init" "--yes" "3"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (let ((obj (json-read-from-string
+                      (supervisor-cli-result-output result))))
+            ;; Must have runlevel field
+            (should (assq 'runlevel obj))
+            (should (= 3 (cdr (assq 'runlevel obj))))
+            ;; Must also have target from isolate
+            (should (assq 'target obj))
+            (should (equal "multi-user.target"
+                           (cdr (assq 'target obj))))))))))
 
 (ert-deftest supervisor-test-cli-init-non-destructive-no-yes ()
   "Runlevels 1-5 do not require --yes."
@@ -20501,13 +20570,14 @@ the invalid-hash must not contain the alias ID."
                 ((symbol-function 'supervisor--manual-stop)
                  (lambda (_id) (list :status 'stopped :reason nil))))
         ;; Test representative runlevels: non-destructive and destructive
-        (dolist (spec '(("1" "rescue\\.target")
-                        ("3" "multi-user\\.target")
-                        ("5" "graphical\\.target")
-                        ("0" "poweroff\\.target")
-                        ("6" "reboot\\.target")))
+        (dolist (spec '(("1" "rescue\\.target" "runlevel 1")
+                        ("3" "multi-user\\.target" "runlevel 3")
+                        ("5" "graphical\\.target" "runlevel 5")
+                        ("0" "poweroff\\.target" "runlevel 0")
+                        ("6" "reboot\\.target" "runlevel 6")))
           (let* ((rl (car spec))
-                 (pattern (cadr spec))
+                 (target-pattern (nth 1 spec))
+                 (rl-pattern (nth 2 spec))
                  (init-result (supervisor--cli-dispatch
                                (list "init" "--yes" rl)))
                  (telinit-result (supervisor--cli-dispatch
@@ -20519,9 +20589,14 @@ the invalid-hash must not contain the alias ID."
             (should (= supervisor-cli-exit-success
                         (supervisor-cli-result-exitcode telinit-result)))
             ;; Both mention resolved target
-            (should (string-match pattern
+            (should (string-match target-pattern
                                   (supervisor-cli-result-output init-result)))
-            (should (string-match pattern
+            (should (string-match target-pattern
+                                  (supervisor-cli-result-output telinit-result)))
+            ;; Both include runlevel identity
+            (should (string-match rl-pattern
+                                  (supervisor-cli-result-output init-result)))
+            (should (string-match rl-pattern
                                   (supervisor-cli-result-output telinit-result)))))))))
 
 (ert-deftest supervisor-test-cli-list-targets-shows-kind ()
