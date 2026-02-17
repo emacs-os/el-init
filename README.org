@@ -107,18 +107,8 @@ With the above configuration running, ~sbin/supervisorctl status~ shows:
 $ sbin/supervisorctl status
 ID               TYPE     STAGE    ENABLED  STATUS     RESTART  LOG   PID     REASON
 ----------------------------------------------------------------------------------------------------
-xhost            oneshot  stage1   yes      done       n/a      yes   -       -
-xrdb             oneshot  stage1   yes      done       n/a      yes   -       -
-xsetroot         oneshot  stage1   yes      done       n/a      yes   -       -
-xset-repeat      oneshot  stage1   yes      done       n/a      yes   -       -
-xset-dpms        oneshot  stage1   yes      done       n/a      yes   -       -
-xset-s           oneshot  stage1   yes      done       n/a      yes   -       -
-xinput-mouse     oneshot  stage1   yes      done       n/a      yes   -       -
-redshift         oneshot  stage1   yes      done       n/a      yes   -       -
-polkit           simple   stage2   yes      running    yes      yes   1280    -
+xhost            oneshot  stage3   yes      done       n/a      yes   -       -
 nm-applet        simple   stage3   yes      running    yes      yes   1396    -
-blueman-applet   simple   stage4   yes      running    yes      yes   1927    -
-pasystray        simple   stage4   yes      running    yes      yes   1442    -
 #+end_example
 
 ~M-x supervisor~ opens an interactive dashboard for managing services:
@@ -135,18 +125,18 @@ all available keywords.
 :CUSTOM_ID: service-definition
 :END:
 
-Each unit file is a single plist expression with ~:id~ and ~:command~ required.
+Each unit file is a single plist expression with ~:id~ required.
+~:command~ is required for non-target units and invalid for ~:type target~.
 
 ** Entry Keywords
 
 | Keyword | Type | Default | Notes |
 | ~:id~ | string | *(required)* | Unit ID (non-empty string) |
-| ~:command~ | string | *(required)* | Command to execute |
-| ~:type~ | symbol | ~simple~ | ~simple~ or ~oneshot~ |
-| ~:stage~ | symbol | ~stage3~ | ~stage1~, ~stage2~, ~stage3~, ~stage4~ |
+| ~:command~ | string or ~nil~ | *(required for non-target types)* | Command to execute; must be omitted for ~:type target~ |
+| ~:type~ | symbol | ~simple~ | ~simple~, ~oneshot~, or ~target~ |
 | ~:delay~ | non-negative number | ~0~ | Delays spawn in seconds |
-| ~:after~ | string or list of strings | ~nil~ | Ordering dependency (same stage) |
-| ~:requires~ | string or list of strings | ~nil~ | Requirement + ordering dependency (same stage) |
+| ~:after~ | string or list of strings | ~nil~ | Ordering dependency |
+| ~:requires~ | string or list of strings | ~nil~ | Requirement + ordering dependency |
 | ~:enabled~ | boolean | ~t~ | Enable/disable service |
 | ~:disabled~ | boolean | ~nil~ | Inverse form of ~:enabled~ |
 | ~:restart~ | boolean or policy symbol | ~always~ | For ~simple~ only; accepts ~t/nil~ or ~always/no/on-success/on-failure~ |
@@ -166,14 +156,16 @@ Each unit file is a single plist expression with ~:id~ and ~:command~ required.
 | ~:restart-sec~ | non-negative number | ~nil~ | Per-unit restart delay, ~simple~ only |
 | ~:description~ | string | ~nil~ | Human-readable description, metadata only |
 | ~:documentation~ | string or list of strings | ~nil~ | Documentation URIs/paths, metadata only |
-| ~:before~ | string or list of strings | ~nil~ | Inverse ordering (same stage), see below |
-| ~:wants~ | string or list of strings | ~nil~ | Soft dependency (same stage), see below |
+| ~:before~ | string or list of strings | ~nil~ | Inverse ordering, see below |
+| ~:wants~ | string or list of strings | ~nil~ | Soft dependency, see below |
 | ~:kill-signal~ | symbol or string | ~SIGTERM~ | Graceful stop signal for this unit |
 | ~:kill-mode~ | symbol or string | ~process~ | ~process~ or ~mixed~, see Stop Semantics |
 | ~:remain-after-exit~ | boolean | ~nil~ | ~oneshot~ only: latch active on success |
 | ~:success-exit-status~ | int, signal symbol/string, or list | ~nil~ | ~simple~ only: extra clean exit criteria |
 | ~:user~ | string, integer, or ~nil~ | ~nil~ | Run-as user (requires root, trusted unit source) |
 | ~:group~ | string, integer, or ~nil~ | ~nil~ | Run-as group (requires root, trusted unit source) |
+| ~:wanted-by~ | string or list of strings | ~nil~ | Soft membership in target units |
+| ~:required-by~ | string or list of strings | ~nil~ | Required membership in target units |
 | ~:sandbox-profile~ | symbol | ~nil~ | ~none~, ~strict~, ~service~, or ~desktop~ (Linux only) |
 | ~:sandbox-network~ | symbol | profile default | ~shared~ or ~isolated~ |
 | ~:sandbox-ro-bind~ | list of absolute path strings | ~nil~ | Read-only bind mounts inside sandbox |
@@ -191,12 +183,14 @@ Validation is performed by unit-file validation
   elements).
 - Unknown keywords are rejected.
 - Duplicate plist keys are rejected.
-- Unit files require both ~:id~ and ~:command~.
+- Unit files require ~:id~.  ~:command~ is required for non-target entries and
+  rejected for ~:type target~.
 - ~:id~ must be a non-empty string containing only ~A-Z~, ~a-z~, ~0-9~, ~.~,
   ~_~, ~:~, ~@~, and ~-~.
-- ~:command~ must be a non-empty, non-whitespace-only string.
-- ~:type~ must be symbol ~simple~ or ~oneshot~.
-- ~:stage~ must be symbol ~stage1..stage4~.
+- ~:command~, when present, must be a non-empty, non-whitespace-only string.
+- ~:type~ must be symbol ~simple~, ~oneshot~, or ~target~.
+- ~:stage~ is removed and rejected.  Use ~:wanted-by~ and ~:required-by~ for
+  target membership.
 - ~:delay~ must be non-negative number.
 - ~:restart~, when provided, must be ~t/nil~ or one of
   ~always/no/on-success/on-failure~.
@@ -217,6 +211,8 @@ Validation is performed by unit-file validation
 - ~:after~, ~:requires~, ~:before~, and ~:wants~ must be string or proper list
   of strings.  Empty or whitespace-only dependency IDs are rejected.
   Self-referencing the entry's own ID is rejected.
+- ~:wanted-by~ and ~:required-by~ must be string or proper list of strings.
+  Referenced IDs must exist and be ~:type target~.
 - ~:working-directory~ must be a string or ~nil~.
 - ~:environment~ must be an alist of ~(KEY . VALUE)~ string pairs.  Keys must
   match ~[A-Za-z_][A-Za-z0-9_]*~.  Duplicate keys are rejected.
@@ -273,16 +269,15 @@ Duplicate IDs are deterministic:
 
 Planner rules:
 
-- All four are constrained to same-stage dependencies.
-- Cross-stage ~:after~ and ~:before~ are ignored with warning.
-- Cross-stage ~:requires~ is an error (entry invalid).
-- Cross-stage ~:wants~ is ignored with warning.
-- Missing ~:after~, ~:before~, and ~:wants~ targets are silently dropped.
-- Missing ~:requires~ targets are ignored with warning.
-- Topological sort uses stable list order as tie-break.
-- Cycle fallback clears dependency edges for affected stage and falls back to
-  deterministic list order.  ~:before~ and ~:wants~ edges participate in cycle
-  detection.
+- Dependencies are global (no stage partitioning).
+- ~:before~ is inverted into ~:after~ edges before sorting.
+- Missing ~:after~ and ~:before~ refs are dropped with warning.
+- Missing ~:wants~ refs are dropped.
+- Missing ~:requires~ refs are dropped for non-target units; for target units,
+  missing ~:requires~ makes the target invalid.
+- Topological sort uses stable source order as tie-break.
+- Cycle fallback clears ~:after~, ~:requires~, and ~:wants~ edges for cycle
+  participants and falls back to deterministic source order.
 
 ~:wants~ soft dependency semantics:
 
@@ -295,16 +290,23 @@ Planner rules:
 Valid entries are normalized to schema v1 tuple form:
 
 #+begin_src elisp
-(id cmd delay enabled-p restart-policy logging-p type stage after
+(id cmd delay enabled-p restart-policy logging-p
+    stdout-log-file stderr-log-file
+    type stage after
     oneshot-blocking oneshot-timeout tags requires
     working-directory environment environment-file
     exec-stop exec-reload restart-sec
     description documentation before wants
-    kill-signal kill-mode remain-after-exit success-exit-status)
+    kill-signal kill-mode remain-after-exit success-exit-status
+    user group wanted-by required-by
+    sandbox-profile sandbox-network sandbox-ro-bind sandbox-rw-bind
+    sandbox-tmpfs sandbox-raw-args)
 #+end_src
 
 Accessor functions (~supervisor-entry-id~, ~supervisor-entry-command~, etc.) are
 the canonical way to read entry fields.
+The internal ~stage~ slot is retained for compatibility and is currently fixed
+to ~stage3~ for user-defined entries.
 
 ** Validation and Dry-Run Commands
 
@@ -318,7 +320,7 @@ the canonical way to read entry fields.
 ~M-x supervisor-dry-run~:
 
 - builds plan without starting processes
-- prints stage order and resolved dependency metadata
+- prints resolved target closure and dependency metadata
 - prints timer validation summary when timers are configured
 - opens ~*supervisor-dry-run*~ report buffer
 
@@ -359,22 +361,17 @@ Each file contains a single plist:
 (:id "nm-applet"
  :command "nm-applet"
  :type simple
- :stage stage3
+ :wanted-by ("graphical.target")
  :restart t)
 #+end_src
 
 Required keys:
 
 - ~:id~ (non-empty string)
-- ~:command~ (string, the shell command)
+- ~:command~ (string, for non-target units)
 
-All other keys are optional (~:type~, ~:stage~, ~:delay~, ~:after~, ~:requires~,
-~:enabled~, ~:disabled~, ~:restart~, ~:no-restart~, ~:logging~,
-~:oneshot-blocking~, ~:oneshot-async~, ~:oneshot-timeout~, ~:tags~,
-~:working-directory~, ~:environment~, ~:environment-file~, ~:exec-stop~,
-~:exec-reload~, ~:restart-sec~, ~:description~, ~:documentation~, ~:before~,
-~:wants~, ~:kill-signal~, ~:kill-mode~, ~:remain-after-exit~,
-~:success-exit-status~).
+All other keys are optional.  See [[#service-definition][Service Definition]] for
+the complete key list and constraints.
 
 ** Unit File Best Practices (Data-Only Declarations)
 
@@ -399,7 +396,7 @@ Good example (declarative):
 (:id "backup"
  :command "/usr/local/bin/backup-runner --mode=incremental"
  :type oneshot
- :stage stage4
+ :wanted-by ("multi-user.target")
  :enabled t
  :logging t)
 #+end_src
@@ -414,7 +411,7 @@ Bad example (logic in declaration):
               "/usr/local/bin/backup-runner --mode=incremental"
             "/usr/local/bin/backup-runner --mode=local")
  :type oneshot
- :stage stage4)
+ :wanted-by ("multi-user.target"))
 #+end_src
 
 ** Precedence and Merge Semantics
@@ -422,7 +419,7 @@ Bad example (logic in declaration):
 Within each authority root, unit files (~*.el~) are scanned in alphabetical order.
 Roots are resolved in the order listed in ~supervisor-unit-authority-path~ (low to
 high precedence).  When the same unit ID appears in multiple roots, the
-highest-precedence root wins completely---no per-key merge is performed.
+highest-precedence root wins completely -- no per-key merge is performed.
 
 - Same root, duplicate IDs: first file wins, later duplicates are skipped with
   warning.
@@ -441,17 +438,17 @@ A vendor root provides a default service:
 (:id "polkit"
  :command "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
  :type simple
- :stage stage2)
+ :wanted-by ("multi-user.target"))
 #+end_src
 
-A user root overrides it with a different stage and logging:
+A user root overrides it with different target membership and logging:
 
 #+begin_src emacs-lisp
 ;; ~/.config/supervisor.el/polkit.el  (Tier 3, user)
 (:id "polkit"
  :command "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
  :type simple
- :stage stage3
+ :wanted-by ("graphical.target")
  :logging t)
 #+end_src
 
@@ -460,7 +457,7 @@ The user definition wins entirely.  The vendor definition is shadowed.
 *** Invalid Authority Root Example
 
 If an authority root does not exist, it is silently skipped.  This means a
-misconfigured path does not cause an error---it simply contributes no units:
+misconfigured path does not cause an error -- it simply contributes no units:
 
 #+begin_src emacs-lisp
 (setq supervisor-unit-authority-path
@@ -480,7 +477,7 @@ a broken override silently reverts to the vendor default:
 (:id "backup"
  :command "/usr/bin/backup-agent"
  :type simple
- :stage stage3)
+ :wanted-by ("multi-user.target"))
 #+end_src
 
 #+begin_src emacs-lisp
@@ -490,7 +487,7 @@ a broken override silently reverts to the vendor default:
 #+end_src
 
 Result: ~backup~ appears as ~invalid~ in the dashboard and CLI.  The vendor
-definition is *not* used as a fallback---the invalid higher-tier winner blocks it.
+definition is *not* used as a fallback -- the invalid higher-tier winner blocks it.
 Fix the user unit file or delete it to unblock the vendor definition.
 
 ** Validation
@@ -498,15 +495,16 @@ Fix the user unit file or delete it to unblock the vendor definition.
 Unit files are validated at load time:
 
 - Unknown keywords are rejected.
-- Missing ~:id~ or ~:command~ is rejected.
-- ~:id~ must be a non-empty string; ~:command~ must be a string.
+- Missing ~:id~ is rejected.
+- ~:command~ is required for non-target entries and rejected for target entries.
+- ~:id~ must be a non-empty string; ~:command~ must be a string when present.
 - File path is included in validation error messages.
 - Invalid unit files are skipped and logged.
 - Invalid unit files appear in the dashboard and CLI with ~invalid~ status.
 
 ** Editing Unit Files
 
-From the dashboard, press ~E~ on any service row to open its unit file for
+From the dashboard, press ~i e~ on any service row to open its unit file for
 editing.  If the file does not exist, a scaffold template is created with the
 service ID and common configuration keys commented out.
 
@@ -554,11 +552,11 @@ Create a file in your highest-precedence authority root (default
 (:id "nm-applet"
  :command "nm-applet"
  :type simple
- :stage stage3
+ :wanted-by ("graphical.target")
  :restart t)
 #+end_src
 
-Or press ~E~ in the dashboard to scaffold a unit file interactively.
+Or press ~i e~ in the dashboard to scaffold a unit file interactively.
 
 *** Step 2: Reload
 
@@ -569,21 +567,30 @@ Run ~supervisorctl daemon-reload~ to pick up the new unit file.
 :CUSTOM_ID: startup-and-lifecycle-model
 :END:
 
-** Stages and Ordering
+** Activation Root and Closure
 
-Stage order is fixed:
+Startup begins from a resolved root target:
 
-- ~stage1~
-- ~stage2~
-- ~stage3~
-- ~stage4~
+- ~supervisor-default-target~ selects the startup root.
+- If it is ~default.target~, supervisor resolves
+  ~supervisor-default-target-link~ first.
+- Alias targets (for example ~runlevel5.target~) are resolved to canonical
+  targets before activation.
 
-Stages execute sequentially; entries inside a stage execute in dependency order,
-with parallelism allowed where dependencies permit.
+The root must exist and be ~:type target~.  Supervisor then computes an
+activation closure:
+
+- Target units pull in their own ~:requires~ and ~:wants~.
+- Target units also pull in inverse membership edges contributed by service
+  ~:required-by~ and ~:wanted-by~ declarations.
+- Service units pull in their own ~:requires~ and ~:wants~.
+
+Only units in this closure are activated during startup.  Units outside the
+closure are shown as ~unreachable~ in status surfaces.
 
 ** Async DAG Scheduler Semantics
 
-Within a stage:
+Scheduling is a global DAG over the activation closure (no stage partitioning).
 
 - In-degree 0 entries are eligible to start.
 - Dependents unlock when prerequisites become ready.
@@ -595,12 +602,14 @@ Ready semantics:
 
 - ~simple~: ready when process spawns.
 - ~oneshot~: ready on exit (success/failure) or timeout.
+- ~target~: ready when required members converge (reached/degraded).
 
-Stage completion requires all of:
+Startup completion requires all of:
 
 - all entries started/skipped/failed-to-spawn,
 - no pending delay timers,
-- no pending blocking oneshots.
+- no pending blocking oneshots,
+- no targets still converging.
 
 ** Lifecycle State Machine
 
@@ -608,13 +617,13 @@ Per-entry runtime state is tracked in ~supervisor--entry-state~.
 
 States:
 
-- ~stage-not-started~
+- ~pending~
 - ~waiting-on-deps~
 - ~delayed~
 - ~disabled~
 - ~started~
 - ~failed-to-spawn~
-- ~stage-timeout~
+- ~startup-timeout~
 
 ~invalid~ is a surfaced status (from validation hash tables), not a lifecycle FSM
 state in ~supervisor--entry-state~.
@@ -649,8 +658,8 @@ set with additional numeric exit codes and/or signal names per unit.
 For example, ~:success-exit-status (42 SIGUSR1)~ treats exit code 42
 and ~SIGUSR1~ as clean exits for restart-policy evaluation.
 
-Set the policy at runtime with ~r~ in the dashboard (cycles through all
-four) or via CLI: ~supervisorctl restart-policy always myservice~.
+Set the policy at runtime from the dashboard policy menu (~p r~, explicit
+selection) or via CLI: ~supervisorctl restart-policy always myservice~.
 
 Crash-loop protection:
 
@@ -735,7 +744,7 @@ services, but the mapping is not one-to-one.
 |------------+---------+-------|
 | ~:type oneshot~ | ~Type=oneshot~ | Run-to-completion services |
 | ~:oneshot-blocking t~ | ~Type=oneshot~ (inherent) | Blocking is inherent to ~Type=oneshot~; ordering deps wait for exit |
-| ~:oneshot-async t~ | No direct equivalent | Process runs without blocking stage advancement |
+| ~:oneshot-async t~ | No direct equivalent | Process runs without blocking dependency progression |
 | ~:oneshot-timeout 30~ | ~TimeoutStartSec=30~ | Kill the process if it hasn't exited in time |
 | No restart for oneshot | ~Restart=~ partially valid | systemd allows ~Restart=on-failure~ etc. for oneshot; supervisor forbids all restart for oneshot |
 | ~:working-directory~ | ~WorkingDirectory=~ | Process working directory |
@@ -755,7 +764,7 @@ services, but the mapping is not one-to-one.
 
 Key differences:
 
-- *Blocking is the default.*  Supervisor oneshots block their stage by
+- *Blocking is the default.*  Supervisor oneshots block dependency progression by
   default (~supervisor-oneshot-default-blocking~ is ~t~).  In systemd,
   blocking is inherent to ~Type=oneshot~: ordered dependencies wait
   for the oneshot process to exit before starting.
@@ -776,10 +785,10 @@ Key differences:
   results in ~failed~ status.  ~stop~ on an active latched unit
   transitions it to ~stopped~.  ~start~ on an active unit is a no-op.
   ~restart~ re-runs the oneshot.
-- *Stage model vs dependency model.*  systemd uses target units and
-  ordering dependencies to sequence oneshots.  Supervisor uses a fixed
-  four-stage model (~stage1~ through ~stage4~) with ~:after~ and
-  ~:requires~ for intra-stage ordering.
+- *Target model and closure.*  Both systems sequence oneshots with dependency
+  ordering.  Supervisor activation is root-target closure based
+  (~:required-by~/~:wanted-by~ + ~:requires~/~:wants~), then globally
+  topologically ordered.
 
 ** Stop Semantics
 
@@ -976,7 +985,7 @@ To disable:
 
 Disabling the timer subsystem disables all timer-driven scheduling,
 including ~logrotate-daily~ and ~log-prune-daily~.  It does not disable
-stage-based startup units.
+normal unit startup.
 
 ** Timer Configuration (~supervisor-timers~)
 
@@ -1131,7 +1140,7 @@ State is saved on every trigger, completion, and scheduler stop.
 
 ** Timer Scheduler Lifecycle
 
-- Started after all service stages complete
+- Started after startup completion
 - Stopped on ~supervisor-stop~, ~supervisor-stop-now~, and when timer mode is disabled
 - Uses ~run-at-time~ scheduling (no polling loop)
 
@@ -1194,9 +1203,8 @@ latched active until explicitly stopped.
 - ~disabled~
 - ~delayed~
 - ~waiting-on-deps~
-- ~stage-not-started~
 - ~failed-to-spawn~
-- ~stage-timeout~
+- ~startup-timeout~
 - ~crash-loop~
 
 ** Timer Rows in Dashboard
@@ -1211,8 +1219,8 @@ with the message: "Not available for timer rows: use timer actions
 (y or ? -> Timers)".
 
 The first body row is a services section header:
-~── Services  TYPE  STAGE  ENABLED  STATUS  RESTART  LOG  PID  REASON~.
-Service rows follow under their stage separators.
+~── Services  TYPE  TARGET  ENABLED  STATUS  RESTART  LOG  PID  REASON~.
+Service rows follow under this section.
 
 Service counters (~run/done/pend/fail/inv~) are shown in the Emacs
 header line.  These counters are service-only and do not include timer rows.
@@ -1237,7 +1245,7 @@ by a second key.  Timer actions use the ~y~ prefix.
 *** Top-Level Keys
 
 | Key | Function |
-| ~f~ | Cycle stage filter (all -> stage1 -> stage2 -> ...) |
+| ~f~ | Cycle target filter (all -> targetA -> targetB -> ...) |
 | ~F~ | Cycle tag filter |
 | ~g~ | Refresh dashboard |
 | ~G~ | Toggle auto-refresh (live monitoring) |
@@ -1285,6 +1293,7 @@ All inspect actions are read-only.
 | ~l~ | View log file |
 | ~c~ | View unit file (read-only) |
 | ~e~ | Edit unit file (create scaffold if missing) |
+| ~m~ | Show target members (target rows only) |
 
 *** Timers (~y~)
 
@@ -1328,7 +1337,7 @@ Limitations in this version:
 - ~supervisor-dashboard-mode~ is the major mode for ~*supervisor*~ and can be
   opened independently of whether supervision is currently running.
 - Dashboard filters are buffer-local:
-  ~supervisor--dashboard-stage-filter~ and ~supervisor--dashboard-tag-filter~.
+  ~supervisor--dashboard-target-filter~ and ~supervisor--dashboard-tag-filter~.
 - Dashboard auto-refresh timer (~supervisor--auto-refresh-timer~) is buffer-local
   and defaults to off until toggled with ~G~ / ~M-x supervisor-dashboard-toggle-auto-refresh~.
 
@@ -1347,14 +1356,14 @@ All dashboard faces are in customization group ~supervisor~:
 | ~supervisor-type-simple~ | Type ~simple~ |
 | ~supervisor-type-oneshot~ | Type ~oneshot~ |
 | ~supervisor-type-timer~ | Type ~timer~ rows |
-| ~supervisor-stage-1~ | Stage column ~stage1~ |
-| ~supervisor-stage-2~ | Stage column ~stage2~ |
-| ~supervisor-stage-3~ | Stage column ~stage3~ |
-| ~supervisor-stage-4~ | Stage column ~stage4~ |
+| ~supervisor-stage-1~ | Compatibility face (currently unused) |
+| ~supervisor-stage-2~ | Compatibility face (currently unused) |
+| ~supervisor-stage-3~ | Compatibility face (currently unused) |
+| ~supervisor-stage-4~ | Compatibility face (currently unused) |
 | ~supervisor-enabled-yes~ | Enabled column (~yes~) |
 | ~supervisor-enabled-no~ | Enabled column (~no~) |
 | ~supervisor-reason~ | Reason column values |
-| ~supervisor-stage-separator~ | Stage separator rows |
+| ~supervisor-stage-separator~ | Section header/separator rows |
 
 * CLI (~sbin/supervisorctl~)
 :PROPERTIES:
@@ -1404,7 +1413,7 @@ Systemctl-compatible commands:
 - ~status [ID...]~ (detail with IDs, overview without)
 - ~list-units [ID...]~ (overview table)
 - ~show ID~ (all properties of a unit)
-- ~start [-- ID...]~
+- ~start [--target TARGET] [-- ID...]~
 - ~stop [-- ID...]~
 - ~restart [-- ID...]~
 - ~enable [--] ID...~
@@ -1471,6 +1480,8 @@ IDs.
 
 - with IDs: operate on those IDs
 - with no IDs: operate on whole supervisor (~start~, ~stop~, ~stop+start~)
+- ~start --target TARGET~: start full supervisor from TARGET for that invocation
+  only (cannot be combined with specific IDs)
 - ~start~ on a disabled unit: succeeds (session-only, no override change).
   Only masked units are blocked from manual start.
 
@@ -1560,6 +1571,27 @@ Status JSON top-level keys (~status ID...~):
 - ~invalid~ (array, invalid configured units with reason)
 - ~not_found~ (array, truly missing IDs)
 
+Per-entry status JSON object keys (~entries~ array):
+
+- ~id~, ~type~, ~stage~, ~enabled~, ~status~, ~restart~, ~logging~, ~pid~,
+  ~reason~, ~delay~, ~after~, ~requires~
+- ~start_time~, ~ready_time~, ~duration~, ~unit_file~, ~authority_tier~
+- ~working_directory~, ~environment~, ~environment_file~, ~exec_stop~,
+  ~exec_reload~, ~restart_sec~, ~user~, ~group~
+- ~sandbox_enabled~, ~sandbox_profile~, ~sandbox_network~
+- ~uptime~, ~restart_count~, ~last_exit~, ~next_restart_eta~, ~metrics~,
+  ~process_tree~
+- ~description~, ~documentation~, ~log_tail~
+
+Sandbox JSON field notes:
+
+- ~sandbox_enabled~ is ~true~ when sandbox is requested, otherwise ~false~.
+- ~sandbox_profile~ is always present as one of ~"none"~, ~"strict"~,
+  ~"service"~, or ~"desktop"~.
+- ~sandbox_network~ is always present as effective mode (~"shared"~ or
+  ~"isolated"~), including profile defaults when no explicit network override
+  is set.
+
 Timer JSON top-level keys:
 
 - ~timers~ (array)
@@ -1611,13 +1643,13 @@ Empty collections are encoded as arrays (not ~null~).
 - ~:type~ (symbol)
 - ~:ts~ (float timestamp)
 - ~:id~ (string or ~nil~)
-- ~:stage~ (symbol or ~nil~)
+- ~:stage~ (symbol or ~nil~; currently emitted as ~nil~)
 - ~:data~ (plist)
 
 Event types:
 
-- ~stage-start~
-- ~stage-complete~
+- ~startup-begin~
+- ~startup-complete~
 - ~process-started~
 - ~process-ready~
 - ~process-exit~
@@ -1627,6 +1659,11 @@ Event types:
 - ~timer-overlap~
 - ~timer-success~
 - ~timer-failure~
+- ~target-reached~
+- ~target-degraded~
+
+~startup-begin~ and ~startup-complete~ are currently defined event symbols but
+are not emitted by runtime paths in this release.
 
 ** Minibuffer Notifications
 
@@ -1875,8 +1912,8 @@ Relevant customization variables:
 ** Overrides File
 
 - Path: ~supervisor-overrides-file~
-- Default: ~${XDG_STATE_HOME}/supervisor/overrides.eld~ if ~XDG_STATE_HOME~ is
-  set, otherwise =~/.local/state/supervisor/overrides.eld=
+- Default: ~${XDG_CONFIG_HOME}/supervisor/overrides.eld~ if ~XDG_CONFIG_HOME~
+  is set, otherwise =~/.config/supervisor/overrides.eld=
 - Format: schema-versioned Elisp data
 
 ** Timer State File
@@ -1904,8 +1941,10 @@ All user options (defcustom) are listed below.
 | ~supervisor-shutdown-timeout~ | ~3~ | Graceful shutdown timeout |
 | ~supervisor-oneshot-default-blocking~ | ~t~ | Default oneshot blocking behavior |
 | ~supervisor-oneshot-timeout~ | ~30~ | Default oneshot timeout |
-| ~supervisor-stage-timeout~ | ~nil~ | Per-stage timeout (~nil~ means disabled) |
-| ~supervisor-max-concurrent-starts~ | ~nil~ | Max concurrent stage spawns |
+| ~supervisor-startup-timeout~ | ~nil~ | Startup timeout before force-complete (~nil~ means disabled) |
+| ~supervisor-max-concurrent-starts~ | ~nil~ | Max concurrent startup spawn attempts |
+| ~supervisor-default-target~ | ~"default.target"~ | Startup target to activate |
+| ~supervisor-default-target-link~ | ~"graphical.target"~ | Alias target that ~default.target~ resolves to |
 | ~supervisor-verbose~ | ~nil~ | Show info-level messages |
 | ~supervisor-log-to-file~ | ~nil~ | Write supervisor events to file |
 | ~supervisor-watch-config~ | ~nil~ | Config file watch and auto-reload |
@@ -1940,8 +1979,6 @@ All user options (defcustom) are listed below.
 ** Dashboard Options
 
 | Variable | Default | Purpose |
-| ~supervisor-stage-descriptions~ | ~((stage1 . "X Setup") (stage2 . "System") (stage3 . "Services") (stage4 . "Applets"))~ | Stage labels |
-| ~supervisor-dashboard-group-by-stage~ | ~t~ | Group rows by stage |
 | ~supervisor-dashboard-show-header-hints~ | ~nil~ | Reserved compatibility option (currently no effect); use ~h~ for key help |
 | ~supervisor-dashboard-show-timers~ | ~t~ | Show timer section |
 | ~supervisor-auto-refresh-interval~ | ~2~ | Auto-refresh cadence |
@@ -1956,7 +1993,7 @@ All user options (defcustom) are listed below.
 | Command | Purpose |
 | ~M-x supervisor-mode~ | Global supervisor mode (start/stop + file watch) |
 | ~M-x supervisor-timer-subsystem-mode~ | Toggle timer subsystem gate |
-| ~M-x supervisor-start~ | Build plan and start staged scheduler |
+| ~M-x supervisor-start~ | Build plan and start target-closure DAG scheduler |
 | ~M-x supervisor-stop~ | Async graceful stop |
 | ~M-x supervisor-stop-now~ | Sync hard stop |
 | ~M-x supervisor-run-log-maintenance~ | Run rotate, reopen, and prune immediately |
@@ -1977,7 +2014,7 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-policy~ | Open policy submenu |
 | ~M-x supervisor-dashboard-inspect~ | Open inspect submenu |
 | ~M-x supervisor-dashboard-refresh~ | Refresh dashboard buffer |
-| ~M-x supervisor-dashboard-cycle-filter~ | Cycle stage filter |
+| ~M-x supervisor-dashboard-cycle-filter~ | Cycle target filter |
 | ~M-x supervisor-dashboard-cycle-tag-filter~ | Cycle tag filter |
 | ~M-x supervisor-dashboard-toggle-auto-refresh~ | Toggle auto-refresh |
 | ~M-x supervisor-dashboard-quit~ | Quit dashboard |
@@ -1998,6 +2035,7 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-show-deps~ | Show selected service deps |
 | ~M-x supervisor-dashboard-show-graph~ | Show full dependency graph |
 | ~M-x supervisor-dashboard-blame~ | Show startup timing view |
+| ~M-x supervisor-dashboard-target-members~ | Show required/wanted members for target at point |
 | ~M-x supervisor-dashboard-view-log~ | Open selected service log |
 | ~M-x supervisor-dashboard-cat~ | View unit file (read-only) |
 | ~M-x supervisor-dashboard-edit~ | Edit unit file (scaffold if missing) |
@@ -2009,6 +2047,12 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-timer-refresh~ | Refresh timer section |
 | ~M-x supervisor-dashboard-help~ | Open dashboard help |
 | ~M-x supervisor-dashboard-menu-open~ | Open transient menu |
+
+** Unit Edit Buffer Commands
+
+| Command | Purpose |
+| ~M-x supervisor-edit-finish~ | Save unit file and return to dashboard |
+| ~M-x supervisor-edit-quit~ | Prompt-save if modified and return to dashboard |
 
 * Indexes
 :PROPERTIES:
@@ -2026,11 +2070,11 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Config file watch and debounce (~supervisor-watch-config~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Crash-loop detection (~supervisor-max-restarts~, ~supervisor-restart-window~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Cycle fallback behavior for dependencies: [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Dashboard filtering (stage/tag): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Dashboard filtering (target/tag): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Disabled unit manual start (session-only, systemctl model): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Dashboard live updates (~supervisor-auto-refresh-interval~): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]], [[#customization-reference][Customization Reference]]
-- Dashboard mode/filter state (buffer-local stage/tag/auto-refresh): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
-- Dashboard visual customization (status/type/stage faces): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Dashboard mode/filter state (buffer-local target/tag/auto-refresh): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Dashboard visual customization (status/type/separator faces): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Dependency semantics split (~:after~ vs ~:requires~): [[#service-definition][Service Definition]]
 - Edit unit file (~edit~, ~i e~ in dashboard, scaffold template): [[#unit-files-modular-configuration][Unit Files]]
 - Event API (~supervisor-event-hook~ and event types): [[#events-and-hooks][Events and Hooks]]
@@ -2042,7 +2086,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Logging pipeline (~supervisor--log~, ~supervisor-verbose~, ~supervisor-log-to-file~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Manual stop behavior and restart suppression: [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Mask/unmask (~mask~, ~unmask~, ~m~ in dashboard): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
-- Max concurrent stage starts (~supervisor-max-concurrent-starts~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Max concurrent startup spawn attempts (~supervisor-max-concurrent-starts~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Adding a new service (~edit~, scaffold template): [[#unit-files-modular-configuration][Unit Files]]
 - Override precedence (runtime override vs config default): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Override persistence (~supervisor-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
@@ -2054,7 +2098,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Privilege-drop troubleshooting (identity errors, trust gate failures): [[#privilege-drop-troubleshooting][Privilege-Drop Troubleshooting]]
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
-- Stage timeout force-complete (~supervisor-stage-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Startup timeout force-complete (~supervisor-startup-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Mutator inventory and classification (explicit verb / unit-definition): [[#service-management-systems-comparison][Service Management Systems Comparison]]
 - Systemd example conversions (unit file to supervisor config): [[#service-management-systems-comparison][Service Management Systems Comparison]]
 - Systemd feature support matrix: [[#service-management-systems-comparison][Service Management Systems Comparison]]
@@ -2212,6 +2256,19 @@ Even with the gate enabled, conflicting or unsafe raw arguments are rejected:
   because all profiles already emit these arguments and duplication causes
   undefined bwrap behavior.
 
+*** Status Surfaces
+
+Sandbox status is surfaced in CLI and dashboard detail views:
+
+- CLI human detail (~status ID~ / ~show ID~) includes:
+  - ~Sandbox: PROFILE (network MODE)~ (only when sandbox is requested)
+- CLI JSON entry objects include:
+  - ~sandbox_enabled~ (boolean)
+  - ~sandbox_profile~ (~"none"~, ~"strict"~, ~"service"~, or ~"desktop"~)
+  - ~sandbox_network~ (~"shared"~ or ~"isolated"~)
+- Dashboard inspect detail (~i i~) includes:
+  - ~Sandbox: PROFILE (network MODE)~ (only when sandbox is requested)
+
 *** Launch Order
 
 When both identity drop (~:user~ / ~:group~) and sandbox are configured, the
@@ -2282,9 +2339,9 @@ Where behavior diverges across systems, parenthetical notes explain.
 | Parallel startup respecting ordering | yes | yes (all parallel, no ordering) | yes | yes (DAG in-degree scheduling) |
 | Conflict declarations | yes (Conflicts) | no | no | no |
 | Conditional activation | yes (ConditionXxx) | no | no | no |
-| *Staged / Phased Startup* | | | | |
-| Named synchronization barriers | yes (targets) | partial (runlevels as dirs) | yes (s6-rc bundles) | yes (4 stages) |
-| Runlevel/target switching at runtime | yes (isolate) | yes (runsvchdir) | yes (s6-rc -u/-d bundles) | no (stages are boot-time only) |
+| *Targets / Runlevels* | | | | |
+| Named synchronization barriers | yes (targets) | partial (runlevels as dirs) | yes (s6-rc bundles) | yes (targets) |
+| Runlevel/target switching at runtime | yes (isolate) | yes (runsvchdir) | yes (s6-rc -u/-d bundles) | yes (isolate, init, telinit) |
 | *Activation Mechanisms* | | | | |
 | Socket activation | yes (centralized, fd passing) | no | partial (s6-ipcserver/s6-tcpserver, composable not centralized) | no |
 | Timer activation | yes (OnCalendar, monotonic) | no | no | yes (on-calendar, on-startup-sec, on-unit-active-sec) |
@@ -2377,7 +2434,7 @@ Where behavior diverges across systems, parenthetical notes explain.
 
 The examples below are strict do-the-same-thing translations.
 Each supervisor unit includes ~:command~ in the plist, because unit files
-require both ~:id~ and ~:command~.
+in these examples are non-target units (where ~:command~ is required).
 
 *** Translation Rules Used in Examples
 
@@ -2397,7 +2454,7 @@ require both ~:id~ and ~:command~.
 | ~KillSignal=...~ | ~:kill-signal ...~ | Signal symbol |
 | ~RemainAfterExit=yes~ | ~:remain-after-exit t~ | Oneshot active latch |
 | ~User=~/~Group=~ | ~:user~ / ~:group~ | Requires root manager + trusted unit file |
-| ~WantedBy=multi-user.target~ | ~:stage stage3~ + ~:enabled t~ | Stage model approximation in current implementation |
+| ~WantedBy=multi-user.target~ | ~:wanted-by (\"multi-user.target\")~ + ~:enabled t~ | Target membership |
 
 *** Example 1: Simple Daemon
 
@@ -2426,7 +2483,7 @@ supervisor unit file (~my-daemon.el~):
  :command "/usr/bin/my-daemon --config /etc/my-daemon.conf"
  :description "My Background Service"
  :type simple
- :stage stage3
+ :wanted-by ("multi-user.target")
  :after ("network-ready")
  :restart on-failure
  :restart-sec 5
@@ -2458,7 +2515,7 @@ supervisor unit file (~setup-dirs.el~):
  :command "/usr/bin/mkdir -p /run/myapp"
  :description "Create runtime directories"
  :type oneshot
- :stage stage1
+ :wanted-by ("multi-user.target")
  :remain-after-exit t
  :enabled t)
 #+end_src
@@ -2493,7 +2550,7 @@ supervisor unit file (~webapp.el~):
  :command "/usr/bin/node /opt/webapp/server.js"
  :description "Web Application"
  :type simple
- :stage stage3
+ :wanted-by ("multi-user.target")
  :after ("database")
  :requires ("database")
  :environment (("NODE_ENV" . "production")
@@ -2530,7 +2587,7 @@ supervisor unit file (~nginx.el~), placed in a root-owned unit directory:
  :command "/usr/bin/nginx -g \"daemon off;\""
  :description "Web server"
  :type simple
- :stage stage3
+ :wanted-by ("multi-user.target")
  :restart on-failure
  :user "www-data"
  :group "www-data"
@@ -2599,7 +2656,7 @@ Public entry points that change runtime state:
 
 | Function | Category | State mutated |
 |----------+----------+---------------|
-| ~supervisor-start~ | Explicit verb | Clears all runtime state, loads overrides, builds plan, starts staged scheduler |
+| ~supervisor-start~ | Explicit verb | Clears all runtime state, loads overrides, builds plan, starts target-closure DAG scheduler |
 | ~supervisor-stop~ | Explicit verb | Sends graceful stop to all processes (async) |
 | ~supervisor-stop-now~ | Explicit verb | Sends hard stop to all processes (sync, for ~kill-emacs-hook~) |
 | ~supervisor-daemon-reload~ | Unit-definition mutation | Re-reads unit files, refreshes invalid hash |
@@ -2670,7 +2727,7 @@ All interactive dashboard commands that change state.
 | ~supervisor-dashboard-set-logging~ | Explicit verb | ~supervisor--policy-set-logging~ + ~save-overrides~ | Yes |
 | ~supervisor-dashboard-reload-unit~ | Unit-definition mutation | ~supervisor--reload-unit~ | No |
 | ~supervisor-dashboard-daemon-reload~ | Unit-definition mutation | ~supervisor-daemon-reload~ | No |
-| ~supervisor-dashboard-cycle-filter~ | UI-local state | Sets buffer-local ~supervisor--dashboard-stage-filter~ | No |
+| ~supervisor-dashboard-cycle-filter~ | UI-local state | Sets buffer-local ~supervisor--dashboard-target-filter~ | No |
 | ~supervisor-dashboard-cycle-tag-filter~ | UI-local state | Sets buffer-local ~supervisor--dashboard-tag-filter~ | No |
 | ~supervisor-dashboard-toggle-auto-refresh~ | UI-local state | Creates/cancels buffer-local auto-refresh timer | No |
 | ~supervisor-dashboard-toggle-proced-auto-update~ | UI-local state | Toggles ~proced-auto-update-flag~ | No |
