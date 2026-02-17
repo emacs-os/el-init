@@ -21617,9 +21617,35 @@ and absent are indistinguishable) and correctly does not apply sandbox."
     (should (member "--die-with-parent" args))
     (should (member "--ro-bind" args))))
 
+(ert-deftest supervisor-test-sandbox-profile-service-deterministic ()
+  "Profile service produces deterministic argv."
+  (let ((args (supervisor--sandbox-profile-args 'service)))
+    (should (member "--die-with-parent" args))
+    (should (member "--unshare-pid" args))
+    (should (member "--unshare-ipc" args))
+    (should (member "--ro-bind" args))
+    ;; Service does NOT unshare-all (unlike strict)
+    (should-not (member "--unshare-all" args))))
+
+(ert-deftest supervisor-test-sandbox-profile-desktop-deterministic ()
+  "Profile desktop produces deterministic argv."
+  (let ((args (supervisor--sandbox-profile-args 'desktop)))
+    (should (member "--die-with-parent" args))
+    (should (member "--unshare-pid" args))
+    (should (member "--ro-bind" args))
+    ;; Desktop binds X11 socket for graphical access
+    (should (member "/tmp/.X11-unix" args))
+    ;; Desktop does NOT unshare-all (unlike strict)
+    (should-not (member "--unshare-all" args))))
+
 (ert-deftest supervisor-test-sandbox-profile-service-shared-network ()
   "Profile service defaults to shared network."
   (should (eq (supervisor--sandbox-profile-default-network 'service)
+              'shared)))
+
+(ert-deftest supervisor-test-sandbox-profile-desktop-shared-network ()
+  "Profile desktop defaults to shared network."
+  (should (eq (supervisor--sandbox-profile-default-network 'desktop)
               'shared)))
 
 (ert-deftest supervisor-test-sandbox-profile-strict-isolated-network ()
