@@ -15464,17 +15464,19 @@ No warning is emitted when there are simply no child processes."
 
 (ert-deftest supervisor-test-cli-json-sandbox-fields ()
   "JSON output includes sandbox fields."
-  (supervisor-test-with-unit-files
-      '(("sleep 300" :id "svc" :type simple :sandbox-profile strict))
-    (let* ((supervisor--processes (make-hash-table :test 'equal))
-           (supervisor--entry-state (make-hash-table :test 'equal))
-           (plan (supervisor--build-plan (supervisor--effective-programs)))
-           (entry (car (supervisor-plan-entries plan)))
-           (info (supervisor--cli-entry-info entry))
-           (json-obj (supervisor--cli-entry-to-json-obj info)))
-      (should (eq t (alist-get 'sandbox_enabled json-obj)))
-      (should (equal "strict" (alist-get 'sandbox_profile json-obj)))
-      (should (equal "isolated" (alist-get 'sandbox_network json-obj))))))
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name) (when (equal name "bwrap") "/usr/bin/bwrap"))))
+    (supervisor-test-with-unit-files
+        '(("sleep 300" :id "svc" :type simple :sandbox-profile strict))
+      (let* ((supervisor--processes (make-hash-table :test 'equal))
+             (supervisor--entry-state (make-hash-table :test 'equal))
+             (plan (supervisor--build-plan (supervisor--effective-programs)))
+             (entry (car (supervisor-plan-entries plan)))
+             (info (supervisor--cli-entry-info entry))
+             (json-obj (supervisor--cli-entry-to-json-obj info)))
+        (should (eq t (alist-get 'sandbox_enabled json-obj)))
+        (should (equal "strict" (alist-get 'sandbox_profile json-obj)))
+        (should (equal "isolated" (alist-get 'sandbox_network json-obj)))))))
 
 (ert-deftest supervisor-test-cli-json-sandbox-disabled ()
   "JSON output shows sandbox_enabled false for non-sandbox entries."
