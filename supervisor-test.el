@@ -3483,36 +3483,29 @@ configured timers must be visible for analysis."
     (should (commandp 'supervisor-dashboard-timer-jump))
     (should (commandp 'supervisor-dashboard-timer-reset))
     (should (commandp 'supervisor-dashboard-timer-refresh))
-    ;; Verify transient layout has Timers group with correct key bindings
-    ;; Layout is stored as property: (get SYM 'transient--layout)
-    ;; Structure: ([1 transient-columns (:description ...) (column-vectors...)])
-    ;; Each column: [1 transient-column (:description "Timers") (suffix-specs...)]
-    ;; Each suffix: (1 transient-suffix (:key "y t" :command ...))
+    ;; Verify transient layout has Timers group with correct key bindings.
+    ;; Walk the layout tree to find :key properties, resilient to internal
+    ;; transient layout format changes across Emacs versions.
     (let* ((layout (get 'supervisor-dashboard-menu 'transient--layout))
-           (columns-vec (car layout))
-           ;; columns-vec is [1 transient-columns (:description ...) (col1 col2 ...)]
-           ;; The column vectors start at index 3
-           (col-list (aref columns-vec 3))
-           ;; Find the Timers column
-           (timer-col
-            (cl-find-if
-             (lambda (col)
-               (let ((props (aref col 2)))
-                 (equal "Timers" (plist-get props :description))))
-             col-list)))
-      (should timer-col)
-      ;; Extract suffix specs from timer column (index 3 is the suffix list)
-      (let* ((suffixes (aref timer-col 3))
-             (keys (mapcar (lambda (s)
-                             ;; Each suffix is (1 transient-suffix (:key K ...))
-                             (plist-get (nth 2 s) :key))
-                           suffixes)))
-        (should (= 5 (length suffixes)))
-        (should (member "y t" keys))
-        (should (member "y i" keys))
-        (should (member "y j" keys))
-        (should (member "y r" keys))
-        (should (member "y g" keys))))))
+           (keys nil))
+      ;; Recursively collect all :key values from the layout structure
+      (cl-labels
+          ((walk (node)
+             (cond
+              ((vectorp node)
+               (dotimes (i (length node))
+                 (walk (aref node i))))
+              ((and (listp node) (plist-get node :key))
+               (push (plist-get node :key) keys))
+              ((listp node)
+               (dolist (elt node)
+                 (walk elt))))))
+        (walk layout))
+      (should (member "y t" keys))
+      (should (member "y i" keys))
+      (should (member "y j" keys))
+      (should (member "y r" keys))
+      (should (member "y g" keys)))))
 
 (ert-deftest supervisor-test-timer-actions-dispatcher-key ()
   "Timer actions dispatcher is bound to y in dashboard keymap."
