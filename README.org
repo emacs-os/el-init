@@ -120,6 +120,76 @@ Each service gets its own ~.el~ file in an authority root.  See
 [[#unit-files-modular-configuration][Unit Files]] for the full authority-root model, precedence rules, and
 all available keywords.
 
+** Understanding the Dashboard View
+:PROPERTIES:
+:CUSTOM_ID: understanding-the-dashboard
+:END:
+
+When you first run ~M-x supervisor~, you will see a mix of target statuses that
+might look surprising.  Some targets show *reached*, others show *unreachable*,
+and you might wonder if something is broken.  It is not -- this is how the
+target system works.
+
+*** Why some targets are "reached"
+
+At startup, supervisor picks a root target (by default ~graphical.target~) and
+walks its dependency chain to figure out what needs to start.  The built-in
+target hierarchy is:
+
+#+begin_example
+basic.target
+  ^  (required by)
+multi-user.target
+  ^  (required by)
+graphical.target   <-- startup root
+#+end_example
+
+All three are in the startup path, so they activate, their member services
+start, and the targets converge to *reached*.  ~default.target~ also shows
+reached because it resolves to ~graphical.target~ under the hood.
+
+*** Why some targets are "unreachable"
+
+Targets like ~rescue.target~, ~shutdown.target~, ~poweroff.target~, and
+~reboot.target~ are *not* in ~graphical.target~'s dependency chain.  Nothing
+pulls them in during a normal boot, so they sit outside the activation closure.
+
+Supervisor shows these as *unreachable* -- meaning "not part of the current
+startup transaction."  This is expected.  These targets only activate when you
+explicitly request them with ~isolate~ or ~init~.
+
+*** Why runlevel aliases follow their canonical target
+
+Each ~runlevelN.target~ is an alias that resolves to a canonical target before
+any status lookup:
+
+| Alias | Resolves to | In normal boot? | Status |
+|-------+-------------+-----------------+--------|
+| ~runlevel2.target~ | ~multi-user.target~ | yes | reached |
+| ~runlevel3.target~ | ~multi-user.target~ | yes | reached |
+| ~runlevel4.target~ | ~multi-user.target~ | yes | reached |
+| ~runlevel5.target~ | ~graphical.target~ | yes | reached |
+| ~runlevel0.target~ | ~poweroff.target~ | no | unreachable |
+| ~runlevel1.target~ | ~rescue.target~ | no | unreachable |
+| ~runlevel6.target~ | ~reboot.target~ | no | unreachable |
+
+Runlevels 2 through 5 show *reached* because their canonical targets
+(~multi-user.target~ and ~graphical.target~) are in the startup path and
+converged.  Runlevels 0, 1, and 6 show *unreachable* because their canonical
+targets (~poweroff.target~, ~rescue.target~, ~reboot.target~) were never pulled
+into the startup transaction.
+
+*** Quick reference for target statuses
+
+| Status | Meaning |
+|--------+---------|
+| reached | Target's required members all started successfully. |
+| degraded | Target converged, but one or more members failed. |
+| converging | Target is still waiting for members to start. |
+| pending | Target is in the startup path but has not begun converging yet. |
+| unreachable | Target is not part of the current startup transaction. |
+| masked | Target was explicitly masked by the operator. |
+
 * Service Definition (Unit-File Keywords)
 :PROPERTIES:
 :CUSTOM_ID: service-definition
