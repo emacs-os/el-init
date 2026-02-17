@@ -1001,42 +1001,53 @@ Return nil if valid, or a reason string if invalid."
               (push (format ":sandbox-network must be one of %s"
                             supervisor--sandbox-network-modes)
                     errors)))))
-      ;; Check path-list sandbox keys
-      (dolist (spec '((:sandbox-ro-bind . ":sandbox-ro-bind")
-                      (:sandbox-rw-bind . ":sandbox-rw-bind")
-                      (:sandbox-tmpfs . ":sandbox-tmpfs")))
+      ;; Check path-list sandbox keys.  Each spec is (KEY LABEL CHECK-EXISTS).
+      ;; Bind sources must exist; tmpfs destinations are created by bwrap.
+      (dolist (spec '((:sandbox-ro-bind ":sandbox-ro-bind" t)
+                      (:sandbox-rw-bind ":sandbox-rw-bind" t)
+                      (:sandbox-tmpfs ":sandbox-tmpfs" nil)))
         (when (plist-member plist (car spec))
-          (let ((val (plist-get plist (car spec))))
+          (let ((val (plist-get plist (car spec)))
+                (label (nth 1 spec))
+                (check-exists (nth 2 spec)))
             (cond
              ((null val))
              ((stringp val)
               (cond
                ((string-empty-p val)
-                (push (format "%s must not contain empty paths" (cdr spec))
+                (push (format "%s must not contain empty paths" label)
                       errors))
                ((not (file-name-absolute-p val))
-                (push (format "%s paths must be absolute" (cdr spec))
+                (push (format "%s paths must be absolute" label)
                       errors))
                ((member val supervisor--sandbox-forbidden-paths)
                 (push (format "%s must not include forbidden path %s"
-                              (cdr spec) val)
+                              label val)
+                      errors))
+               ((and check-exists (not (file-exists-p val)))
+                (push (format "%s source path does not exist: %s"
+                              label val)
                       errors))))
              ((and (proper-list-p val) (cl-every #'stringp val))
               (dolist (path val)
                 (cond
                  ((string-empty-p path)
-                  (push (format "%s must not contain empty paths" (cdr spec))
+                  (push (format "%s must not contain empty paths" label)
                         errors))
                  ((not (file-name-absolute-p path))
-                  (push (format "%s paths must be absolute" (cdr spec))
+                  (push (format "%s paths must be absolute" label)
                         errors))
                  ((member path supervisor--sandbox-forbidden-paths)
                   (push (format "%s must not include forbidden path %s"
-                                (cdr spec) path)
+                                label path)
+                        errors))
+                 ((and check-exists (not (file-exists-p path)))
+                  (push (format "%s source path does not exist: %s"
+                                label path)
                         errors)))))
              (t
               (push (format "%s must be a string or list of absolute path strings"
-                            (cdr spec))
+                            label)
                     errors))))))
       ;; Check :sandbox-raw-args shape and gate
       (when (plist-member plist :sandbox-raw-args)

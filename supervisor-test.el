@@ -21429,7 +21429,34 @@ the invalid-hash must not contain the alias ID."
 (ert-deftest supervisor-test-sandbox-validate-path-valid ()
   "Valid absolute paths pass validation."
   (should-not (supervisor--validate-entry
-               '("cmd" :id "svc" :sandbox-ro-bind ("/opt/data")))))
+               '("cmd" :id "svc" :sandbox-ro-bind ("/tmp")))))
+
+(ert-deftest supervisor-test-sandbox-validate-bind-source-nonexistent ()
+  "Non-existent source path in ro-bind is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-ro-bind
+                   ("/definitely/does/not/exist/supervisor-test")))))
+    (should (string-match-p "source path does not exist" reason))))
+
+(ert-deftest supervisor-test-sandbox-validate-rw-bind-source-nonexistent ()
+  "Non-existent source path in rw-bind is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-rw-bind
+                   ("/definitely/does/not/exist/supervisor-test")))))
+    (should (string-match-p "source path does not exist" reason))))
+
+(ert-deftest supervisor-test-sandbox-validate-tmpfs-no-existence-check ()
+  "Tmpfs paths do not require source existence."
+  (should-not (supervisor--validate-entry
+               '("cmd" :id "svc" :sandbox-tmpfs
+                 ("/definitely/does/not/exist/supervisor-test")))))
+
+(ert-deftest supervisor-test-sandbox-validate-bind-source-string-nonexistent ()
+  "Non-existent source path as string in ro-bind is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-ro-bind
+                   "/definitely/does/not/exist/supervisor-test"))))
+    (should (string-match-p "source path does not exist" reason))))
 
 (ert-deftest supervisor-test-sandbox-validate-path-invalid-type ()
   "Non-string path list is rejected."
