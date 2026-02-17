@@ -21776,6 +21776,31 @@ and absent are indistinguishable) and correctly does not apply sandbox."
                (after-sep (nth (1+ first-sep) args)))
           (should (equal after-sep "/usr/bin/bwrap")))))))
 
+(ert-deftest supervisor-test-sandbox-build-launch-resolves-service-exe ()
+  "Build-launch-command resolves service executable under runas + bwrap.
+The service binary must be resolved to an absolute path via executable-find
+even when both identity wrapper and sandbox wrapper are active."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc" :sandbox-profile service))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (name)
+                 (cond ((equal name "bwrap") "/usr/bin/bwrap")
+                       ((equal name "sleep") "/usr/bin/sleep")
+                       (t nil)))))
+      (let ((args (supervisor--build-launch-command "sleep 300" "alice" nil
+                                                    entry)))
+        ;; Runas is first
+        (should (equal (car args) supervisor-runas-command))
+        ;; bwrap appears after runas -- separator
+        (let ((first-sep (cl-position "--" args :test #'equal)))
+          (should first-sep)
+          (should (equal (nth (1+ first-sep) args) "/usr/bin/bwrap")))
+        ;; Service executable is resolved to absolute path after bwrap --
+        (let ((last-sep (cl-position "--" args :test #'equal :from-end t)))
+          (should last-sep)
+          (should (equal (nth (1+ last-sep) args) "/usr/bin/sleep"))
+          (should (equal (nth (+ last-sep 2) args) "300")))))))
+
 ;; Service struct roundtrip tests
 
 (ert-deftest supervisor-test-sandbox-service-roundtrip ()
