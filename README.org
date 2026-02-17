@@ -912,7 +912,9 @@ execute an ~isolate~ transaction (stops entries not in the new target
 closure, starts entries in the closure).
 
 Runlevels 0 and 6 are destructive transitions and require
-~--yes~ for confirmation.  Runlevels 1-5 do not require ~--yes~.
+confirmation.  In interactive Emacs, a ~y-or-n-p~ prompt is shown.
+In batch mode or JSON output, ~--yes~ is required.
+Runlevels 1-5 do not require confirmation.
 
 ~init N~ is transaction-scoped and does NOT persist default target
 changes.  Use ~set-default TARGET~ to persist a default target
@@ -949,9 +951,9 @@ The timer validation denylist includes:
 - ~rescue.target~, ~shutdown.target~, ~poweroff.target~, ~reboot.target~
 - ~runlevel0.target~ through ~runlevel6.target~
 
-Timers targeting these IDs are rejected during validation with the
-reason "init-transition target is not timer-eligible" and excluded
-from the scheduler.
+Timers targeting these IDs are rejected during validation with a
+reason of the form =:target 'ID' is an init-transition target and is
+not timer-eligible= and excluded from the scheduler.
 
 * Timer Subsystem
 :PROPERTIES:
