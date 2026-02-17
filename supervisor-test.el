@@ -21519,6 +21519,45 @@ the invalid-hash must not contain the alias ID."
                  (executable-find name)))))
     (should-not (supervisor--validate-entry '("cmd" :id "svc")))))
 
+(ert-deftest supervisor-test-sandbox-mixed-plan-missing-bwrap ()
+  "Mixed plan invalidates sandbox entry and keeps non-sandbox entry valid.
+Build a plan with one sandbox-requesting and one non-sandbox entry while
+bwrap is missing.  The sandbox entry must land in the invalid hash with
+a bwrap-related reason, while the non-sandbox entry must be in the valid
+entries list and eligible for DAG startup."
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name)
+               (unless (equal name "bwrap")
+                 (executable-find name)))))
+    (let* ((programs '(("sleep 300" :id "sandboxed-svc"
+                         :sandbox-profile strict)
+                       ("sleep 300" :id "plain-svc")))
+           (warnings nil))
+      ;; Capture warnings emitted by supervisor--log
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (push (apply #'format fmt args) warnings))))
+        (let ((plan (supervisor--build-plan programs)))
+          ;; Sandbox-requesting entry must be invalid
+          (should (gethash "sandboxed-svc"
+                           (supervisor-plan-invalid plan)))
+          (should (string-match-p
+                   "bwrap"
+                   (gethash "sandboxed-svc"
+                            (supervisor-plan-invalid plan))))
+          ;; Non-sandbox entry must be valid
+          (should (cl-find "plain-svc"
+                           (supervisor-plan-entries plan)
+                           :key #'supervisor-entry-id
+                           :test #'equal))
+          (should-not (gethash "plain-svc"
+                               (supervisor-plan-invalid plan)))
+          ;; Warning must have been emitted for the sandbox entry
+          (should (cl-some (lambda (w)
+                             (and (string-match-p "INVALID" w)
+                                  (string-match-p "sandboxed-svc" w)))
+                           warnings)))))))
+
 ;; Profile registry and command builder tests
 
 (ert-deftest supervisor-test-sandbox-profile-none-no-argv ()
