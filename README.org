@@ -105,10 +105,10 @@ With the above configuration running, ~sbin/supervisorctl status~ shows:
 
 #+begin_example
 $ sbin/supervisorctl status
-ID               TYPE     STAGE    ENABLED  STATUS     RESTART  LOG   PID     REASON
+ID               TYPE     TARGET               ENABLED  STATUS     RESTART  LOG   PID     REASON
 ----------------------------------------------------------------------------------------------------
-xhost            oneshot  stage3   yes      done       n/a      yes   -       -
-nm-applet        simple   stage3   yes      running    yes      yes   1396    -
+xhost            oneshot  graphical.target     yes      done       n/a      yes   -       -
+nm-applet        simple   graphical.target     yes      running    always   yes   1396    -
 #+end_example
 
 ~M-x supervisor~ opens an interactive dashboard for managing services:
@@ -1298,7 +1298,7 @@ State is saved on every trigger, completion, and scheduler stop.
 Dashboard:
 
 - Timer section is shown when ~supervisor-dashboard-show-timers~ is non-nil.
-- Stage and tag filters apply only to the service section; the timer section
+- Target and tag filters apply only to the service section; the timer section
   is always visible when ~supervisor-dashboard-show-timers~ is non-nil.
 - When the timer subsystem is disabled, the timer section renders with
   an explicit "(disabled)" label and no interactive timer actions.
@@ -1321,7 +1321,7 @@ Dashboard buffer: ~*supervisor*~, major mode ~supervisor-dashboard-mode~
 
 - ~ID~
 - ~Type~
-- ~Stage~
+- ~Target~
 - ~Enabled~
 - ~Status~
 - ~Restart~
