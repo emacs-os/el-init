@@ -285,6 +285,13 @@ is intended for expert users only."
   :type 'boolean
   :group 'supervisor)
 
+(defcustom supervisor-log-format-binary-enable nil
+  "When non-nil, allow per-unit binary log format.
+The `:log-format binary' value is rejected unless this gate is
+enabled.  Binary logging is experimental."
+  :type 'boolean
+  :group 'supervisor)
+
 (defcustom supervisor-verbose nil
   "When non-nil, log all events including informational messages.
 When nil, only warnings and errors are logged.
@@ -455,7 +462,8 @@ Scan PLIST and collect any key that appears more than once."
     :user :group
     :wanted-by :required-by
     :sandbox-profile :sandbox-network :sandbox-ro-bind :sandbox-rw-bind
-    :sandbox-tmpfs :sandbox-raw-args)
+    :sandbox-tmpfs :sandbox-raw-args
+    :log-format)
   "List of valid keywords for entry plists.")
 
 (defconst supervisor--valid-types '(simple oneshot target)
@@ -469,7 +477,8 @@ Scan PLIST and collect any key that appears more than once."
     :kill-signal :kill-mode :remain-after-exit :success-exit-status
     :user :group :wanted-by :required-by
     :sandbox-profile :sandbox-network :sandbox-ro-bind :sandbox-rw-bind
-    :sandbox-tmpfs :sandbox-raw-args)
+    :sandbox-tmpfs :sandbox-raw-args
+    :log-format)
   "Keywords invalid for :type target entries.")
 
 (defconst supervisor--valid-restart-policies '(no on-success on-failure always)
@@ -1094,6 +1103,17 @@ Return nil if valid, or a reason string if invalid."
                 (push (format ":sandbox-raw-args \"%s\" conflicts with profile-managed setup"
                               arg)
                       errors)))))))
+      ;; Check :log-format value and gate
+      (when (plist-member plist :log-format)
+        (let ((val (plist-get plist :log-format)))
+          (let ((sym (if (stringp val) (intern val) val)))
+            (unless (memq sym '(text binary))
+              (push (format ":log-format must be `text' or `binary', got: %S" val)
+                    errors))
+            (when (and (eq sym 'binary)
+                       (not supervisor-log-format-binary-enable))
+              (push ":log-format binary requires supervisor-log-format-binary-enable to be enabled"
+                    errors)))))
       ;; Check sandbox-requesting units for OS and binary prerequisites.
       ;; Per plan contract: a unit is sandbox-requesting when
       ;; :sandbox-profile is set to anything other than none, OR any
@@ -1956,7 +1976,9 @@ Field documentation:
   sandbox-tmpfs  - List of tmpfs mount absolute paths
                    Default: nil
   sandbox-raw-args - List of raw bwrap argument strings (expert gate)
-                   Default: nil"
+                   Default: nil
+  log-format     - Log format symbol: text or binary
+                   Default: nil (effective text)"
   (id nil :type string :documentation "Unique identifier (required)")
   (command nil :type string :documentation "Shell command to execute (required)")
   (type 'simple :type symbol :documentation "Process type: simple or oneshot")
@@ -1996,7 +2018,8 @@ Field documentation:
   (sandbox-ro-bind nil :type list :documentation "Read-only bind mount paths")
   (sandbox-rw-bind nil :type list :documentation "Read-write bind mount paths")
   (sandbox-tmpfs nil :type list :documentation "Tmpfs mount paths")
-  (sandbox-raw-args nil :type list :documentation "Raw bwrap argument list"))
+  (sandbox-raw-args nil :type list :documentation "Raw bwrap argument list")
+  (log-format nil :type (or null symbol) :documentation "Log format: text or binary"))
 
 (defconst supervisor-service-required-fields '(id command)
   "List of required fields in a service record.")
@@ -2037,7 +2060,8 @@ Field documentation:
     (sandbox-ro-bind . nil)
     (sandbox-rw-bind . nil)
     (sandbox-tmpfs . nil)
-    (sandbox-raw-args . nil))
+    (sandbox-raw-args . nil)
+    (log-format . nil))
   "Alist of optional fields with their default values.
 A value of :defer means the default is resolved at runtime.")
 
@@ -2056,7 +2080,8 @@ A value of :defer means the default is resolved at runtime.")
 ;;    kill-signal kill-mode remain-after-exit success-exit-status
 ;;    user group wanted-by required-by
 ;;    sandbox-profile sandbox-network sandbox-ro-bind sandbox-rw-bind
-;;    sandbox-tmpfs sandbox-raw-args)
+;;    sandbox-tmpfs sandbox-raw-args
+;;    log-format)
 
 (defun supervisor-entry-id (entry)
   "Return the ID of parsed ENTRY."
@@ -2216,6 +2241,10 @@ Value is one of `always', `no', `on-success', or `on-failure'."
 (defun supervisor-entry-sandbox-raw-args (entry)
   "Return the sandbox raw argument list of parsed ENTRY, or nil."
   (and (>= (length entry) 38) (nth 37 entry)))
+
+(defun supervisor-entry-log-format (entry)
+  "Return the log format symbol of parsed ENTRY, or nil."
+  (and (>= (length entry) 39) (nth 38 entry)))
 
 (defun supervisor--sandbox-requesting-p (entry)
   "Return non-nil if parsed ENTRY requests sandbox.
@@ -3154,14 +3183,14 @@ or nil if VAL is nil."
 
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
-Return a 38-element list: (id cmd delay enabled-p restart-policy
+Return a 39-element list: (id cmd delay enabled-p restart-policy
 logging-p stdout-log-file stderr-log-file type after
 oneshot-blocking oneshot-timeout tags requires working-directory
 environment environment-file exec-stop exec-reload restart-sec
 description documentation before wants kill-signal kill-mode
 remain-after-exit success-exit-status user group wanted-by
 required-by sandbox-profile sandbox-network sandbox-ro-bind
-sandbox-rw-bind sandbox-tmpfs sandbox-raw-args).
+sandbox-rw-bind sandbox-tmpfs sandbox-raw-args log-format).
 
 Indices (schema v1):
   0  id                  - unique identifier string
@@ -3202,6 +3231,7 @@ Indices (schema v1):
   35 sandbox-rw-bind     - list of read-write bind paths or nil
   36 sandbox-tmpfs       - list of tmpfs mount paths or nil
   37 sandbox-raw-args    - list of raw bwrap argument strings or nil
+  38 log-format          - log format symbol (text or binary) or nil
 
 ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
@@ -3215,7 +3245,8 @@ Use accessor functions instead of direct indexing for new code."
               nil nil nil nil nil nil
               nil nil nil nil nil nil nil nil
               nil nil nil nil
-              nil nil nil nil nil nil))
+              nil nil nil nil nil nil
+              nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
            (type-raw (plist-get plist :type))
@@ -3338,7 +3369,12 @@ Use accessor functions instead of direct indexing for new code."
               (plist-get plist :sandbox-tmpfs))))
            (sandbox-raw-args
             (supervisor--normalize-string-or-list
-             (plist-get plist :sandbox-raw-args))))
+             (plist-get plist :sandbox-raw-args)))
+           (log-format-raw (plist-get plist :log-format))
+           (log-format (when log-format-raw
+                         (if (stringp log-format-raw)
+                             (intern log-format-raw)
+                           log-format-raw))))
       (list id cmd delay enabled restart logging
             stdout-log-file stderr-log-file
             type after
@@ -3349,7 +3385,8 @@ Use accessor functions instead of direct indexing for new code."
             kill-signal kill-mode remain-after-exit success-exit-status
             user group wanted-by required-by
             sandbox-profile sandbox-network sandbox-ro-bind sandbox-rw-bind
-            sandbox-tmpfs sandbox-raw-args))))
+            sandbox-tmpfs sandbox-raw-args
+            log-format))))
 
 ;;; Entry/Service Conversion Functions
 
@@ -3393,7 +3430,8 @@ Use accessor functions instead of direct indexing for new code."
    :sandbox-ro-bind (supervisor-entry-sandbox-ro-bind entry)
    :sandbox-rw-bind (supervisor-entry-sandbox-rw-bind entry)
    :sandbox-tmpfs (supervisor-entry-sandbox-tmpfs entry)
-   :sandbox-raw-args (supervisor-entry-sandbox-raw-args entry)))
+   :sandbox-raw-args (supervisor-entry-sandbox-raw-args entry)
+   :log-format (supervisor-entry-log-format entry)))
 
 (defun supervisor-service-to-entry (service)
   "Convert SERVICE struct to a parsed entry tuple."
@@ -3434,7 +3472,8 @@ Use accessor functions instead of direct indexing for new code."
         (supervisor-service-sandbox-ro-bind service)
         (supervisor-service-sandbox-rw-bind service)
         (supervisor-service-sandbox-tmpfs service)
-        (supervisor-service-sandbox-raw-args service)))
+        (supervisor-service-sandbox-raw-args service)
+        (supervisor-service-log-format service)))
 
 (defun supervisor--check-crash-loop (id)
   "Check if ID is crash-looping.  Return t if should NOT restart."

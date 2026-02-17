@@ -32,7 +32,7 @@
 
 ;; Forward declarations for supervisor-core functions we depend on
 (declare-function supervisor--log "supervisor-core" (level format-string &rest args))
-(declare-function supervisor--emit-event "supervisor-core" (type id msg &optional metadata))
+(declare-function supervisor--emit-event "supervisor-core" (type &optional id data))
 (declare-function supervisor--build-plan "supervisor-core" (programs))
 (declare-function supervisor--effective-programs "supervisor-core" ())
 (declare-function supervisor--start-entry-async "supervisor-core" (entry callback))
@@ -771,7 +771,7 @@ Returns t if triggered, nil if skipped."
         (let ((state (gethash id supervisor--timer-state)))
           (setq state (plist-put state :last-failure-at (float-time)))
           (puthash id state supervisor--timer-state))
-        (supervisor--emit-event 'timer-failure id nil
+        (supervisor--emit-event 'timer-failure id
                                 (list :target target-id :reason 'not-found))
         (cl-return-from supervisor-timer--trigger nil))
       (let ((target-type (supervisor-entry-type entry)))
@@ -813,7 +813,7 @@ Returns t if triggered, nil if skipped."
       (supervisor-timer--record-result id 'skip 'overlap)
       (supervisor--log 'info "timer %s: skipped (target %s still active)"
                        id target-id)
-      (supervisor--emit-event 'timer-overlap id nil
+      (supervisor--emit-event 'timer-overlap id
                               (list :target target-id :reason reason))
       (cl-return-from supervisor-timer--trigger-oneshot nil))
     ;; Start the oneshot
@@ -948,7 +948,7 @@ Optional TARGET-ID is included in the event data."
     (setq state (plist-put state :last-run-at now))
     (puthash timer-id state supervisor--timer-state))
   (supervisor-timer--save-state)
-  (supervisor--emit-event 'timer-trigger timer-id nil
+  (supervisor--emit-event 'timer-trigger timer-id
                           (list :target target-id :reason reason)))
 
 (defun supervisor-timer--record-result (timer-id result result-reason)
@@ -977,7 +977,7 @@ TARGET-ID is the simple service.  SUCCESS is t if spawned."
   (if success
       (progn
         (supervisor-timer--record-result timer-id 'success nil)
-        (supervisor--emit-event 'timer-success timer-id nil
+        (supervisor--emit-event 'timer-success timer-id
                                 (list :target target-id)))
     (supervisor-timer--record-result timer-id 'failure 'spawn-failed)
     (let ((state (gethash timer-id supervisor--timer-state)))
@@ -988,7 +988,7 @@ TARGET-ID is the simple service.  SUCCESS is t if spawned."
         (setq state updated))
       (puthash timer-id state supervisor--timer-state)
       (supervisor-timer--save-state)
-      (supervisor--emit-event 'timer-failure timer-id nil
+      (supervisor--emit-event 'timer-failure timer-id
                               (list :target target-id))))
   (supervisor--timer-scheduler-tick))
 
@@ -1002,7 +1002,7 @@ convergence states are classified as failure."
     (pcase conv
       ('reached
        (supervisor-timer--record-result timer-id 'success 'target-reached)
-       (supervisor--emit-event 'timer-success timer-id nil
+       (supervisor--emit-event 'timer-success timer-id
                                (list :target target-id)))
       ('degraded
        (supervisor-timer--record-result timer-id 'failure 'target-degraded)
@@ -1013,7 +1013,7 @@ convergence states are classified as failure."
            (setq state updated))
          (puthash timer-id state supervisor--timer-state)
          (supervisor-timer--save-state))
-       (supervisor--emit-event 'timer-failure timer-id nil
+       (supervisor--emit-event 'timer-failure timer-id
                                (list :target target-id :reason 'degraded)))
       ('converging
        ;; DAG completed but target still converging -- classify as failure
@@ -1024,7 +1024,7 @@ convergence states are classified as failure."
            (setq state updated))
          (puthash timer-id state supervisor--timer-state)
          (supervisor-timer--save-state))
-       (supervisor--emit-event 'timer-failure timer-id nil
+       (supervisor--emit-event 'timer-failure timer-id
                                (list :target target-id :reason 'not-converged)))
       (_
        ;; nil or unknown -- convergence never initialized, treat as failure
@@ -1033,7 +1033,7 @@ convergence states are classified as failure."
          (setq state (plist-put state :last-failure-at (float-time)))
          (puthash timer-id state supervisor--timer-state)
          (supervisor-timer--save-state))
-       (supervisor--emit-event 'timer-failure timer-id nil
+       (supervisor--emit-event 'timer-failure timer-id
                                (list :target target-id
                                      :reason 'convergence-unknown)))))
   (supervisor--timer-scheduler-tick))
@@ -1077,14 +1077,14 @@ SUCCESS is t if completed successfully, nil otherwise."
           (setq state (plist-put state :last-result-reason nil))
           (setq state (plist-put state :retry-attempt 0))
           (setq state (plist-put state :retry-next-at nil))
-          (supervisor--emit-event 'timer-success timer-id nil
+          (supervisor--emit-event 'timer-success timer-id
                                   (list :target target-id)))
       ;; Failure - check if retryable
       (setq state (plist-put state :last-failure-at now))
       (setq state (plist-put state :last-exit (or exit-code -1)))
       (setq state (plist-put state :last-result 'failure))
       (setq state (plist-put state :last-result-reason nil))
-      (supervisor--emit-event 'timer-failure timer-id nil
+      (supervisor--emit-event 'timer-failure timer-id
                               (list :target target-id :exit exit-code))
       ;; Schedule retry if eligible
       (when (supervisor-timer--failure-retryable-p exit-code)

@@ -52,6 +52,10 @@ structured and deterministic.
 9. Exit markers are mandatory in both formats.
 10. Stream attribution (`stdout` vs `stderr`) is mandatory in both formats.
 11. Binary mode is a format choice, not a security boundary.
+11a. Binary mode is declared **experimental** and hard-gated behind
+    `supervisor-log-format-binary-enable` (default `nil`).  When the
+    variable is `nil`, `:log-format binary` is a validation error.
+    `:log-format text` (or omitted) is always accepted.
 12. Existing `supervisorctl logs [--tail N] [--] ID` behavior remains
     unchanged.
 13. New `supervisorctl journal` command is the canonical decoded reader for
@@ -98,7 +102,7 @@ Type constraints:
 ### 2) Parsed Entry Contract
 Entry tuple extends by one field.
 
-- index 33: `log-format`.
+- index 38: `log-format`.
 
 Required accessor:
 
@@ -316,8 +320,10 @@ Maintenance remains file-size-based for all log formats.
 1. `:log-format` must be symbol `text` or `binary` when present.
 2. Unknown `:log-format` values are validation errors.
 3. `:log-format` on `:type target` is validation error.
-4. Validation errors are surfaced in existing invalid-entry surfaces.
-5. Invalid entries are excluded from startup as today.
+4. `:log-format binary` when `supervisor-log-format-binary-enable` is `nil`
+   is a validation error (message must reference the gate variable).
+5. Validation errors are surfaced in existing invalid-entry surfaces.
+6. Invalid entries are excluded from startup as today.
 
 ## Phase Plan
 
@@ -333,7 +339,11 @@ Acceptance:
 1. `simple` and `oneshot` parse and preserve `:log-format`.
 2. `target` with `:log-format` is invalid.
 3. Unknown `:log-format` values are rejected deterministically.
-4. `make check` passes.
+4. `:log-format binary` is rejected when `supervisor-log-format-binary-enable`
+   is `nil`, with an error message naming the gate variable.
+5. `:log-format binary` is accepted when `supervisor-log-format-binary-enable`
+   is non-nil.
+6. `make check` passes.
 
 ### Phase 2: Writer Event Transport
 Deliverables:

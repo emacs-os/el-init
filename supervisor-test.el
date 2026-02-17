@@ -2542,7 +2542,7 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
 
 (ert-deftest supervisor-test-emit-event-invalid-type-rejected ()
   "Emitting an invalid event type signals an error."
-  (should-error (supervisor--emit-event 'invalid-event-type nil nil nil)
+  (should-error (supervisor--emit-event 'invalid-event-type nil nil)
                 :type 'error))
 
 (ert-deftest supervisor-test-emit-event-schema ()
@@ -2552,7 +2552,7 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
                (lambda (hook &rest args) (when (eq hook 'supervisor-event-hook)
                                            (push (car args) events))))
               ((symbol-function 'run-hooks) #'ignore))
-      (supervisor--emit-event 'startup-begin nil nil nil)
+      (supervisor--emit-event 'startup-begin)
       (let ((event (car events)))
         (should (eq 'startup-begin (plist-get event :type)))
         (should (numberp (plist-get event :ts)))
@@ -2566,7 +2566,7 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
                  (when (eq hook 'supervisor-event-hook)
                    (push (car args) events))))
               ((symbol-function 'run-hooks) #'ignore))
-      (supervisor--emit-event 'startup-begin nil nil nil)
+      (supervisor--emit-event 'startup-begin)
       (should (= 1 (length events)))
       (let ((event (car events)))
         (should (eq 'startup-begin (plist-get event :type)))))))
@@ -2579,7 +2579,7 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
                  (when (eq hook 'supervisor-event-hook)
                    (push (car args) events))))
               ((symbol-function 'run-hooks) #'ignore))
-      (supervisor--emit-event 'process-exit "myproc" nil
+      (supervisor--emit-event 'process-exit "myproc"
                               (list :status 'exited :code 0))
       (should (= 1 (length events)))
       (let ((event (car events)))
@@ -2596,7 +2596,7 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
                  (when (eq hook 'supervisor-event-hook)
                    (push (car args) events))))
               ((symbol-function 'run-hooks) #'ignore))
-      (supervisor--emit-event 'process-started "daemon" nil
+      (supervisor--emit-event 'process-started "daemon"
                               (list :type 'simple))
       (should (= 1 (length events)))
       (let ((event (car events)))
@@ -2817,7 +2817,7 @@ Regression test: stderr pipe processes used to pollute the process list."
             (supervisor-dashboard-mode)
             (let ((tabulated-list-entries
                    (list (list (cons :service "test-svc")
-                               (vector "test-svc" "simple"
+                               (vector "test-svc" "simple" "-"
                                        "yes" "running" "yes" "yes"
                                        "1234" "-")))))
               (tabulated-list-init-header)
@@ -2848,7 +2848,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
-           (list (list "my-svc" (vector "my-svc" "simple"
+           (list (list "my-svc" (vector "my-svc" "simple" "-"
                                        "yes" "running" "yes" "yes" "1234" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -2870,7 +2870,7 @@ Regression test: stderr pipe processes used to pollute the process list."
         (supervisor-dashboard-mode)
         ;; Row has type "simple" — this is a service row, not a timer row
         (let ((tabulated-list-entries
-               (list (list "dup" (vector "dup" "simple"
+               (list (list "dup" (vector "dup" "simple" "-"
                                         "yes" "stopped" "yes" "yes" "-" "-")))))
           (tabulated-list-init-header)
           (tabulated-list-print)
@@ -2889,7 +2889,7 @@ Regression test: stderr pipe processes used to pollute the process list."
       (with-temp-buffer
         (supervisor-dashboard-mode)
         (let ((tabulated-list-entries
-               (list (list "my-oneshot" (vector "my-oneshot" "oneshot"
+               (list (list "my-oneshot" (vector "my-oneshot" "oneshot" "-"
                                                "yes" "done" "n/a" "yes" "-" "-")))))
           (tabulated-list-init-header)
           (tabulated-list-print)
@@ -2911,7 +2911,7 @@ proceed to call start unconditionally."
         (supervisor-dashboard-mode)
         (let ((tabulated-list-entries
                (list (list (cons :service "my-oneshot")
-                           (vector "my-oneshot" "oneshot"
+                           (vector "my-oneshot" "oneshot" "-"
                                    "yes" "done" "n/a" "yes" "-" "-")))))
           (tabulated-list-init-header)
           (tabulated-list-print)
@@ -2933,7 +2933,7 @@ proceed to call start unconditionally."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :timer "my-timer")
-                       (vector "my-timer" "timer"
+                       (vector "my-timer" "timer" "-"
                                "-" "pending" "-" "-" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -2948,7 +2948,7 @@ proceed to call start unconditionally."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :timer "my-timer")
-                       (vector "my-timer" "timer"
+                       (vector "my-timer" "timer" "-"
                                "-" "pending" "-" "-" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -2971,7 +2971,7 @@ proceed to call start unconditionally."
         (supervisor-dashboard-mode)
         (let ((tabulated-list-entries
                (list (list (cons :service "my-svc")
-                           (vector "my-svc" "simple"
+                           (vector "my-svc" "simple" "-"
                                    "yes" "stopped" "yes" "yes" "-" "-")))))
           (tabulated-list-init-header)
           (tabulated-list-print)
@@ -3046,10 +3046,10 @@ proceed to call start unconditionally."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :service "backup")
-                       (vector "backup" "simple"
+                       (vector "backup" "simple" "-"
                                "yes" "running" "yes" "yes" "-" "-"))
                  (list (cons :timer "backup")
-                       (vector "backup" "backup-svc"
+                       (vector "backup" "backup-svc" "-"
                                "-" "-" "-" "-" "" "")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3066,7 +3066,7 @@ proceed to call start unconditionally."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :service "svc")
-                       (vector "svc" "simple"
+                       (vector "svc" "simple" "-"
                                "yes" "running" "yes" "yes" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3079,7 +3079,7 @@ proceed to call start unconditionally."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :timer "my-timer")
-                       (vector "my-timer" "target"
+                       (vector "my-timer" "target" "-"
                                "-" "-" "-" "-" "" "")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3093,7 +3093,7 @@ proceed to call start unconditionally."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list '--services--
-                       (vector "── Services" "" "" "" "" "" "" "")))))
+                       (vector "── Services" "" "" "" "" "" "" "" "")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
       (goto-char (point-min))
@@ -3230,7 +3230,7 @@ configured timers must be visible for analysis."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :service "svc")
-                       (vector "svc" "simple"
+                       (vector "svc" "simple" "-"
                                "yes" "running" "yes" "yes" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3244,7 +3244,7 @@ configured timers must be visible for analysis."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :service "svc")
-                       (vector "svc" "simple"
+                       (vector "svc" "simple" "-"
                                "yes" "running" "yes" "yes" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3258,7 +3258,7 @@ configured timers must be visible for analysis."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :service "svc")
-                       (vector "svc" "simple"
+                       (vector "svc" "simple" "-"
                                "yes" "running" "yes" "yes" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3272,7 +3272,7 @@ configured timers must be visible for analysis."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :service "svc")
-                       (vector "svc" "simple"
+                       (vector "svc" "simple" "-"
                                "yes" "running" "yes" "yes" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3288,10 +3288,10 @@ configured timers must be visible for analysis."
       (supervisor-dashboard-mode)
       (let ((tabulated-list-entries
              (list (list (cons :service "my-svc")
-                         (vector "my-svc" "simple"
+                         (vector "my-svc" "simple" "-"
                                  "yes" "running" "yes" "yes" "-" "-"))
                    (list (cons :timer "t1")
-                         (vector "t1" "my-svc"
+                         (vector "t1" "my-svc" "-"
                                  "-" "-" "-" "-" "" "")))))
         (tabulated-list-init-header)
         (tabulated-list-print)
@@ -5173,7 +5173,7 @@ conflicting ID, proving precedence derives from list position."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
-           (list (list '--services-- (vector "" "" "" "" "" "" "" "")))))
+           (list (list '--services-- (vector "" "" "" "" "" "" "" "" "")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
       (goto-char (point-min))
@@ -5185,7 +5185,7 @@ conflicting ID, proving precedence derives from list position."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
-           (list (list "t1" (vector "t1" "timer" "yes"
+           (list (list "t1" (vector "t1" "timer" "-" "yes"
                                     "waiting" "---" "---" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -5207,7 +5207,7 @@ conflicting ID, proving precedence derives from list position."
           (supervisor-dashboard-mode)
           (let ((tabulated-list-entries
                  (list (list (cons :service "logrotate")
-                             (vector "logrotate" "oneshot"
+                             (vector "logrotate" "oneshot" "-"
                                      "yes" "pending" "n/a" "yes" "-" "-")))))
             (tabulated-list-init-header)
             (tabulated-list-print)
@@ -5223,7 +5223,7 @@ conflicting ID, proving precedence derives from list position."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
-           (list (list '--services-- (vector "" "" "" "" "" "" "" "")))))
+           (list (list '--services-- (vector "" "" "" "" "" "" "" "" "")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
       (goto-char (point-min))
@@ -5303,7 +5303,7 @@ conflicting ID, proving precedence derives from list position."
             (supervisor-dashboard-mode)
             (let ((tabulated-list-entries
                    (list (list (cons :service "test-svc")
-                               (vector "test-svc" "simple"
+                               (vector "test-svc" "simple" "-"
                                        "yes" "running" "yes" "---"
                                        "-" "-")))))
               (tabulated-list-init-header)
@@ -5358,7 +5358,7 @@ conflicting ID, proving precedence derives from list position."
             (supervisor-dashboard-mode)
             (let ((tabulated-list-entries
                    (list (list (cons :service "hook-svc")
-                               (vector "hook-svc" "simple"
+                               (vector "hook-svc" "simple" "-"
                                        "yes" "running" "yes" "---"
                                        "-" "-")))))
               (tabulated-list-init-header)
@@ -10591,7 +10591,7 @@ could incorrectly preserve a non-running disabled unit."
 (ert-deftest supervisor-test-parse-entry-new-fields-defaults ()
   "Parsed entry has nil defaults for P2 and PT3 fields."
   (let ((entry (supervisor--parse-entry "echo hello")))
-    (should (= (length entry) 38))
+    (should (= (length entry) 39))
     (should-not (supervisor-entry-working-directory entry))
     (should-not (supervisor-entry-environment entry))
     (should-not (supervisor-entry-environment-file entry))
@@ -10940,7 +10940,7 @@ could incorrectly preserve a non-running disabled unit."
                :kill-signal 'SIGTERM
                :kill-mode 'mixed))
          (entry (supervisor-service-to-entry svc)))
-    (should (= (length entry) 38))
+    (should (= (length entry) 39))
     (should (equal (supervisor-entry-working-directory entry) "/opt"))
     (should (equal (supervisor-entry-environment entry) '(("K" . "V"))))
     (should (equal (supervisor-entry-environment-file entry) '("/etc/env")))
@@ -10975,7 +10975,7 @@ could incorrectly preserve a non-running disabled unit."
          (entries (supervisor-plan-entries plan)))
     ;; Both entries must be full parsed tuples.
     (dolist (entry entries)
-      (should (= (length entry) 38)))
+      (should (= (length entry) 39)))
     ;; svc-a new fields preserved
     (let ((a (cl-find "svc-a" entries :key #'car :test #'equal)))
       (should (equal (supervisor-entry-working-directory a) "/opt"))
@@ -11955,7 +11955,7 @@ could incorrectly preserve a non-running disabled unit."
 (ert-deftest supervisor-test-parse-entry-33-elements ()
   "Parse entry returns 39 elements."
   (let ((entry (supervisor--parse-entry "sleep 300")))
-    (should (= (length entry) 38))))
+    (should (= (length entry) 39))))
 
 ;; Validation tests for PT3 keys
 
@@ -17763,14 +17763,14 @@ An invalid entry ID that happens to end in .target must not pass."
     (should (equal (supervisor-entry-id entry) "multi.target"))
     (should (null (supervisor-entry-command entry)))
     (should (eq (supervisor-entry-type entry) 'target))
-    (should (= (length entry) 38)))
+    (should (= (length entry) 39)))
   ;; Nil car form
   (let ((entry (supervisor--parse-entry
                 '(nil :type target :id "multi.target"))))
     (should (equal (supervisor-entry-id entry) "multi.target"))
     (should (null (supervisor-entry-command entry)))
     (should (eq (supervisor-entry-type entry) 'target))
-    (should (= (length entry) 38))))
+    (should (= (length entry) 39))))
 
 (ert-deftest supervisor-test-wanted-by-shape-string-valid ()
   ":wanted-by as a string passes validation."
@@ -18334,7 +18334,7 @@ They are inert fallback definitions activated only by timers."
     (should (member "basic.target" (supervisor-entry-requires multi-entry)))
     (should (member "svc-a" (supervisor-entry-requires multi-entry)))
     ;; Tuple length unchanged
-    (should (= 38 (length multi-entry)))))
+    (should (= 39 (length multi-entry)))))
 
 (ert-deftest supervisor-test-target-auto-ordering-wants-implies-after ()
   "Target :wants automatically implies :after ordering edge."
@@ -18356,7 +18356,7 @@ They are inert fallback definitions activated only by timers."
     (should (member "basic.target" (supervisor-entry-wants multi-entry)))
     (should (member "svc-opt" (supervisor-entry-wants multi-entry)))
     ;; Tuple length unchanged
-    (should (= 38 (length multi-entry)))))
+    (should (= 39 (length multi-entry)))))
 
 (ert-deftest supervisor-test-service-requires-no-auto-after ()
   "Service :requires does NOT auto-inject :after (only targets do)."
@@ -18372,7 +18372,7 @@ They are inert fallback definitions activated only by timers."
     ;; Structural integrity: :type and :requires preserved
     (should (eq 'simple (supervisor-entry-type svc-b)))
     (should (equal '("svc-a") (supervisor-entry-requires svc-b)))
-    (should (= 38 (length svc-b)))))
+    (should (= 39 (length svc-b)))))
 
 (ert-deftest supervisor-test-builtin-targets-no-redundant-after ()
   "Built-in targets rely on auto-ordering, no explicit :after."
@@ -18446,7 +18446,7 @@ They are inert fallback definitions activated only by timers."
          (svc-b (cl-find "svc-b" (supervisor-plan-by-target plan)
                          :key #'supervisor-entry-id :test #'equal)))
     ;; After invalid dep removal, entry must retain correct structure
-    (should (= 38 (length svc-b)))
+    (should (= 39 (length svc-b)))
     (should (equal "svc-b" (supervisor-entry-id svc-b)))
     (should (equal "true" (supervisor-entry-command svc-b)))
     (should (eq 'simple (supervisor-entry-type svc-b)))
@@ -18471,7 +18471,7 @@ They are inert fallback definitions activated only by timers."
     (should (eq 'target (supervisor-entry-type upper)))
     (should (member "base.target" (supervisor-entry-after upper)))
     (should (equal '("base.target") (supervisor-entry-requires upper)))
-    (should (= 38 (length upper)))))
+    (should (= 39 (length upper)))))
 
 (ert-deftest supervisor-test-mixed-target-service-cycle-fallback ()
   "Cycle involving both target and service entries triggers fallback."
@@ -19150,9 +19150,9 @@ They are inert fallback definitions activated only by timers."
          (supervisor--logging-override (make-hash-table :test 'equal))
          (supervisor--last-exit-info (make-hash-table :test 'equal))
          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
-         ;; 39-element target entry
+         ;; 38-element target entry
          (entry (list "app.target" nil 0 t nil nil nil nil
-                      'target nil nil nil nil nil nil
+                      'target nil nil nil nil nil
                       nil nil nil nil nil nil
                       "Test target" nil nil nil nil nil nil nil nil nil
                       '("multi-user.target") nil
@@ -19366,17 +19366,17 @@ They are inert fallback definitions activated only by timers."
 (ert-deftest supervisor-test-all-target-ids-includes-empty-targets ()
   "All-target-ids includes targets with no members."
   (let* ((members-hash (make-hash-table :test 'equal))
-         ;; 39-element target entry for empty-target (no members)
+         ;; 38-element target entry for empty-target (no members)
          (empty-entry (list "empty.target" nil 0 t nil nil nil nil
-                            'target nil nil nil nil nil nil
+                            'target nil nil nil nil nil
                             nil nil nil nil nil nil nil nil nil nil
-                            nil nil nil nil nil nil nil nil nil
+                            nil nil nil nil nil nil nil nil
                             nil nil nil nil nil nil))
-         ;; 39-element target entry for pop.target (has members)
+         ;; 38-element target entry for pop.target (has members)
          (pop-entry (list "pop.target" nil 0 t nil nil nil nil
-                          'target nil nil nil nil nil nil
+                          'target nil nil nil nil nil
                           nil nil nil nil nil nil nil nil nil nil
-                          nil nil nil nil nil nil nil nil nil
+                          nil nil nil nil nil nil nil nil
                           nil nil nil nil nil nil))
          (supervisor--current-plan
           (supervisor-plan--create
@@ -21446,9 +21446,9 @@ the invalid-hash must not contain the alias ID."
          (supervisor--logging-override (make-hash-table :test 'equal))
          (supervisor--last-exit-info (make-hash-table :test 'equal))
          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
-         ;; 39-element target entry for runlevel3.target (alias)
+         ;; 38-element target entry for runlevel3.target (alias)
          (entry (list "runlevel3.target" nil 0 t nil nil nil nil
-                      'target nil nil nil nil nil nil
+                      'target nil nil nil nil nil
                       nil nil nil nil nil nil
                       nil nil nil nil nil nil nil nil nil nil
                       nil nil
@@ -21817,7 +21817,7 @@ the invalid-hash must not contain the alias ID."
   "Parse entry extracts sandbox-profile as symbol."
   (let ((entry (supervisor--parse-entry
                 '("sleep 300" :id "svc" :sandbox-profile strict))))
-    (should (= (length entry) 38))
+    (should (= (length entry) 39))
     (should (eq (supervisor-entry-sandbox-profile entry) 'strict))))
 
 (ert-deftest supervisor-test-sandbox-parse-profile-string ()
@@ -22464,7 +22464,7 @@ even when both identity wrapper and sandbox wrapper are active."
                :sandbox-tmpfs '("/tmp/work")
                :sandbox-raw-args '("--cap-add" "CAP_NET_RAW")))
          (entry (supervisor-service-to-entry svc)))
-    (should (= (length entry) 38))
+    (should (= (length entry) 39))
     (should (eq (supervisor-entry-sandbox-profile entry) 'strict))
     (should (eq (supervisor-entry-sandbox-network entry) 'isolated))
     (should (equal (supervisor-entry-sandbox-ro-bind entry) '("/opt")))
@@ -22483,6 +22483,74 @@ even when both identity wrapper and sandbox wrapper are active."
     (let ((with (supervisor--build-launch-command "sleep 300" nil nil entry))
           (without (supervisor--build-launch-command "sleep 300" nil nil nil)))
       (should (equal with without)))))
+
+;;; Log-format tests
+
+(ert-deftest supervisor-test-log-format-parse-text ()
+  "Parse :log-format text returns symbol text."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc" :log-format text))))
+    (should (eq (supervisor-entry-log-format entry) 'text))))
+
+(ert-deftest supervisor-test-log-format-parse-binary-gate-on ()
+  "Parse :log-format binary with gate enabled returns symbol binary."
+  (let ((supervisor-log-format-binary-enable t))
+    (let ((entry (supervisor--parse-entry
+                  '("sleep 300" :id "svc" :log-format binary))))
+      (should (eq (supervisor-entry-log-format entry) 'binary)))))
+
+(ert-deftest supervisor-test-log-format-parse-omitted ()
+  "Parse without :log-format returns nil (effective text)."
+  (let ((entry (supervisor--parse-entry '("sleep 300" :id "svc"))))
+    (should-not (supervisor-entry-log-format entry))))
+
+(ert-deftest supervisor-test-log-format-validate-unknown ()
+  "Unknown :log-format value is a validation error."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :log-format json))))
+    (should (stringp reason))
+    (should (string-match-p ":log-format must be" reason))))
+
+(ert-deftest supervisor-test-log-format-validate-target ()
+  ":log-format on target is a validation error."
+  (let ((reason (supervisor--validate-entry
+                 '("" :id "foo.target" :type target :log-format text))))
+    (should (stringp reason))
+    (should (string-match-p ":log-format" reason))))
+
+(ert-deftest supervisor-test-log-format-validate-binary-gate-off ()
+  ":log-format binary with gate nil is a validation error mentioning gate."
+  (let ((supervisor-log-format-binary-enable nil))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc" :log-format binary))))
+      (should (stringp reason))
+      (should (string-match-p "supervisor-log-format-binary-enable" reason)))))
+
+(ert-deftest supervisor-test-log-format-validate-binary-gate-on ()
+  ":log-format binary with gate non-nil passes validation."
+  (let ((supervisor-log-format-binary-enable t))
+    (should-not (supervisor--validate-entry
+                 '("cmd" :id "svc" :log-format binary)))))
+
+(ert-deftest supervisor-test-log-format-validate-text-always ()
+  ":log-format text is always accepted regardless of gate."
+  (let ((supervisor-log-format-binary-enable nil))
+    (should-not (supervisor--validate-entry
+                 '("cmd" :id "svc" :log-format text)))))
+
+(ert-deftest supervisor-test-log-format-service-round-trip ()
+  "Entry->service->entry preserves :log-format."
+  (let ((supervisor-log-format-binary-enable t))
+    (let* ((entry (supervisor--parse-entry
+                   '("sleep 300" :id "svc" :log-format binary)))
+           (service (supervisor-entry-to-service entry))
+           (entry2 (supervisor-service-to-entry service)))
+      (should (eq (supervisor-entry-log-format entry2) 'binary))
+      (should (eq (supervisor-service-log-format service) 'binary)))))
+
+(ert-deftest supervisor-test-log-format-unit-file-keyword ()
+  ":log-format is in unit-file keyword allowlist."
+  (should (memq :log-format supervisor--unit-file-keywords)))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

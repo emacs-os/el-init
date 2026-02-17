@@ -232,7 +232,8 @@ Return a plist with keys:
     :kill-signal :kill-mode :remain-after-exit :success-exit-status
     :user :group :wanted-by :required-by
     :sandbox-profile :sandbox-network :sandbox-ro-bind :sandbox-rw-bind
-    :sandbox-tmpfs :sandbox-raw-args)
+    :sandbox-tmpfs :sandbox-raw-args
+    :log-format)
   "Valid keywords in a unit-file plist.
 Includes `:command' which is unit-file specific.")
 
