@@ -46,6 +46,7 @@
 (defvar supervisor--enabled-override)
 (defvar supervisor-logrotate-keep-days)
 (defvar supervisor-log-prune-max-total-bytes)
+(defvar supervisor--target-alias-map)
 ;;; Customization
 
 (defcustom supervisor-unit-authority-path
@@ -544,7 +545,8 @@ seed default unit files into the highest-precedence root."
 Publish the authority snapshot, read valid winners, convert to
 program entries, and store the result in `supervisor--programs-cache'.
 Built-in entries from `supervisor--builtin-programs' are appended at
-lowest priority; a disk unit with the same ID overrides the builtin.
+lowest priority; a disk unit with the same ID overrides the builtin,
+except for alias targets which are immutable and cannot be redefined.
 This is the explicit refresh point called by `supervisor-start' and
 `supervisor-daemon-reload'.  Consumers that just need the current
 program list should use `supervisor--effective-programs' instead."
@@ -552,18 +554,51 @@ program list should use `supervisor--effective-programs' instead."
   (let* ((unit-plists (supervisor--read-authority-snapshot))
          (disk-entries (mapcar #'supervisor--unit-file-to-program-entry
                                unit-plists))
+         ;; Compute which built-in IDs are alias targets (immutable).
+         ;; Only protect aliases that actually exist in the builtins list.
+         (all-builtins (when (fboundp 'supervisor--builtin-programs)
+                         (supervisor--builtin-programs)))
+         (alias-ids (when (and all-builtins
+                               (boundp 'supervisor--target-alias-map))
+                      (let ((map-keys (mapcar #'car
+                                              supervisor--target-alias-map))
+                            (builtin-ids (mapcar
+                                          (lambda (e)
+                                            (plist-get (cdr e) :id))
+                                          all-builtins)))
+                        (cl-remove-if-not
+                         (lambda (k) (member k builtin-ids))
+                         map-keys))))
+         ;; Partition disk entries: reject those that collide with
+         ;; alias targets (immutable IDs) and warn the user.
+         (rejected nil)
+         (allowed-entries
+          (if (null alias-ids)
+              disk-entries
+            (cl-remove-if
+             (lambda (e)
+               (let ((eid (or (plist-get (cdr e) :id)
+                              (file-name-nondirectory
+                               (car (split-string-and-unquote
+                                     (car e)))))))
+                 (when (member eid alias-ids)
+                   (push eid rejected)
+                   t)))
+             disk-entries)))
          (disk-ids (mapcar (lambda (e)
                              (or (plist-get (cdr e) :id)
                                  (file-name-nondirectory
                                   (car (split-string-and-unquote (car e))))))
-                           disk-entries))
-         (builtins (when (fboundp 'supervisor--builtin-programs)
-                    (cl-remove-if
-                     (lambda (e)
-                       (member (plist-get (cdr e) :id) disk-ids))
-                     (supervisor--builtin-programs)))))
+                           allowed-entries))
+         (builtins (cl-remove-if
+                    (lambda (e)
+                      (member (plist-get (cdr e) :id) disk-ids))
+                    all-builtins)))
+    ;; Warn about rejected alias target overrides
+    (dolist (id (nreverse rejected))
+      (supervisor--log 'warning "disk unit \"%s\" ignored: alias targets are immutable" id))
     (setq supervisor--programs-cache
-          (append disk-entries builtins))))
+          (append allowed-entries builtins))))
 
 ;;; Unit-File Template
 

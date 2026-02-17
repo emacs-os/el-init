@@ -20080,6 +20080,94 @@ They are inert fallback definitions activated only by timers."
     ;; reboot.target requires shutdown.target
     (should (equal '("shutdown.target") (plist-get (cdr reboot) :requires)))))
 
+(ert-deftest supervisor-test-alias-target-override-rejected ()
+  "Disk unit with alias target ID is rejected at merge time."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
+         (warnings nil))
+    (supervisor-test--write-unit-files
+     dir '((nil :id "runlevel5.target" :type target
+                :requires ("basic.target"))))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'supervisor--log)
+                     (lambda (_level fmt &rest args)
+                       (push (apply #'format fmt args) warnings))))
+            (supervisor--load-programs))
+          ;; The alias target should still be the built-in (no :requires)
+          (let ((entry (cl-find "runlevel5.target"
+                                supervisor--programs-cache
+                                :key (lambda (e) (plist-get (cdr e) :id))
+                                :test #'equal)))
+            (should entry)
+            ;; Built-in alias has no :requires
+            (should-not (plist-get (cdr entry) :requires)))
+          ;; Warning was emitted
+          (should (cl-some (lambda (w)
+                             (string-match-p "runlevel5\\.target.*immutable" w))
+                           warnings)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-alias-target-override-non-alias-still-works ()
+  "Disk unit can still override non-alias built-in targets."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+    ;; Override basic.target (canonical, not alias -- should be allowed)
+    (supervisor-test--write-unit-files
+     dir '((nil :id "basic.target" :type target
+                :description "User-custom basic target")))
+    (unwind-protect
+        (progn
+          (supervisor--load-programs)
+          (let ((entry (cl-find "basic.target"
+                                supervisor--programs-cache
+                                :key (lambda (e) (plist-get (cdr e) :id))
+                                :test #'equal)))
+            (should entry)
+            ;; Should be the disk version (user-custom description)
+            (should (equal "User-custom basic target"
+                           (plist-get (cdr entry) :description)))
+            ;; Should appear exactly once
+            (should (= 1 (cl-count "basic.target"
+                                   supervisor--programs-cache
+                                   :key (lambda (e) (plist-get (cdr e) :id))
+                                   :test #'equal)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-merged-targets-include-canonical-and-alias ()
+  "Merged runtime load path includes both canonical and alias targets."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+    ;; No disk targets -- all built-in targets should appear in merged set
+    (unwind-protect
+        (progn
+          (supervisor--load-programs)
+          (let ((ids (mapcar (lambda (e) (plist-get (cdr e) :id))
+                             supervisor--programs-cache)))
+            ;; Canonical targets present
+            (should (member "basic.target" ids))
+            (should (member "multi-user.target" ids))
+            (should (member "graphical.target" ids))
+            (should (member "default.target" ids))
+            ;; Init-transition targets present
+            (should (member "rescue.target" ids))
+            (should (member "shutdown.target" ids))
+            (should (member "poweroff.target" ids))
+            (should (member "reboot.target" ids))
+            ;; Alias targets present
+            (dolist (n '(0 1 2 3 4 5 6))
+              (should (member (format "runlevel%d.target" n) ids)))))
+      (delete-directory dir t))))
+
 (ert-deftest supervisor-test-cli-init-valid-runlevels ()
   "The `init' command accepts runlevels 1-5 and resolves correctly."
   (supervisor-test-with-unit-files
