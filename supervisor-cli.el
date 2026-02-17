@@ -2231,11 +2231,12 @@ List all target units with convergence state and member counts."
                                (supervisor-entry-id b)))))
         (dolist (entry target-entries)
           (let* ((id (supervisor-entry-id entry))
-                 (mem (gethash id members))
+                 (canonical (supervisor--resolve-target-alias id))
+                 (mem (gethash canonical members))
                  (req-count (length (plist-get mem :requires)))
                  (wants-count (length (plist-get mem :wants)))
                  (conv (when (hash-table-p supervisor--target-convergence)
-                         (gethash id supervisor--target-convergence)))
+                         (gethash canonical supervisor--target-convergence)))
                  (status (pcase conv
                            ('reached "reached")
                            ('degraded "degraded")
@@ -2312,11 +2313,12 @@ Show convergence state, reasons, and member lists for a target."
          (if json-p 'json 'human)))
        (t
         (let* ((members (supervisor--materialize-target-members entries))
-               (mem (gethash target members))
+               (canonical (supervisor--resolve-target-alias target))
+               (mem (gethash canonical members))
                (req-ids (plist-get mem :requires))
                (want-ids (plist-get mem :wants))
                (conv (when (hash-table-p supervisor--target-convergence)
-                       (gethash target supervisor--target-convergence)))
+                       (gethash canonical supervisor--target-convergence)))
                (status (pcase conv
                          ('reached "reached")
                          ('degraded "degraded")
@@ -2324,7 +2326,7 @@ Show convergence state, reasons, and member lists for a target."
                          (_ "pending")))
                (reasons (when (hash-table-p
                                supervisor--target-convergence-reasons)
-                          (gethash target
+                          (gethash canonical
                                    supervisor--target-convergence-reasons)))
                (alias-target (supervisor--target-alias-p target))
                (kind (if alias-target "alias" "canonical"))
@@ -2437,11 +2439,12 @@ Show root-cause chain: why is this target in its current state?"
          (if json-p 'json 'human)))
        (t
         (let* ((members (supervisor--materialize-target-members entries))
-               (mem (gethash target members))
+               (canonical (supervisor--resolve-target-alias target))
+               (mem (gethash canonical members))
                (req-ids (plist-get mem :requires))
                (want-ids (plist-get mem :wants))
                (conv (when (hash-table-p supervisor--target-convergence)
-                       (gethash target supervisor--target-convergence)))
+                       (gethash canonical supervisor--target-convergence)))
                (status (pcase conv
                          ('reached "reached")
                          ('degraded "degraded")
@@ -2449,7 +2452,7 @@ Show root-cause chain: why is this target in its current state?"
                          (_ "pending")))
                (reasons (when (hash-table-p
                                supervisor--target-convergence-reasons)
-                          (gethash target
+                          (gethash canonical
                                    supervisor--target-convergence-reasons)))
                (all-ids (append req-ids want-ids))
                (member-details nil))
@@ -2478,7 +2481,7 @@ Show root-cause chain: why is this target in its current state?"
                   `((id . ,target)
                     (kind . ,(if alias-info "alias" "canonical"))
                     ,@(when alias-info
-                        `((resolved . ,(supervisor--resolve-target-alias target))))
+                        `((resolved-link . ,(supervisor--resolve-target-alias target))))
                     (status . ,status)
                     (reasons . ,(or reasons []))
                     (members . ,(supervisor--cli-ensure-array

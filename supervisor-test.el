@@ -20864,6 +20864,199 @@ the invalid-hash must not contain the alias ID."
           (should (string-match "alias" output))
           (should (string-match "multi-user\\.target" output)))))))
 
+(ert-deftest supervisor-test-cli-list-targets-alias-shows-canonical-convergence ()
+  "Alias target in list-targets shows convergence from canonical target."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("multi-user.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "runlevel3.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--target-convergence (make-hash-table :test 'equal))
+          (supervisor--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (supervisor-default-target-link "multi-user.target")
+          (supervisor--default-target-link-override nil))
+      (puthash "multi-user.target" 'reached supervisor--target-convergence)
+      (let ((result (supervisor--cli-dispatch '("list-targets"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((output (supervisor-cli-result-output result)))
+          ;; runlevel3.target row should show reached, not pending
+          (should (string-match "runlevel3\\.target.*reached" output)))))))
+
+(ert-deftest supervisor-test-cli-target-status-alias-shows-canonical-state ()
+  "Target-status for alias shows convergence from canonical target."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("multi-user.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "runlevel3.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence (make-hash-table :test 'equal))
+          (supervisor--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (supervisor-default-target-link "multi-user.target")
+          (supervisor--default-target-link-override nil))
+      (puthash "multi-user.target" 'reached supervisor--target-convergence)
+      (let ((result (supervisor--cli-dispatch
+                     '("target-status" "runlevel3.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((output (supervisor-cli-result-output result)))
+          (should (string-match "reached" output))
+          ;; Should list members from canonical target
+          (should (string-match "svc-a" output)))))))
+
+(ert-deftest supervisor-test-cli-explain-target-alias-shows-canonical-state ()
+  "Explain-target for alias shows convergence from canonical target."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :required-by ("multi-user.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "runlevel3.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence (make-hash-table :test 'equal))
+          (supervisor--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (supervisor-default-target-link "multi-user.target")
+          (supervisor--default-target-link-override nil))
+      (puthash "multi-user.target" 'reached supervisor--target-convergence)
+      (let ((result (supervisor--cli-dispatch
+                     '("explain-target" "runlevel3.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((output (supervisor-cli-result-output result)))
+          (should (string-match "reached" output))
+          (should (string-match "healthy" output)))))))
+
+(ert-deftest supervisor-test-cli-explain-target-json-resolved-link-key ()
+  "Explain-target JSON for alias uses `resolved-link' key, not `resolved'."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "runlevel3.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target-link "multi-user.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("--json" "explain-target" "runlevel3.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((json (json-read-from-string
+                     (supervisor-cli-result-output result))))
+          (should (alist-get 'resolved-link json))
+          (should-not (alist-get 'resolved json)))))))
+
+(ert-deftest supervisor-test-dashboard-alias-target-shows-canonical-convergence ()
+  "Dashboard entry for alias target shows convergence from canonical."
+  (let* ((conv-hash (make-hash-table :test 'equal))
+         (supervisor--target-convergence conv-hash)
+         (supervisor--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (snapshot (supervisor-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time))))
+    ;; Convergence stored under canonical ID
+    (puthash "multi-user.target" 'reached conv-hash)
+    ;; Query via alias ID
+    (let ((vec (supervisor--make-dashboard-entry
+                "runlevel3.target" 'target nil t nil nil snapshot)))
+      ;; TARGET column (index 2) should show reached
+      (should (equal "reached"
+                     (substring-no-properties (aref vec 2)))))))
+
+(ert-deftest supervisor-test-dashboard-detail-alias-shows-canonical-convergence ()
+  "Detail panel for alias target shows convergence from canonical."
+  (let* ((supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (supervisor--target-members (make-hash-table :test 'equal))
+         (supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--enabled-override (make-hash-table :test 'equal))
+         (supervisor--restart-override (make-hash-table :test 'equal))
+         (supervisor--logging (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--remain-active (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--start-times (make-hash-table :test 'equal))
+         (supervisor--ready-times (make-hash-table :test 'equal))
+         (supervisor--restart-times (make-hash-table :test 'equal))
+         (supervisor--restart-timers (make-hash-table :test 'equal))
+         (supervisor--logging-override (make-hash-table :test 'equal))
+         (supervisor--last-exit-info (make-hash-table :test 'equal))
+         (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+         ;; 39-element target entry for runlevel3.target (alias)
+         (entry (list "runlevel3.target" nil 0 t nil nil nil nil
+                      'target nil nil nil nil nil nil
+                      nil nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil nil nil
+                      nil nil
+                      nil nil nil nil nil nil)))
+    ;; Store convergence under canonical ID
+    (puthash "multi-user.target" 'reached supervisor--target-convergence)
+    (puthash "multi-user.target" '("all healthy")
+             supervisor--target-convergence-reasons)
+    (puthash "multi-user.target" '(:requires ("svc-a") :wants ("svc-b"))
+             supervisor--target-members)
+    (cl-letf (((symbol-function 'supervisor--unit-file-path)
+               (lambda (_id) nil))
+              ((symbol-function 'supervisor--telemetry-log-tail)
+               (lambda (_id &optional _lines) nil)))
+      (supervisor--describe-entry-detail "runlevel3.target" entry)
+      (let ((info-buf (get-buffer "*supervisor-info*")))
+        (unwind-protect
+            (progn
+              (should info-buf)
+              (let ((output (with-current-buffer info-buf
+                              (buffer-string))))
+                (should (string-match-p "Converge: reached" output))
+                (should (string-match-p "Req-mem: svc-a" output))
+                (should (string-match-p "Want-mem: svc-b" output))))
+          (when info-buf (kill-buffer info-buf)))))))
+
 ;;; Regression Tests: Convergence, Status, and Target Guards
 
 (ert-deftest supervisor-test-convergence-survives-dag-cleanup ()

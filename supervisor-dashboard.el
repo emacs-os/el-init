@@ -550,9 +550,11 @@ If SNAPSHOT is provided, read runtime state from it."
                                 (_ 'supervisor-type-simple)))
             (if (eq type 'target)
                 (let* ((effective-id
-                        (if (equal id "default.target")
-                            (supervisor--resolve-default-target-link)
-                          id))
+                        (cond ((equal id "default.target")
+                               (supervisor--resolve-default-target-link))
+                              ((supervisor--target-alias-p id)
+                               (supervisor--resolve-target-alias id))
+                              (t id)))
                        (conv (when (hash-table-p supervisor--target-convergence)
                                (gethash effective-id
                                         supervisor--target-convergence)))
@@ -1159,12 +1161,13 @@ With prefix argument, show status legend instead."
                        (mapconcat #'identity requires ", "))))
       ;; Target-specific convergence info
       (when (eq type 'target)
-        (let ((conv (when (hash-table-p supervisor--target-convergence)
-                      (gethash id supervisor--target-convergence)))
-              (reasons (when (hash-table-p supervisor--target-convergence-reasons)
-                         (gethash id supervisor--target-convergence-reasons)))
-              (members (when (hash-table-p supervisor--target-members)
-                         (gethash id supervisor--target-members))))
+        (let* ((effective-id (supervisor--resolve-target-alias id))
+               (conv (when (hash-table-p supervisor--target-convergence)
+                       (gethash effective-id supervisor--target-convergence)))
+               (reasons (when (hash-table-p supervisor--target-convergence-reasons)
+                          (gethash effective-id supervisor--target-convergence-reasons)))
+               (members (when (hash-table-p supervisor--target-members)
+                          (gethash effective-id supervisor--target-members))))
           (princ (format "Converge: %s\n" (or conv "not started")))
           (when reasons
             (princ (format " Reasons: %s\n"
