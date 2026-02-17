@@ -187,39 +187,14 @@ timer subsystem enabled.
 #+CAPTION: Default dashboard view after graphical boot
 [[file:dashboard-default.png]]
 
-**** Services section
-
-#+begin_example
-── Services  TYPE     TARGET               ENABLED  STATUS      RESTART   LOG   PID     REASON
-ssh-agent    simple   multi-user.target    yes      running     always    yes   84210
-emacs-server simple   graphical.target     yes      running     always    yes   84215
-logrotate    oneshot  -                    yes      unreachable n/a       yes   -       pending
-log-prune    oneshot  -                    yes      unreachable n/a       yes   -       pending
-basic.target          target               ...      reached     n/a       -     -
-multi-user.target     target               ...      reached     n/a       -     -
-graphical.target      target               ...      reached     n/a       -     -
-default.target        target               ...      reached     n/a       -     -
-rescue.target         target               ...      unreachable n/a       -     -
-shutdown.target       target               ...      unreachable n/a       -     -
-poweroff.target       target               ...      unreachable n/a       -     -
-reboot.target         target               ...      unreachable n/a       -     -
-runlevel0.target      target               ...      unreachable n/a       -     -
-runlevel1.target      target               ...      unreachable n/a       -     -
-runlevel2.target      target               ...      reached     n/a       -     -
-runlevel3.target      target               ...      reached     n/a       -     -
-runlevel4.target      target               ...      reached     n/a       -     -
-runlevel5.target      target               ...      reached     n/a       -     -
-runlevel6.target      target               ...      unreachable n/a       -     -
-#+end_example
-
 What each group means:
 
-- *Your services* (~ssh-agent~, ~emacs-server~) -- running, owned by their
-  respective targets.  These are the units you defined.
+- *Your services* -- running, owned by their respective targets.  These are
+  the units you defined.
 - *logrotate and log-prune* -- built-in maintenance oneshots.  They show
   *unreachable* because no target in the startup path pulls them in.  They are
-  not broken -- they activate only when their timers fire (see below).  The
-  ~pending~ reason means they have not run yet.
+  not broken -- they activate only when their timers fire.  The ~pending~
+  reason means they have not run yet.
 - *Startup targets* (~basic.target~ through ~default.target~) -- all *reached*
   because they are in ~graphical.target~'s dependency chain and all their
   members started successfully.
@@ -229,23 +204,8 @@ What each group means:
 - *Runlevel aliases* (~runlevel0.target~ through ~runlevel6.target~) -- each
   mirrors the status of its canonical target.  Runlevels 2 through 5 show
   reached; 0, 1, 6 show unreachable.
-
-**** Timers section
-
-#+begin_example
-── Timers          TARGET      ENABLED  LAST-RUN  NEXT-RUN  EXIT  REASON  TYPE     RESULT
-logrotate-daily    logrotate   yes      -         +23h      -     -       oneshot  -
-log-prune-daily    log-prune   yes      -         +23h      -     -       oneshot  -
-#+end_example
-
-Timers trigger their target oneshot on a schedule.  In a fresh session:
-
-- *LAST-RUN* is ~-~ because neither timer has fired yet.
-- *NEXT-RUN* shows the time until the next trigger (e.g., ~+23h~).
-- *EXIT*, *REASON*, and *RESULT* are all empty until the first run completes.
-
-After the first trigger, these columns fill in with the exit code, completion
-reason, and pass/fail result of the last oneshot run.
+- *Timers* -- trigger their target oneshot on a schedule.  ~LAST-RUN~ is ~-~
+  until the first fire; ~NEXT-RUN~ shows the countdown to the next trigger.
 
 *** Quick reference for target statuses
 
