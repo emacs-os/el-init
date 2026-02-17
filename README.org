@@ -586,7 +586,20 @@ activation closure:
 - Service units pull in their own ~:requires~ and ~:wants~.
 
 Only units in this closure are activated during startup.  Units outside the
-closure are shown as ~unreachable~ in status surfaces.
+closure -- including both service and target units -- are shown as ~unreachable~
+in status surfaces.  This applies to all unit types:
+
+- Service and oneshot units outside the closure show ~unreachable~.
+- Target units outside the closure show ~unreachable~ (not ~pending~).
+- Alias targets (e.g., ~runlevel3.target~) resolve to their canonical target
+  before checking closure membership, so an alias shows ~reached~ when its
+  canonical target has converged, and ~unreachable~ when the canonical target is
+  not in the closure.
+
+In a normal ~graphical.target~ boot, transition targets such as ~rescue.target~,
+~shutdown.target~, ~poweroff.target~, and ~reboot.target~ are not in the
+activation closure and display as ~unreachable~.  This is expected -- these
+targets activate only when explicitly requested via ~isolate~ or ~init~.
 
 ** Async DAG Scheduler Semantics
 

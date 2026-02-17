@@ -21371,6 +21371,109 @@ the invalid-hash must not contain the alias ID."
     (let ((result (supervisor--compute-entry-status "inside" 'simple)))
       (should (equal "stopped" (car result))))))
 
+(ert-deftest supervisor-test-alias-target-status-mirrors-canonical ()
+  "Alias target status mirrors convergence stored under canonical ID."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--remain-active (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--current-plan nil))
+    ;; Convergence stored under canonical target
+    (puthash "multi-user.target" 'reached supervisor--target-convergence)
+    ;; Alias target should resolve to canonical and show reached
+    (let ((result (supervisor--compute-entry-status
+                   "runlevel3.target" 'target)))
+      (should (equal "reached" (car result))))))
+
+(ert-deftest supervisor-test-alias-target-reason-mirrors-canonical ()
+  "Alias target reason mirrors degraded reasons stored under canonical ID."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--target-convergence (make-hash-table :test 'equal))
+         (supervisor--target-convergence-reasons (make-hash-table :test 'equal))
+         (supervisor--current-plan nil))
+    (puthash "multi-user.target" 'degraded supervisor--target-convergence)
+    (puthash "multi-user.target" '("svc failed")
+             supervisor--target-convergence-reasons)
+    ;; Alias should resolve and return canonical reasons
+    (let ((reason (supervisor--compute-entry-reason
+                   "runlevel3.target" 'target)))
+      (should (equal "svc failed" reason)))))
+
+(ert-deftest supervisor-test-target-outside-closure-shows-unreachable ()
+  "Target units outside activation closure show unreachable, not pending."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--remain-active (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--target-convergence (make-hash-table :test 'equal))
+         (closure (make-hash-table :test 'equal))
+         (supervisor--current-plan
+          (supervisor-plan--create
+           :entries nil :by-target nil
+           :deps (make-hash-table :test 'equal)
+           :requires-deps (make-hash-table :test 'equal)
+           :dependents (make-hash-table :test 'equal)
+           :invalid (make-hash-table :test 'equal)
+           :cycle-fallback-ids (make-hash-table :test 'equal)
+           :order-index (make-hash-table :test 'equal)
+           :meta nil
+           :activation-closure closure)))
+    ;; graphical.target is in the closure
+    (puthash "graphical.target" t closure)
+    ;; rescue.target is NOT in the closure -- should be unreachable
+    (let ((result (supervisor--compute-entry-status
+                   "rescue.target" 'target)))
+      (should (equal "unreachable" (car result))))
+    ;; graphical.target is in closure with no convergence -- should be pending
+    (let ((result (supervisor--compute-entry-status
+                   "graphical.target" 'target)))
+      (should (equal "pending" (car result))))))
+
+(ert-deftest supervisor-test-alias-target-outside-closure-shows-unreachable ()
+  "Alias targets outside closure show unreachable via canonical resolution."
+  (let* ((supervisor--processes (make-hash-table :test 'equal))
+         (supervisor--failed (make-hash-table :test 'equal))
+         (supervisor--oneshot-completed (make-hash-table :test 'equal))
+         (supervisor--remain-active (make-hash-table :test 'equal))
+         (supervisor--manually-stopped (make-hash-table :test 'equal))
+         (supervisor--mask-override (make-hash-table :test 'equal))
+         (supervisor--entry-state (make-hash-table :test 'equal))
+         (supervisor--target-convergence (make-hash-table :test 'equal))
+         (closure (make-hash-table :test 'equal))
+         (supervisor--current-plan
+          (supervisor-plan--create
+           :entries nil :by-target nil
+           :deps (make-hash-table :test 'equal)
+           :requires-deps (make-hash-table :test 'equal)
+           :dependents (make-hash-table :test 'equal)
+           :invalid (make-hash-table :test 'equal)
+           :cycle-fallback-ids (make-hash-table :test 'equal)
+           :order-index (make-hash-table :test 'equal)
+           :meta nil
+           :activation-closure closure)))
+    ;; multi-user.target is in the closure
+    (puthash "multi-user.target" t closure)
+    (puthash "multi-user.target" 'reached supervisor--target-convergence)
+    ;; runlevel3.target resolves to multi-user.target which IS in closure
+    (let ((result (supervisor--compute-entry-status
+                   "runlevel3.target" 'target)))
+      (should (equal "reached" (car result))))
+    ;; runlevel1.target resolves to rescue.target which is NOT in closure
+    (let ((result (supervisor--compute-entry-status
+                   "runlevel1.target" 'target)))
+      (should (equal "unreachable" (car result))))))
+
 (ert-deftest supervisor-test-health-counts-disabled-not-pending ()
   "Health counts put disabled entries in :disabled, not :pending."
   (let ((supervisor--processes (make-hash-table :test 'equal))

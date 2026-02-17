@@ -2316,19 +2316,29 @@ Return a cons cell (STATUS . PID)."
          (status (cond (masked "masked")
                        (target-p
                         (let* ((effective-id
-                                (if (equal id "default.target")
-                                    (supervisor--resolve-default-target-link)
-                                  id))
+                                (supervisor--resolve-target-alias
+                                 (if (equal id "default.target")
+                                     (supervisor--resolve-default-target-link)
+                                   id)))
                                (conv
                                 (when (hash-table-p
                                        supervisor--target-convergence)
                                   (gethash effective-id
-                                           supervisor--target-convergence))))
-                          (pcase conv
-                            ('reached "reached")
-                            ('degraded "degraded")
-                            ('converging "converging")
-                            (_ "pending"))))
+                                           supervisor--target-convergence)))
+                               (closure
+                                (and (supervisor-plan-p
+                                      supervisor--current-plan)
+                                     (supervisor-plan-activation-closure
+                                      supervisor--current-plan))))
+                          (cond
+                           ((eq conv 'reached) "reached")
+                           ((eq conv 'degraded) "degraded")
+                           ((eq conv 'converging) "converging")
+                           ;; Not in activation closure: unreachable
+                           ((and (hash-table-p closure)
+                                 (not (gethash effective-id closure)))
+                            "unreachable")
+                           (t "pending"))))
                        (alive "running")
                        (failed "dead")
                        ((and oneshot-p oneshot-failed) "failed")
@@ -2376,10 +2386,15 @@ If SNAPSHOT is provided, read from it; otherwise read from globals."
     (cond
      (masked "masked")
      ((eq type 'target)
-      (let ((reasons (when (hash-table-p
-                            supervisor--target-convergence-reasons)
-                       (gethash id
-                                supervisor--target-convergence-reasons))))
+      (let* ((effective-id
+              (supervisor--resolve-target-alias
+               (if (equal id "default.target")
+                   (supervisor--resolve-default-target-link)
+                 id)))
+             (reasons (when (hash-table-p
+                             supervisor--target-convergence-reasons)
+                        (gethash effective-id
+                                 supervisor--target-convergence-reasons))))
         (when reasons
           (mapconcat #'identity reasons "; "))))
      (alive nil)
