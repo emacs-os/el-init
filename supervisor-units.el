@@ -230,7 +230,9 @@ Return a plist with keys:
     :exec-stop :exec-reload :restart-sec
     :description :documentation :before :wants
     :kill-signal :kill-mode :remain-after-exit :success-exit-status
-    :user :group :wanted-by :required-by)
+    :user :group :wanted-by :required-by
+    :sandbox-profile :sandbox-network :sandbox-ro-bind :sandbox-rw-bind
+    :sandbox-tmpfs :sandbox-raw-args)
   "Valid keywords in a unit-file plist.
 Includes `:command' which is unit-file specific.")
 

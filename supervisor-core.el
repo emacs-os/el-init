@@ -1059,16 +1059,19 @@ Return nil if valid, or a reason string if invalid."
            ((null val))
            ((not (and (proper-list-p val) (cl-every #'stringp val)))
             (push ":sandbox-raw-args must be a list of strings" errors)))))
-      ;; Check sandbox-requesting units for OS and binary prerequisites
+      ;; Check sandbox-requesting units for OS and binary prerequisites.
+      ;; Use truthy value checks (not plist-member) to match runtime
+      ;; supervisor--sandbox-requesting-p: :sandbox-ro-bind nil is not
+      ;; sandbox-requesting in either path.
       (let ((sandbox-requesting
-             (or (and (plist-member plist :sandbox-profile)
-                      (let ((p (plist-get plist :sandbox-profile)))
-                        (not (memq (if (stringp p) (intern p) p) '(nil none)))))
-                 (plist-member plist :sandbox-network)
-                 (plist-member plist :sandbox-ro-bind)
-                 (plist-member plist :sandbox-rw-bind)
-                 (plist-member plist :sandbox-tmpfs)
-                 (plist-member plist :sandbox-raw-args))))
+             (or (let ((p (plist-get plist :sandbox-profile)))
+                   (and p (not (memq (if (stringp p) (intern p) p)
+                                     '(none)))))
+                 (plist-get plist :sandbox-network)
+                 (plist-get plist :sandbox-ro-bind)
+                 (plist-get plist :sandbox-rw-bind)
+                 (plist-get plist :sandbox-tmpfs)
+                 (plist-get plist :sandbox-raw-args))))
         (when sandbox-requesting
           (unless (eq system-type 'gnu/linux)
             (push "sandbox is only supported on GNU/Linux" errors))

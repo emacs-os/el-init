@@ -12143,6 +12143,32 @@ could incorrectly preserve a non-running disabled unit."
         (should (equal (supervisor-entry-user entry) "alice"))
         (should (equal (supervisor-entry-group entry) "staff"))))))
 
+;; Unit-file and core keyword whitelists include sandbox keys
+
+(ert-deftest supervisor-test-unit-file-keywords-sandbox ()
+  "Unit-file keywords include all sandbox keys."
+  (dolist (kw '(:sandbox-profile :sandbox-network :sandbox-ro-bind
+                :sandbox-rw-bind :sandbox-tmpfs :sandbox-raw-args))
+    (should (memq kw supervisor--unit-file-keywords))))
+
+(ert-deftest supervisor-test-unit-file-sandbox-profile-accepted ()
+  "Unit file with :sandbox-profile passes validation and roundtrips."
+  (supervisor-test-with-unit-files
+      '(("echo hi" :id "svc" :sandbox-profile strict))
+    (let* ((entries (supervisor--all-parsed-entries)))
+      (should (= 1 (length entries)))
+      (should (eq (supervisor-entry-sandbox-profile (car entries))
+                  'strict)))))
+
+(ert-deftest supervisor-test-unit-file-sandbox-ro-bind-accepted ()
+  "Unit file with :sandbox-ro-bind passes validation and roundtrips."
+  (supervisor-test-with-unit-files
+      '(("echo hi" :id "svc" :sandbox-ro-bind ("/tmp")))
+    (let* ((entries (supervisor--all-parsed-entries)))
+      (should (= 1 (length entries)))
+      (should (equal (supervisor-entry-sandbox-ro-bind (car entries))
+                     '("/tmp"))))))
+
 ;; Type-gating
 
 (ert-deftest supervisor-test-remain-after-exit-oneshot-only ()
@@ -21557,6 +21583,22 @@ entries list and eligible for DAG startup."
                              (and (string-match-p "INVALID" w)
                                   (string-match-p "sandboxed-svc" w)))
                            warnings)))))))
+
+(ert-deftest supervisor-test-sandbox-nil-bind-not-requesting ()
+  "Entry with :sandbox-ro-bind nil is not treated as sandbox-requesting.
+Both validation and runtime must agree: nil-valued sandbox keys are not
+sandbox-requesting, so the entry validates even without bwrap."
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name)
+               (unless (equal name "bwrap")
+                 (executable-find name)))))
+    ;; Validation should pass (not sandbox-requesting, so no bwrap check)
+    (should-not (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-ro-bind nil)))
+    ;; Runtime detection should also report not sandbox-requesting
+    (let ((entry (supervisor--parse-entry
+                  '("cmd" :id "svc" :sandbox-ro-bind nil))))
+      (should-not (supervisor--sandbox-requesting-p entry)))))
 
 ;; Profile registry and command builder tests
 
