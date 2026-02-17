@@ -2152,6 +2152,10 @@ JSON-P controls the output format."
      "Supervisor is not running (no current plan)"
      (if json-p 'json 'human))))
 
+(defun supervisor--cli-target-status-string (target-id)
+  "Return runtime target status string for TARGET-ID."
+  (car (supervisor--compute-entry-status target-id 'target)))
+
 (defun supervisor--cli-cmd-get-default (args json-p)
   "Handle `get-default' command with ARGS.  JSON-P enables JSON output.
 Print the effective default-target-link (what default.target resolves to)."
@@ -2250,13 +2254,7 @@ List all target units with convergence state and member counts."
                  (mem (gethash canonical members))
                  (req-count (length (plist-get mem :requires)))
                  (wants-count (length (plist-get mem :wants)))
-                 (conv (when (hash-table-p supervisor--target-convergence)
-                         (gethash canonical supervisor--target-convergence)))
-                 (status (pcase conv
-                           ('reached "reached")
-                           ('degraded "degraded")
-                           ('converging "converging")
-                           (_ "pending")))
+                 (status (supervisor--cli-target-status-string id))
                  (alias-target (supervisor--target-alias-p id))
                  (kind (if alias-target "alias" "canonical"))
                  (resolved-link
@@ -2332,13 +2330,7 @@ Show convergence state, reasons, and member lists for a target."
                (mem (gethash canonical members))
                (req-ids (plist-get mem :requires))
                (want-ids (plist-get mem :wants))
-               (conv (when (hash-table-p supervisor--target-convergence)
-                       (gethash canonical supervisor--target-convergence)))
-               (status (pcase conv
-                         ('reached "reached")
-                         ('degraded "degraded")
-                         ('converging "converging")
-                         (_ "pending")))
+               (status (supervisor--cli-target-status-string target))
                (reasons (when (hash-table-p
                                supervisor--target-convergence-reasons)
                           (gethash canonical
@@ -2458,13 +2450,7 @@ Show root-cause chain: why is this target in its current state?"
                (mem (gethash canonical members))
                (req-ids (plist-get mem :requires))
                (want-ids (plist-get mem :wants))
-               (conv (when (hash-table-p supervisor--target-convergence)
-                       (gethash canonical supervisor--target-convergence)))
-               (status (pcase conv
-                         ('reached "reached")
-                         ('degraded "degraded")
-                         ('converging "converging")
-                         (_ "pending")))
+               (status (supervisor--cli-target-status-string target))
                (reasons (when (hash-table-p
                                supervisor--target-convergence-reasons)
                           (gethash canonical
@@ -2532,8 +2518,10 @@ Show root-cause chain: why is this target in its current state?"
                  (format "  All %d required member%s healthy\n"
                          (length req-ids)
                          (if (= 1 (length req-ids)) "" "s")))
+                ("unreachable"
+                 "  Target is outside the current activation closure\n")
                 ("pending"
-                 "  Supervisor not started or target not in activation closure\n"))))
+                 "  Target convergence has not started yet\n"))))
            (if json-p 'json 'human)))))))))))
 
 (defun supervisor--cli-cmd-isolate (args json-p)

@@ -1766,6 +1766,57 @@ Regression test: duplicates must not overwrite order-index of kept entry."
 
 ;;; Phase 2: Startup Uses Plan Tests
 
+(ert-deftest supervisor-test-start-sets-current-plan-and-closure ()
+  "Supervisor-start stores active plan metadata for status surfaces."
+  (supervisor-test-with-unit-files
+      '((nil :id "graphical.target" :type target)
+        (nil :id "rescue.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--writers (make-hash-table :test 'equal))
+          (supervisor--stderr-writers (make-hash-table :test 'equal))
+          (supervisor--stderr-pipes (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--restart-timers (make-hash-table :test 'equal))
+          (supervisor--last-exit-info (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--start-times (make-hash-table :test 'equal))
+          (supervisor--ready-times (make-hash-table :test 'equal))
+          (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+          (supervisor--computed-deps (make-hash-table :test 'equal))
+          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--current-plan nil)
+          (supervisor-default-target "default.target")
+          (supervisor-default-target-link "graphical.target")
+          (supervisor--default-target-link-override nil)
+          (supervisor--shutting-down t)
+          (started-ids nil))
+      (cl-letf (((symbol-function 'supervisor--stop-all-processes)
+                 (lambda (callback) (funcall callback)))
+                ((symbol-function 'supervisor--load-overrides) #'ignore)
+                ((symbol-function 'supervisor--start-entries-async)
+                 (lambda (entries callback &optional _target-members)
+                   (setq started-ids (mapcar #'supervisor-entry-id entries))
+                   (funcall callback))))
+        (supervisor-start))
+      (should (supervisor-plan-p supervisor--current-plan))
+      (let ((closure (supervisor-plan-activation-closure supervisor--current-plan)))
+        (should (hash-table-p closure))
+        (should (gethash "graphical.target" closure))
+        (should-not (gethash "rescue.target" closure)))
+      (should (member "graphical.target" started-ids))
+      (should-not (member "rescue.target" started-ids)))))
+
 (ert-deftest supervisor-test-startup-populates-globals-from-plan ()
   "Plan->global copy mechanism populates legacy globals correctly.
 Unit test for the plan data extraction used by supervisor-start.
@@ -19184,6 +19235,47 @@ They are inert fallback definitions activated only by timers."
                 "svc" 'simple nil t 'always t snapshot)))
       (should (equal "-" (aref vec 2))))))
 
+(ert-deftest supervisor-test-dashboard-target-column-outside-closure-unreachable ()
+  "TARGET column shows unreachable for targets outside activation closure."
+  (let* ((conv-hash (make-hash-table :test 'equal))
+         (closure (make-hash-table :test 'equal))
+         (supervisor--target-convergence conv-hash)
+         (supervisor--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (supervisor--current-plan
+          (supervisor-plan--create
+           :entries nil :by-target nil
+           :deps (make-hash-table :test 'equal)
+           :requires-deps (make-hash-table :test 'equal)
+           :dependents (make-hash-table :test 'equal)
+           :invalid (make-hash-table :test 'equal)
+           :cycle-fallback-ids (make-hash-table :test 'equal)
+           :order-index (make-hash-table :test 'equal)
+           :meta nil
+           :activation-closure closure))
+         (snapshot (supervisor-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time))))
+    (puthash "graphical.target" t closure)
+    (let ((vec (supervisor--make-dashboard-entry
+                "rescue.target" 'target nil t nil nil snapshot)))
+      (should (equal "unreachable"
+                     (substring-no-properties (aref vec 2))))
+      (should (equal "unreachable"
+                     (substring-no-properties (aref vec 4)))))))
+
 (ert-deftest supervisor-test-dashboard-target-restart-renders-na ()
   "Dashboard renders target restart column as n/a."
   (let* ((supervisor--target-convergence (make-hash-table :test 'equal))
@@ -19535,6 +19627,44 @@ They are inert fallback definitions activated only by timers."
           (should (vectorp parsed))
           (should (> (length parsed) 0)))))))
 
+(ert-deftest supervisor-test-cli-list-targets-outside-closure-unreachable ()
+  "List-targets marks outside-closure targets as unreachable."
+  (supervisor-test-with-unit-files
+      '((nil :id "graphical.target" :type target)
+        (nil :id "rescue.target" :type target)
+        (nil :id "default.target" :type target))
+    (let* ((closure (make-hash-table :test 'equal))
+           (supervisor--current-plan
+            (supervisor-plan--create
+             :entries nil :by-target nil
+             :deps (make-hash-table :test 'equal)
+             :requires-deps (make-hash-table :test 'equal)
+             :dependents (make-hash-table :test 'equal)
+             :invalid (make-hash-table :test 'equal)
+             :cycle-fallback-ids (make-hash-table :test 'equal)
+             :order-index (make-hash-table :test 'equal)
+             :meta nil
+             :activation-closure closure))
+           (supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--remain-active (make-hash-table :test 'equal))
+           (supervisor--manually-stopped (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--target-convergence (make-hash-table :test 'equal))
+           (supervisor--target-convergence-reasons (make-hash-table :test 'equal))
+           (supervisor-default-target-link "graphical.target")
+           (supervisor--default-target-link-override nil))
+      (puthash "graphical.target" t closure)
+      (let ((result (supervisor--cli-dispatch '("list-targets"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((output (supervisor-cli-result-output result)))
+          (should (string-match "rescue\\.target" output))
+          (should (string-match "rescue\\.target[[:space:]]+unreachable"
+                                output)))))))
+
 (ert-deftest supervisor-test-cli-list-targets-includes-empty-targets ()
   "Targets with no members still appear in list-targets."
   (supervisor-test-with-unit-files
@@ -19647,6 +19777,43 @@ They are inert fallback definitions activated only by timers."
           (should (assoc 'requires parsed))
           (should (assoc 'wants parsed)))))))
 
+(ert-deftest supervisor-test-cli-target-status-outside-closure-unreachable ()
+  "Target-status reports unreachable for target outside active closure."
+  (supervisor-test-with-unit-files
+      '((nil :id "graphical.target" :type target)
+        (nil :id "rescue.target" :type target)
+        (nil :id "default.target" :type target))
+    (let* ((closure (make-hash-table :test 'equal))
+           (supervisor--current-plan
+            (supervisor-plan--create
+             :entries nil :by-target nil
+             :deps (make-hash-table :test 'equal)
+             :requires-deps (make-hash-table :test 'equal)
+             :dependents (make-hash-table :test 'equal)
+             :invalid (make-hash-table :test 'equal)
+             :cycle-fallback-ids (make-hash-table :test 'equal)
+             :order-index (make-hash-table :test 'equal)
+             :meta nil
+             :activation-closure closure))
+           (supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--remain-active (make-hash-table :test 'equal))
+           (supervisor--manually-stopped (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--target-convergence (make-hash-table :test 'equal))
+           (supervisor--target-convergence-reasons (make-hash-table :test 'equal))
+           (supervisor-default-target-link "graphical.target")
+           (supervisor--default-target-link-override nil))
+      (puthash "graphical.target" t closure)
+      (let ((result (supervisor--cli-dispatch
+                     '("target-status" "rescue.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (should (string-match "Status: unreachable"
+                              (supervisor-cli-result-output result)))))))
+
 (ert-deftest supervisor-test-cli-explain-target-reached ()
   "Reached target shows all members healthy message."
   (supervisor-test-with-unit-files
@@ -19731,6 +19898,45 @@ They are inert fallback definitions activated only by timers."
                     (supervisor-cli-result-exitcode result)))
         (should (string-match "pending"
                               (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-explain-target-outside-closure-unreachable ()
+  "Explain-target reports unreachable when target is outside closure."
+  (supervisor-test-with-unit-files
+      '((nil :id "graphical.target" :type target)
+        (nil :id "rescue.target" :type target)
+        (nil :id "default.target" :type target))
+    (let* ((closure (make-hash-table :test 'equal))
+           (supervisor--current-plan
+            (supervisor-plan--create
+             :entries nil :by-target nil
+             :deps (make-hash-table :test 'equal)
+             :requires-deps (make-hash-table :test 'equal)
+             :dependents (make-hash-table :test 'equal)
+             :invalid (make-hash-table :test 'equal)
+             :cycle-fallback-ids (make-hash-table :test 'equal)
+             :order-index (make-hash-table :test 'equal)
+             :meta nil
+             :activation-closure closure))
+           (supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--remain-active (make-hash-table :test 'equal))
+           (supervisor--manually-stopped (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--target-convergence (make-hash-table :test 'equal))
+           (supervisor--target-convergence-reasons (make-hash-table :test 'equal))
+           (supervisor-default-target-link "graphical.target")
+           (supervisor--default-target-link-override nil))
+      (puthash "graphical.target" t closure)
+      (let ((result (supervisor--cli-dispatch
+                     '("explain-target" "rescue.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((output (supervisor-cli-result-output result)))
+          (should (string-match "rescue\\.target: unreachable" output))
+          (should (string-match "outside the current activation closure"
+                                output)))))))
 
 (ert-deftest supervisor-test-cli-explain-target-nonexistent ()
   "Explain-target with nonexistent target returns exit code 4."
@@ -21205,6 +21411,36 @@ the invalid-hash must not contain the alias ID."
       ;; TARGET column (index 2) should show reached
       (should (equal "reached"
                      (substring-no-properties (aref vec 2)))))))
+
+(ert-deftest supervisor-test-dashboard-alias-target-status-shows-canonical-convergence ()
+  "Dashboard STATUS for alias target mirrors canonical convergence."
+  (let* ((conv-hash (make-hash-table :test 'equal))
+         (supervisor--target-convergence conv-hash)
+         (supervisor--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (snapshot (supervisor-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time))))
+    ;; Convergence stored under canonical ID
+    (puthash "multi-user.target" 'reached conv-hash)
+    ;; Query via alias ID
+    (let ((vec (supervisor--make-dashboard-entry
+                "runlevel3.target" 'target nil t nil nil snapshot)))
+      ;; STATUS column (index 4) should also show reached
+      (should (equal "reached"
+                     (substring-no-properties (aref vec 4)))))))
 
 (ert-deftest supervisor-test-dashboard-detail-alias-shows-canonical-convergence ()
   "Detail panel for alias target shows convergence from canonical."

@@ -2316,10 +2316,7 @@ Return a cons cell (STATUS . PID)."
          (status (cond (masked "masked")
                        (target-p
                         (let* ((effective-id
-                                (supervisor--resolve-target-alias
-                                 (if (equal id "default.target")
-                                     (supervisor--resolve-default-target-link)
-                                   id)))
+                                (supervisor--resolve-target-runtime-id id))
                                (conv
                                 (when (hash-table-p
                                        supervisor--target-convergence)
@@ -2386,11 +2383,7 @@ If SNAPSHOT is provided, read from it; otherwise read from globals."
     (cond
      (masked "masked")
      ((eq type 'target)
-      (let* ((effective-id
-              (supervisor--resolve-target-alias
-               (if (equal id "default.target")
-                   (supervisor--resolve-default-target-link)
-                 id)))
+      (let* ((effective-id (supervisor--resolve-target-runtime-id id))
              (reasons (when (hash-table-p
                              supervisor--target-convergence-reasons)
                         (gethash effective-id
@@ -5960,6 +5953,15 @@ TARGET-ID itself if it is not an alias."
   (or supervisor--default-target-link-override
       supervisor-default-target-link))
 
+(defun supervisor--resolve-target-runtime-id (target-id)
+  "Resolve TARGET-ID for target convergence and status lookups.
+Resolve `default.target' via `supervisor--resolve-default-target-link',
+then resolve runlevel aliases to canonical target IDs."
+  (supervisor--resolve-target-alias
+   (if (equal target-id "default.target")
+       (supervisor--resolve-default-target-link)
+     target-id)))
+
 (defun supervisor--resolve-startup-root (valid-id-set)
   "Resolve the startup root target from configuration.
 VALID-ID-SET is a hash of valid entry IDs.
@@ -6090,6 +6092,8 @@ Ready semantics (when dependents are unblocked):
                (supervisor-timer-subsystem-active-p)
                (fboundp 'supervisor-timer-build-list))
       (supervisor-timer-build-list plan))
+    ;; Expose the active plan for dashboard/CLI status and closure-aware views.
+    (setq supervisor--current-plan plan)
     ;; Initialize all entry states to pending via FSM
     (dolist (entry (supervisor-plan-entries plan))
       (supervisor--transition-state (car entry) 'pending))

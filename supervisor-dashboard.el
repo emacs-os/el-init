@@ -558,11 +558,17 @@ If SNAPSHOT is provided, read runtime state from it."
                        (conv (when (hash-table-p supervisor--target-convergence)
                                (gethash effective-id
                                         supervisor--target-convergence)))
-                       (conv-str (pcase conv
-                                   ('reached "reached")
-                                   ('degraded "degraded")
-                                   ('converging "pending")
-                                   (_ "pending"))))
+                       (closure (and (supervisor-plan-p supervisor--current-plan)
+                                     (supervisor-plan-activation-closure
+                                      supervisor--current-plan)))
+                       (conv-str (cond
+                                  ((and (hash-table-p closure)
+                                        (not (gethash effective-id closure)))
+                                   "unreachable")
+                                  ((eq conv 'reached) "reached")
+                                  ((eq conv 'degraded) "degraded")
+                                  ((eq conv 'converging) "pending")
+                                  (t "pending"))))
                   (supervisor--propertize-status conv-str))
               (or parent-target "-"))
             (propertize (if effective-enabled "yes" "no")
@@ -1051,7 +1057,7 @@ Includes all target-type entries, even those with no members."
                      (if wants (mapconcat #'identity wants ", ") "none"))))))))
 
 (defvar supervisor--status-legend
-  "Status: running=active process | active=oneshot remain-after-exit | done=oneshot completed ok | failed=crashed/exit>0 | dead=crash-loop | pending=not yet started | stopped=terminated | invalid=config error"
+  "Status: running=active process | active=oneshot remain-after-exit | done=oneshot completed ok | failed=crashed/exit>0 | dead=crash-loop | pending=not yet started | unreachable=outside activation closure | stopped=terminated | invalid=config error"
   "Legend explaining status column values.")
 
 (defun supervisor--describe-format-duration (seconds)
@@ -1319,7 +1325,8 @@ With prefix argument, show status legend instead."
     (princ "  done      Oneshot completed successfully (exit 0)\n")
     (princ "  failed    Process crashed or oneshot exited non-zero\n")
     (princ "  dead      Process crash-looped (exceeded restart limit)\n")
-    (princ "  pending   Not yet started (waiting for stage/deps)\n")
+    (princ "  pending   Not yet started (inside activation closure)\n")
+    (princ "  unreachable Outside current activation closure\n")
     (princ "  stopped   Process terminated or active oneshot explicitly stopped\n")
     (princ "  masked    Entry is masked (always disabled)\n")
     (princ "  invalid   Config entry has errors\n")
@@ -1330,7 +1337,7 @@ With prefix argument, show status legend instead."
     (princ "---------------\n")
     (princ "  ID        Process identifier (from :id or command)\n")
     (princ "  Type      simple (daemon), oneshot (run-once), or target (group)\n")
-    (princ "  Target    Convergence state for targets, - for services\n")
+    (princ "  Target    Convergence/unreachable for targets, - for services\n")
     (princ "  Enabled   Whether process will start (yes/no)\n")
     (princ "  Status    Current state (see above)\n")
     (princ "  Restart   Restart policy: no, on-success, on-failure, always (simple only)\n")
