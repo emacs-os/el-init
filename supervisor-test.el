@@ -21536,6 +21536,66 @@ the invalid-hash must not contain the alias ID."
                    '("cmd" :id "svc" :sandbox-raw-args (42)))))
       (should (string-match-p "must be a list of strings" reason)))))
 
+(ert-deftest supervisor-test-sandbox-validate-raw-args-share-net-conflicts-isolated ()
+  "Raw --share-net conflicts with :sandbox-network isolated."
+  (let ((supervisor-sandbox-allow-raw-bwrap t))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc"
+                     :sandbox-profile strict
+                     :sandbox-network isolated
+                     :sandbox-raw-args ("--share-net")))))
+      (should (string-match-p "\"--share-net\" conflicts with :sandbox-network isolated"
+                              reason)))))
+
+(ert-deftest supervisor-test-sandbox-validate-raw-args-unshare-net-conflicts-shared ()
+  "Raw --unshare-net conflicts with :sandbox-network shared."
+  (let ((supervisor-sandbox-allow-raw-bwrap t))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc"
+                     :sandbox-profile service
+                     :sandbox-network shared
+                     :sandbox-raw-args ("--unshare-net")))))
+      (should (string-match-p "\"--unshare-net\" conflicts with :sandbox-network shared"
+                              reason)))))
+
+(ert-deftest supervisor-test-sandbox-validate-raw-args-unshare-all-conflicts ()
+  "Raw --unshare-all conflicts with profile-managed namespace setup."
+  (let ((supervisor-sandbox-allow-raw-bwrap t))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc"
+                     :sandbox-profile service
+                     :sandbox-raw-args ("--unshare-all")))))
+      (should (string-match-p "\"--unshare-all\" conflicts with profile-managed"
+                              reason)))))
+
+(ert-deftest supervisor-test-sandbox-validate-raw-args-die-with-parent-conflicts ()
+  "Raw --die-with-parent conflicts with profile-managed setup."
+  (let ((supervisor-sandbox-allow-raw-bwrap t))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc"
+                     :sandbox-profile strict
+                     :sandbox-raw-args ("--die-with-parent")))))
+      (should (string-match-p "\"--die-with-parent\" conflicts with profile-managed"
+                              reason)))))
+
+(ert-deftest supervisor-test-sandbox-validate-raw-args-proc-conflicts ()
+  "Raw --proc conflicts with profile-managed mount setup."
+  (let ((supervisor-sandbox-allow-raw-bwrap t))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc"
+                     :sandbox-profile service
+                     :sandbox-raw-args ("--proc")))))
+      (should (string-match-p "\"--proc\" conflicts with profile-managed"
+                              reason)))))
+
+(ert-deftest supervisor-test-sandbox-validate-raw-args-safe-arg-accepted ()
+  "Non-conflicting raw args like --cap-add pass validation."
+  (let ((supervisor-sandbox-allow-raw-bwrap t))
+    (should-not (supervisor--validate-entry
+                 '("cmd" :id "svc"
+                   :sandbox-profile service
+                   :sandbox-raw-args ("--cap-add" "CAP_NET_RAW"))))))
+
 (ert-deftest supervisor-test-sandbox-validate-target-rejects ()
   "Sandbox keys are rejected for target type."
   (let ((reason (supervisor--validate-entry

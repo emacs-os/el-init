@@ -1060,7 +1060,28 @@ Return nil if valid, or a reason string if invalid."
                   errors))
            ((null val))
            ((not (and (proper-list-p val) (cl-every #'stringp val)))
-            (push ":sandbox-raw-args must be a list of strings" errors)))))
+            (push ":sandbox-raw-args must be a list of strings" errors))
+           (t
+            ;; Validate against conflicting/unsafe raw arg combinations.
+            (let ((network (plist-get plist :sandbox-network)))
+              (when (and (member "--share-net" val)
+                         (eq (if (stringp network) (intern network) network)
+                             'isolated))
+                (push ":sandbox-raw-args \"--share-net\" conflicts with :sandbox-network isolated"
+                      errors))
+              (when (and (member "--unshare-net" val)
+                         (eq (if (stringp network) (intern network) network)
+                             'shared))
+                (push ":sandbox-raw-args \"--unshare-net\" conflicts with :sandbox-network shared"
+                      errors)))
+            ;; Reject args that duplicate or conflict with profile-managed
+            ;; namespace and mount setup.
+            (dolist (arg '("--unshare-all" "--die-with-parent"
+                           "--proc" "--dev"))
+              (when (member arg val)
+                (push (format ":sandbox-raw-args \"%s\" conflicts with profile-managed setup"
+                              arg)
+                      errors)))))))
       ;; Check sandbox-requesting units for OS and binary prerequisites.
       ;; Per plan contract: a unit is sandbox-requesting when
       ;; :sandbox-profile is set to anything other than none, OR any
