@@ -3484,28 +3484,16 @@ configured timers must be visible for analysis."
     (should (commandp 'supervisor-dashboard-timer-reset))
     (should (commandp 'supervisor-dashboard-timer-refresh))
     ;; Verify transient layout has Timers group with correct key bindings.
-    ;; Walk the layout tree to find :key properties, resilient to internal
-    ;; transient layout format changes across Emacs versions.
+    ;; Serialize the layout and search for key strings to avoid depending
+    ;; on internal transient layout structure which varies across versions.
     (let* ((layout (get 'supervisor-dashboard-menu 'transient--layout))
-           (keys nil))
-      ;; Recursively collect all :key values from the layout structure
-      (cl-labels
-          ((walk (node)
-             (cond
-              ((vectorp node)
-               (dotimes (i (length node))
-                 (walk (aref node i))))
-              ((and (listp node) (plist-get node :key))
-               (push (plist-get node :key) keys))
-              ((listp node)
-               (dolist (elt node)
-                 (walk elt))))))
-        (walk layout))
-      (should (member "y t" keys))
-      (should (member "y i" keys))
-      (should (member "y j" keys))
-      (should (member "y r" keys))
-      (should (member "y g" keys)))))
+           (repr (format "%S" layout)))
+      (should (string-match-p ":key \"y t\"" repr))
+      (should (string-match-p ":key \"y i\"" repr))
+      (should (string-match-p ":key \"y j\"" repr))
+      (should (string-match-p ":key \"y r\"" repr))
+      (should (string-match-p ":key \"y g\"" repr))
+      (should (string-match-p "Timers" repr)))))
 
 (ert-deftest supervisor-test-timer-actions-dispatcher-key ()
   "Timer actions dispatcher is bound to y in dashboard keymap."
