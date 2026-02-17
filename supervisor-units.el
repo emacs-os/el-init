@@ -597,6 +597,13 @@ program list should use `supervisor--effective-programs' instead."
     ;; Warn about rejected alias target overrides
     (dolist (id (nreverse rejected))
       (supervisor--log 'warning "disk unit \"%s\" ignored: alias targets are immutable" id))
+    ;; Clear invalid-hash entries for alias IDs whose builtin version
+    ;; is valid and present in the merged set.  Without this cleanup a
+    ;; rejected disk alias target would pollute the invalid hash and
+    ;; mask the valid builtin in the dashboard/CLI.
+    (when alias-ids
+      (dolist (id alias-ids)
+        (remhash id supervisor--unit-file-invalid)))
     (setq supervisor--programs-cache
           (append allowed-entries builtins))))
 

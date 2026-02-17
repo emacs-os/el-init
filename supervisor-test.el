@@ -20107,7 +20107,12 @@ They are inert fallback definitions activated only by timers."
           ;; Validation rejected with "passive" reason
           (should (cl-some (lambda (w)
                              (string-match-p "runlevel5\\.target.*passive" w))
-                           warnings)))
+                           warnings))
+          ;; Invalid-hash must NOT contain the alias ID -- the valid
+          ;; builtin replaces it, so the dashboard/CLI must not show
+          ;; the rejected disk unit's invalid status.
+          (should-not (gethash "runlevel5.target"
+                               supervisor--unit-file-invalid)))
       (delete-directory dir t))))
 
 (ert-deftest supervisor-test-alias-target-no-deps-rejected-by-merge ()
@@ -20135,7 +20140,50 @@ They are inert fallback definitions activated only by timers."
           ;; Merge-time warning was emitted
           (should (cl-some (lambda (w)
                              (string-match-p "runlevel3\\.target.*immutable" w))
-                           warnings)))
+                           warnings))
+          ;; Invalid-hash cleaned: builtin is valid, disk rejection must
+          ;; not leak into dashboard/CLI invalid state.
+          (should-not (gethash "runlevel3.target"
+                               supervisor--unit-file-invalid)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-alias-invalid-winner-does-not-suppress-builtin ()
+  "Invalid disk alias target does not suppress the valid builtin in merged set.
+Exercises the authority resolver invalid-winner-blocks-fallback semantics:
+even when a disk alias target wins authority and is marked invalid, the
+builtin alias target must still appear in the merged program cache and
+the invalid-hash must not contain the alias ID."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+    ;; Write a deliberately invalid alias target (has :after dep edge)
+    (supervisor-test--write-unit-files
+     dir '((nil :id "runlevel0.target" :type target
+                :after ("basic.target"))))
+    (unwind-protect
+        (progn
+          (supervisor--load-programs)
+          ;; Builtin runlevel0.target must be in the cache
+          (let ((entry (cl-find "runlevel0.target"
+                                supervisor--programs-cache
+                                :key (lambda (e) (plist-get (cdr e) :id))
+                                :test #'equal)))
+            (should entry)
+            ;; Must be the builtin (no :after)
+            (should-not (plist-get (cdr entry) :after))
+            ;; Description should be the builtin's
+            (should (string-match-p "poweroff"
+                                    (plist-get (cdr entry) :description))))
+          ;; Invalid-hash must not contain alias ID
+          (should-not (gethash "runlevel0.target"
+                               supervisor--unit-file-invalid))
+          ;; Other builtins are unaffected
+          (should (cl-find "runlevel5.target"
+                           supervisor--programs-cache
+                           :key (lambda (e) (plist-get (cdr e) :id))
+                           :test #'equal)))
       (delete-directory dir t))))
 
 (ert-deftest supervisor-test-alias-target-override-non-alias-still-works ()
