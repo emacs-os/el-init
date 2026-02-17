@@ -124,11 +124,38 @@ info "logrotate: start log_dir=${log_dir} keep_days=${keep_days} signal_reopen=$
 # name matches *.NNNNNNNN-NNNNNN.log or *.NNNNNNNN-NNNNNN.N+.log
 is_rotated() {
     case "${1}" in
-        # With sequence suffix: base.YYYYMMDD-HHMMSS.N.log
+        # With sequence suffix: base.YYYYMMDD-HHMMSS.N.log[.tar.gz]
         *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].[0-9]*.log) return 0 ;;
-        # Without sequence suffix: base.YYYYMMDD-HHMMSS.log
+        *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].[0-9]*.log.tar.gz) return 0 ;;
+        # Without sequence suffix: base.YYYYMMDD-HHMMSS.log[.tar.gz]
         *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].log) return 0 ;;
+        *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].log.tar.gz) return 0 ;;
         *) return 1 ;;
+    esac
+}
+
+# --- Optional tar compression of rotated files ---
+# If tar is available, compress each rotated file into a .tar.gz archive.
+# On failure, preserve the uncompressed file and warn.
+has_tar=0
+command -v tar >/dev/null 2>&1 && has_tar=1
+
+compress_rotated() {
+    [ "${has_tar}" = "1" ] || return 0
+    src_file="${1}"
+    src_base="${src_file##*/}"
+    src_dir="${src_file%/*}"
+    archive="${src_file}.tar.gz"
+    case "${dry_run}" in
+        1) printf 'compress: %s -> %s\n' "${src_file}" "${archive}" ;;
+        *)
+            if tar -C "${src_dir}" -czf "${archive}" "${src_base}" 2>/dev/null; then
+                rm -f "${src_file}"
+                printf 'compress: %s -> %s\n' "${src_file}" "${archive}"
+            else
+                warn "Failed to compress ${src_file}; preserving uncompressed"
+            fi
+            ;;
     esac
 }
 
@@ -149,6 +176,7 @@ rotate_file() {
         *)
             mv "${src}" "${dest}"
             printf 'rotate: %s -> %s\n' "${src}" "${dest}"
+            compress_rotated "${dest}"
             ;;
     esac
 }
@@ -198,7 +226,8 @@ esac
 prune_rotated() {
     dir="${1}"
     days="${2}"
-    find "${dir}" -maxdepth 1 \( -name 'supervisor.*.log' -o -name 'log-*.*.log' \) -mtime +"${days}" -type f | while IFS= read -r f; do
+    find "${dir}" -maxdepth 1 \( -name 'supervisor.*.log' -o -name 'log-*.*.log' \
+       -o -name 'supervisor.*.log.tar.gz' -o -name 'log-*.*.log.tar.gz' \) -mtime +"${days}" -type f | while IFS= read -r f; do
         name="${f##*/}"
         is_rotated "${name}" || continue
         case "${dry_run}" in

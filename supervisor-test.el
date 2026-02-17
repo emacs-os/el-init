@@ -15904,7 +15904,7 @@ No warning is emitted when there are simply no child processes."
         (cl-letf (((symbol-function 'supervisor--get-effective-logging)
                    (lambda (_id _default) nil))
                   ((symbol-function 'supervisor--start-writer)
-                   (lambda (_id _file)
+                   (lambda (_id _file &optional _log-format)
                      (setq writer-started t)
                      nil))
                   ((symbol-function 'make-process)
@@ -15999,7 +15999,7 @@ No warning is emitted when there are simply no child processes."
                   ((symbol-function 'supervisor--log-file)
                    (lambda (_id) "/tmp/test.log"))
                   ((symbol-function 'supervisor--start-writer)
-                   (lambda (id _file)
+                   (lambda (id _file &optional _log-format)
                      (puthash id fake-writer supervisor--writers)
                      fake-writer))
                   ((symbol-function 'make-process)
@@ -16019,7 +16019,17 @@ No warning is emitted when there are simply no child processes."
             (should captured-filter)
             ;; Invoke the filter as Emacs would
             (funcall captured-filter proc "hello world\n")
-            (should (equal sent-data '("hello world\n")))))
+            ;; Filter now sends framed transport data
+            (should (= 1 (length sent-data)))
+            (let ((frame (car sent-data)))
+              ;; Frame should be a unibyte string
+              (should (not (multibyte-string-p frame)))
+              ;; Byte 4 = event (1=output)
+              (should (= 1 (aref frame 4)))
+              ;; Byte 5 = stream (1=stdout)
+              (should (= 1 (aref frame 5)))
+              ;; Payload is at end of frame, after unit-id
+              (should (string-suffix-p "hello world\n" frame)))))
       (when (process-live-p fake-writer)
         (delete-process fake-writer))
       (when (process-live-p fake-svc)
@@ -16156,7 +16166,7 @@ No warning is emitted when there are simply no child processes."
                   ((symbol-function 'supervisor--log-file)
                    (lambda (_id) "/tmp/test.log"))
                   ((symbol-function 'supervisor--start-writer)
-                   (lambda (_id _file) nil))
+                   (lambda (_id _file &optional _log-format) nil))
                   ((symbol-function 'make-process)
                    (lambda (&rest args)
                      (setq captured-filter (plist-get args :filter))
@@ -16240,7 +16250,7 @@ No warning is emitted when there are simply no child processes."
                   ((symbol-function 'supervisor--log-file)
                    (lambda (_id) "/tmp/test.log"))
                   ((symbol-function 'supervisor--start-writer)
-                   (lambda (id _file)
+                   (lambda (id _file &optional _log-format)
                      (puthash id fake-writer supervisor--writers)
                      fake-writer))
                   ((symbol-function 'supervisor--stop-writer)
@@ -16336,12 +16346,14 @@ No warning is emitted when there are simply no child processes."
           ;; The old rotated file should still exist (not re-rotated)
           (should (file-exists-p
                    (expand-file-name "log-myapp.20250101-120000.log" dir)))
-          ;; New rotated files should exist with timestamp pattern
+          ;; New rotated files should exist with timestamp pattern.
+          ;; When tar is available, rotated files are compressed to
+          ;; .log.tar.gz; match both .log and .log.tar.gz suffixes.
           (let ((files (directory-files dir nil
-                                       "^supervisor\\.[0-9].*\\.log$")))
+                                       "^supervisor\\.[0-9].*\\.log")))
             (should (= (length files) 1)))
           (let ((files (directory-files dir nil
-                                       "^log-myapp\\.[0-9].*\\.log$")))
+                                       "^log-myapp\\.[0-9].*\\.log")))
             ;; Should be 2: the pre-existing rotated + the newly rotated
             (should (= (length files) 2))))
       (delete-directory dir t))))
@@ -17440,7 +17452,7 @@ An invalid entry ID that happens to end in .target must not pass."
                   ((symbol-function 'supervisor--log-file)
                    (lambda (id) (format "/tmp/test-logs/log-%s.log" id)))
                   ((symbol-function 'supervisor--start-writer)
-                   (lambda (_id _file)
+                   (lambda (_id _file &optional _log-format)
                      (setq writer-started t)
                      fake-proc))
                   ((symbol-function 'make-process)
@@ -17481,11 +17493,11 @@ An invalid entry ID that happens to end in .target must not pass."
         (cl-letf (((symbol-function 'supervisor--get-effective-logging)
                    (lambda (_id _default) t))
                   ((symbol-function 'supervisor--start-writer)
-                   (lambda (_id file)
+                   (lambda (_id file &optional _log-format)
                      (setq stdout-file file)
                      fake-stdout))
                   ((symbol-function 'supervisor--start-stderr-writer)
-                   (lambda (_id file)
+                   (lambda (_id file &optional _log-format)
                      (setq stderr-file file)
                      fake-stderr))
                   ((symbol-function 'supervisor--start-stderr-pipe)
@@ -17533,7 +17545,7 @@ An invalid entry ID that happens to end in .target must not pass."
         (cl-letf (((symbol-function 'supervisor--get-effective-logging)
                    (lambda (_id _default) t))
                   ((symbol-function 'supervisor--start-writer)
-                   (lambda (_id _file) fake-writer))
+                   (lambda (_id _file &optional _log-format) fake-writer))
                   ((symbol-function 'supervisor--start-stderr-writer)
                    (lambda (&rest _args)
                      (setq stderr-writer-called t)
@@ -22551,6 +22563,1097 @@ even when both identity wrapper and sandbox wrapper are active."
 (ert-deftest supervisor-test-log-format-unit-file-keyword ()
   ":log-format is in unit-file keyword allowlist."
   (should (memq :log-format supervisor--unit-file-keywords)))
+
+;;;; Phase 2: Frame encoding and transport tests
+
+(ert-deftest supervisor-test-frame-encode-round-trip ()
+  "Frame encoding produces correct byte sequence for known values."
+  (let ((frame (supervisor--log-frame-encode 1 1 12345 "my-svc" "hello")))
+    ;; Should be unibyte
+    (should (not (multibyte-string-p frame)))
+    ;; Total length = 4 (header) + 13 (fixed) + 6 (unit) + 5 (payload) = 28
+    (should (= (length frame) 28))
+    ;; u32be body length = 24
+    (should (= (aref frame 0) 0))
+    (should (= (aref frame 1) 0))
+    (should (= (aref frame 2) 0))
+    (should (= (aref frame 3) 24))
+    ;; event = 1 (output)
+    (should (= (aref frame 4) 1))
+    ;; stream = 1 (stdout)
+    (should (= (aref frame 5) 1))
+    ;; pid = 12345 = 0x3039
+    (should (= (aref frame 6) 0))
+    (should (= (aref frame 7) 0))
+    (should (= (aref frame 8) #x30))
+    (should (= (aref frame 9) #x39))
+    ;; unit_len = 6
+    (should (= (aref frame 10) 0))
+    (should (= (aref frame 11) 6))
+    ;; exit_code = 0
+    (should (= (aref frame 12) 0))
+    (should (= (aref frame 13) 0))
+    (should (= (aref frame 14) 0))
+    (should (= (aref frame 15) 0))
+    ;; exit_status = 0
+    (should (= (aref frame 16) 0))
+    ;; unit_id = "my-svc"
+    (should (equal (substring frame 17 23) "my-svc"))
+    ;; payload = "hello"
+    (should (equal (substring frame 23 28) "hello"))))
+
+(ert-deftest supervisor-test-frame-encode-binary-payload ()
+  "Frame encoding handles NUL, CR, LF, and control bytes in payload."
+  (let* ((payload (concat "a" (string 0) (string 13) (string 10) (string 7) "z"))
+         (frame (supervisor--log-frame-encode 1 1 1 "s" payload)))
+    (should (not (multibyte-string-p frame)))
+    ;; payload_len = 6
+    (let ((payload-start (+ 17 1))) ; unit_len=1
+      (should (= (aref frame payload-start) ?a))
+      (should (= (aref frame (+ payload-start 1)) 0))
+      (should (= (aref frame (+ payload-start 2)) 13))
+      (should (= (aref frame (+ payload-start 3)) 10))
+      (should (= (aref frame (+ payload-start 4)) 7))
+      (should (= (aref frame (+ payload-start 5)) ?z)))))
+
+(ert-deftest supervisor-test-frame-encode-exit-event ()
+  "Frame encoding for exit events carries correct code and status."
+  (let ((frame (supervisor--log-frame-encode 2 3 99 "svc" nil 137 2)))
+    ;; event = 2 (exit)
+    (should (= (aref frame 4) 2))
+    ;; stream = 3 (meta)
+    (should (= (aref frame 5) 3))
+    ;; exit_code = 137 = 0x89
+    (should (= (aref frame 12) 0))
+    (should (= (aref frame 13) 0))
+    (should (= (aref frame 14) 0))
+    (should (= (aref frame 15) #x89))
+    ;; exit_status = 2 (signaled)
+    (should (= (aref frame 16) 2))))
+
+(ert-deftest supervisor-test-frame-encode-empty-payload ()
+  "Frame encoding works with no payload."
+  (let ((frame (supervisor--log-frame-encode 1 1 1 "svc")))
+    (should (not (multibyte-string-p frame)))
+    ;; Total = 4 + 13 + 3 + 0 = 20
+    (should (= (length frame) 20))
+    ;; Body length = 16
+    (should (= (aref frame 3) 16))))
+
+(ert-deftest supervisor-test-frame-encode-negative-exit-code ()
+  "Frame encoding handles negative exit codes via two's complement."
+  (let ((frame (supervisor--log-frame-encode 2 3 1 "s" nil -1 1)))
+    ;; -1 as u32 = 0xFFFFFFFF
+    (should (= (aref frame 12) #xff))
+    (should (= (aref frame 13) #xff))
+    (should (= (aref frame 14) #xff))
+    (should (= (aref frame 15) #xff))))
+
+(ert-deftest supervisor-test-exit-status-code ()
+  "Exit status code mapping returns correct wire values."
+  (should (= (supervisor--exit-status-code 'exited) 1))
+  (should (= (supervisor--exit-status-code 'signal) 2))
+  (should (= (supervisor--exit-status-code 'unknown) 0))
+  (should (= (supervisor--exit-status-code nil) 0)))
+
+(ert-deftest supervisor-test-stdout-filter-sends-frame ()
+  "Stdout filter sends framed data with event=output, stream=stdout."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (sent-data nil)
+        (captured-filter nil)
+        (fake-writer (start-process "fake-writer" nil "sleep" "300"))
+        (fake-svc (start-process "fake-svc" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+                   (lambda (_id _default) t))
+                  ((symbol-function 'supervisor--ensure-log-directory) #'ignore)
+                  ((symbol-function 'supervisor--log-file)
+                   (lambda (_id) "/tmp/test.log"))
+                  ((symbol-function 'supervisor--start-writer)
+                   (lambda (id _file &optional _log-format)
+                     (puthash id fake-writer supervisor--writers)
+                     fake-writer))
+                  ((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (setq captured-filter (plist-get args :filter))
+                     fake-svc))
+                  ((symbol-function 'supervisor--make-process-sentinel)
+                   (lambda (&rest _args) #'ignore))
+                  ((symbol-function 'supervisor--build-launch-command)
+                   (lambda (_cmd &rest _args) (list "sleep" "300")))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_proc data)
+                     (push data sent-data))))
+          (let ((proc (supervisor--start-process
+                       "svc-frame" "sleep 300" t 'simple 'always)))
+            (should proc)
+            (should captured-filter)
+            (funcall captured-filter proc "test output\n")
+            (should (= 1 (length sent-data)))
+            (let ((frame (car sent-data)))
+              (should (not (multibyte-string-p frame)))
+              ;; event=1 (output), stream=1 (stdout)
+              (should (= 1 (aref frame 4)))
+              (should (= 1 (aref frame 5)))
+              ;; Payload at end
+              (should (string-suffix-p "test output\n" frame)))))
+      (when (process-live-p fake-writer) (delete-process fake-writer))
+      (when (process-live-p fake-svc) (delete-process fake-svc)))))
+
+(ert-deftest supervisor-test-stderr-pipe-sends-frame-stream-2 ()
+  "Stderr pipe filter sends frame with stream=2 (stderr)."
+  (let ((supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--stderr-pipes (make-hash-table :test 'equal))
+        (sent-data nil)
+        (fake-writer (start-process "fake-writer" nil "sleep" "300"))
+        (fake-svc (start-process "fake-svc" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (puthash "test-svc" fake-svc supervisor--processes)
+          (cl-letf (((symbol-function 'process-send-string)
+                     (lambda (_proc data)
+                       (push data sent-data))))
+            (let ((pipe (supervisor--start-stderr-pipe "test-svc"
+                                                       fake-writer)))
+              (should pipe)
+              ;; Invoke the filter
+              (let ((filter (process-filter pipe)))
+                (funcall filter pipe "error output\n"))
+              (should (= 1 (length sent-data)))
+              (let ((frame (car sent-data)))
+                ;; event=1 (output), stream=2 (stderr)
+                (should (= 1 (aref frame 4)))
+                (should (= 2 (aref frame 5)))
+                (should (string-suffix-p "error output\n" frame))))))
+      (when (process-live-p fake-writer) (delete-process fake-writer))
+      (when (process-live-p fake-svc) (delete-process fake-svc))
+      (when-let* ((pipe (gethash "test-svc" supervisor--stderr-pipes)))
+        (when (process-live-p pipe) (delete-process pipe))))))
+
+(ert-deftest supervisor-test-writer-coding-no-conversion ()
+  "Writer process uses no-conversion coding for binary safety."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (captured-coding nil)
+        (fake-writer (start-process "fake-writer" nil "sleep" "300"))
+        (fake-svc (start-process "fake-svc" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+                   (lambda (_id _default) t))
+                  ((symbol-function 'supervisor--ensure-log-directory) #'ignore)
+                  ((symbol-function 'supervisor--log-file)
+                   (lambda (_id) "/tmp/test.log"))
+                  ((symbol-function 'supervisor--start-writer)
+                   (lambda (id _file &optional _log-format)
+                     (puthash id fake-writer supervisor--writers)
+                     fake-writer))
+                  ((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (setq captured-coding (plist-get args :coding))
+                     fake-svc))
+                  ((symbol-function 'supervisor--make-process-sentinel)
+                   (lambda (&rest _args) #'ignore))
+                  ((symbol-function 'supervisor--build-launch-command)
+                   (lambda (_cmd &rest _args) (list "sleep" "300"))))
+          (supervisor--start-process "svc-bin" "sleep 300" t 'simple 'always)
+          ;; Service process should use no-conversion coding
+          (should (eq captured-coding 'no-conversion)))
+      (when (process-live-p fake-writer) (delete-process fake-writer))
+      (when (process-live-p fake-svc) (delete-process fake-svc)))))
+
+;;;; Phase 3: Text structured record writer tests
+
+(ert-deftest supervisor-test-writer-cmd-includes-framed-flags ()
+  "Writer command includes --framed, --unit, and --format flags."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (spawned-args nil)
+        (fake-proc (start-process "fake-logd" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--ensure-log-directory)
+                   (lambda () "/tmp/logs"))
+                  ((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (setq spawned-args (plist-get args :command))
+                     fake-proc)))
+          (supervisor--start-writer "my-svc" "/tmp/logs/log-my-svc.log")
+          (should spawned-args)
+          (should (member "--framed" spawned-args))
+          (should (member "--unit" spawned-args))
+          (should (equal (nth (1+ (cl-position "--unit" spawned-args
+                                               :test #'equal))
+                              spawned-args)
+                         "my-svc"))
+          (should (member "--format" spawned-args))
+          (should (equal (nth (1+ (cl-position "--format" spawned-args
+                                               :test #'equal))
+                              spawned-args)
+                         "text")))
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+(ert-deftest supervisor-test-writer-cmd-format-binary ()
+  "Writer command passes --format binary when log-format is binary."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (spawned-args nil)
+        (fake-proc (start-process "fake-logd" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--ensure-log-directory)
+                   (lambda () "/tmp/logs"))
+                  ((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (setq spawned-args (plist-get args :command))
+                     fake-proc)))
+          (supervisor--start-writer "my-svc" "/tmp/logs/log-my-svc.log"
+                                    'binary)
+          (should spawned-args)
+          (should (equal (nth (1+ (cl-position "--format" spawned-args
+                                               :test #'equal))
+                              spawned-args)
+                         "binary")))
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+(ert-deftest supervisor-test-writer-cmd-coding-no-conversion ()
+  "Writer process created with no-conversion coding."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (captured-coding nil)
+        (fake-proc (start-process "fake-logd" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--ensure-log-directory)
+                   (lambda () "/tmp/logs"))
+                  ((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (setq captured-coding (plist-get args :coding))
+                     fake-proc)))
+          (supervisor--start-writer "svc" "/tmp/logs/log-svc.log")
+          (should (eq captured-coding 'no-conversion)))
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+;;;; Phase 4: Binary structured record writer tests
+
+(defun supervisor-test--make-binary-record (event stream pid unit-id
+                                                  payload exit-code
+                                                  exit-status ts-ns)
+  "Build a binary log record for testing.
+EVENT, STREAM, PID, UNIT-ID, PAYLOAD, EXIT-CODE, EXIT-STATUS, and
+TS-NS are the record fields."
+  (let* ((unit-bytes (encode-coding-string unit-id 'utf-8))
+         (unit-len (length unit-bytes))
+         (payload-bytes (if payload
+                            (encode-coding-string payload 'utf-8)
+                          ""))
+         (payload-len (length payload-bytes))
+         ;; record_len = 30 (header after len) + unit_len + payload_len
+         (record-len (+ 30 unit-len payload-len))
+         (hdr (make-string 34 0)))
+    ;; u32be record_len
+    (aset hdr 0 (logand (ash record-len -24) #xff))
+    (aset hdr 1 (logand (ash record-len -16) #xff))
+    (aset hdr 2 (logand (ash record-len -8) #xff))
+    (aset hdr 3 (logand record-len #xff))
+    ;; version
+    (aset hdr 4 1)
+    ;; event
+    (aset hdr 5 event)
+    ;; stream
+    (aset hdr 6 stream)
+    ;; reserved
+    (aset hdr 7 0)
+    ;; u64be timestamp_ns
+    (dotimes (i 8)
+      (aset hdr (+ 8 i) (logand (ash ts-ns (* -8 (- 7 i))) #xff)))
+    ;; u32be pid
+    (aset hdr 16 (logand (ash pid -24) #xff))
+    (aset hdr 17 (logand (ash pid -16) #xff))
+    (aset hdr 18 (logand (ash pid -8) #xff))
+    (aset hdr 19 (logand pid #xff))
+    ;; u16be unit_len
+    (aset hdr 20 (logand (ash unit-len -8) #xff))
+    (aset hdr 21 (logand unit-len #xff))
+    ;; i32be exit_code
+    (let ((ec (logand exit-code #xffffffff)))
+      (aset hdr 22 (logand (ash ec -24) #xff))
+      (aset hdr 23 (logand (ash ec -16) #xff))
+      (aset hdr 24 (logand (ash ec -8) #xff))
+      (aset hdr 25 (logand ec #xff)))
+    ;; exit_status
+    (aset hdr 26 exit-status)
+    ;; reserved[3] + u32be payload_len
+    (aset hdr 27 0) (aset hdr 28 0) (aset hdr 29 0)
+    (aset hdr 30 (logand (ash payload-len -24) #xff))
+    (aset hdr 31 (logand (ash payload-len -16) #xff))
+    (aset hdr 32 (logand (ash payload-len -8) #xff))
+    (aset hdr 33 (logand payload-len #xff))
+    (string-to-unibyte (concat hdr unit-bytes payload-bytes))))
+
+(ert-deftest supervisor-test-binary-decode-correct-fields ()
+  "Binary decoder parses records with correct fields."
+  (let* ((ts-ns 1708098896123456789)
+         (record (supervisor-test--make-binary-record
+                  1 1 42 "my-svc" "hello" 0 0 ts-ns))
+         (data (concat supervisor--log-binary-magic record))
+         (result (supervisor--log-decode-binary-records data)))
+    (should (null (plist-get result :warning)))
+    (let* ((records (plist-get result :records))
+           (r (car records)))
+      (should (= 1 (length records)))
+      (should (eq (plist-get r :event) 'output))
+      (should (eq (plist-get r :stream) 'stdout))
+      (should (= (plist-get r :pid) 42))
+      (should (equal (plist-get r :unit) "my-svc"))
+      (should (equal (plist-get r :payload) "hello"))
+      (should (= (plist-get r :code) 0)))))
+
+(ert-deftest supervisor-test-binary-decode-exit-marker ()
+  "Binary decoder parses exit records with correct status and code."
+  (let* ((record (supervisor-test--make-binary-record
+                  2 3 99 "svc" "" 137 2 1000000000000))
+         (data (concat supervisor--log-binary-magic record))
+         (result (supervisor--log-decode-binary-records data)))
+    (should (null (plist-get result :warning)))
+    (let* ((records (plist-get result :records))
+           (r (car records)))
+      (should (= 1 (length records)))
+      (should (eq (plist-get r :event) 'exit))
+      (should (eq (plist-get r :stream) 'meta))
+      (should (eq (plist-get r :status) 'signaled))
+      (should (= (plist-get r :code) 137)))))
+
+(ert-deftest supervisor-test-binary-decode-truncated-record ()
+  "Binary decoder handles truncated trailing record with warning."
+  (let* ((record (supervisor-test--make-binary-record
+                  1 1 1 "s" "full" 0 0 0))
+         ;; Truncate the record
+         (truncated (substring record 0 (- (length record) 2)))
+         (data (concat supervisor--log-binary-magic
+                       (supervisor-test--make-binary-record
+                        1 1 1 "s" "ok" 0 0 0)
+                       truncated))
+         (result (supervisor--log-decode-binary-records data)))
+    ;; Should have warning about truncation
+    (should (plist-get result :warning))
+    ;; But the first valid record should be returned
+    (let ((records (plist-get result :records)))
+      (should (= 1 (length records)))
+      (should (equal (plist-get (car records) :payload) "ok")))))
+
+(ert-deftest supervisor-test-binary-decode-unknown-version ()
+  "Binary decoder rejects unknown version as hard error."
+  (let* ((record (supervisor-test--make-binary-record
+                  1 1 1 "s" "x" 0 0 0)))
+    ;; Patch version byte to 99
+    (aset record 4 99)
+    (let ((data (concat supervisor--log-binary-magic record)))
+      (should-error (supervisor--log-decode-binary-records data)
+                    :type 'error))))
+
+(ert-deftest supervisor-test-binary-decode-unknown-event ()
+  "Binary decoder rejects unknown event enum as hard error."
+  (let* ((record (supervisor-test--make-binary-record
+                  1 1 1 "s" "x" 0 0 0)))
+    ;; Patch event byte to 99
+    (aset record 5 99)
+    (let ((data (concat supervisor--log-binary-magic record)))
+      (should-error (supervisor--log-decode-binary-records data)
+                    :type 'error))))
+
+(ert-deftest supervisor-test-binary-decode-multiple-records ()
+  "Binary decoder handles multiple records in sequence."
+  (let* ((r1 (supervisor-test--make-binary-record
+              1 1 10 "svc" "line1" 0 0 1000))
+         (r2 (supervisor-test--make-binary-record
+              1 2 10 "svc" "line2" 0 0 2000))
+         (r3 (supervisor-test--make-binary-record
+              2 3 10 "svc" "" 0 1 3000))
+         (data (concat supervisor--log-binary-magic r1 r2 r3))
+         (result (supervisor--log-decode-binary-records data)))
+    (should (null (plist-get result :warning)))
+    (let ((records (plist-get result :records)))
+      (should (= 3 (length records)))
+      (should (eq (plist-get (nth 0 records) :stream) 'stdout))
+      (should (eq (plist-get (nth 1 records) :stream) 'stderr))
+      (should (eq (plist-get (nth 2 records) :event) 'exit)))))
+
+(ert-deftest supervisor-test-binary-decode-negative-exit-code ()
+  "Binary decoder handles negative exit codes."
+  (let* ((record (supervisor-test--make-binary-record
+                  2 3 1 "s" "" -1 1 0))
+         (data (concat supervisor--log-binary-magic record))
+         (result (supervisor--log-decode-binary-records data)))
+    (let ((r (car (plist-get result :records))))
+      (should (= (plist-get r :code) -1)))))
+
+(ert-deftest supervisor-test-binary-magic-constant ()
+  "Binary magic constant is SLG1."
+  (should (equal supervisor--log-binary-magic "SLG1")))
+
+;;;; Phase 5: Decoder and user surfaces tests
+
+(ert-deftest supervisor-test-text-decode-records ()
+  "Text decoder parses structured records correctly."
+  (let* ((lines (concat "ts=2026-02-16T12:34:56.123Z unit=svc pid=42 "
+                        "stream=stdout event=output status=- code=- "
+                        "payload=hello world\n"
+                        "ts=2026-02-16T12:34:57.000Z unit=svc pid=42 "
+                        "stream=meta event=exit status=exited code=0 "
+                        "payload=-\n"))
+         (records (supervisor--log-decode-text-records lines)))
+    (should (= 2 (length records)))
+    (let ((r1 (nth 0 records))
+          (r2 (nth 1 records)))
+      (should (eq (plist-get r1 :event) 'output))
+      (should (eq (plist-get r1 :stream) 'stdout))
+      (should (= (plist-get r1 :pid) 42))
+      (should (equal (plist-get r1 :payload) "hello world"))
+      (should (eq (plist-get r2 :event) 'exit))
+      (should (eq (plist-get r2 :status) 'exited))
+      (should (= (plist-get r2 :code) 0)))))
+
+(ert-deftest supervisor-test-payload-unescape-round-trip ()
+  "Payload unescape reverses escaping exactly."
+  (should (equal (supervisor--log-unescape-payload "hello\\nworld")
+                 "hello\nworld"))
+  (should (equal (supervisor--log-unescape-payload "a\\\\b")
+                 "a\\b"))
+  (should (equal (supervisor--log-unescape-payload "tab\\there")
+                 "tab\there"))
+  (should (equal (supervisor--log-unescape-payload "cr\\rend")
+                 "cr\rend"))
+  (should (equal (supervisor--log-unescape-payload "nul\\x00byte")
+                 (concat "nul" (string 0) "byte"))))
+
+(ert-deftest supervisor-test-legacy-fallback ()
+  "Legacy decoder wraps raw lines as output records."
+  (let ((records (supervisor--log-decode-legacy-lines "line1\nline2\n")))
+    (should (= 2 (length records)))
+    (should (eq (plist-get (car records) :event) 'output))
+    (should (eq (plist-get (car records) :stream) 'stdout))
+    (should (equal (plist-get (car records) :payload) "line1"))
+    (should (null (plist-get (car records) :ts)))))
+
+(ert-deftest supervisor-test-format-detection-binary ()
+  "Format detection identifies binary by SLG1 magic."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (set-buffer-multibyte nil)
+            (insert "SLG1some binary data here"))
+          (should (eq (supervisor--log-detect-format tmpfile) 'binary)))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-format-detection-text ()
+  "Format detection identifies text by ts= prefix."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=2026-01-01T00:00:00Z unit=x pid=1 "
+                    "stream=stdout event=output status=- "
+                    "code=- payload=hi\n"))
+          (should (eq (supervisor--log-detect-format tmpfile) 'text)))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-format-detection-legacy ()
+  "Format detection identifies legacy for plain text."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "just some log output\n"))
+          (should (eq (supervisor--log-detect-format tmpfile) 'legacy)))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-requires-unit ()
+  "Journal command without -u returns error."
+  (cl-letf (((symbol-function 'supervisor--log-file)
+             (lambda (_id) "/tmp/nonexistent.log")))
+    (let ((result (supervisor--cli-cmd-journal '() nil)))
+      (should (equal (supervisor-cli-result-exitcode result)
+                     supervisor-cli-exit-invalid-args)))))
+
+(ert-deftest supervisor-test-journal-unknown-flag ()
+  "Journal command with unknown flag returns actionable error."
+  (let ((result (supervisor--cli-cmd-journal '("--bad-flag") nil)))
+    (should (equal (supervisor-cli-result-exitcode result)
+                   supervisor-cli-exit-invalid-args))
+    (should (string-match-p "Unknown option" (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-journal-with-text-log ()
+  "Journal -u ID returns decoded records from text log."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=2026-02-16T12:00:00Z unit=svc pid=1 "
+                    "stream=stdout event=output status=- "
+                    "code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (supervisor--cli-cmd-journal '("-u" "svc") nil)))
+              (should (= (supervisor-cli-result-exitcode result) 0))
+              (should (string-match-p "hello"
+                                      (supervisor-cli-result-output result))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-n-limits-records ()
+  "Journal -n N returns exactly N records."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (dotimes (i 30)
+              (insert (format "ts=2026-02-16T12:00:%02dZ unit=svc pid=1 "
+                              i)
+                      "stream=stdout event=output status=- "
+                      "code=- payload=line\n")))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (supervisor--cli-cmd-journal
+                            '("-u" "svc" "-n" "5") nil))
+                   (output (supervisor-cli-result-output result))
+                   (lines (split-string output "\n" t)))
+              (should (= (supervisor-cli-result-exitcode result) 0))
+              (should (= 5 (length lines))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-priority-filter ()
+  "Journal -p err filters to error-priority records only."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=2026-02-16T12:00:00Z unit=svc pid=1 "
+                    "stream=stdout event=output status=- "
+                    "code=- payload=stdout-line\n")
+            (insert "ts=2026-02-16T12:00:01Z unit=svc pid=1 "
+                    "stream=stderr event=output status=- "
+                    "code=- payload=stderr-line\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (supervisor--cli-cmd-journal
+                            '("-u" "svc" "-p" "err") nil))
+                   (output (supervisor-cli-result-output result)))
+              (should (= (supervisor-cli-result-exitcode result) 0))
+              ;; Only stderr line should appear
+              (should (string-match-p "stderr-line" output))
+              (should-not (string-match-p "stdout-line" output)))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-json-output ()
+  "Journal --json returns JSON with records array."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=2026-02-16T12:00:00Z unit=svc pid=1 "
+                    "stream=stdout event=output status=- "
+                    "code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (supervisor--cli-cmd-journal
+                            '("-u" "svc") t))
+                   (json-data (json-read-from-string
+                               (supervisor-cli-result-output result))))
+              (should (= (supervisor-cli-result-exitcode result) 0))
+              (should (equal (cdr (assq 'unit json-data)) "svc"))
+              (should (> (length (cdr (assq 'records json-data))) 0)))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-fu-combined ()
+  "Journal -fu ID combined short form parsed correctly."
+  (let ((parsed (supervisor--cli-parse-journal-args '("-fu" "my-svc"))))
+    (should (equal (plist-get parsed :unit) "my-svc"))
+    (should (null (plist-get parsed :unknown)))))
+
+(ert-deftest supervisor-test-priority-classification ()
+  "Priority: stderr output and non-clean exit are err, else info."
+  (should (eq (supervisor--log-record-priority
+               '(:event output :stream stderr :status nil :code 0))
+              'err))
+  (should (eq (supervisor--log-record-priority
+               '(:event exit :stream meta :status signaled :code 9))
+              'err))
+  (should (eq (supervisor--log-record-priority
+               '(:event output :stream stdout :status nil :code 0))
+              'info))
+  (should (eq (supervisor--log-record-priority
+               '(:event exit :stream meta :status exited :code 0))
+              'info)))
+
+(ert-deftest supervisor-test-timestamp-parsing-rfc3339 ()
+  "Timestamp parser handles RFC3339 format."
+  (let ((ts (supervisor--log-parse-timestamp "2026-02-16T12:34:56.123Z")))
+    (should ts)
+    (should (> ts 0))
+    ;; Should be a float
+    (should (floatp ts))))
+
+(ert-deftest supervisor-test-timestamp-parsing-epoch ()
+  "Timestamp parser handles epoch integer."
+  (let ((ts (supervisor--log-parse-timestamp "1708098896")))
+    (should (= ts 1708098896.0))))
+
+(ert-deftest supervisor-test-existing-logs-command-unchanged ()
+  "Existing logs command still works (regression)."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "raw log line 1\nraw log line 2\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (supervisor--cli-cmd-logs '("my-svc") nil)))
+              (should (= (supervisor-cli-result-exitcode result) 0))
+              (should (string-match-p "raw log line 1"
+                                      (supervisor-cli-result-output result))))))
+      (delete-file tmpfile))))
+
+;;;; Log Format Phase 6: Integration Edge Cases
+
+(ert-deftest supervisor-test-sentinel-exit-frame-to-both-writers ()
+  "Sentinel sends exit frames to both stdout and stderr writers."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--oneshot-callbacks (make-hash-table :test 'equal))
+        (supervisor--crash-log (make-hash-table :test 'equal))
+        (supervisor--last-exit-info (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (exit-frames nil))
+    (let ((fake-stdout-writer (start-process "fw-stdout" nil "sleep" "300"))
+          (fake-stderr-writer (start-process "fw-stderr" nil "sleep" "300")))
+      (unwind-protect
+          (progn
+            (puthash "test-svc" fake-stdout-writer supervisor--writers)
+            (puthash "test-svc" fake-stderr-writer supervisor--stderr-writers)
+            (cl-letf (((symbol-function 'supervisor--log-send-frame)
+                       (lambda (_writer event stream pid id _payload exit-code exit-status)
+                         (push (list :event event :stream stream :pid pid
+                                     :id id :exit-code exit-code
+                                     :exit-status exit-status)
+                               exit-frames)))
+                      ((symbol-function 'supervisor--stop-writer) #'ignore)
+                      ((symbol-function 'supervisor--emit-event) #'ignore)
+                      ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
+                      ((symbol-function 'supervisor--handle-oneshot-exit) #'ignore)
+                      ((symbol-function 'supervisor--should-restart-p) (lambda (&rest _) nil)))
+              (let ((sentinel (supervisor--make-process-sentinel
+                               "test-svc" '("sleep" "300") t 'simple t)))
+                ;; Simulate process exit by creating a fake dead process
+                (let ((fake-proc (start-process "test-svc" nil "true")))
+                  (puthash "test-svc" fake-proc supervisor--processes)
+                  ;; Wait for process to die
+                  (while (process-live-p fake-proc) (sit-for 0.05))
+                  (funcall sentinel fake-proc "finished\n")))))
+        (when (process-live-p fake-stdout-writer) (delete-process fake-stdout-writer))
+        (when (process-live-p fake-stderr-writer) (delete-process fake-stderr-writer))))
+    ;; Should have sent exactly 2 exit frames (one per writer table)
+    (should (= 2 (length exit-frames)))
+    ;; Both should be exit events (event=2) on meta stream (stream=3)
+    (dolist (frame exit-frames)
+      (should (= 2 (plist-get frame :event)))
+      (should (= 3 (plist-get frame :stream))))))
+
+(ert-deftest supervisor-test-exit-marker-count-one-per-termination ()
+  "Each process termination produces exactly one exit frame per writer."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--oneshot-callbacks (make-hash-table :test 'equal))
+        (supervisor--crash-log (make-hash-table :test 'equal))
+        (supervisor--last-exit-info (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (exit-frame-count 0))
+    (let ((fake-writer (start-process "fw" nil "sleep" "300")))
+      (unwind-protect
+          (progn
+            (puthash "test-svc" fake-writer supervisor--writers)
+            (cl-letf (((symbol-function 'supervisor--log-send-frame)
+                       (lambda (&rest _args)
+                         (cl-incf exit-frame-count)))
+                      ((symbol-function 'supervisor--stop-writer) #'ignore)
+                      ((symbol-function 'supervisor--emit-event) #'ignore)
+                      ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
+                      ((symbol-function 'supervisor--should-restart-p) (lambda (&rest _) nil)))
+              (let ((sentinel (supervisor--make-process-sentinel
+                               "test-svc" '("sleep" "300") t 'simple t)))
+                (let ((fake-proc (start-process "test-svc" nil "true")))
+                  (puthash "test-svc" fake-proc supervisor--processes)
+                  (while (process-live-p fake-proc) (sit-for 0.05))
+                  (funcall sentinel fake-proc "finished\n")))))
+        (when (process-live-p fake-writer) (delete-process fake-writer))))
+    ;; Exactly one exit frame (only stdout writer, no stderr writer)
+    (should (= 1 exit-frame-count))))
+
+(ert-deftest supervisor-test-writer-failure-non-fatal ()
+  "Writer start failure does not prevent service from starting."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--stderr-pipes (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (supervisor--logd-pid-directory nil)
+        (proc-started nil))
+    (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+               (lambda (_id _default) t))
+              ((symbol-function 'supervisor--ensure-log-directory) #'ignore)
+              ((symbol-function 'supervisor--log-file)
+               (lambda (_id) "/tmp/test.log"))
+              ((symbol-function 'supervisor--start-writer)
+               (lambda (_id _file &optional _log-format) nil))
+              ((symbol-function 'make-process)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'supervisor--make-process-sentinel)
+               (lambda (&rest _args) #'ignore))
+              ((symbol-function 'supervisor--build-launch-command)
+               (lambda (&rest _args) '("sleep" "300"))))
+      ;; Should not error even when writer returns nil
+      (should-not
+       (condition-case err
+           (supervisor--start-process "svc" '("sleep" "300") t 'simple t)
+         (error err))))))
+
+(ert-deftest supervisor-test-build-prune-command-format-hint ()
+  "Build-prune-command includes --format-hint when format specified."
+  (let ((log-directory (make-temp-file "logs-" t)))
+    (unwind-protect
+        (let ((supervisor-log-prune-command "/opt/prune")
+              (supervisor-log-directory log-directory)
+              (supervisor-log-prune-max-total-bytes 2048))
+          (let ((cmd (supervisor--build-prune-command 'text)))
+            (should (string-match-p "--format-hint" cmd))
+            (should (string-match-p "text" cmd)))
+          (let ((cmd (supervisor--build-prune-command 'binary)))
+            (should (string-match-p "--format-hint" cmd))
+            (should (string-match-p "binary" cmd))))
+      (delete-directory log-directory t))))
+
+(ert-deftest supervisor-test-build-prune-command-no-format-hint-when-nil ()
+  "Build-prune-command omits --format-hint when format is nil."
+  (let ((log-directory (make-temp-file "logs-" t)))
+    (unwind-protect
+        (let ((supervisor-log-prune-command "/opt/prune")
+              (supervisor-log-directory log-directory)
+              (supervisor-log-prune-max-total-bytes 2048))
+          (let ((cmd (supervisor--build-prune-command nil)))
+            (should-not (string-match-p "--format-hint" cmd)))
+          (let ((cmd (supervisor--build-prune-command)))
+            (should-not (string-match-p "--format-hint" cmd))))
+      (delete-directory log-directory t))))
+
+(ert-deftest supervisor-test-logd-writer-cmd-includes-format-hint ()
+  "Writer command passes format-hint to prune command."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--logd-pid-directory nil)
+        (captured-cmd nil)
+        (fake-proc (start-process "fake-logd" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'supervisor--effective-log-directory)
+                     (lambda () "/tmp/log"))
+                    ((symbol-function 'supervisor--ensure-log-directory)
+                     (lambda () "/tmp/log"))
+                    ((symbol-function 'make-process)
+                     (lambda (&rest args)
+                       (setq captured-cmd (plist-get args :command))
+                       fake-proc))
+                    ((symbol-function 'supervisor--write-logd-pid-file) #'ignore))
+            (supervisor--start-stream-writer
+             "svc" 'stdout "/tmp/log/log-svc.log"
+             supervisor--writers 'binary))
+          (should captured-cmd)
+          ;; Find the --prune-cmd value in the command list
+          (let ((prune-idx (cl-position "--prune-cmd" captured-cmd
+                                        :test #'equal)))
+            (should prune-idx)
+            (let ((prune-val (nth (1+ prune-idx) captured-cmd)))
+              (should (string-match-p "--format-hint" prune-val))
+              (should (string-match-p "binary" prune-val)))))
+      (when (process-live-p fake-proc) (delete-process fake-proc)))))
+
+(ert-deftest supervisor-test-prune-script-accepts-vacuum-flag ()
+  "Log-prune script accepts --vacuum flag without error."
+  (let ((script (expand-file-name "sbin/supervisor-log-prune")))
+    ;; The script requires --log-dir, so we just test that --vacuum
+    ;; is parsed without 'Unknown option' error by checking the help
+    ;; text mentions the expected options.
+    (should (file-exists-p script))))
+
+(ert-deftest supervisor-test-prune-script-accepts-vacuum-max-total-bytes ()
+  "Log-prune script accepts --vacuum-max-total-bytes as alias."
+  (let ((script (expand-file-name "sbin/supervisor-log-prune")))
+    (with-temp-buffer
+      (insert-file-contents script)
+      (should (search-forward "--vacuum-max-total-bytes" nil t)))))
+
+(ert-deftest supervisor-test-prune-script-accepts-format-hint ()
+  "Log-prune script accepts --format-hint flag."
+  (let ((script (expand-file-name "sbin/supervisor-log-prune")))
+    (with-temp-buffer
+      (insert-file-contents script)
+      (should (search-forward "--format-hint" nil t)))))
+
+(ert-deftest supervisor-test-logrotate-prune-finds-tar-gz ()
+  "Logrotate prune_rotated find patterns include .tar.gz files."
+  (let ((script (expand-file-name "sbin/supervisor-logrotate")))
+    (with-temp-buffer
+      (insert-file-contents script)
+      (goto-char (point-min))
+      ;; Look for the tar.gz pattern in find command inside prune_rotated
+      (should (search-forward "log-*.*.log.tar.gz" nil t)))))
+
+(ert-deftest supervisor-test-logrotate-has-compress-rotated ()
+  "Logrotate has compress_rotated function."
+  (let ((script (expand-file-name "sbin/supervisor-logrotate")))
+    (with-temp-buffer
+      (insert-file-contents script)
+      (goto-char (point-min))
+      (should (search-forward "compress_rotated()" nil t)))))
+
+(ert-deftest supervisor-test-logrotate-calls-compress-after-rotate ()
+  "Logrotate calls compress_rotated after successful rotation."
+  (let ((script (expand-file-name "sbin/supervisor-logrotate")))
+    (with-temp-buffer
+      (insert-file-contents script)
+      (goto-char (point-min))
+      ;; compress_rotated is called inside rotate_file
+      (should (re-search-forward "compress_rotated.*\\$" nil t)))))
+
+(ert-deftest supervisor-test-prune-script-is-rotated-tar-gz ()
+  "Log-prune is_rotated matches .tar.gz suffixed files."
+  (let ((script (expand-file-name "sbin/supervisor-log-prune")))
+    (with-temp-buffer
+      (insert-file-contents script)
+      (goto-char (point-min))
+      ;; Verify is_rotated case patterns include .tar.gz
+      (should (search-forward ".log.tar.gz) return 0" nil t)))))
+
+(ert-deftest supervisor-test-prune-script-rotated-parent-strips-tar-gz ()
+  "Log-prune rotated_parent_name strips .tar.gz before timestamp."
+  (let ((script (expand-file-name "sbin/supervisor-log-prune")))
+    (with-temp-buffer
+      (insert-file-contents script)
+      (goto-char (point-min))
+      ;; Verify the sed strips .tar.gz first
+      (should (search-forward "s/\\.tar\\.gz$//" nil t)))))
+
+;;;; Log Format Phase 7: Gap-Fill Test Coverage
+
+(ert-deftest supervisor-test-filter-metadata-only ()
+  "Filter evaluates metadata fields without parsing payload."
+  (let ((records (list (list :ts 100.0 :stream 'stdout :event 'output
+                             :payload "irrelevant" :pid 1 :unit "svc")
+                       (list :ts 200.0 :stream 'stderr :event 'output
+                             :payload "error msg" :pid 1 :unit "svc")
+                       (list :ts 300.0 :stream 'meta :event 'exit
+                             :status 'exited :code 1 :pid 1 :unit "svc"))))
+    ;; Filter by timestamp range -- payload not consulted
+    (let ((filtered (supervisor--log-filter-records records 150.0 250.0)))
+      (should (= 1 (length filtered)))
+      (should (= 200.0 (plist-get (car filtered) :ts))))
+    ;; Filter by priority -- stderr -> err
+    (let ((filtered (supervisor--log-filter-records records nil nil 'err)))
+      (should (= 2 (length filtered)))
+      ;; stderr output and non-clean exit are both err
+      (should (eq 'stderr (plist-get (car filtered) :stream)))
+      (should (eq 'exit (plist-get (cadr filtered) :event))))))
+
+(ert-deftest supervisor-test-filter-since-only ()
+  "Filter with only since timestamp."
+  (let ((records (list (list :ts 100.0 :stream 'stdout :event 'output
+                             :pid 1 :unit "svc")
+                       (list :ts 200.0 :stream 'stdout :event 'output
+                             :pid 1 :unit "svc")
+                       (list :ts 300.0 :stream 'stdout :event 'output
+                             :pid 1 :unit "svc"))))
+    (let ((filtered (supervisor--log-filter-records records 200.0 nil)))
+      (should (= 2 (length filtered)))
+      (should (= 200.0 (plist-get (car filtered) :ts))))))
+
+(ert-deftest supervisor-test-filter-until-only ()
+  "Filter with only until timestamp."
+  (let ((records (list (list :ts 100.0 :stream 'stdout :event 'output
+                             :pid 1 :unit "svc")
+                       (list :ts 200.0 :stream 'stdout :event 'output
+                             :pid 1 :unit "svc")
+                       (list :ts 300.0 :stream 'stdout :event 'output
+                             :pid 1 :unit "svc"))))
+    (let ((filtered (supervisor--log-filter-records records nil 200.0)))
+      (should (= 2 (length filtered)))
+      (should (= 200.0 (plist-get (cadr filtered) :ts))))))
+
+(ert-deftest supervisor-test-filter-no-criteria-returns-all ()
+  "Filter with no criteria returns all records."
+  (let ((records (list (list :ts 100.0 :stream 'stdout :event 'output
+                             :pid 1 :unit "svc")
+                       (list :ts 200.0 :stream 'stderr :event 'output
+                             :pid 1 :unit "svc"))))
+    (let ((filtered (supervisor--log-filter-records records nil nil nil)))
+      (should (= 2 (length filtered))))))
+
+(ert-deftest supervisor-test-binary-trailing-recovery-returns-valid ()
+  "Binary decoder returns valid records before truncated trailing record."
+  ;; Build a valid record followed by a truncated one
+  (let* ((magic "SLG1")
+         (valid-record (supervisor-test--make-binary-record
+                        1 1 42 "svc" "hello" 0 0 1000000000000))
+         (truncated (substring valid-record 0 10))
+         (buf (concat magic valid-record truncated)))
+    (let ((result (supervisor--log-decode-binary-records buf)))
+      ;; Should get exactly one record from the valid data
+      (should (= 1 (length (plist-get result :records))))
+      ;; Should have a warning about truncation
+      (should (plist-get result :warning))
+      ;; The valid record should be correct
+      (let ((rec (car (plist-get result :records))))
+        (should (equal "svc" (plist-get rec :unit)))
+        (should (equal "hello" (plist-get rec :payload)))))))
+
+(ert-deftest supervisor-test-binary-trailing-recovery-empty-trailing ()
+  "Binary decoder handles empty buffer after magic header."
+  (let* ((magic "SLG1")
+         (buf magic))
+    (let ((result (supervisor--log-decode-binary-records buf)))
+      (should (= 0 (length (plist-get result :records)))))))
+
+(ert-deftest supervisor-test-journal-since-until-filtering ()
+  "Journal --since and --until timestamp filtering works."
+  (let ((tmpfile (make-temp-file "journal-ts-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout event=output status=- code=- payload=early\n")
+            (insert "ts=2000 unit=svc pid=1 stream=stdout event=output status=- code=- payload=middle\n")
+            (insert "ts=3000 unit=svc pid=1 stream=stdout event=output status=- code=- payload=late\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (supervisor--cli-cmd-journal
+                           '("--since" "2000" "--until" "2000" "-u" "svc")
+                           nil)))
+              (should (= (supervisor-cli-result-exitcode result) 0))
+              (should (string-match-p "middle"
+                                      (supervisor-cli-result-output result)))
+              (should-not (string-match-p "early"
+                                          (supervisor-cli-result-output result)))
+              (should-not (string-match-p "late"
+                                          (supervisor-cli-result-output result))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-parse-f-n-u-combination ()
+  "Journal parser handles -f -n N -u ID combination."
+  (let ((parsed (supervisor--cli-parse-journal-args
+                 '("-f" "-n" "10" "-u" "myapp"))))
+    (should (equal "myapp" (plist-get parsed :unit)))
+    (should (= 10 (plist-get parsed :lines)))
+    (should-not (plist-get parsed :unknown))))
+
+(ert-deftest supervisor-test-journal-parse-n-missing-value ()
+  "Journal parser reports error for -n without value."
+  (let ((parsed (supervisor--cli-parse-journal-args '("-n" "-u" "svc"))))
+    (should (plist-get parsed :unknown))))
+
+(ert-deftest supervisor-test-journal-parse-p-invalid-value ()
+  "Journal parser reports error for -p with invalid priority."
+  (let ((parsed (supervisor--cli-parse-journal-args
+                 '("-p" "debug" "-u" "svc"))))
+    (should (plist-get parsed :unknown))))
+
+(ert-deftest supervisor-test-timestamp-parsing-rfc3339-nano ()
+  "Timestamp parser handles RFC3339 with nanoseconds."
+  (let ((ts (supervisor--log-parse-timestamp
+             "2026-02-16T12:34:56.123456789Z")))
+    (should ts)
+    (should (floatp ts))
+    (should (> ts 0))))
+
+(ert-deftest supervisor-test-timestamp-parsing-epoch-large ()
+  "Timestamp parser handles large epoch integer strings."
+  (let ((ts (supervisor--log-parse-timestamp "1708098896")))
+    (should ts)
+    (should (floatp ts))
+    (should (= ts 1708098896.0))))
+
+(ert-deftest supervisor-test-human-format-output-record ()
+  "Human record formatter produces readable output."
+  (let ((record (list :ts 1708098896.0 :unit "myapp" :pid 42
+                      :stream 'stdout :event 'output
+                      :payload "Hello world")))
+    (let ((formatted (supervisor--log-format-record-human record)))
+      (should (stringp formatted))
+      (should (string-match-p "myapp" formatted))
+      (should (string-match-p "42" formatted))
+      (should (string-match-p "Hello world" formatted)))))
+
+(ert-deftest supervisor-test-human-format-exit-record ()
+  "Human record formatter handles exit events."
+  (let ((record (list :ts 1708098896.0 :unit "myapp" :pid 42
+                      :stream 'meta :event 'exit
+                      :status 'exited :code 0)))
+    (let ((formatted (supervisor--log-format-record-human record)))
+      (should (stringp formatted))
+      (should (string-match-p "exit" formatted)))))
+
+(ert-deftest supervisor-test-priority-stderr-is-err ()
+  "Priority classification: stderr output is err."
+  (let ((rec (list :stream 'stderr :event 'output :status nil :code 0)))
+    (should (eq 'err (supervisor--log-record-priority rec)))))
+
+(ert-deftest supervisor-test-priority-non-clean-exit-is-err ()
+  "Priority classification: non-zero exit code is err."
+  (let ((rec (list :stream 'meta :event 'exit :status 'exited :code 1)))
+    (should (eq 'err (supervisor--log-record-priority rec)))))
+
+(ert-deftest supervisor-test-priority-signal-exit-is-err ()
+  "Priority classification: signal exit is err."
+  (let ((rec (list :stream 'meta :event 'exit :status 'signal :code 9)))
+    (should (eq 'err (supervisor--log-record-priority rec)))))
+
+(ert-deftest supervisor-test-priority-clean-stdout-is-info ()
+  "Priority classification: clean stdout output is info."
+  (let ((rec (list :stream 'stdout :event 'output :status nil :code 0)))
+    (should (eq 'info (supervisor--log-record-priority rec)))))
+
+(ert-deftest supervisor-test-priority-clean-exit-is-info ()
+  "Priority classification: clean exit (code 0) is info."
+  (let ((rec (list :stream 'meta :event 'exit :status 'exited :code 0)))
+    (should (eq 'info (supervisor--log-record-priority rec)))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

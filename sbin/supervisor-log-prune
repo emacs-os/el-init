@@ -91,6 +91,21 @@ log-${2}.log"
             dry_run=1
             shift
             ;;
+        --format-hint)
+            # Accepted for forward compatibility; no behavioral change.
+            [ -n "${2-}" ] || die 1 "--format-hint requires a value"
+            shift 2
+            ;;
+        --vacuum)
+            # No-op naming convention alias.
+            shift
+            ;;
+        --vacuum-max-total-bytes)
+            # Alias of --max-total-bytes.
+            [ -n "${2-}" ] || die 1 "--vacuum-max-total-bytes requires a number"
+            max_total_bytes="${2}"
+            shift 2
+            ;;
         *)
             die 1 "Unknown option: ${1}"
             ;;
@@ -136,10 +151,12 @@ flock -n 9 || {
 # Reuse the exact is_rotated() pattern from sbin/supervisor-logrotate.
 is_rotated() {
     case "${1}" in
-        # With sequence suffix: base.YYYYMMDD-HHMMSS.N.log
+        # With sequence suffix: base.YYYYMMDD-HHMMSS.N.log[.tar.gz]
         *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].[0-9]*.log) return 0 ;;
-        # Without sequence suffix: base.YYYYMMDD-HHMMSS.log
+        *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].[0-9]*.log.tar.gz) return 0 ;;
+        # Without sequence suffix: base.YYYYMMDD-HHMMSS.log[.tar.gz]
         *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].log) return 0 ;;
+        *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].log.tar.gz) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -150,7 +167,8 @@ is_rotated() {
 #       log-svc.20250101-120000.3.log -> log-svc.log
 #       log-svc.1.20250101-120000.log -> log-svc.1.log
 rotated_parent_name() {
-    printf '%s' "${1}" | sed 's/\.[0-9]\{8\}-[0-9]\{6\}\(\.[0-9]\{1,\}\)\{0,1\}\.log$/.log/'
+    # Strip .tar.gz suffix first, then the timestamp pattern.
+    printf '%s' "${1}" | sed 's/\.tar\.gz$//' | sed 's/\.[0-9]\{8\}-[0-9]\{6\}\(\.[0-9]\{1,\}\)\{0,1\}\.log$/.log/'
 }
 
 # --- Compute total directory size ---
@@ -176,7 +194,8 @@ info "prune: start log_dir=${log_dir} total_bytes=${total} max_total_bytes=${max
 # find -printf '%T@ %p\n' gives epoch.frac path; sort -n gives oldest first.
 rotated_files=""
 rotated_files="$(find "${log_dir}" -maxdepth 1 -type f \
-    \( -name 'supervisor.*.log' -o -name 'log-*.*.log' \) \
+    \( -name 'supervisor.*.log' -o -name 'log-*.*.log' \
+       -o -name 'supervisor.*.log.tar.gz' -o -name 'log-*.*.log.tar.gz' \) \
     -printf '%T@ %p\n' | sort -n | awk '{ print $2 }')"
 
 [ -n "${rotated_files}" ] || {

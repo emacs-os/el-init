@@ -1692,6 +1692,135 @@ Options must come before --.  Use -- before IDs that start with hyphen."
                                  (format "No log file for '%s'" id)
                                  (if json-p 'json 'human))))))))
 
+(defun supervisor--cli-parse-journal-args (args)
+  "Parse journal command ARGS into a plist.
+Recognized flags: -u/--unit ID, -n N, -p PRIORITY, --since TS,
+--until TS.  Combined -fu ID is supported.
+Return plist with :unit, :lines, :priority, :since, :until, :unknown."
+  (let (unit lines priority since until unknown
+        (rest args))
+    (while rest
+      (let ((arg (car rest)))
+        (cond
+         ;; -fu ID (combined short form)
+         ((and (string-prefix-p "-f" arg) (> (length arg) 2)
+               (string-match-p "u" (substring arg 2)))
+          (let ((next (cadr rest)))
+            (if (or (null next) (string-prefix-p "-" next))
+                (setq unknown (or unknown (format "-fu requires a unit ID")))
+              (setq unit next)
+              (setq rest (cdr rest)))))
+         ;; -u or --unit
+         ((or (equal arg "-u") (equal arg "--unit"))
+          (let ((next (cadr rest)))
+            (if (or (null next) (string-prefix-p "-" next))
+                (setq unknown (or unknown "--unit requires an argument"))
+              (setq unit next)
+              (setq rest (cdr rest)))))
+         ;; -n (line limit)
+         ((equal arg "-n")
+          (let ((next (cadr rest)))
+            (if (or (null next) (not (string-match-p "\\`[0-9]+\\'" next)))
+                (setq unknown (or unknown "-n requires a numeric value"))
+              (setq lines (string-to-number next))
+              (setq rest (cdr rest)))))
+         ;; -p (priority filter)
+         ((equal arg "-p")
+          (let ((next (cadr rest)))
+            (if (or (null next)
+                    (not (member next '("err" "info"))))
+                (setq unknown (or unknown "-p must be err or info"))
+              (setq priority (intern next))
+              (setq rest (cdr rest)))))
+         ;; --since
+         ((equal arg "--since")
+          (let ((next (cadr rest)))
+            (if (null next)
+                (setq unknown (or unknown "--since requires a timestamp"))
+              (setq since next)
+              (setq rest (cdr rest)))))
+         ;; --until
+         ((equal arg "--until")
+          (let ((next (cadr rest)))
+            (if (null next)
+                (setq unknown (or unknown "--until requires a timestamp"))
+              (setq until next)
+              (setq rest (cdr rest)))))
+         ;; -f (follow, accepted but not implemented in basic mode)
+         ((equal arg "-f") nil)
+         ;; Unknown flags
+         ((string-prefix-p "-" arg)
+          (setq unknown (or unknown (format "Unknown option: %s" arg)))))
+        (setq rest (cdr rest))))
+    (list :unit unit :lines lines :priority priority
+          :since since :until until :unknown unknown)))
+
+(defun supervisor--cli-cmd-journal (args json-p)
+  "Handle `journal' command with ARGS.  JSON-P for JSON output.
+Display structured log records for a unit.  Requires -u/--unit."
+  (let* ((parsed (supervisor--cli-parse-journal-args args))
+         (unit (plist-get parsed :unit))
+         (n (or (plist-get parsed :lines) 50))
+         (priority (plist-get parsed :priority))
+         (since-str (plist-get parsed :since))
+         (until-str (plist-get parsed :until))
+         (unknown (plist-get parsed :unknown)))
+    (cond
+     (unknown
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             unknown
+                             (if json-p 'json 'human)))
+     ((null unit)
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "journal requires -u/--unit ID"
+                             (if json-p 'json 'human)))
+     (t
+      (let ((log-file (supervisor--log-file unit)))
+        (if (not (file-exists-p log-file))
+            (supervisor--cli-error supervisor-cli-exit-failure
+                                   (format "No log file for '%s'" unit)
+                                   (if json-p 'json 'human))
+          (let* ((decoded (supervisor--log-decode-file log-file))
+                 (records (plist-get decoded :records))
+                 (since-ts (when since-str
+                             (supervisor--log-parse-timestamp since-str)))
+                 (until-ts (when until-str
+                             (supervisor--log-parse-timestamp until-str)))
+                 (filtered (supervisor--log-filter-records
+                            records since-ts until-ts priority))
+                 (limited (if (> (length filtered) n)
+                              (last filtered n)
+                            filtered)))
+            (supervisor--cli-success
+             (if json-p
+                 (json-encode
+                  `((unit . ,unit)
+                    (format . ,(symbol-name
+                                (plist-get decoded :format)))
+                    (records .
+                     ,(vconcat
+                       (mapcar
+                        (lambda (r)
+                          `((ts . ,(plist-get r :ts))
+                            (unit . ,(plist-get r :unit))
+                            (pid . ,(plist-get r :pid))
+                            (stream . ,(symbol-name
+                                        (plist-get r :stream)))
+                            (event . ,(symbol-name
+                                       (plist-get r :event)))
+                            (status . ,(if (plist-get r :status)
+                                           (symbol-name
+                                            (plist-get r :status))
+                                         :null))
+                            (code . ,(plist-get r :code))
+                            (payload . ,(plist-get r :payload))))
+                        limited)))))
+               (if limited
+                   (mapconcat #'supervisor--log-format-record-human
+                              limited "\n")
+                 (format "No records for %s" unit)))
+             (if json-p 'json 'human)))))))))
+
 (defun supervisor--cli-cmd-ping (args json-p)
   "Handle `ping' command with ARGS.  JSON-P enables JSON output."
   (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
@@ -2763,6 +2892,7 @@ Returns a `supervisor-cli-result' struct."
                    "  logging (on|off) ID...     Set logging policy\n"
                    "  blame                      Show startup timing\n"
                    "  logs [--tail N] [--] ID    View unit log file\n"
+                   "  journal -u ID [-n N] [-p err] [--since TS] [--until TS]  Structured log records\n"
                    "  ping                       Check supervisor liveness\n"
                    "  version                    Show version\n\n"
                    "Target commands:\n"
@@ -2812,6 +2942,8 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-list-dependencies args json-p))
          ((equal command "logs")
           (supervisor--cli-cmd-logs args json-p))
+         ((equal command "journal")
+          (supervisor--cli-cmd-journal args json-p))
          ((equal command "kill")
           (supervisor--cli-cmd-kill args json-p))
          ((equal command "ping")

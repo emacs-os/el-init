@@ -289,6 +289,7 @@ Each unit file is a single plist expression with ~:id~ required.
 | ~:sandbox-rw-bind~ | list of absolute path strings | ~nil~ | Read-write bind mounts inside sandbox |
 | ~:sandbox-tmpfs~ | list of absolute path strings | ~nil~ | Tmpfs mounts inside sandbox |
 | ~:sandbox-raw-args~ | list of strings | ~nil~ | Raw bwrap arguments (expert gate required) |
+| ~:log-format~ | symbol | ~nil~ | Structured log format: ~text~ or ~binary~ |
 
 ** Validation Rules
 
@@ -363,6 +364,9 @@ Validation is performed by unit-file validation
 - Units requesting sandbox (any sandbox key present or profile not ~none~) on
   non-Linux hosts are rejected.
 - Units requesting sandbox without =bwrap= (bubblewrap) installed are rejected.
+- ~:log-format~ must be ~text~ or ~binary~.  ~binary~ is rejected unless
+  ~supervisor-log-format-binary-enable~ is non-nil.  ~:log-format~ is rejected
+  for ~:type target~.
 
 Invalid entries are skipped at start and shown as ~invalid~ in dashboard
 and CLI status/validate output.
@@ -1574,6 +1578,7 @@ Supervisor-specific commands:
 - ~logging (on|off) [--] ID...~
 - ~blame~
 - ~logs [--tail N] [--] ID~
+- ~journal [-u ID] [-n N] [-p PRIORITY] [--since TS] [--until TS] [--json]~
 - ~ping~
 - ~version~
 
@@ -2023,6 +2028,133 @@ Relevant customization variables:
 | ~supervisor-logd-prune-min-interval~ | 60 s | Minimum seconds between logd-triggered prune calls |
 | ~supervisor-logrotate-keep-days~ | 14 | Days to keep rotated files (scheduled path) |
 
+*** Structured Logging
+
+The ~:log-format~ unit option enables structured log records.
+When set, the logd writer produces machine-parseable records instead of
+raw byte passthrough.  Two formats are available:
+
+- ~text~ -- one key=value line per record, human-readable.
+- ~binary~ -- compact binary framing with nanosecond timestamps.
+
+Text is the default when ~:log-format~ is set.  Binary requires the gate
+variable ~supervisor-log-format-binary-enable~ to be non-nil; units
+requesting ~:log-format binary~ without the gate enabled are rejected
+during validation.
+
+Example unit file:
+
+#+begin_src emacs-lisp
+(:id "my-service"
+ :command "/usr/bin/my-service"
+ :log-format text)
+#+end_src
+
+**** Text Record Format
+
+Each log line has the form:
+
+#+begin_example
+ts=<TIMESTAMP> unit=<UNIT> pid=<PID> stream=<STREAM> event=<EVENT> status=<STATUS> code=<CODE> payload=<PAYLOAD>
+#+end_example
+
+Fields:
+
+| Field | Values | Description |
+|-------+--------+-------------|
+| ~ts~ | RFC3339Nano UTC | Record timestamp (e.g. ~2026-02-16T12:34:56.123456789Z~) |
+| ~unit~ | string | Service unit ID |
+| ~pid~ | integer | Process PID |
+| ~stream~ | ~stdout~, ~stderr~, ~meta~ | Output stream origin |
+| ~event~ | ~output~, ~exit~ | Record type |
+| ~status~ | ~-~, ~exited~, ~signaled~ | Exit status (output events use ~-~) |
+| ~code~ | integer or ~-~ | Exit code (output events use ~-~) |
+| ~payload~ | escaped string or ~-~ | Output data with escaping |
+
+Payload escaping rules: ~\\~ becomes ~\\\\~, newline becomes ~\\n~,
+carriage return becomes ~\\r~, tab becomes ~\\t~, bytes outside
+0x20-0x7E become ~\\xNN~.
+
+**** Binary Record Format
+
+Binary files begin with a 4-byte magic header ~SLG1~.  Each record is:
+
+#+begin_example
+u32be record_len       (bytes after this field)
+u8    version          (1)
+u8    event            (1=output, 2=exit)
+u8    stream           (1=stdout, 2=stderr, 3=meta)
+u8    reserved         (0)
+u64be timestamp_ns     (nanoseconds since epoch)
+u32be pid
+u16be unit_len
+i32be exit_code
+u8    exit_status      (0=none, 1=exited, 2=signaled)
+u8[3] reserved         (0)
+u32be payload_len
+<unit_len bytes>       unit_id (UTF-8)
+<payload_len bytes>    payload
+#+end_example
+
+The Elisp decoder handles truncated trailing records gracefully: it
+returns all valid records parsed before the truncation point and includes
+a warning.  Unknown version or event values are rejected as hard errors.
+
+**** ~supervisorctl journal~ Command
+
+The ~journal~ command reads and displays structured log records:
+
+#+begin_example
+supervisorctl journal -u my-service
+supervisorctl journal -u my-service -n 20
+supervisorctl journal -u my-service -p err
+supervisorctl journal -u my-service --since 1708098896 --until 1708099000
+supervisorctl journal -fu my-service
+supervisorctl journal --json -u my-service
+#+end_example
+
+Flags:
+
+| Flag | Description |
+|------+-------------|
+| ~-u ID~ / ~--unit ID~ | Unit ID (required) |
+| ~-n N~ | Limit to last N records (default: 50) |
+| ~-p err~ / ~-p info~ | Filter by priority |
+| ~--since TS~ | Show records from timestamp (epoch integer or RFC3339) |
+| ~--until TS~ | Show records up to timestamp |
+| ~-fu ID~ | Combined follow + unit (short form) |
+| ~--json~ | Output as JSON |
+
+Priority classification: stderr output and non-clean exits (non-zero
+exit code or signal death) are ~err~; all other records are ~info~.
+
+Auto-detection: the decoder reads the first bytes of the log file to
+determine the format (~SLG1~ magic for binary, ~ts=~ prefix for text,
+otherwise legacy raw lines).  Legacy files are wrapped as unstructured
+output records.
+
+The dashboard (~supervisor-dashboard-view-log~) also auto-detects binary
+format and decodes records for display instead of showing raw binary
+data.
+
+**** Compression and Vacuum
+
+The logrotate script optionally compresses rotated files with ~tar~.
+When ~tar~ is available on ~PATH~, each newly rotated log file is
+compressed into a ~.tar.gz~ archive.  If compression fails, the
+uncompressed file is preserved and a warning is emitted.
+
+The prune script accepts additional aliases for consistency with
+journalctl vocabulary:
+
+| Flag | Description |
+|------+-------------|
+| ~--vacuum~ | Accepted as no-op alias |
+| ~--vacuum-max-total-bytes N~ | Alias of ~--max-total-bytes N~ |
+| ~--format-hint VALUE~ | Accepted for forward compatibility |
+
+Both scripts handle ~.log.tar.gz~ files in their rotated-file patterns.
+
 ** Logging Semantics
 
 ~supervisor--log~ emits levels:
@@ -2084,6 +2216,7 @@ All user options (defcustom) are listed below.
 | ~supervisor-libexec-compiler-candidates~ | ~("cc" "clang" "gcc")~ | Candidate compiler commands, checked in order |
 | ~supervisor-libexec-cflags~ | ~("-Wall" "-Wextra" "-Werror" "-pedantic" "-std=c99" "-O2")~ | C flags used when building bundled helpers |
 | ~supervisor-sandbox-allow-raw-bwrap~ | ~nil~ | Enable raw bwrap arguments (~:sandbox-raw-args~) |
+| ~supervisor-log-format-binary-enable~ | ~nil~ | Gate variable: allow ~:log-format binary~ in unit files |
 
 ** Unit-File Options
 

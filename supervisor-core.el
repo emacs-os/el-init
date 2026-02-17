@@ -3570,16 +3570,28 @@ Gracefully returns nil if process attributes are unavailable."
 
 (defun supervisor--telemetry-log-tail (id &optional lines)
   "Return last LINES lines from the log file for ID.
-LINES defaults to 5.  Returns nil if no log file exists."
+LINES defaults to 5.  Returns nil if no log file exists.
+Automatically detects binary format and decodes records."
   (let ((log-file (supervisor--log-file id))
         (n (or lines 5)))
     (when (file-exists-p log-file)
       (condition-case nil
-          (with-temp-buffer
-            (insert-file-contents log-file)
-            (goto-char (point-max))
-            (forward-line (- n))
-            (buffer-substring-no-properties (point) (point-max)))
+          (let ((fmt (supervisor--log-detect-format log-file)))
+            (if (eq fmt 'binary)
+                ;; Decode binary records and format as text
+                (let* ((decoded (supervisor--log-decode-file log-file n))
+                       (records (plist-get decoded :records)))
+                  (when records
+                    (concat (mapconcat
+                             #'supervisor--log-format-record-human
+                             records "\n")
+                            "\n")))
+              ;; Text or legacy: read last N lines
+              (with-temp-buffer
+                (insert-file-contents log-file)
+                (goto-char (point-max))
+                (forward-line (- n))
+                (buffer-substring-no-properties (point) (point-max)))))
         (error nil)))))
 
 (defun supervisor--telemetry-process-tree (pid)
@@ -3790,6 +3802,433 @@ Prefer `supervisor-log-directory'.  If it is not writable, fall back to
   (when-let* ((log-directory (supervisor--ensure-log-directory)))
     (expand-file-name (format "log-%s.log" prog) log-directory)))
 
+;;;; Log framing protocol
+;;
+;; Wire format for structured transport (Elisp -> logd stdin):
+;;   u32be total_frame_len   (bytes after this 4-byte header)
+;;   u8    event             (1=output, 2=exit)
+;;   u8    stream            (1=stdout, 2=stderr, 3=meta)
+;;   u32be pid
+;;   u16be unit_len
+;;   i32be exit_code         (0 for output events)
+;;   u8    exit_status       (0=none, 1=exited, 2=signaled, 3=spawn-failed)
+;;   <unit_len bytes>        unit_id (UTF-8)
+;;   <remaining bytes>       payload
+
+(defun supervisor--log-frame-encode (event stream pid unit-id
+                                          &optional payload exit-code
+                                          exit-status)
+  "Encode a log transport frame as a unibyte string.
+EVENT is 1 (output) or 2 (exit).  STREAM is 1 (stdout), 2 (stderr),
+or 3 (meta).  PID is the process ID.  UNIT-ID is the service name.
+PAYLOAD is an optional unibyte string of output data.
+EXIT-CODE is the process exit code (default 0).
+EXIT-STATUS is 0 (none), 1 (exited), 2 (signaled), or 3 (spawn-failed)."
+  (let* ((unit-bytes (encode-coding-string unit-id 'utf-8))
+         (unit-len (length unit-bytes))
+         (payload-bytes (if payload
+                            (if (multibyte-string-p payload)
+                                (encode-coding-string payload 'utf-8)
+                              payload)
+                          ""))
+         (payload-len (length payload-bytes))
+         (ec (or exit-code 0))
+         (es (or exit-status 0))
+         ;; Fixed header: event(1) + stream(1) + pid(4) + unit_len(2)
+         ;;             + exit_code(4) + exit_status(1) = 13
+         (body-len (+ 13 unit-len payload-len))
+         (frame (make-string (+ 4 body-len) 0)))
+    ;; u32be total_frame_len
+    (aset frame 0 (logand (ash body-len -24) #xff))
+    (aset frame 1 (logand (ash body-len -16) #xff))
+    (aset frame 2 (logand (ash body-len -8) #xff))
+    (aset frame 3 (logand body-len #xff))
+    ;; u8 event
+    (aset frame 4 event)
+    ;; u8 stream
+    (aset frame 5 stream)
+    ;; u32be pid
+    (aset frame 6 (logand (ash pid -24) #xff))
+    (aset frame 7 (logand (ash pid -16) #xff))
+    (aset frame 8 (logand (ash pid -8) #xff))
+    (aset frame 9 (logand pid #xff))
+    ;; u16be unit_len
+    (aset frame 10 (logand (ash unit-len -8) #xff))
+    (aset frame 11 (logand unit-len #xff))
+    ;; i32be exit_code (two's complement for negative values)
+    (let ((ec-unsigned (logand ec #xffffffff)))
+      (aset frame 12 (logand (ash ec-unsigned -24) #xff))
+      (aset frame 13 (logand (ash ec-unsigned -16) #xff))
+      (aset frame 14 (logand (ash ec-unsigned -8) #xff))
+      (aset frame 15 (logand ec-unsigned #xff)))
+    ;; u8 exit_status
+    (aset frame 16 es)
+    ;; unit_id bytes
+    (dotimes (i unit-len)
+      (aset frame (+ 17 i) (aref unit-bytes i)))
+    ;; payload bytes
+    (dotimes (i payload-len)
+      (aset frame (+ 17 unit-len i) (aref payload-bytes i)))
+    (string-to-unibyte frame)))
+
+(defun supervisor--log-send-frame (writer event stream pid unit-id
+                                         &optional payload exit-code
+                                         exit-status)
+  "Send a framed log event to WRITER process.
+EVENT, STREAM, PID, UNIT-ID, PAYLOAD, EXIT-CODE, and EXIT-STATUS are
+passed to `supervisor--log-frame-encode'.  Silently ignores errors
+when the writer process has died."
+  (condition-case nil
+      (process-send-string
+       writer
+       (supervisor--log-frame-encode event stream pid unit-id
+                                     payload exit-code exit-status))
+    (error nil)))
+
+(defun supervisor--exit-status-code (status)
+  "Map exit STATUS symbol to wire protocol value.
+Return 1 for `exited', 2 for `signal', 0 for anything else."
+  (pcase status
+    ('exited 1)
+    ('signal 2)
+    (_ 0)))
+
+;;;; Binary log decoder
+
+(defconst supervisor--log-binary-magic "SLG1"
+  "Magic bytes at the start of a binary structured log file.")
+
+(defconst supervisor--log-binary-header-size 34
+  "Size of a single binary record header in bytes.
+Layout: u32be record_len, u8 version, u8 event, u8 stream,
+u8 reserved, u64be timestamp_ns, u32be pid, u16be unit_len,
+i32be exit_code, u8 exit_status, u8[3] reserved, u32be payload_len.")
+
+(defun supervisor--log-read-u32be (str offset)
+  "Read big-endian u32 from unibyte string STR at OFFSET."
+  (logior (ash (aref str offset) 24)
+          (ash (aref str (+ offset 1)) 16)
+          (ash (aref str (+ offset 2)) 8)
+          (aref str (+ offset 3))))
+
+(defun supervisor--log-read-u16be (str offset)
+  "Read big-endian u16 from unibyte string STR at OFFSET."
+  (logior (ash (aref str offset) 8)
+          (aref str (+ offset 1))))
+
+(defun supervisor--log-read-u64be (str offset)
+  "Read big-endian u64 from unibyte string STR at OFFSET.
+Return the value as an Emacs integer (may lose precision on 32-bit)."
+  (let ((hi (supervisor--log-read-u32be str offset))
+        (lo (supervisor--log-read-u32be str (+ offset 4))))
+    (+ (ash hi 32) lo)))
+
+(defun supervisor--log-read-i32be (str offset)
+  "Read big-endian i32 (signed) from unibyte string STR at OFFSET."
+  (let ((u (supervisor--log-read-u32be str offset)))
+    (if (>= u #x80000000)
+        (- u #x100000000)
+      u)))
+
+(defun supervisor--log-wire-event (code)
+  "Map wire event CODE to symbol."
+  (pcase code
+    (1 'output)
+    (2 'exit)
+    (_ (error "Unknown event code: %d" code))))
+
+(defun supervisor--log-wire-stream (code)
+  "Map wire stream CODE to symbol."
+  (pcase code
+    (1 'stdout)
+    (2 'stderr)
+    (3 'meta)
+    (_ (error "Unknown stream code: %d" code))))
+
+(defun supervisor--log-wire-exit-status (code)
+  "Map wire exit status CODE to symbol."
+  (pcase code
+    (0 nil)
+    (1 'exited)
+    (2 'signaled)
+    (3 'spawn-failed)
+    (_ (error "Unknown exit status code: %d" code))))
+
+(defun supervisor--log-decode-binary-records (str &optional offset)
+  "Parse binary log buffer STR into record plists.
+OFFSET is the byte position to start parsing (default 0, skips
+SLG1 magic if present at start).  Return a plist
+\(:records LIST :offset INT :warning STRING-OR-NIL)."
+  (let* ((pos (or offset 0))
+         (len (length str))
+         (records nil)
+         (warning nil))
+    ;; Skip magic header if at start
+    (when (and (= pos 0) (>= len 4)
+               (equal (substring str 0 4) supervisor--log-binary-magic))
+      (setq pos 4))
+    (while (and (< pos len) (not warning))
+      (let ((remaining (- len pos)))
+        (if (< remaining supervisor--log-binary-header-size)
+            ;; Incomplete trailing record
+            (setq warning (format "truncated record at offset %d" pos))
+          (let* ((record-len (supervisor--log-read-u32be str pos))
+                 (total (+ 4 record-len)))
+            (if (> total remaining)
+                ;; Incomplete record body
+                (setq warning (format "truncated record at offset %d" pos))
+              (let* ((base (+ pos 4))
+                     (version (aref str base))
+                     (event-code (aref str (+ base 1)))
+                     (stream-code (aref str (+ base 2)))
+                     (ts-ns (supervisor--log-read-u64be str (+ base 4)))
+                     (pid (supervisor--log-read-u32be str (+ base 12)))
+                     (unit-len (supervisor--log-read-u16be str (+ base 16)))
+                     (exit-code (supervisor--log-read-i32be str (+ base 18)))
+                     (exit-status-code (aref str (+ base 22)))
+                     (payload-len (supervisor--log-read-u32be str (+ base 26)))
+                     (unit-start (+ base 30))
+                     (payload-start (+ unit-start unit-len)))
+                (when (/= version 1)
+                  (error "Unknown binary log version: %d" version))
+                (condition-case err
+                    (let ((event (supervisor--log-wire-event event-code))
+                          (stream (supervisor--log-wire-stream stream-code))
+                          (exit-status (supervisor--log-wire-exit-status
+                                        exit-status-code))
+                          (unit (substring str unit-start
+                                           (+ unit-start unit-len)))
+                          (payload (substring str payload-start
+                                              (+ payload-start payload-len)))
+                          (ts (/ (float ts-ns) 1e9)))
+                      (push (list :ts ts :unit unit :pid pid
+                                  :stream stream :event event
+                                  :status exit-status :code exit-code
+                                  :payload payload)
+                            records))
+                  (error
+                   (error "Binary decode error at offset %d: %s"
+                          pos (error-message-string err))))
+                (setq pos (+ pos total))))))))
+    (list :records (nreverse records) :offset pos :warning warning)))
+
+;;;; Log decoders and record utilities
+
+(defun supervisor--log-unescape-payload (escaped)
+  "Reverse text-format escaping of ESCAPED payload string.
+Convert \\\\->\\, \\n->newline, \\r->CR, \\t->tab, \\xNN->byte."
+  (let ((result (make-string (length escaped) 0))
+        (rpos 0)
+        (i 0)
+        (len (length escaped)))
+    (while (< i len)
+      (if (and (= (aref escaped i) ?\\) (< (1+ i) len))
+          (let ((next (aref escaped (1+ i))))
+            (pcase next
+              (?\\
+               (aset result rpos ?\\)
+               (setq rpos (1+ rpos) i (+ i 2)))
+              (?n
+               (aset result rpos ?\n)
+               (setq rpos (1+ rpos) i (+ i 2)))
+              (?r
+               (aset result rpos ?\r)
+               (setq rpos (1+ rpos) i (+ i 2)))
+              (?t
+               (aset result rpos ?\t)
+               (setq rpos (1+ rpos) i (+ i 2)))
+              (?x
+               (if (< (+ i 3) len)
+                   (let ((hex (substring escaped (+ i 2) (+ i 4))))
+                     (aset result rpos (string-to-number hex 16))
+                     (setq rpos (1+ rpos) i (+ i 4)))
+                 (aset result rpos (aref escaped i))
+                 (setq rpos (1+ rpos) i (1+ i))))
+              (_
+               (aset result rpos (aref escaped i))
+               (setq rpos (1+ rpos) i (1+ i)))))
+        (aset result rpos (aref escaped i))
+        (setq rpos (1+ rpos) i (1+ i))))
+    (substring result 0 rpos)))
+
+(defun supervisor--log-parse-timestamp (ts-string)
+  "Parse timestamp TS-STRING to float seconds.
+Accept RFC3339 format or epoch integer."
+  (cond
+   ((string-match
+     "\\`\\([0-9]\\{4\\}\\)-\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)T\\([0-9]\\{2\\}\\):\\([0-9]\\{2\\}\\):\\([0-9]\\{2\\}\\)\\(?:\\.\\([0-9]+\\)\\)?Z\\'"
+     ts-string)
+    (let* ((year (string-to-number (match-string 1 ts-string)))
+           (month (string-to-number (match-string 2 ts-string)))
+           (day (string-to-number (match-string 3 ts-string)))
+           (hour (string-to-number (match-string 4 ts-string)))
+           (min (string-to-number (match-string 5 ts-string)))
+           (sec (string-to-number (match-string 6 ts-string)))
+           (frac-str (match-string 7 ts-string))
+           (frac (if frac-str
+                     (/ (float (string-to-number frac-str))
+                        (expt 10.0 (length frac-str)))
+                   0.0))
+           (encoded (encode-time (list sec min hour day month year
+                                       nil nil t 0))))
+      (+ (float-time encoded) frac)))
+   ((string-match "\\`[0-9]+\\'" ts-string)
+    (float (string-to-number ts-string)))
+   (t nil)))
+
+(defun supervisor--log-decode-text-records (str)
+  "Parse text-format structured log STR into record plists.
+Each line has the format: ts=TS unit=UNIT pid=PID stream=STREAM
+event=EVENT status=STATUS code=CODE payload=PAYLOAD."
+  (let ((records nil)
+        (lines (split-string str "\n" t)))
+    (dolist (line lines)
+      (when (string-match
+             "\\`ts=\\([^ ]+\\) unit=\\([^ ]+\\) pid=\\([0-9]+\\) stream=\\([^ ]+\\) event=\\([^ ]+\\) status=\\([^ ]+\\) code=\\([^ ]+\\) payload=\\(.*\\)\\'"
+             line)
+        (let* ((ts-str (match-string 1 line))
+               (unit (match-string 2 line))
+               (pid (string-to-number (match-string 3 line)))
+               (stream (intern (match-string 4 line)))
+               (event (intern (match-string 5 line)))
+               (status-str (match-string 6 line))
+               (code-str (match-string 7 line))
+               (payload-raw (match-string 8 line))
+               (ts (supervisor--log-parse-timestamp ts-str))
+               (status (unless (equal status-str "-")
+                         (intern status-str)))
+               (code (if (equal code-str "-") 0
+                       (string-to-number code-str)))
+               (payload (if (equal payload-raw "-") ""
+                          (supervisor--log-unescape-payload payload-raw))))
+          (push (list :ts ts :unit unit :pid pid
+                      :stream stream :event event
+                      :status status :code code
+                      :payload payload)
+                records))))
+    (nreverse records)))
+
+(defun supervisor--log-decode-legacy-lines (str)
+  "Wrap raw log lines in STR as output record plists.
+Legacy logs have no structured metadata."
+  (let ((records nil)
+        (lines (split-string str "\n" t)))
+    (dolist (line lines)
+      (push (list :ts nil :unit nil :pid 0
+                  :stream 'stdout :event 'output
+                  :status nil :code 0
+                  :payload line)
+            records))
+    (nreverse records)))
+
+(defun supervisor--log-detect-format (file)
+  "Detect log format of FILE by reading first bytes.
+Return `binary', `text', or `legacy'."
+  (condition-case nil
+      (with-temp-buffer
+        (set-buffer-multibyte nil)
+        (insert-file-contents-literally file nil 0 256)
+        (cond
+         ((and (>= (buffer-size) 4)
+               (equal (buffer-substring 1 5) supervisor--log-binary-magic))
+          'binary)
+         ((string-match "\\`ts=" (buffer-substring 1 (min 4 (1+ (buffer-size)))))
+          'text)
+         (t 'legacy)))
+    (error 'legacy)))
+
+(defun supervisor--log-decode-file (file &optional limit offset)
+  "Decode structured log FILE into records.
+LIMIT is maximum number of records to return (from end).
+OFFSET is byte offset to start reading (for incremental reads).
+Return (:records LIST :offset INT :format SYMBOL :warning STRING-OR-NIL)."
+  (let ((fmt (supervisor--log-detect-format file)))
+    (condition-case nil
+        (with-temp-buffer
+          (set-buffer-multibyte nil)
+          (if offset
+              (insert-file-contents-literally file nil offset)
+            (insert-file-contents-literally file))
+          (let* ((content (buffer-string))
+                 (end-offset (+ (or offset 0) (length content))))
+            (pcase fmt
+              ('binary
+               (let ((result (supervisor--log-decode-binary-records
+                              content (if offset 0 nil))))
+                 (let ((records (plist-get result :records)))
+                   (list :records (if (and limit (> (length records) limit))
+                                      (last records limit)
+                                    records)
+                         :offset (+ (or offset 0)
+                                    (plist-get result :offset))
+                         :format 'binary
+                         :warning (plist-get result :warning)))))
+              ('text
+               (let* ((str (decode-coding-string content 'utf-8))
+                      (records (supervisor--log-decode-text-records str)))
+                 (list :records (if (and limit (> (length records) limit))
+                                    (last records limit)
+                                  records)
+                       :offset end-offset
+                       :format 'text
+                       :warning nil)))
+              (_
+               (let* ((str (decode-coding-string content 'utf-8))
+                      (records (supervisor--log-decode-legacy-lines str)))
+                 (list :records (if (and limit (> (length records) limit))
+                                    (last records limit)
+                                  records)
+                       :offset end-offset
+                       :format 'legacy
+                       :warning nil))))))
+      (error (list :records nil :offset 0 :format fmt :warning "read error")))))
+
+(defun supervisor--log-record-priority (record)
+  "Return priority symbol for RECORD.
+Stderr output and non-clean exits return `err', else `info'."
+  (cond
+   ((and (eq (plist-get record :event) 'output)
+         (eq (plist-get record :stream) 'stderr))
+    'err)
+   ((and (eq (plist-get record :event) 'exit)
+         (not (and (eq (plist-get record :status) 'exited)
+                   (= (plist-get record :code) 0))))
+    'err)
+   (t 'info)))
+
+(defun supervisor--log-filter-records (records &optional since until priority)
+  "Filter RECORDS by timestamp range and priority.
+SINCE and UNTIL are float timestamps (inclusive).
+PRIORITY, when non-nil, filters to records matching that priority."
+  (cl-remove-if-not
+   (lambda (r)
+     (let ((ts (plist-get r :ts))
+           (pri (supervisor--log-record-priority r)))
+       (and (or (null since) (null ts) (>= ts since))
+            (or (null until) (null ts) (<= ts until))
+            (or (null priority) (eq pri priority)))))
+   records))
+
+(defun supervisor--log-format-record-human (record)
+  "Format one structured log RECORD for human display."
+  (let* ((ts (plist-get record :ts))
+         (unit (or (plist-get record :unit) "?"))
+         (pid (plist-get record :pid))
+         (stream (plist-get record :stream))
+         (event (plist-get record :event))
+         (payload (plist-get record :payload))
+         (ts-str (if ts
+                     (format-time-string "%b %d %H:%M:%S" ts)
+                   "---")))
+    (if (eq event 'exit)
+        (format "%s %s[%d] exit: status=%s code=%d"
+                ts-str unit pid
+                (or (plist-get record :status) '--)
+                (plist-get record :code))
+      (format "%s %s[%d] %s: %s"
+              ts-str unit pid stream
+              (or payload "")))))
+
 ;;;; Log writer lifecycle
 
 (defun supervisor--logd-pid-dir ()
@@ -3827,29 +4266,36 @@ given to send SIGHUP to all active writers."
     (when (file-exists-p pid-file)
       (delete-file pid-file))))
 
-(defun supervisor--start-stream-writer (id stream log-file table)
+(defun supervisor--start-stream-writer (id stream log-file table
+                                          &optional log-format)
   "Start log writer for service ID STREAM writing to LOG-FILE.
-TABLE receives the process keyed by ID.  STREAM is `stdout' or `stderr'."
+TABLE receives the process keyed by ID.  STREAM is `stdout' or `stderr'.
+LOG-FORMAT is the structured log format symbol (`text' or `binary')."
   (condition-case err
       (let* ((writer-id (supervisor--stream-writer-id id stream))
              (log-directory-raw (or (file-name-directory log-file)
                                     (supervisor--ensure-log-directory)
                                     supervisor-log-directory))
              (log-directory (directory-file-name log-directory-raw))
-             (cmd (list supervisor-logd-command
-                        "--file" log-file
-                        "--max-file-size-bytes"
-                        (number-to-string supervisor-logd-max-file-size)
-                        "--log-dir" log-directory
-                        "--prune-cmd"
-                        (supervisor--build-prune-command)
-                        "--prune-min-interval-sec"
-                        (number-to-string
-                         supervisor-logd-prune-min-interval)))
+             (fmt (or (and log-format (symbol-name log-format)) "text"))
+             (cmd (append (list supervisor-logd-command
+                                "--file" log-file
+                                "--max-file-size-bytes"
+                                (number-to-string supervisor-logd-max-file-size)
+                                "--log-dir" log-directory
+                                "--prune-cmd"
+                                (supervisor--build-prune-command log-format)
+                                "--prune-min-interval-sec"
+                                (number-to-string
+                                 supervisor-logd-prune-min-interval))
+                          (list "--framed"
+                                "--unit" id
+                                "--format" fmt)))
              (proc (make-process
                     :name (format "logd-%s" writer-id)
                     :command cmd
                     :connection-type 'pipe
+                    :coding 'no-conversion
                     :noquery t)))
         (set-process-query-on-exit-flag proc nil)
         (puthash id proc table)
@@ -3860,13 +4306,17 @@ TABLE receives the process keyed by ID.  STREAM is `stdout' or `stderr'."
                       id stream (error-message-string err))
      nil)))
 
-(defun supervisor--start-writer (id log-file)
-  "Start stdout log writer process for service ID writing to LOG-FILE."
-  (supervisor--start-stream-writer id 'stdout log-file supervisor--writers))
+(defun supervisor--start-writer (id log-file &optional log-format)
+  "Start stdout log writer process for service ID writing to LOG-FILE.
+LOG-FORMAT is the structured log format symbol (`text' or `binary')."
+  (supervisor--start-stream-writer id 'stdout log-file supervisor--writers
+                                   log-format))
 
-(defun supervisor--start-stderr-writer (id log-file)
-  "Start dedicated stderr log writer process for service ID and LOG-FILE."
-  (supervisor--start-stream-writer id 'stderr log-file supervisor--stderr-writers))
+(defun supervisor--start-stderr-writer (id log-file &optional log-format)
+  "Start dedicated stderr log writer process for service ID and LOG-FILE.
+LOG-FORMAT is the structured log format symbol (`text' or `binary')."
+  (supervisor--start-stream-writer id 'stderr log-file supervisor--stderr-writers
+                                   log-format))
 
 (defun supervisor--start-stderr-pipe (id writer)
   "Start an internal stderr pipe process for service ID using WRITER."
@@ -3877,7 +4327,11 @@ TABLE receives the process keyed by ID.  STREAM is `stdout' or `stderr'."
               :coding 'no-conversion
               :filter (lambda (_proc output)
                         (when (process-live-p writer)
-                          (process-send-string writer output)))
+                          (let ((pid (when-let* ((svc (gethash id
+                                                      supervisor--processes)))
+                                      (process-id svc))))
+                            (supervisor--log-send-frame
+                             writer 1 2 (or pid 0) id output))))
               :sentinel (lambda (_proc _event) nil)
               :noquery t)))
         (set-process-query-on-exit-flag pipe nil)
@@ -3927,18 +4381,23 @@ TABLE receives the process keyed by ID.  STREAM is `stdout' or `stderr'."
   (clrhash supervisor--stderr-writers)
   (clrhash supervisor--stderr-pipes))
 
-(defun supervisor--build-prune-command ()
+(defun supervisor--build-prune-command (&optional format-hint)
   "Build the shell command string for logd's --prune-cmd flag.
 Return a string suitable for passing to logd as the value of its
 `--prune-cmd' argument.  The command invokes the prune script with
 the current `supervisor-log-directory' and
-`supervisor-log-prune-max-total-bytes'."
+`supervisor-log-prune-max-total-bytes'.  FORMAT-HINT, when non-nil,
+is passed as `--format-hint' for forward compatibility."
   (let ((log-directory (or (supervisor--effective-log-directory)
                            supervisor-log-directory)))
-    (format "%s --log-dir %s --max-total-bytes %d"
-            (shell-quote-argument supervisor-log-prune-command)
-            (shell-quote-argument log-directory)
-            supervisor-log-prune-max-total-bytes)))
+    (concat (format "%s --log-dir %s --max-total-bytes %d"
+                    (shell-quote-argument supervisor-log-prune-command)
+                    (shell-quote-argument log-directory)
+                    supervisor-log-prune-max-total-bytes)
+            (when format-hint
+              (format " --format-hint %s"
+                      (shell-quote-argument
+                       (symbol-name format-hint)))))))
 
 (defun supervisor--signal-writers-reopen ()
   "Send SIGHUP to all live log writers to trigger file reopen.
@@ -4303,7 +4762,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
                               (supervisor-entry-id entry)))
         (user (supervisor-entry-user entry))
         (group (supervisor-entry-group entry))
-        (sandbox-entry (when (supervisor--sandbox-requesting-p entry) entry)))
+        (sandbox-entry (when (supervisor--sandbox-requesting-p entry) entry))
+        (log-format (supervisor-entry-log-format entry)))
     ;; Check effective enabled state (config + runtime override)
     (let ((effective-enabled (supervisor--get-effective-enabled id enabled-p)))
       (cond
@@ -4334,7 +4794,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
                                  environment-file restart-sec
                                  unit-file-directory
                                  user group
-                                 sandbox-entry)))
+                                 sandbox-entry log-format)))
                  supervisor--dag-delay-timers))
        ;; Start immediately
        (t
@@ -4346,7 +4806,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
          environment-file restart-sec
          unit-file-directory
          user group
-         sandbox-entry))))))
+         sandbox-entry log-format))))))
 
 (defun supervisor--dag-finish-spawn-attempt ()
   "Finish a spawn attempt by decrementing count and processing queue."
@@ -4393,12 +4853,12 @@ Mark ready immediately for simple processes, on exit for oneshot."
                                     environment-file restart-sec
                                     unit-file-directory
                                     user group
-                                    sandbox-entry)
+                                    sandbox-entry log-format)
   "Start process ID with CMD, LOGGING-P, TYPE, RESTART-POLICY, ONESHOT-TIMEOUT.
 STDOUT-LOG-FILE and STDERR-LOG-FILE are per-stream log file overrides.
 Optional WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE,
-RESTART-SEC, UNIT-FILE-DIRECTORY, USER, GROUP, and SANDBOX-ENTRY
-are passed through to `supervisor--start-process'."
+RESTART-SEC, UNIT-FILE-DIRECTORY, USER, GROUP, SANDBOX-ENTRY, and
+LOG-FORMAT are passed through to `supervisor--start-process'."
   (puthash id t supervisor--dag-started)
   (puthash id (float-time) supervisor--start-times)
   (cl-incf supervisor--dag-active-starts)
@@ -4415,7 +4875,7 @@ are passed through to `supervisor--start-process'."
                    unit-file-directory
                    user group
                    stdout-log-file stderr-log-file
-                   sandbox-entry)))
+                   sandbox-entry log-format)))
         (if (not proc)
             (supervisor--dag-handle-spawn-failure id)
           (supervisor--dag-handle-spawn-success id type oneshot-timeout))))))
@@ -4741,7 +5201,7 @@ ignored."
                                         unit-file-directory
                                         user group
                                         stdout-log-file stderr-log-file
-                                        sandbox-entry)
+                                        sandbox-entry log-format)
   "Schedule restart of process ID after crash.
 CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are original process params.
 PROC-STATUS and EXIT-CODE describe the exit for logging.
@@ -4749,7 +5209,8 @@ WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, RESTART-SEC,
 and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts.
 USER and GROUP are identity parameters preserved for restart.
 STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets.
-SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox."
+SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox.
+LOG-FORMAT is the structured log format symbol (`text' or `binary')."
   (supervisor--log 'info "%s %s, restarting..."
                    id (supervisor--format-exit-status proc-status exit-code))
   (let ((delay (or restart-sec supervisor-restart-delay)))
@@ -4762,7 +5223,7 @@ SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox."
                           unit-file-directory
                           user group
                           stdout-log-file stderr-log-file
-                          sandbox-entry)
+                          sandbox-entry log-format)
              supervisor--restart-timers)))
 
 (defun supervisor--make-process-sentinel (id cmd default-logging type config-restart
@@ -4771,17 +5232,19 @@ SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox."
                                              unit-file-directory
                                              user group
                                              stdout-log-file stderr-log-file
-                                             sandbox-entry)
+                                             sandbox-entry log-format)
   "Create a process sentinel for ID with captured parameters.
 CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart.
 WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, RESTART-SEC,
 and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts.
 USER and GROUP are identity parameters preserved for restart.
 STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets.
-SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox."
+SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox.
+LOG-FORMAT is the structured log format symbol (`text' or `binary')."
   (lambda (p _event)
     (unless (process-live-p p)
       (let* ((name (process-name p))
+             (pid (process-id p))
              (proc-status (process-status p))
              (exit-code (process-exit-status p))
              (exit-status (pcase proc-status
@@ -4789,6 +5252,13 @@ SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox."
                             ('exit 'exited)
                             (_ 'unknown))))
         (remhash name supervisor--processes)
+        ;; Send exit frames to writers before stopping them
+        (let ((exit-status-wire (supervisor--exit-status-code exit-status)))
+          (dolist (table (list supervisor--writers supervisor--stderr-writers))
+            (when-let* ((w (gethash name table)))
+              (when (process-live-p w)
+                (supervisor--log-send-frame w 2 3 (or pid 0) name nil
+                                            exit-code exit-status-wire)))))
         ;; Stop the log writer for this service
         (supervisor--stop-writer name)
         ;; Record last exit info for telemetry
@@ -4824,7 +5294,7 @@ SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox."
 	                                        unit-file-directory
 	                                        user group
 	                                        stdout-log-file stderr-log-file
-	                                        sandbox-entry))))))
+	                                        sandbox-entry log-format))))))
 
 ;;; Process Environment and Working Directory Helpers
 
@@ -5364,7 +5834,7 @@ Return a list suitable for the `make-process' :command keyword."
                                      unit-file-directory
                                      user group
                                      stdout-log-file stderr-log-file
-                                     sandbox-entry)
+                                     sandbox-entry log-format)
   "Start CMD with identifier ID.
 DEFAULT-LOGGING is the config value; runtime override is checked at restart.
 TYPE is `simple' (long-running) or `oneshot' (run once).
@@ -5380,7 +5850,8 @@ as the specified identity.  Requires root privileges.
 STDOUT-LOG-FILE and STDERR-LOG-FILE are optional per-unit stream log
 targets.  By default stderr follows stdout into the same log file.
 SANDBOX-ENTRY, when non-nil, is a parsed entry tuple from which
-sandbox wrapper arguments are built via bubblewrap."
+sandbox wrapper arguments are built via bubblewrap.
+LOG-FORMAT is the structured log format symbol (`text' or `binary')."
   ;; Clear any pending restart timer for this ID first
   (when-let* ((timer (gethash id supervisor--restart-timers)))
     (when (timerp timer)
@@ -5457,10 +5928,11 @@ sandbox wrapper arguments are built via bubblewrap."
                                   (not (equal stderr-log-target
                                               stdout-log-target))))
                (writer (when stdout-log-target
-                         (supervisor--start-writer id stdout-log-target)))
+                         (supervisor--start-writer id stdout-log-target
+                                                   log-format)))
                (stderr-writer (when split-stderr
                                 (supervisor--start-stderr-writer
-                                 id stderr-log-target)))
+                                 id stderr-log-target log-format)))
                (stderr-pipe (when stderr-writer
                               (supervisor--start-stderr-pipe id stderr-writer)))
                (_ (when (and stderr-writer (not stderr-pipe))
@@ -5472,13 +5944,16 @@ sandbox wrapper arguments are built via bubblewrap."
                           :name id
                           :command args
                           :connection-type 'pipe
+                          :coding 'no-conversion
                           ;; Default is merged streams (stderr=nil).  In split mode
                           ;; stderr is routed through a dedicated pipe/writer pair.
                           :stderr (when effective-split stderr-pipe)
                           :filter (when writer
-                                    (lambda (_proc output)
+                                    (lambda (proc output)
                                       (when (process-live-p writer)
-                                        (process-send-string writer output))))
+                                        (supervisor--log-send-frame
+                                         writer 1 1 (process-id proc)
+                                         id output))))
                           :sentinel (supervisor--make-process-sentinel
                                      id cmd default-logging type config-restart
                                      working-directory environment
@@ -5486,7 +5961,7 @@ sandbox wrapper arguments are built via bubblewrap."
                                      unit-file-directory
                                      user group
                                      stdout-log-file stderr-log-file
-                                     sandbox-entry))
+                                     sandbox-entry log-format))
                        (error
                         (supervisor--stop-writer id)
                         (puthash id (error-message-string err)
@@ -5544,7 +6019,8 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
                               (supervisor-entry-id entry)))
         (user (supervisor-entry-user entry))
         (group (supervisor-entry-group entry))
-        (sandbox-entry (when (supervisor--sandbox-requesting-p entry) entry)))
+        (sandbox-entry (when (supervisor--sandbox-requesting-p entry) entry))
+        (log-format (supervisor-entry-log-format entry)))
     (if (not (supervisor--get-effective-enabled id enabled-p))
         (progn
           (supervisor--log 'info "%s disabled (config or override), skipping" id)
@@ -5564,7 +6040,7 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
                        unit-file-directory
                        user group
                        stdout-log-file stderr-log-file
-                       sandbox-entry)))
+                       sandbox-entry log-format)))
             (if (not proc)
                 (progn
                   (supervisor--emit-event 'process-failed id nil)
