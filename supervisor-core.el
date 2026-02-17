@@ -1013,7 +1013,7 @@ Return nil if valid, or a reason string if invalid."
             (cond
              ((null val))
              ((stringp val)
-              (let ((normalized (directory-file-name val)))
+              (let ((normalized (directory-file-name (expand-file-name val))))
                 (cond
                  ((string-empty-p val)
                   (push (format "%s must not contain empty paths" label)
@@ -1031,7 +1031,7 @@ Return nil if valid, or a reason string if invalid."
                         errors)))))
              ((and (proper-list-p val) (cl-every #'stringp val))
               (dolist (path val)
-                (let ((normalized (directory-file-name path)))
+                (let ((normalized (directory-file-name (expand-file-name path))))
                   (cond
                    ((string-empty-p path)
                     (push (format "%s must not contain empty paths" label)

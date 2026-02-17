@@ -21464,6 +21464,18 @@ the invalid-hash must not contain the alias ID."
                  '("cmd" :id "svc" :sandbox-ro-bind ("/dev/")))))
     (should (string-match-p "must not include forbidden path" reason))))
 
+(ert-deftest supervisor-test-sandbox-validate-path-forbidden-proc-dot-segment ()
+  "Forbidden /proc/. dot-segment alias is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-tmpfs ("/proc/.")))))
+    (should (string-match-p "must not include forbidden path" reason))))
+
+(ert-deftest supervisor-test-sandbox-validate-path-forbidden-dev-dot-segment ()
+  "Forbidden /dev/. dot-segment alias is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-ro-bind ("/dev/.")))))
+    (should (string-match-p "must not include forbidden path" reason))))
+
 (ert-deftest supervisor-test-sandbox-validate-path-valid ()
   "Valid absolute paths pass validation."
   (should-not (supervisor--validate-entry
