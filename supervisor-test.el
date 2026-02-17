@@ -21452,6 +21452,18 @@ the invalid-hash must not contain the alias ID."
                  '("cmd" :id "svc" :sandbox-ro-bind ("/dev")))))
     (should (string-match-p "must not include forbidden path" reason))))
 
+(ert-deftest supervisor-test-sandbox-validate-path-forbidden-trailing-slash ()
+  "Forbidden paths with trailing slash are rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-tmpfs ("/proc/")))))
+    (should (string-match-p "must not include forbidden path" reason))))
+
+(ert-deftest supervisor-test-sandbox-validate-path-forbidden-dev-trailing-slash ()
+  "Forbidden /dev/ path with trailing slash is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-ro-bind ("/dev/")))))
+    (should (string-match-p "must not include forbidden path" reason))))
+
 (ert-deftest supervisor-test-sandbox-validate-path-valid ()
   "Valid absolute paths pass validation."
   (should-not (supervisor--validate-entry
@@ -21672,7 +21684,9 @@ and absent are indistinguishable) and correctly does not apply sandbox."
         (should (equal (car (last argv)) "--"))))))
 
 (ert-deftest supervisor-test-sandbox-build-argv-network-override ()
-  "Build-argv respects network override."
+  "Build-argv respects network override for strict profile.
+Strict uses --unshare-all which includes network isolation.
+Override to shared must emit --share-net to restore networking."
   (let ((entry (supervisor--parse-entry
                 '("sleep 300" :id "svc"
                   :sandbox-profile strict
@@ -21680,8 +21694,23 @@ and absent are indistinguishable) and correctly does not apply sandbox."
     (cl-letf (((symbol-function 'executable-find)
                (lambda (_name) "/usr/bin/bwrap")))
       (let ((argv (supervisor--sandbox-build-argv entry)))
-        ;; strict defaults to isolated, but override is shared
-        ;; so --unshare-net should NOT be added
+        ;; --share-net must be present to counter --unshare-all
+        (should (member "--share-net" argv))
+        ;; --unshare-net must NOT be added
+        (should-not (member "--unshare-net" argv))))))
+
+(ert-deftest supervisor-test-sandbox-build-argv-service-shared-no-share-net ()
+  "Service profile with shared network does not emit --share-net.
+Only profiles using --unshare-all need --share-net to restore networking."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc"
+                  :sandbox-profile service
+                  :sandbox-network shared))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_name) "/usr/bin/bwrap")))
+      (let ((argv (supervisor--sandbox-build-argv entry)))
+        ;; service does not use --unshare-all, so no --share-net needed
+        (should-not (member "--share-net" argv))
         (should-not (member "--unshare-net" argv))))))
 
 (ert-deftest supervisor-test-sandbox-build-argv-ro-bind ()

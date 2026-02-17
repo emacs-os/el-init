@@ -1013,38 +1013,40 @@ Return nil if valid, or a reason string if invalid."
             (cond
              ((null val))
              ((stringp val)
-              (cond
-               ((string-empty-p val)
-                (push (format "%s must not contain empty paths" label)
-                      errors))
-               ((not (file-name-absolute-p val))
-                (push (format "%s paths must be absolute" label)
-                      errors))
-               ((member val supervisor--sandbox-forbidden-paths)
-                (push (format "%s must not include forbidden path %s"
-                              label val)
-                      errors))
-               ((and check-exists (not (file-exists-p val)))
-                (push (format "%s source path does not exist: %s"
-                              label val)
-                      errors))))
-             ((and (proper-list-p val) (cl-every #'stringp val))
-              (dolist (path val)
+              (let ((normalized (directory-file-name val)))
                 (cond
-                 ((string-empty-p path)
+                 ((string-empty-p val)
                   (push (format "%s must not contain empty paths" label)
                         errors))
-                 ((not (file-name-absolute-p path))
+                 ((not (file-name-absolute-p val))
                   (push (format "%s paths must be absolute" label)
                         errors))
-                 ((member path supervisor--sandbox-forbidden-paths)
+                 ((member normalized supervisor--sandbox-forbidden-paths)
                   (push (format "%s must not include forbidden path %s"
-                                label path)
+                                label val)
                         errors))
-                 ((and check-exists (not (file-exists-p path)))
+                 ((and check-exists (not (file-exists-p val)))
                   (push (format "%s source path does not exist: %s"
-                                label path)
+                                label val)
                         errors)))))
+             ((and (proper-list-p val) (cl-every #'stringp val))
+              (dolist (path val)
+                (let ((normalized (directory-file-name path)))
+                  (cond
+                   ((string-empty-p path)
+                    (push (format "%s must not contain empty paths" label)
+                          errors))
+                   ((not (file-name-absolute-p path))
+                    (push (format "%s paths must be absolute" label)
+                          errors))
+                   ((member normalized supervisor--sandbox-forbidden-paths)
+                    (push (format "%s must not include forbidden path %s"
+                                  label path)
+                          errors))
+                   ((and check-exists (not (file-exists-p path)))
+                    (push (format "%s source path does not exist: %s"
+                                  label path)
+                          errors))))))
              (t
               (push (format "%s must be a string or list of absolute path strings"
                             label)
@@ -5217,10 +5219,16 @@ does not include the service command itself -- callers append that."
              (argv (list bwrap)))
         ;; Append profile base args
         (setq argv (append argv base-args))
-        ;; Apply network override
-        (when (eq effective-network 'isolated)
+        ;; Apply network override.  When profile uses --unshare-all
+        ;; (which includes network), --share-net is needed to restore
+        ;; shared networking.
+        (cond
+         ((eq effective-network 'isolated)
           (unless (member "--unshare-net" argv)
             (setq argv (append argv (list "--unshare-net")))))
+         ((and (eq effective-network 'shared)
+               (member "--unshare-all" argv))
+          (setq argv (append argv (list "--share-net")))))
         ;; Apply read-only bind overrides
         (dolist (path (supervisor-entry-sandbox-ro-bind entry))
           (setq argv (append argv (list "--ro-bind" path path))))
