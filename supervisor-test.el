@@ -20080,8 +20080,8 @@ They are inert fallback definitions activated only by timers."
     ;; reboot.target requires shutdown.target
     (should (equal '("shutdown.target") (plist-get (cdr reboot) :requires)))))
 
-(ert-deftest supervisor-test-alias-target-override-rejected ()
-  "Disk unit with alias target ID is rejected at merge time."
+(ert-deftest supervisor-test-alias-target-with-deps-rejected-by-validation ()
+  "Disk alias target with dependency edges is caught by validation."
   (let* ((dir (make-temp-file "units-" t))
          (supervisor-unit-authority-path (list dir))
          (supervisor-unit-directory dir)
@@ -20103,11 +20103,38 @@ They are inert fallback definitions activated only by timers."
                                 :key (lambda (e) (plist-get (cdr e) :id))
                                 :test #'equal)))
             (should entry)
-            ;; Built-in alias has no :requires
             (should-not (plist-get (cdr entry) :requires)))
-          ;; Warning was emitted
+          ;; Validation rejected with "passive" reason
           (should (cl-some (lambda (w)
-                             (string-match-p "runlevel5\\.target.*immutable" w))
+                             (string-match-p "runlevel5\\.target.*passive" w))
+                           warnings)))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-alias-target-no-deps-rejected-by-merge ()
+  "Disk alias target without deps passes validation but is rejected at merge."
+  (let* ((dir (make-temp-file "units-" t))
+         (supervisor-unit-authority-path (list dir))
+         (supervisor-unit-directory dir)
+         (supervisor--programs-cache :not-yet-loaded)
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
+         (warnings nil))
+    (supervisor-test--write-unit-files
+     dir '((nil :id "runlevel3.target" :type target)))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'supervisor--log)
+                     (lambda (_level fmt &rest args)
+                       (push (apply #'format fmt args) warnings))))
+            (supervisor--load-programs))
+          ;; Built-in alias still present
+          (let ((entry (cl-find "runlevel3.target"
+                                supervisor--programs-cache
+                                :key (lambda (e) (plist-get (cdr e) :id))
+                                :test #'equal)))
+            (should entry))
+          ;; Merge-time warning was emitted
+          (should (cl-some (lambda (w)
+                             (string-match-p "runlevel3\\.target.*immutable" w))
                            warnings)))
       (delete-directory dir t))))
 
@@ -20167,6 +20194,31 @@ They are inert fallback definitions activated only by timers."
             (dolist (n '(0 1 2 3 4 5 6))
               (should (member (format "runlevel%d.target" n) ids)))))
       (delete-directory dir t))))
+
+(ert-deftest supervisor-test-alias-target-validation-rejects-deps ()
+  "Validation rejects alias target entries that carry dependency edges."
+  (dolist (kw '(:requires :wants :after :before :wanted-by :required-by))
+    (let* ((entry (list nil :id "runlevel3.target" :type 'target
+                        kw '("basic.target")))
+           (reason (supervisor--validate-entry entry)))
+      (should reason)
+      (should (string-match-p "alias target" reason))
+      (should (string-match-p "passive" reason))
+      (should (string-match-p (symbol-name kw) reason)))))
+
+(ert-deftest supervisor-test-alias-target-validation-accepts-passive ()
+  "Validation accepts alias target entries without dependency edges."
+  (let* ((entry (list nil :id "runlevel5.target" :type 'target
+                      :description "Alias for graphical.target"))
+         (reason (supervisor--validate-entry entry)))
+    (should-not reason)))
+
+(ert-deftest supervisor-test-canonical-target-validation-allows-deps ()
+  "Validation allows canonical (non-alias) targets to carry dependencies."
+  (let* ((entry (list nil :id "multi-user.target" :type 'target
+                      :requires '("basic.target")))
+         (reason (supervisor--validate-entry entry)))
+    (should-not reason)))
 
 (ert-deftest supervisor-test-cli-init-valid-runlevels ()
   "The `init' command accepts runlevels 1-5 and resolves correctly."

@@ -325,6 +325,7 @@ cleared by `supervisor-start' (which builds its own fresh plan).")
 ;;; Program Loading
 
 (defvar supervisor--programs-cache)
+(defvar supervisor--target-alias-map)
 
 (defun supervisor--effective-programs ()
   "Return the cached program list from the last authority resolution.
@@ -728,7 +729,19 @@ Return nil if valid, or a reason string if invalid."
         ;; Target must not have a non-empty command
         (when (and (listp entry) (stringp (car entry))
                    (not (string-empty-p (string-trim (car entry)))))
-          (push "target entry must not have a command" errors)))
+          (push "target entry must not have a command" errors))
+        ;; Alias targets are passive: no dependency edges allowed
+        (let ((eid (or (plist-get plist :id)
+                       (when (stringp (car entry))
+                         (file-name-nondirectory (car entry))))))
+          (when (and (stringp eid)
+                     (assoc eid supervisor--target-alias-map))
+            (dolist (kw '(:requires :wants :after :before
+                          :wanted-by :required-by))
+              (when (plist-member plist kw)
+                (push (format "alias target \"%s\" is passive and must not have %s"
+                              eid kw)
+                      errors))))))
       ;; Check :wanted-by and :required-by shape
       (dolist (spec '((:wanted-by . ":wanted-by")
                       (:required-by . ":required-by")))
