@@ -12153,21 +12153,25 @@ could incorrectly preserve a non-running disabled unit."
 
 (ert-deftest supervisor-test-unit-file-sandbox-profile-accepted ()
   "Unit file with :sandbox-profile passes validation and roundtrips."
-  (supervisor-test-with-unit-files
-      '(("echo hi" :id "svc" :sandbox-profile strict))
-    (let* ((entries (supervisor--all-parsed-entries)))
-      (should (= 1 (length entries)))
-      (should (eq (supervisor-entry-sandbox-profile (car entries))
-                  'strict)))))
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name) (when (equal name "bwrap") "/usr/bin/bwrap"))))
+    (supervisor-test-with-unit-files
+        '(("echo hi" :id "svc" :sandbox-profile strict))
+      (let* ((entries (supervisor--all-parsed-entries)))
+        (should (= 1 (length entries)))
+        (should (eq (supervisor-entry-sandbox-profile (car entries))
+                    'strict))))))
 
 (ert-deftest supervisor-test-unit-file-sandbox-ro-bind-accepted ()
   "Unit file with :sandbox-ro-bind passes validation and roundtrips."
-  (supervisor-test-with-unit-files
-      '(("echo hi" :id "svc" :sandbox-ro-bind ("/tmp")))
-    (let* ((entries (supervisor--all-parsed-entries)))
-      (should (= 1 (length entries)))
-      (should (equal (supervisor-entry-sandbox-ro-bind (car entries))
-                     '("/tmp"))))))
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name) (when (equal name "bwrap") "/usr/bin/bwrap"))))
+    (supervisor-test-with-unit-files
+        '(("echo hi" :id "svc" :sandbox-ro-bind ("/tmp")))
+      (let* ((entries (supervisor--all-parsed-entries)))
+        (should (= 1 (length entries)))
+        (should (equal (supervisor-entry-sandbox-ro-bind (car entries))
+                       '("/tmp")))))))
 
 ;; Type-gating
 
@@ -21594,9 +21598,11 @@ the invalid-hash must not contain the alias ID."
 
 (ert-deftest supervisor-test-sandbox-validate-profile-valid ()
   "Valid sandbox profiles pass validation."
-  (dolist (profile '(none strict service desktop))
-    (should-not (supervisor--validate-entry
-                 `("cmd" :id "svc" :sandbox-profile ,profile)))))
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name) (when (equal name "bwrap") "/usr/bin/bwrap"))))
+    (dolist (profile '(none strict service desktop))
+      (should-not (supervisor--validate-entry
+                   `("cmd" :id "svc" :sandbox-profile ,profile))))))
 
 (ert-deftest supervisor-test-sandbox-validate-profile-invalid ()
   "Invalid sandbox profile is rejected."
@@ -21606,9 +21612,11 @@ the invalid-hash must not contain the alias ID."
 
 (ert-deftest supervisor-test-sandbox-validate-network-valid ()
   "Valid network modes pass validation."
-  (dolist (mode '(shared isolated))
-    (should-not (supervisor--validate-entry
-                 `("cmd" :id "svc" :sandbox-network ,mode)))))
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name) (when (equal name "bwrap") "/usr/bin/bwrap"))))
+    (dolist (mode '(shared isolated))
+      (should-not (supervisor--validate-entry
+                   `("cmd" :id "svc" :sandbox-network ,mode))))))
 
 (ert-deftest supervisor-test-sandbox-validate-network-invalid ()
   "Invalid network mode is rejected."
@@ -21666,8 +21674,10 @@ the invalid-hash must not contain the alias ID."
 
 (ert-deftest supervisor-test-sandbox-validate-path-valid ()
   "Valid absolute paths pass validation."
-  (should-not (supervisor--validate-entry
-               '("cmd" :id "svc" :sandbox-ro-bind ("/tmp")))))
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name) (when (equal name "bwrap") "/usr/bin/bwrap"))))
+    (should-not (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-ro-bind ("/tmp"))))))
 
 (ert-deftest supervisor-test-sandbox-validate-bind-source-nonexistent ()
   "Non-existent source path in ro-bind is rejected."
@@ -21685,9 +21695,11 @@ the invalid-hash must not contain the alias ID."
 
 (ert-deftest supervisor-test-sandbox-validate-tmpfs-no-existence-check ()
   "Tmpfs paths do not require source existence."
-  (should-not (supervisor--validate-entry
-               '("cmd" :id "svc" :sandbox-tmpfs
-                 ("/definitely/does/not/exist/supervisor-test")))))
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name) (when (equal name "bwrap") "/usr/bin/bwrap"))))
+    (should-not (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-tmpfs
+                   ("/definitely/does/not/exist/supervisor-test"))))))
 
 (ert-deftest supervisor-test-sandbox-validate-bind-source-string-nonexistent ()
   "Non-existent source path as string in ro-bind is rejected."
@@ -21713,9 +21725,11 @@ the invalid-hash must not contain the alias ID."
 (ert-deftest supervisor-test-sandbox-validate-raw-args-gate-on ()
   "Raw args accepted when gate is on."
   (let ((supervisor-sandbox-allow-raw-bwrap t))
-    (should-not (supervisor--validate-entry
-                 '("cmd" :id "svc"
-                   :sandbox-raw-args ("--cap-add" "CAP_NET_RAW"))))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (name) (when (equal name "bwrap") "/usr/bin/bwrap"))))
+      (should-not (supervisor--validate-entry
+                   '("cmd" :id "svc"
+                     :sandbox-raw-args ("--cap-add" "CAP_NET_RAW")))))))
 
 (ert-deftest supervisor-test-sandbox-validate-raw-args-shape ()
   "Raw args must be list of strings."
@@ -21799,10 +21813,12 @@ the invalid-hash must not contain the alias ID."
 (ert-deftest supervisor-test-sandbox-validate-raw-args-safe-arg-accepted ()
   "Non-conflicting raw args like --cap-add pass validation."
   (let ((supervisor-sandbox-allow-raw-bwrap t))
-    (should-not (supervisor--validate-entry
-                 '("cmd" :id "svc"
-                   :sandbox-profile service
-                   :sandbox-raw-args ("--cap-add" "CAP_NET_RAW"))))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (name) (when (equal name "bwrap") "/usr/bin/bwrap"))))
+      (should-not (supervisor--validate-entry
+                   '("cmd" :id "svc"
+                     :sandbox-profile service
+                     :sandbox-raw-args ("--cap-add" "CAP_NET_RAW")))))))
 
 (ert-deftest supervisor-test-sandbox-validate-target-rejects ()
   "Sandbox keys are rejected for target type."
