@@ -20269,12 +20269,15 @@ the invalid-hash must not contain the alias ID."
     (should-not reason)))
 
 (ert-deftest supervisor-test-cli-init-valid-runlevels ()
-  "The `init' command accepts runlevels 1-5 and resolves correctly."
+  "The `init' command accepts all runlevels 0-6 and resolves correctly."
   (supervisor-test-with-unit-files
       '((nil :id "basic.target" :type target)
         (nil :id "multi-user.target" :type target)
         (nil :id "graphical.target" :type target)
         (nil :id "rescue.target" :type target)
+        (nil :id "shutdown.target" :type target)
+        (nil :id "poweroff.target" :type target)
+        (nil :id "reboot.target" :type target)
         (nil :id "default.target" :type target))
     (let ((supervisor--current-plan t)
           (supervisor--processes (make-hash-table :test 'equal))
@@ -20297,17 +20300,47 @@ the invalid-hash must not contain the alias ID."
                  (lambda (_entries callback) (funcall callback)))
                 ((symbol-function 'supervisor--manual-stop)
                  (lambda (_id) (list :status 'stopped :reason nil))))
+        ;; init 0 -> poweroff.target (destructive, needs --yes)
+        (let ((result (supervisor--cli-dispatch '("init" "--yes" "0"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (should (string-match "poweroff\\.target"
+                                (supervisor-cli-result-output result))))
         ;; init 1 -> rescue.target
         (let ((result (supervisor--cli-dispatch '("init" "--yes" "1"))))
           (should (= supervisor-cli-exit-success
                       (supervisor-cli-result-exitcode result)))
           (should (string-match "rescue\\.target"
                                 (supervisor-cli-result-output result))))
+        ;; init 2 -> multi-user.target
+        (let ((result (supervisor--cli-dispatch '("init" "--yes" "2"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (should (string-match "multi-user\\.target"
+                                (supervisor-cli-result-output result))))
+        ;; init 3 -> multi-user.target
+        (let ((result (supervisor--cli-dispatch '("init" "--yes" "3"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (should (string-match "multi-user\\.target"
+                                (supervisor-cli-result-output result))))
+        ;; init 4 -> multi-user.target
+        (let ((result (supervisor--cli-dispatch '("init" "--yes" "4"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (should (string-match "multi-user\\.target"
+                                (supervisor-cli-result-output result))))
         ;; init 5 -> graphical.target
         (let ((result (supervisor--cli-dispatch '("init" "--yes" "5"))))
           (should (= supervisor-cli-exit-success
                       (supervisor-cli-result-exitcode result)))
           (should (string-match "graphical\\.target"
+                                (supervisor-cli-result-output result))))
+        ;; init 6 -> reboot.target (destructive, needs --yes)
+        (let ((result (supervisor--cli-dispatch '("init" "--yes" "6"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (should (string-match "reboot\\.target"
                                 (supervisor-cli-result-output result))))))))
 
 (ert-deftest supervisor-test-cli-init-out-of-range ()
@@ -20420,20 +20453,76 @@ the invalid-hash must not contain the alias ID."
 
 (ert-deftest supervisor-test-cli-telinit-parity ()
   "The `telinit' command behaves identically to `init'."
-  ;; telinit without args
+  ;; Error paths: telinit without args
   (let ((result (supervisor--cli-dispatch '("telinit"))))
     (should (= supervisor-cli-exit-invalid-args
                 (supervisor-cli-result-exitcode result))))
-  ;; telinit out of range
+  ;; Error paths: telinit out of range
   (let ((result (supervisor--cli-dispatch '("telinit" "9"))))
     (should (= supervisor-cli-exit-invalid-args
                 (supervisor-cli-result-exitcode result))))
-  ;; telinit destructive without --yes
+  ;; Error paths: telinit destructive without --yes
   (let ((result (supervisor--cli-dispatch '("telinit" "0"))))
     (should (= supervisor-cli-exit-invalid-args
                 (supervisor-cli-result-exitcode result)))
     (should (string-match "destructive"
                           (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-telinit-success-parity ()
+  "Successful telinit produces same exitcode and output as init."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "graphical.target" :type target)
+        (nil :id "rescue.target" :type target)
+        (nil :id "shutdown.target" :type target)
+        (nil :id "poweroff.target" :type target)
+        (nil :id "reboot.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor--target-members nil)
+          (supervisor-default-target-link "graphical.target")
+          (supervisor--default-target-link-override nil))
+      (cl-letf (((symbol-function 'supervisor--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'supervisor--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        ;; Test representative runlevels: non-destructive and destructive
+        (dolist (spec '(("1" "rescue\\.target")
+                        ("3" "multi-user\\.target")
+                        ("5" "graphical\\.target")
+                        ("0" "poweroff\\.target")
+                        ("6" "reboot\\.target")))
+          (let* ((rl (car spec))
+                 (pattern (cadr spec))
+                 (init-result (supervisor--cli-dispatch
+                               (list "init" "--yes" rl)))
+                 (telinit-result (supervisor--cli-dispatch
+                                  (list "telinit" "--yes" rl))))
+            ;; Same exitcode
+            (should (= (supervisor-cli-result-exitcode init-result)
+                        (supervisor-cli-result-exitcode telinit-result)))
+            ;; Both succeed
+            (should (= supervisor-cli-exit-success
+                        (supervisor-cli-result-exitcode telinit-result)))
+            ;; Both mention resolved target
+            (should (string-match pattern
+                                  (supervisor-cli-result-output init-result)))
+            (should (string-match pattern
+                                  (supervisor-cli-result-output telinit-result)))))))))
 
 (ert-deftest supervisor-test-cli-list-targets-shows-kind ()
   "The `list-targets' output includes kind column (alias/canonical)."
