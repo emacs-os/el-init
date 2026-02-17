@@ -16801,7 +16801,7 @@ PATH set to exclude fuser."
 (ert-deftest supervisor-test-builtin-programs-log-maintenance-pair ()
   "Built-in programs include logrotate, log-prune, and built-in targets."
   (let ((builtins (supervisor--builtin-programs)))
-    (should (= 6 (length builtins)))
+    (should (= 17 (length builtins)))
     (let* ((ids (mapcar (lambda (e) (plist-get (cdr e) :id)) builtins))
            (rotate (cl-find "logrotate" builtins
                             :key (lambda (e) (plist-get (cdr e) :id))
@@ -16843,7 +16843,7 @@ PATH set to exclude fuser."
          (targets (cl-remove-if-not
                    (lambda (e) (eq 'target (plist-get (cdr e) :type)))
                    builtins)))
-    (should (= 4 (length targets)))
+    (should (= 15 (length targets)))
     (dolist (entry targets)
       (let ((parsed (supervisor--parse-entry entry)))
         (should (eq 'target (supervisor-entry-type parsed)))
@@ -19989,6 +19989,450 @@ They are inert fallback definitions activated only by timers."
             (should (equal "app.target" (alist-get 'target json)))
             (should (numberp (alist-get 'stopped json)))
             (should (numberp (alist-get 'started json)))))))))
+
+;;;; SysV Init Runlevel Compatibility Tests
+
+(ert-deftest supervisor-test-runlevel-map-complete ()
+  "Runlevel map covers all 7 runlevels 0-6."
+  (dolist (n '(0 1 2 3 4 5 6))
+    (should (assq n supervisor--runlevel-map))))
+
+(ert-deftest supervisor-test-runlevel-map-values ()
+  "Runlevel map matches systemd semantics exactly."
+  (should (equal "poweroff.target" (cdr (assq 0 supervisor--runlevel-map))))
+  (should (equal "rescue.target" (cdr (assq 1 supervisor--runlevel-map))))
+  (should (equal "multi-user.target" (cdr (assq 2 supervisor--runlevel-map))))
+  (should (equal "multi-user.target" (cdr (assq 3 supervisor--runlevel-map))))
+  (should (equal "multi-user.target" (cdr (assq 4 supervisor--runlevel-map))))
+  (should (equal "graphical.target" (cdr (assq 5 supervisor--runlevel-map))))
+  (should (equal "reboot.target" (cdr (assq 6 supervisor--runlevel-map)))))
+
+(ert-deftest supervisor-test-alias-resolution ()
+  "Alias targets resolve to canonical targets."
+  (should (equal "poweroff.target"
+                 (supervisor--resolve-target-alias "runlevel0.target")))
+  (should (equal "rescue.target"
+                 (supervisor--resolve-target-alias "runlevel1.target")))
+  (should (equal "multi-user.target"
+                 (supervisor--resolve-target-alias "runlevel3.target")))
+  (should (equal "graphical.target"
+                 (supervisor--resolve-target-alias "runlevel5.target")))
+  (should (equal "reboot.target"
+                 (supervisor--resolve-target-alias "runlevel6.target"))))
+
+(ert-deftest supervisor-test-alias-resolution-passthrough ()
+  "Non-alias targets pass through unchanged."
+  (should (equal "graphical.target"
+                 (supervisor--resolve-target-alias "graphical.target")))
+  (should (equal "basic.target"
+                 (supervisor--resolve-target-alias "basic.target")))
+  (should (equal "my-service"
+                 (supervisor--resolve-target-alias "my-service"))))
+
+(ert-deftest supervisor-test-alias-predicate ()
+  "Alias predicate identifies aliases and non-aliases."
+  (should (supervisor--target-alias-p "runlevel0.target"))
+  (should (supervisor--target-alias-p "runlevel5.target"))
+  (should-not (supervisor--target-alias-p "graphical.target"))
+  (should-not (supervisor--target-alias-p "basic.target")))
+
+(ert-deftest supervisor-test-builtin-init-targets-present ()
+  "Built-in programs include init-transition canonical targets."
+  (let* ((builtins (supervisor--builtin-programs))
+         (ids (mapcar (lambda (e) (plist-get (cdr e) :id)) builtins)))
+    (should (member "rescue.target" ids))
+    (should (member "shutdown.target" ids))
+    (should (member "poweroff.target" ids))
+    (should (member "reboot.target" ids))))
+
+(ert-deftest supervisor-test-builtin-alias-targets-present ()
+  "Built-in programs include all runlevel alias targets."
+  (let* ((builtins (supervisor--builtin-programs))
+         (ids (mapcar (lambda (e) (plist-get (cdr e) :id)) builtins)))
+    (dolist (n '(0 1 2 3 4 5 6))
+      (should (member (format "runlevel%d.target" n) ids)))))
+
+(ert-deftest supervisor-test-builtin-init-target-topology ()
+  "Init-transition targets have correct dependency chain."
+  (let* ((builtins (supervisor--builtin-programs))
+         (rescue (cl-find "rescue.target" builtins
+                          :key (lambda (e) (plist-get (cdr e) :id))
+                          :test #'equal))
+         (shutdown (cl-find "shutdown.target" builtins
+                            :key (lambda (e) (plist-get (cdr e) :id))
+                            :test #'equal))
+         (poweroff (cl-find "poweroff.target" builtins
+                            :key (lambda (e) (plist-get (cdr e) :id))
+                            :test #'equal))
+         (reboot (cl-find "reboot.target" builtins
+                          :key (lambda (e) (plist-get (cdr e) :id))
+                          :test #'equal)))
+    ;; rescue.target requires basic.target
+    (should (equal '("basic.target") (plist-get (cdr rescue) :requires)))
+    ;; shutdown.target has no requires
+    (should-not (plist-get (cdr shutdown) :requires))
+    ;; poweroff.target requires shutdown.target
+    (should (equal '("shutdown.target") (plist-get (cdr poweroff) :requires)))
+    ;; reboot.target requires shutdown.target
+    (should (equal '("shutdown.target") (plist-get (cdr reboot) :requires)))))
+
+(ert-deftest supervisor-test-cli-init-valid-runlevels ()
+  "The `init' command accepts runlevels 1-5 and resolves correctly."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "graphical.target" :type target)
+        (nil :id "rescue.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor--target-members nil)
+          (supervisor-default-target-link "graphical.target")
+          (supervisor--default-target-link-override nil))
+      (cl-letf (((symbol-function 'supervisor--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'supervisor--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        ;; init 1 -> rescue.target
+        (let ((result (supervisor--cli-dispatch '("init" "--yes" "1"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (should (string-match "rescue\\.target"
+                                (supervisor-cli-result-output result))))
+        ;; init 5 -> graphical.target
+        (let ((result (supervisor--cli-dispatch '("init" "--yes" "5"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          (should (string-match "graphical\\.target"
+                                (supervisor-cli-result-output result))))))))
+
+(ert-deftest supervisor-test-cli-init-out-of-range ()
+  "The `init' command rejects runlevels outside 0-6."
+  (let ((result (supervisor--cli-dispatch '("init" "7"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))
+    (should (string-match "out of range"
+                          (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-init-non-numeric ()
+  "The `init' command rejects non-numeric arguments."
+  (let ((result (supervisor--cli-dispatch '("init" "abc"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))
+    (should (string-match "not a valid runlevel"
+                          (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-init-no-args ()
+  "The `init' command rejects missing argument."
+  (let ((result (supervisor--cli-dispatch '("init"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))))
+
+(ert-deftest supervisor-test-cli-init-destructive-requires-yes ()
+  "Runlevels 0 and 6 require --yes for destructive confirmation."
+  ;; init 0 without --yes
+  (let ((result (supervisor--cli-dispatch '("init" "0"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))
+    (should (string-match "destructive"
+                          (supervisor-cli-result-output result)))
+    (should (string-match "--yes"
+                          (supervisor-cli-result-output result))))
+  ;; init 6 without --yes
+  (let ((result (supervisor--cli-dispatch '("init" "6"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))
+    (should (string-match "destructive"
+                          (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-init-non-destructive-no-yes ()
+  "Runlevels 1-5 do not require --yes."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor--target-members nil)
+          (supervisor-default-target-link "multi-user.target")
+          (supervisor--default-target-link-override nil))
+      ;; init routes through isolate which requires --yes, but init
+      ;; passes --yes automatically for non-destructive transitions
+      (cl-letf (((symbol-function 'supervisor--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'supervisor--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        (let ((result (supervisor--cli-dispatch '("init" "3"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result))))))))
+
+(ert-deftest supervisor-test-cli-init-does-not-persist-default ()
+  "The `init' command does not persist default target changes."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "graphical.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor--target-members nil)
+          (supervisor-default-target-link "graphical.target")
+          (supervisor--default-target-link-override nil))
+      (cl-letf (((symbol-function 'supervisor--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'supervisor--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        (supervisor--cli-dispatch '("init" "--yes" "3"))
+        ;; default-target-link-override must remain nil
+        (should-not supervisor--default-target-link-override)
+        ;; get-default must still return original
+        (let ((result (supervisor--cli-dispatch '("get-default"))))
+          (should (string-match "graphical\\.target"
+                                (supervisor-cli-result-output result))))))))
+
+(ert-deftest supervisor-test-cli-telinit-parity ()
+  "The `telinit' command behaves identically to `init'."
+  ;; telinit without args
+  (let ((result (supervisor--cli-dispatch '("telinit"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result))))
+  ;; telinit out of range
+  (let ((result (supervisor--cli-dispatch '("telinit" "9"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result))))
+  ;; telinit destructive without --yes
+  (let ((result (supervisor--cli-dispatch '("telinit" "0"))))
+    (should (= supervisor-cli-exit-invalid-args
+                (supervisor-cli-result-exitcode result)))
+    (should (string-match "destructive"
+                          (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-cli-list-targets-shows-kind ()
+  "The `list-targets' output includes kind column (alias/canonical)."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("multi-user.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target
+             :after ("basic.target"))
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target-link "multi-user.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch '("list-targets"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((output (supervisor-cli-result-output result)))
+          (should (string-match "KIND" output))
+          (should (string-match "canonical" output)))))))
+
+(ert-deftest supervisor-test-cli-list-targets-alias-shows-resolved ()
+  "Alias targets in list-targets show resolved canonical target."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "graphical.target" :type target)
+        (nil :id "default.target" :type target)
+        (nil :id "runlevel5.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target-link "graphical.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch '("list-targets"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((output (supervisor-cli-result-output result)))
+          (should (string-match "alias" output))
+          (should (string-match "runlevel5\\.target" output))
+          (should (string-match "graphical\\.target" output)))))))
+
+(ert-deftest supervisor-test-cli-target-status-alias-shows-kind ()
+  "Target-status for an alias target shows kind and resolved link."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "runlevel3.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target-link "multi-user.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("target-status" "runlevel3.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((output (supervisor-cli-result-output result)))
+          (should (string-match "alias" output))
+          (should (string-match "multi-user\\.target" output)))))))
+
+(ert-deftest supervisor-test-cli-set-default-resolves-alias ()
+  "The `set-default' with alias target persists canonical target."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "graphical.target" :type target)
+        (nil :id "runlevel5.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--default-target-link-override nil)
+          (supervisor-overrides-file nil)
+          (supervisor-default-target-link "multi-user.target"))
+      (let ((result (supervisor--cli-dispatch
+                     '("set-default" "runlevel5.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        ;; Must persist the canonical target, not the alias
+        (should (equal "graphical.target"
+                       supervisor--default-target-link-override))
+        ;; Output should mention both
+        (should (string-match "graphical\\.target"
+                              (supervisor-cli-result-output result)))))))
+
+(ert-deftest supervisor-test-cli-isolate-accepts-alias ()
+  "Isolate accepts alias targets and resolves to canonical."
+  (supervisor-test-with-unit-files
+      '(("sleep 300" :id "svc-a" :required-by ("multi-user.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "runlevel3.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--manually-started (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--restart-times (make-hash-table :test 'equal))
+          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor--target-members nil)
+          (supervisor-default-target-link "multi-user.target")
+          (supervisor--default-target-link-override nil))
+      (cl-letf (((symbol-function 'supervisor--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'supervisor--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        (let ((result (supervisor--cli-dispatch
+                       '("isolate" "--yes" "runlevel3.target"))))
+          (should (= supervisor-cli-exit-success
+                      (supervisor-cli-result-exitcode result)))
+          ;; Output should reference the canonical target
+          (should (string-match "multi-user\\.target"
+                                (supervisor-cli-result-output result))))))))
+
+(ert-deftest supervisor-test-timer-rejects-init-transition-target ()
+  "Timer validation rejects init-transition targets."
+  (supervisor-test-with-unit-files
+      '((nil :id "rescue.target" :type target)
+        (nil :id "shutdown.target" :type target)
+        (nil :id "poweroff.target" :type target)
+        (nil :id "reboot.target" :type target)
+        (nil :id "runlevel0.target" :type target)
+        (nil :id "default.target" :type target))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs))))
+      (dolist (tid '("rescue.target" "shutdown.target"
+                     "poweroff.target" "reboot.target"
+                     "runlevel0.target"))
+        (let ((reason (supervisor-timer--validate
+                       `(:id ,(format "timer-%s" tid)
+                             :target ,tid
+                             :on-calendar (:hour 3))
+                       plan)))
+          (should reason)
+          (should (string-match "init-transition" reason)))))))
+
+(ert-deftest supervisor-test-timer-allows-non-init-targets ()
+  "Timer validation allows non-init-transition targets."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :type oneshot)
+        ("sleep 1" :id "svc-b" :type simple)
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let* ((plan (supervisor--build-plan (supervisor--effective-programs))))
+      (dolist (tid '("svc-a" "svc-b" "app.target"))
+        (let ((reason (supervisor-timer--validate
+                       `(:id ,(format "timer-%s" tid)
+                             :target ,tid
+                             :on-calendar (:hour 3))
+                       plan)))
+          (should-not reason))))))
+
+(ert-deftest supervisor-test-cli-explain-target-alias-shows-resolved ()
+  "Explain-target for alias shows resolved canonical target."
+  (supervisor-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "runlevel3.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((supervisor--current-plan t)
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--remain-active (make-hash-table :test 'equal))
+          (supervisor--manually-stopped (make-hash-table :test 'equal))
+          (supervisor--mask-override (make-hash-table :test 'equal))
+          (supervisor--target-convergence nil)
+          (supervisor--target-convergence-reasons nil)
+          (supervisor-default-target-link "multi-user.target")
+          (supervisor--default-target-link-override nil))
+      (let ((result (supervisor--cli-dispatch
+                     '("explain-target" "runlevel3.target"))))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((output (supervisor-cli-result-output result)))
+          (should (string-match "alias" output))
+          (should (string-match "multi-user\\.target" output)))))))
 
 ;;; Regression Tests: Convergence, Status, and Target Guards
 

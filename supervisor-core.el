@@ -3700,7 +3700,34 @@ A user unit file with the same ID overrides the built-in entry."
          :requires '("multi-user.target")
          :description "Graphical session target")
    (list nil :id "default.target" :type 'target
-         :description "Default startup target (alias)")))
+         :description "Default startup target (alias)")
+   ;; Init-transition canonical targets
+   (list nil :id "rescue.target" :type 'target
+         :requires '("basic.target")
+         :description "Single-user rescue target")
+   (list nil :id "shutdown.target" :type 'target
+         :description "Shutdown synchronization barrier")
+   (list nil :id "poweroff.target" :type 'target
+         :requires '("shutdown.target")
+         :description "Power-off target")
+   (list nil :id "reboot.target" :type 'target
+         :requires '("shutdown.target")
+         :description "Reboot target")
+   ;; Runlevel alias targets (immutable alias -> canonical mapping)
+   (list nil :id "runlevel0.target" :type 'target
+         :description "Alias for poweroff.target")
+   (list nil :id "runlevel1.target" :type 'target
+         :description "Alias for rescue.target")
+   (list nil :id "runlevel2.target" :type 'target
+         :description "Alias for multi-user.target")
+   (list nil :id "runlevel3.target" :type 'target
+         :description "Alias for multi-user.target")
+   (list nil :id "runlevel4.target" :type 'target
+         :description "Alias for multi-user.target")
+   (list nil :id "runlevel5.target" :type 'target
+         :description "Alias for graphical.target")
+   (list nil :id "runlevel6.target" :type 'target
+         :description "Alias for reboot.target")))
 
 ;;; DAG Scheduler
 
@@ -5449,6 +5476,37 @@ starts without disrupting existing runtime state."
 
 ;;; Default target resolution
 
+(defconst supervisor--target-alias-map
+  '(("runlevel0.target" . "poweroff.target")
+    ("runlevel1.target" . "rescue.target")
+    ("runlevel2.target" . "multi-user.target")
+    ("runlevel3.target" . "multi-user.target")
+    ("runlevel4.target" . "multi-user.target")
+    ("runlevel5.target" . "graphical.target")
+    ("runlevel6.target" . "reboot.target"))
+  "Immutable mapping of alias targets to canonical targets.
+Uses systemd runlevel mapping semantics.")
+
+(defconst supervisor--init-transition-targets
+  '("rescue.target" "shutdown.target" "poweroff.target" "reboot.target"
+    "runlevel0.target" "runlevel1.target" "runlevel2.target"
+    "runlevel3.target" "runlevel4.target" "runlevel5.target"
+    "runlevel6.target")
+  "Targets not eligible for timer triggering.
+Init-transition targets represent system state changes that must
+not be triggered by the timer subsystem.")
+
+(defun supervisor--resolve-target-alias (target-id)
+  "Resolve TARGET-ID through the alias map.
+Return the canonical target ID if TARGET-ID is an alias, or
+TARGET-ID itself if it is not an alias."
+  (or (cdr (assoc target-id supervisor--target-alias-map))
+      target-id))
+
+(defun supervisor--target-alias-p (target-id)
+  "Return non-nil if TARGET-ID is a known alias target."
+  (assoc target-id supervisor--target-alias-map))
+
 (defun supervisor--resolve-default-target-link ()
   "Return the effective default-target-link value."
   (or supervisor--default-target-link-override
@@ -5461,7 +5519,9 @@ Signal `user-error' if resolved target does not exist or is not a target."
   (let* ((root supervisor-default-target)
          (resolved (if (equal root "default.target")
                        (supervisor--resolve-default-target-link)
-                     root)))
+                     root))
+         ;; Resolve alias targets (e.g., runlevelN.target -> canonical)
+         (resolved (supervisor--resolve-target-alias resolved)))
     (when (equal resolved "default.target")
       (user-error "Supervisor: default-target-link must not be \"default.target\" (circular alias)"))
     (unless (string-suffix-p ".target" resolved)

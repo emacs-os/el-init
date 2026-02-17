@@ -2194,14 +2194,19 @@ Persist default-target-link override.  Reject \"default.target\"."
              (format "'%s' exists but is not a target unit" target)
              (if json-p 'json 'human)))
            (t
-            (setq supervisor--default-target-link-override target)
-            (supervisor--save-overrides)
-            (supervisor--cli-success
-             (if json-p
-                 (json-encode `((status . "applied")
-                                (target . ,target)))
-               (format "Default target set to %s\n" target))
-             (if json-p 'json 'human)))))))))))
+            ;; Resolve alias to canonical before persisting
+            (let ((canonical (supervisor--resolve-target-alias target)))
+              (setq supervisor--default-target-link-override canonical)
+              (supervisor--save-overrides)
+              (supervisor--cli-success
+               (if json-p
+                   (json-encode `((status . "applied")
+                                  (target . ,canonical)))
+                 (if (equal target canonical)
+                     (format "Default target set to %s\n" canonical)
+                   (format "Default target set to %s (resolved from %s)\n"
+                           canonical target)))
+               (if json-p 'json 'human))))))))))))
 
 (defun supervisor--cli-cmd-list-targets (args json-p)
   "Handle `list-targets' command with ARGS.  JSON-P enables JSON output.
@@ -2236,11 +2241,16 @@ List all target units with convergence state and member counts."
                            ('degraded "degraded")
                            ('converging "converging")
                            (_ "pending")))
+                 (alias-target (supervisor--target-alias-p id))
+                 (kind (if alias-target "alias" "canonical"))
                  (resolved-link
-                  (when (equal id "default.target")
-                    (supervisor--resolve-default-target-link))))
+                  (cond (alias-target
+                         (supervisor--resolve-target-alias id))
+                        ((equal id "default.target")
+                         (supervisor--resolve-default-target-link)))))
             (push `((id . ,id)
                     (status . ,status)
+                    (kind . ,kind)
                     (requires-count . ,req-count)
                     (wants-count . ,wants-count)
                     (resolved-link . ,resolved-link))
@@ -2250,18 +2260,19 @@ List all target units with convergence state and member counts."
          (if json-p
              (json-encode (supervisor--cli-ensure-array rows))
            (concat
-            (format "%-25s %-12s %s\n" "ID" "STATUS" "MEMBERS")
-            (make-string 60 ?-)
+            (format "%-25s %-12s %-10s %s\n" "ID" "STATUS" "KIND" "MEMBERS")
+            (make-string 70 ?-)
             "\n"
             (mapconcat
              (lambda (row)
                (let ((id (alist-get 'id row))
                      (status (alist-get 'status row))
+                     (kind (alist-get 'kind row))
                      (req (alist-get 'requires-count row))
                      (wants (alist-get 'wants-count row))
                      (link (alist-get 'resolved-link row)))
-                 (format "%-25s %-12s %d requires, %d wants%s\n"
-                         id status req wants
+                 (format "%-25s %-12s %-10s %d requires, %d wants%s\n"
+                         id status kind req wants
                          (if link (format "  (-> %s)" link) ""))))
              rows "")))
          (if json-p 'json 'human))))))))
@@ -2315,9 +2326,13 @@ Show convergence state, reasons, and member lists for a target."
                                supervisor--target-convergence-reasons)
                           (gethash target
                                    supervisor--target-convergence-reasons)))
+               (alias-target (supervisor--target-alias-p target))
+               (kind (if alias-target "alias" "canonical"))
                (resolved-link
-                (when (equal target "default.target")
-                  (supervisor--resolve-default-target-link)))
+                (cond (alias-target
+                       (supervisor--resolve-target-alias target))
+                      ((equal target "default.target")
+                       (supervisor--resolve-default-target-link))))
                (desc (supervisor-entry-description found))
                ;; Build member status lists
                (req-info
@@ -2338,6 +2353,7 @@ Show convergence state, reasons, and member lists for a target."
                 `((id . ,target)
                   (description . ,desc)
                   (status . ,status)
+                  (kind . ,kind)
                   (reasons . ,(or reasons []))
                   (resolved-link . ,resolved-link)
                   (requires
@@ -2356,6 +2372,7 @@ Show convergence state, reasons, and member lists for a target."
               (format "%s" target)
               (if desc (format " - %s" desc) "")
               "\n"
+              (format "  Kind: %s\n" kind)
               (format "  Status: %s\n" status)
               (when reasons
                 (format "  Reason: %s\n"
@@ -2456,14 +2473,22 @@ Show root-cause chain: why is this target in its current state?"
             (_ nil))
           (supervisor--cli-success
            (if json-p
-               (json-encode
-                `((id . ,target)
-                  (status . ,status)
-                  (reasons . ,(or reasons []))
-                  (members . ,(supervisor--cli-ensure-array
-                               member-details))))
+               (let ((alias-info (supervisor--target-alias-p target)))
+                 (json-encode
+                  `((id . ,target)
+                    (kind . ,(if alias-info "alias" "canonical"))
+                    ,@(when alias-info
+                        `((resolved . ,(supervisor--resolve-target-alias target))))
+                    (status . ,status)
+                    (reasons . ,(or reasons []))
+                    (members . ,(supervisor--cli-ensure-array
+                                 member-details)))))
              (concat
-              (format "%s: %s\n" target status)
+              (format "%s: %s%s\n" target status
+                      (if (supervisor--target-alias-p target)
+                          (format " (alias -> %s)"
+                                  (supervisor--resolve-target-alias target))
+                        ""))
               (pcase status
                 ("degraded"
                  (concat
@@ -2524,12 +2549,14 @@ Requires --yes flag.  Transaction-scoped (does not persist default change)."
      (t
       (let ((running-err (supervisor--cli-require-running json-p)))
         (or running-err
-      (let ((target (car positional)))
+      (let* ((raw-target (car positional))
+             ;; Resolve alias before lookup (e.g., runlevelN.target -> canonical)
+             (target (supervisor--resolve-target-alias raw-target)))
         (cond
-         ((not (string-suffix-p ".target" target))
+         ((not (string-suffix-p ".target" raw-target))
           (supervisor--cli-error
            supervisor-cli-exit-invalid-args
-           (format "'%s' is not a target (must end in .target)" target)
+           (format "'%s' is not a target (must end in .target)" raw-target)
            (if json-p 'json 'human)))
          (t
           (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
@@ -2602,6 +2629,71 @@ Requires --yes flag.  Transaction-scoped (does not persist default change)."
                            target stop-count start-count))
                  (if json-p 'json 'human)))))))))))))))
 
+(defconst supervisor--runlevel-map
+  '((0 . "poweroff.target")
+    (1 . "rescue.target")
+    (2 . "multi-user.target")
+    (3 . "multi-user.target")
+    (4 . "multi-user.target")
+    (5 . "graphical.target")
+    (6 . "reboot.target"))
+  "Fixed runlevel-to-target mapping using systemd semantics.")
+
+(defun supervisor--cli-cmd-init (args json-p)
+  "Handle `init N' command with ARGS.  JSON-P for JSON output.
+Map numeric runlevel N (0-6) to a target and isolate to it.
+Runlevels 0 and 6 require --yes for destructive confirmation.
+Does not persist default-target changes."
+  (let* ((split (supervisor--cli-split-at-separator args))
+         (before (car split))
+         (after (cdr split))
+         (unknown (supervisor--cli-has-unknown-flags before '("--yes")))
+         (yes-flag (member "--yes" before))
+         (positional (cl-remove "--yes" (append before after)
+                                :test #'equal)))
+    (cond
+     (unknown
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             (format "Unknown option: %s" unknown)
+                             (if json-p 'json 'human)))
+     ((null positional)
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             "init requires a runlevel argument (0-6)"
+                             (if json-p 'json 'human)))
+     ((cdr positional)
+      (supervisor--cli-error supervisor-cli-exit-invalid-args
+                             (format "init takes exactly one argument, got: %s"
+                                     (mapconcat #'identity positional " "))
+                             (if json-p 'json 'human)))
+     (t
+      (let* ((arg (car positional))
+             (n (and (string-match-p "\\`[0-9]+\\'" arg)
+                     (string-to-number arg)))
+             (mapping (when n (assq n supervisor--runlevel-map))))
+        (cond
+         ((null n)
+          (supervisor--cli-error
+           supervisor-cli-exit-invalid-args
+           (format "'%s' is not a valid runlevel (must be 0-6)" arg)
+           (if json-p 'json 'human)))
+         ((null mapping)
+          (supervisor--cli-error
+           supervisor-cli-exit-invalid-args
+           (format "Runlevel %d is out of range (must be 0-6)" n)
+           (if json-p 'json 'human)))
+         ;; Destructive transitions (0=poweroff, 6=reboot) need --yes
+         ((and (memq n '(0 6)) (not yes-flag))
+          (supervisor--cli-error
+           supervisor-cli-exit-invalid-args
+           (format "init %d (%s) is destructive; use --yes to confirm"
+                   n (cdr mapping))
+           (if json-p 'json 'human)))
+         (t
+          ;; Route through isolate with --yes already confirmed
+          (let ((target (cdr mapping)))
+            (supervisor--cli-cmd-isolate
+             (list "--yes" target) json-p)))))))))
+
 (defun supervisor--cli-dispatch (argv)
   "Dispatch CLI command from ARGV.
 ARGV is a list of strings (command and arguments).
@@ -2651,7 +2743,9 @@ Returns a `supervisor-cli-result' struct."
                    "  explain-target TARGET      Show root-cause chain for target state\n"
                    "  isolate --yes TARGET       Switch to target (transaction-scoped)\n"
                    "  get-default                Show effective default target\n"
-                   "  set-default TARGET         Set persistent default target\n\n"
+                   "  set-default TARGET         Set persistent default target\n"
+                   "  init [--yes] N             Switch to runlevel (0-6)\n"
+                   "  telinit [--yes] N          Alias for init\n\n"
                    "Options: --json (output as JSON)\n")
            (if json-p 'json 'human)))
          ((equal command "status")
@@ -2722,6 +2816,10 @@ Returns a `supervisor-cli-result' struct."
           (supervisor--cli-cmd-get-default args json-p))
          ((equal command "set-default")
           (supervisor--cli-cmd-set-default args json-p))
+         ((equal command "init")
+          (supervisor--cli-cmd-init args json-p))
+         ((equal command "telinit")
+          (supervisor--cli-cmd-init args json-p))
          (t
           (supervisor--cli-error supervisor-cli-exit-invalid-args
                                  (format "Unknown command: %s" command)

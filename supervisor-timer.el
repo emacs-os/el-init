@@ -63,6 +63,7 @@
 (defvar supervisor--target-member-reverse)
 (defvar supervisor--current-plan)
 (defvar supervisor--mask-override)
+(defvar supervisor--init-transition-targets)
 
 ;;; Timer Subsystem Gate
 
@@ -469,6 +470,11 @@ PLAN is used to verify the target exists and is oneshot, simple, or target."
                        (not (string-suffix-p ".target" target)))
               (throw 'invalid
                      (format ":target '%s' is type target but ID does not end in .target"
+                             target)))
+            ;; Reject init-transition targets (not timer-eligible)
+            (when (member target supervisor--init-transition-targets)
+              (throw 'invalid
+                     (format ":target '%s' is an init-transition target and is not timer-eligible"
                              target))))))
       ;; Valid
       nil)))

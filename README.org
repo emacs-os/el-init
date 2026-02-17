@@ -847,6 +847,92 @@ All dashboard policy commands (~enable~, ~disable~, ~mask~, ~unmask~,
 ~set-restart-policy~, ~set-logging~) persist overrides immediately via
 ~supervisor--save-overrides~, matching the CLI behaviour.
 
+* Target System
+:PROPERTIES:
+:CUSTOM_ID: target-system-handbook
+:END:
+
+Supervisor uses systemd-style targets for startup ordering and runtime
+isolation.  Targets are dependency-only units (no command) whose IDs
+end in ~.target~.
+
+** Built-in Targets
+
+Canonical built-in targets (lowest authority, user overrides win):
+
+| Target | Requires | Description |
+|--------+----------+-------------|
+| ~basic.target~ | (none) | Basic system initialization |
+| ~multi-user.target~ | ~basic.target~ | Multi-user services |
+| ~graphical.target~ | ~multi-user.target~ | Graphical session |
+| ~default.target~ | (none) | Startup root (alias resolved via ~supervisor-default-target-link~) |
+| ~rescue.target~ | ~basic.target~ | Single-user rescue mode |
+| ~shutdown.target~ | (none) | Shutdown synchronization barrier |
+| ~poweroff.target~ | ~shutdown.target~ | Power-off target |
+| ~reboot.target~ | ~shutdown.target~ | Reboot target |
+
+** SysV Init Runlevel Compatibility
+
+Supervisor maps SysV numeric runlevels to targets using systemd mapping
+semantics.  The mapping is fixed and not configurable:
+
+| Runlevel | Target | Description |
+|----------+--------+-------------|
+| 0 | ~poweroff.target~ | Halt/power off |
+| 1 | ~rescue.target~ | Single-user / rescue |
+| 2 | ~multi-user.target~ | Multi-user (no NFS) |
+| 3 | ~multi-user.target~ | Multi-user (full) |
+| 4 | ~multi-user.target~ | Reserved / multi-user |
+| 5 | ~graphical.target~ | Graphical session |
+| 6 | ~reboot.target~ | Reboot |
+
+Use ~init N~ or ~telinit N~ to switch runlevels at runtime.  Both
+commands map the numeric runlevel to the corresponding target and
+execute an ~isolate~ transaction (stops entries not in the new target
+closure, starts entries in the closure).
+
+Runlevels 0 and 6 are destructive transitions and require
+~--yes~ for confirmation.  Runlevels 1-5 do not require ~--yes~.
+
+~init N~ is transaction-scoped and does NOT persist default target
+changes.  Use ~set-default TARGET~ to persist a default target
+override.
+
+** Alias Targets
+
+Alias targets provide alternate names for canonical targets.  They
+resolve to the canonical target before graph expansion.  The built-in
+runlevel aliases are:
+
+| Alias | Resolves to |
+|-------+-------------|
+| ~runlevel0.target~ | ~poweroff.target~ |
+| ~runlevel1.target~ | ~rescue.target~ |
+| ~runlevel2.target~ | ~multi-user.target~ |
+| ~runlevel3.target~ | ~multi-user.target~ |
+| ~runlevel4.target~ | ~multi-user.target~ |
+| ~runlevel5.target~ | ~graphical.target~ |
+| ~runlevel6.target~ | ~reboot.target~ |
+
+Alias resolution is immutable.  User units cannot redefine
+~runlevelN.target~ alias mappings.
+
+~set-default~ accepts alias targets but always persists the resolved
+canonical target ID.  ~list-targets~ shows the ~KIND~ column
+(~canonical~ or ~alias~) and resolved link for alias targets.
+
+** Timer Denylist for Init-Transition Targets
+
+Timer targets that represent init transitions are not timer-eligible.
+The timer validation denylist includes:
+
+- ~rescue.target~, ~shutdown.target~, ~poweroff.target~, ~reboot.target~
+- ~runlevel0.target~ through ~runlevel6.target~
+
+Timers targeting these IDs are rejected during validation with the
+reason "init-transition target is not timer-eligible" and excluded
+from the scheduler.
+
 * Timer Subsystem
 :PROPERTIES:
 :CUSTOM_ID: timer-subsystem-handbook
@@ -1309,6 +1395,17 @@ Systemctl-compatible commands:
 - ~edit ID~ (edit unit file; creates scaffold if missing)
 - ~list-dependencies [ID]~
 - ~list-timers~
+
+Target commands:
+
+- ~list-targets~ (list all target units with convergence state and alias/canonical kind)
+- ~target-status TARGET~ (show convergence, member lists, alias resolution)
+- ~explain-target TARGET~ (root-cause chain for target state)
+- ~isolate --yes TARGET~ (switch to target, transaction-scoped, does not persist)
+- ~get-default~ (show effective default target)
+- ~set-default TARGET~ (persist default target; aliases resolved to canonical)
+- ~init [--yes] N~ (switch to runlevel 0-6; maps to systemd-style target)
+- ~telinit [--yes] N~ (alias for ~init~)
 
 Supervisor-specific commands:
 
