@@ -239,9 +239,13 @@ Validation is performed by unit-file validation
 - ~:sandbox-ro-bind~, ~:sandbox-rw-bind~, and ~:sandbox-tmpfs~ must be strings
   or proper lists of absolute path strings.  Empty paths and forbidden
   destinations (~/proc~, ~/dev~) are rejected.  Duplicate paths are
-  deduplicated (first occurrence wins).
+  deduplicated (first occurrence wins).  Bind sources (~:sandbox-ro-bind~ and
+  ~:sandbox-rw-bind~) must exist on disk; ~:sandbox-tmpfs~ destinations do
+  not require existence (bwrap creates them).
 - ~:sandbox-raw-args~ must be a list of strings.  Rejected unless
-  ~supervisor-sandbox-allow-raw-bwrap~ is non-nil.
+  ~supervisor-sandbox-allow-raw-bwrap~ is non-nil.  Raw args that conflict
+  with the effective network mode or duplicate profile-managed setup are
+  rejected (see [[#sandbox-expert-raw-mode][Expert Raw Mode]]).
 - Sandbox keys are rejected for ~:type target~.
 - Units requesting sandbox (any sandbox key present or profile not ~none~) on
   non-Linux hosts are rejected.
@@ -2177,9 +2181,16 @@ Path validation rules:
 - All paths must be absolute.
 - Empty paths are rejected.
 - ~/proc~ and ~/dev~ are forbidden destinations (profiles handle these).
+  Equivalent spellings (trailing slashes, dot segments) are canonicalized
+  before the check.
+- ~:sandbox-ro-bind~ and ~:sandbox-rw-bind~ sources must exist on disk.
+  ~:sandbox-tmpfs~ destinations do not require existence (bwrap creates them).
 - Duplicate paths are deduplicated (first occurrence wins).
 
 *** Expert Raw Mode
+:PROPERTIES:
+:CUSTOM_ID: sandbox-expert-raw-mode
+:END:
 
 ~:sandbox-raw-args~ allows passing arbitrary bwrap arguments.  This key is
 rejected at validation time unless the global gate is enabled:
@@ -2190,6 +2201,16 @@ rejected at validation time unless the global gate is enabled:
 
 When enabled, the raw arguments are appended after profile and knob arguments.
 Expert mode is unsupported on non-Linux and rejected.
+
+Even with the gate enabled, conflicting or unsafe raw arguments are rejected:
+
+- ~--share-net~ is rejected when the effective network mode is ~isolated~
+  (explicit ~:sandbox-network isolated~ or profile default such as ~strict~).
+- ~--unshare-net~ is rejected when the effective network mode is ~shared~
+  (explicit ~:sandbox-network shared~ or profile default such as ~service~).
+- ~--unshare-all~, ~--die-with-parent~, ~--proc~, and ~--dev~ are rejected
+  because all profiles already emit these arguments and duplication causes
+  undefined bwrap behavior.
 
 *** Launch Order
 
