@@ -1215,7 +1215,7 @@ scheduler tick from double-triggering the same timer."
 
 (cl-defun supervisor-timer-scheduler-start ()
   "Start the timer scheduler.
-Call after supervisor-start has completed stage startup.
+Call after supervisor-start has completed startup.
 Does nothing if timer subsystem is not active."
   (unless (supervisor-timer-subsystem-active-p)
     (supervisor--log 'info "timer subsystem disabled, skipping scheduler start")

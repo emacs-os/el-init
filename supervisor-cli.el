@@ -256,7 +256,6 @@ Returns nil if args is empty, otherwise returns an error result."
 Returns alist with all fields needed for status display."
   (let* ((id (supervisor-entry-id entry))
          (type (supervisor-entry-type entry))
-         (stage (supervisor-entry-stage entry))
          (enabled-cfg (supervisor-entry-enabled-p entry))
          (restart-cfg (supervisor-entry-restart-policy entry))
          (logging-cfg (supervisor-entry-logging-p entry))
@@ -293,7 +292,6 @@ Returns alist with all fields needed for status display."
                          (supervisor--telemetry-process-tree actual-pid))))
     `((id . ,id)
       (type . ,type)
-      (stage . ,stage)
       (enabled . ,enabled-eff)
       (enabled-config . ,enabled-cfg)
       (restart . ,restart-eff)
@@ -391,17 +389,15 @@ Includes both plan-level and unit-file-level invalid entries."
   "Format single entry INFO alist as status table row."
   (let ((id (alist-get 'id info))
         (type (alist-get 'type info))
-        (stage (alist-get 'stage info))
         (enabled (alist-get 'enabled info))
         (status (alist-get 'status info))
         (restart (alist-get 'restart info))
         (logging (alist-get 'logging info))
         (pid (alist-get 'pid info))
         (reason (alist-get 'reason info)))
-    (format "%-16s %-8s %-8s %-8s %-10s %-11s %-5s %-7s %s\n"
+    (format "%-16s %-8s %-8s %-10s %-11s %-5s %-7s %s\n"
             (truncate-string-to-width (or id "-") 16)
             (or (symbol-name type) "-")
-            (if stage (symbol-name stage) "-")
             (supervisor--cli-format-bool enabled)
             (or status "-")
             (if (eq type 'oneshot) "n/a"
@@ -414,16 +410,16 @@ Includes both plan-level and unit-file-level invalid entries."
   "Format invalid entry INFO as status table row."
   (let ((id (alist-get 'id info))
         (reason (alist-get 'reason info)))
-    (format "%-16s %-8s %-8s %-8s %-10s %-11s %-5s %-7s %s\n"
+    (format "%-16s %-8s %-8s %-10s %-11s %-5s %-7s %s\n"
             (truncate-string-to-width (or id "-") 16)
-            "-" "-" "-" "invalid" "-" "-" "-"
+            "-" "-" "invalid" "-" "-" "-"
             (or reason "-"))))
 
 (defun supervisor--cli-status-human (entries invalid)
   "Format ENTRIES and INVALID as human-readable status table."
-  (let ((header (format "%-16s %-8s %-8s %-8s %-10s %-11s %-5s %-7s %s\n"
-                        "ID" "TYPE" "STAGE" "ENABLED" "STATUS" "RESTART" "LOG" "PID" "REASON"))
-        (sep (make-string 103 ?-)))
+  (let ((header (format "%-16s %-8s %-8s %-10s %-11s %-5s %-7s %s\n"
+                        "ID" "TYPE" "ENABLED" "STATUS" "RESTART" "LOG" "PID" "REASON"))
+        (sep (make-string 94 ?-)))
     (concat header sep "\n"
             (mapconcat #'supervisor--cli-format-status-line entries "")
             (when invalid
@@ -433,7 +429,6 @@ Includes both plan-level and unit-file-level invalid entries."
   "Format single entry INFO as human-readable detail view."
   (let ((id (alist-get 'id info))
         (type (alist-get 'type info))
-        (stage (alist-get 'stage info))
         (enabled (alist-get 'enabled info))
         (enabled-cfg (alist-get 'enabled-config info))
         (restart (alist-get 'restart info))
@@ -454,7 +449,6 @@ Includes both plan-level and unit-file-level invalid entries."
      (let ((desc (alist-get 'description info)))
        (when desc (format "Description: %s\n" desc)))
      (format "Type: %s\n" type)
-     (format "Stage: %s\n" stage)
      (format "Status: %s%s\n" status (if reason (format " (%s)" reason) ""))
      (format "Enabled: %s%s\n"
              (supervisor--cli-format-bool enabled)
@@ -574,7 +568,6 @@ Includes both plan-level and unit-file-level invalid entries."
   "Convert entry INFO alist to JSON-compatible alist."
   `((id . ,(alist-get 'id info))
     (type . ,(symbol-name (alist-get 'type info)))
-    (stage . ,(symbol-name (alist-get 'stage info)))
     (enabled . ,(if (alist-get 'enabled info) t :json-false))
     (status . ,(alist-get 'status info))
     (restart . ,(let ((r (alist-get 'restart info)))

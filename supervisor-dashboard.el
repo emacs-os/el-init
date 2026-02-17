@@ -129,26 +129,6 @@
   "Face for target type in dashboard."
   :group 'supervisor)
 
-(defface supervisor-stage-1
-  '((t :foreground "#ff6b6b"))
-  "Face for stage1 in dashboard."
-  :group 'supervisor)
-
-(defface supervisor-stage-2
-  '((t :foreground "#feca57"))
-  "Face for stage2 in dashboard."
-  :group 'supervisor)
-
-(defface supervisor-stage-3
-  '((t :foreground "#48dbfb"))
-  "Face for stage3 in dashboard."
-  :group 'supervisor)
-
-(defface supervisor-stage-4
-  '((t :foreground "#1dd1a1"))
-  "Face for stage4 in dashboard."
-  :group 'supervisor)
-
 (defface supervisor-enabled-yes
   '((t :foreground "#00ff00"))
   "Face for enabled=yes in dashboard."
@@ -164,9 +144,9 @@
   "Face for reason column in dashboard."
   :group 'supervisor)
 
-(defface supervisor-stage-separator
+(defface supervisor-section-separator
   '((t :foreground "#5f87af" :weight bold :underline t))
-  "Face for stage separator rows in dashboard."
+  "Face for section separator rows in dashboard."
   :group 'supervisor)
 
 (defcustom supervisor-dashboard-show-header-hints nil
@@ -403,7 +383,7 @@ SNAPSHOT and PROGRAMS are forwarded to `supervisor--health-counts'."
                                   " active")
                         "-")))
     (list '--health--
-          (vector (propertize "services" 'face 'supervisor-stage-separator)
+          (vector (propertize "services" 'face 'supervisor-section-separator)
                   (concat (propertize (format "%d" running)
                                       'face 'supervisor-status-running)
                           " run")
@@ -601,39 +581,39 @@ If SNAPSHOT is provided, read runtime state from it."
 (defun supervisor--make-timer-separator ()
   "Create a header row for the Timers section with column labels."
   (list '--timers--
-        (vector (propertize "── Timers" 'face 'supervisor-stage-separator)
-                (propertize "TARGET" 'face 'supervisor-stage-separator)
-                (propertize "ENABLED" 'face 'supervisor-stage-separator)
-                (propertize "LAST-RUN" 'face 'supervisor-stage-separator)
-                (propertize "NEXT-RUN" 'face 'supervisor-stage-separator)
-                (propertize "EXIT" 'face 'supervisor-stage-separator)
-                (propertize "REASON" 'face 'supervisor-stage-separator)
-                (propertize "TYPE" 'face 'supervisor-stage-separator)
-                (propertize "RESULT" 'face 'supervisor-stage-separator))))
+        (vector (propertize "── Timers" 'face 'supervisor-section-separator)
+                (propertize "TARGET" 'face 'supervisor-section-separator)
+                (propertize "ENABLED" 'face 'supervisor-section-separator)
+                (propertize "LAST-RUN" 'face 'supervisor-section-separator)
+                (propertize "NEXT-RUN" 'face 'supervisor-section-separator)
+                (propertize "EXIT" 'face 'supervisor-section-separator)
+                (propertize "REASON" 'face 'supervisor-section-separator)
+                (propertize "TYPE" 'face 'supervisor-section-separator)
+                (propertize "RESULT" 'face 'supervisor-section-separator))))
 
 (defun supervisor--make-services-separator ()
   "Create a header row for the Services section with column labels."
   (list '--services--
-        (vector (propertize "── Services" 'face 'supervisor-stage-separator)
-                (propertize "TYPE" 'face 'supervisor-stage-separator)
-                (propertize "TARGET" 'face 'supervisor-stage-separator)
-                (propertize "ENABLED" 'face 'supervisor-stage-separator)
-                (propertize "STATUS" 'face 'supervisor-stage-separator)
-                (propertize "RESTART" 'face 'supervisor-stage-separator)
-                (propertize "LOG" 'face 'supervisor-stage-separator)
-                (propertize "PID" 'face 'supervisor-stage-separator)
-                (propertize "REASON" 'face 'supervisor-stage-separator))))
+        (vector (propertize "── Services" 'face 'supervisor-section-separator)
+                (propertize "TYPE" 'face 'supervisor-section-separator)
+                (propertize "TARGET" 'face 'supervisor-section-separator)
+                (propertize "ENABLED" 'face 'supervisor-section-separator)
+                (propertize "STATUS" 'face 'supervisor-section-separator)
+                (propertize "RESTART" 'face 'supervisor-section-separator)
+                (propertize "LOG" 'face 'supervisor-section-separator)
+                (propertize "PID" 'face 'supervisor-section-separator)
+                (propertize "REASON" 'face 'supervisor-section-separator))))
 
 (defun supervisor--make-timer-separator-disabled ()
   "Create a timer section header showing disabled state."
   (list '--timers--
-        (vector (propertize "── Timers (disabled)" 'face 'supervisor-stage-separator)
+        (vector (propertize "── Timers (disabled)" 'face 'supervisor-section-separator)
                 "" "" "" "" "" "" "" "")))
 
 (defun supervisor--make-timer-separator-empty ()
   "Create a timer section header showing no timers configured."
   (list '--timers--
-        (vector (propertize "── Timers" 'face 'supervisor-stage-separator)
+        (vector (propertize "── Timers" 'face 'supervisor-section-separator)
                 (propertize "no timers configured" 'face 'supervisor-status-stopped)
                 "" "" "" "" "" "" "")))
 
@@ -1087,7 +1067,6 @@ With prefix argument, show status legend instead."
 (defun supervisor--describe-entry-detail (id entry)
   "Show detailed telemetry for ID with parsed ENTRY in a help window."
   (let* ((type (supervisor-entry-type entry))
-         (stage (supervisor-entry-stage entry))
          (enabled-p (supervisor-entry-enabled-p entry))
          (restart-policy (supervisor-entry-restart-policy entry))
          (logging-p (supervisor-entry-logging-p entry))
@@ -1145,7 +1124,6 @@ With prefix argument, show status legend instead."
       (princ "\n")
       ;; Config block
       (princ (format "     Type: %s\n" type))
-      (princ (format "    Stage: %s\n" stage))
       (princ (format "  Enabled: %s%s\n"
                      (if eff-enabled "yes" "no")
                      (if (not (eq eff-enabled enabled-p)) " (override)" "")))
@@ -1702,7 +1680,7 @@ Calls `supervisor-daemon-reload' and refreshes the dashboard."
 
 (defun supervisor-dashboard-show-deps ()
   "Show computed dependencies for entry at point.
-Shows post-validation edges: after cycle fallback and stage filtering.
+Shows post-validation edges: after cycle fallback and dep filtering.
 Run `supervisor-start' first to populate computed dependency data."
   (interactive)
   (let ((id (supervisor--require-service-row)))
@@ -1710,8 +1688,7 @@ Run `supervisor-start' first to populate computed dependency data."
         (message "Cannot show dependencies for invalid entry: %s" id)
       (let ((entry (supervisor--get-entry-for-id id)))
         (if entry
-            (let* ((my-stage (supervisor-entry-stage entry))
-                   (cycle-fallback (gethash id supervisor--cycle-fallback-ids))
+            (let* ((cycle-fallback (gethash id supervisor--cycle-fallback-ids))
                    ;; Use computed deps if available, else show raw (pre-start)
                    (computed (gethash id supervisor--computed-deps))
                    (effective-deps (if cycle-fallback
@@ -1726,8 +1703,8 @@ Run `supervisor-start' first to populate computed dependency data."
                                     (member id e-deps))
                            (push e-id dependents)))
                        supervisor--computed-deps)
-              (message "%s [%s]%s: depends-on=%s blocks=%s"
-                       id my-stage
+              (message "%s%s: depends-on=%s blocks=%s"
+                       id
                        (if cycle-fallback " (cycle fallback)" "")
                        (if effective-deps (mapconcat #'identity effective-deps ", ") "none")
                        (if dependents (mapconcat #'identity dependents ", ") "none")))

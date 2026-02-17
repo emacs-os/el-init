@@ -186,7 +186,7 @@ core symbols exist without dashboard/cli-specific dependencies."
     (should-not (supervisor-entry-stdout-log-file parsed))
     (should-not (supervisor-entry-stderr-log-file parsed))
     (should (eq (supervisor-entry-type parsed) 'simple))
-    (should (eq (supervisor-entry-stage parsed) 'stage3))))
+    (should (eq (supervisor-entry-type parsed) 'simple))))
 
 (ert-deftest supervisor-test-parse-plist-entry ()
   "Parse a plist-style entry with options."
@@ -195,8 +195,7 @@ core symbols exist without dashboard/cli-specific dependencies."
     (should (equal (supervisor-entry-id parsed) "nm-applet"))
     (should (= (supervisor-entry-delay parsed) 3))
     (should (eq (supervisor-entry-restart-policy parsed) 'no))
-    (should (eq (supervisor-entry-type parsed) 'simple))
-    (should (eq (supervisor-entry-stage parsed) 'stage3))))
+    (should (eq (supervisor-entry-type parsed) 'simple))))
 
 (ert-deftest supervisor-test-parse-explicit-id ()
   "Parse entry with explicit :id."
@@ -208,8 +207,7 @@ core symbols exist without dashboard/cli-specific dependencies."
   "Parse oneshot entry."
   (let ((parsed (supervisor--parse-entry
                  '("xrdb ~/.Xresources" :type oneshot))))
-    (should (eq (supervisor-entry-type parsed) 'oneshot))
-    (should (eq (supervisor-entry-stage parsed) 'stage3))))
+    (should (eq (supervisor-entry-type parsed) 'oneshot))))
 
 (ert-deftest supervisor-test-parse-enabled-disabled ()
   "Parse :enabled and :disabled flags."
@@ -443,16 +441,16 @@ core symbols exist without dashboard/cli-specific dependencies."
 
 (ert-deftest supervisor-test-entry-restart-p-accessor ()
   "The restart-p accessor returns boolean from policy symbol."
-  (let ((always-entry (list "id" "cmd" 0 t 'always t 'simple 'stage3 nil t 30 nil nil))
-        (no-entry (list "id" "cmd" 0 t 'no t 'simple 'stage3 nil t 30 nil nil))
-        (on-failure-entry (list "id" "cmd" 0 t 'on-failure t 'simple 'stage3 nil t 30 nil nil)))
+  (let ((always-entry (list "id" "cmd" 0 t 'always t 'simple nil t 30 nil nil))
+        (no-entry (list "id" "cmd" 0 t 'no t 'simple nil t 30 nil nil))
+        (on-failure-entry (list "id" "cmd" 0 t 'on-failure t 'simple nil t 30 nil nil)))
     (should (supervisor-entry-restart-p always-entry))
     (should-not (supervisor-entry-restart-p no-entry))
     (should (supervisor-entry-restart-p on-failure-entry))))
 
 (ert-deftest supervisor-test-entry-restart-policy-accessor ()
   "The restart-policy accessor returns the raw policy symbol."
-  (let ((entry (list "id" "cmd" 0 t 'on-failure t 'simple 'stage3 nil t 30 nil nil)))
+  (let ((entry (list "id" "cmd" 0 t 'on-failure t 'simple nil t 30 nil nil)))
     (should (eq 'on-failure (supervisor-entry-restart-policy entry)))))
 
 (ert-deftest supervisor-test-get-effective-restart-policy ()
@@ -657,7 +655,7 @@ restart-timer cancellation on `no'."
     (should (equal "done" (substring-no-properties (aref vec 4))))
     (should (equal "-" (aref vec 7)))))
 
-;;; Stage conversion tests
+;;; Type conversion tests
 
 ;;; Normalize :after tests
 
@@ -883,18 +881,18 @@ restart-timer cancellation on `no'."
 
 (ert-deftest supervisor-test-topo-sort-stable-ordering ()
   "Unconstrained nodes maintain original list order."
-  (let* ((entries '(("a" "cmd" 0 t always t simple stage3 nil t 30)
-                    ("b" "cmd" 0 t always t simple stage3 nil t 30)
-                    ("c" "cmd" 0 t always t simple stage3 nil t 30)))
+  (let* ((entries '(("a" "cmd" 0 t always t simple nil t 30)
+                    ("b" "cmd" 0 t always t simple nil t 30)
+                    ("c" "cmd" 0 t always t simple nil t 30)))
          (sorted (supervisor--stable-topo-sort entries)))
     ;; With no dependencies, order should be preserved
     (should (equal (mapcar #'car sorted) '("a" "b" "c")))))
 
 (ert-deftest supervisor-test-topo-sort-respects-after ()
   "Entries with :after come after their dependencies."
-  (let* ((entries '(("c" "cmd" 0 t always t simple stage3 ("a") t 30)
-                    ("a" "cmd" 0 t always t simple stage3 nil t 30)
-                    ("b" "cmd" 0 t always t simple stage3 nil t 30)))
+  (let* ((entries '(("c" "cmd" 0 t always t simple ("a") t 30)
+                    ("a" "cmd" 0 t always t simple nil t 30)
+                    ("b" "cmd" 0 t always t simple nil t 30)))
          (sorted (supervisor--stable-topo-sort entries))
          (order (mapcar #'car sorted)))
     ;; "a" must come before "c" (dependency constraint)
@@ -906,22 +904,22 @@ restart-timer cancellation on `no'."
 
 (ert-deftest supervisor-test-topo-sort-cycle-fallback ()
   "Cycle detection returns list order with :after cleared."
-  (let* ((entries '(("a" "cmd" 0 t always t simple stage3 ("b") t 30)
-                    ("b" "cmd" 0 t always t simple stage3 ("a") t 30)))
+  (let* ((entries '(("a" "cmd" 0 t always t simple ("b") t 30)
+                    ("b" "cmd" 0 t always t simple ("a") t 30)))
          (sorted (supervisor--stable-topo-sort entries)))
     ;; Should return in original order
     (should (equal (mapcar #'car sorted) '("a" "b")))
-    ;; :after (index 8) should be nil for all entries
-    (should (null (nth 8 (car sorted))))
-    (should (null (nth 8 (cadr sorted))))))
+    ;; :after (index 7) should be nil for all entries
+    (should (null (nth 7 (car sorted))))
+    (should (null (nth 7 (cadr sorted))))))
 
 (ert-deftest supervisor-test-topo-sort-complex-dag ()
   "Complex DAG with multiple dependencies."
   ;; d depends on b and c, b depends on a
-  (let* ((entries '(("a" "cmd" 0 t always t simple stage3 nil t 30)
-                    ("b" "cmd" 0 t always t simple stage3 ("a") t 30)
-                    ("c" "cmd" 0 t always t simple stage3 nil t 30)
-                    ("d" "cmd" 0 t always t simple stage3 ("b" "c") t 30)))
+  (let* ((entries '(("a" "cmd" 0 t always t simple nil t 30)
+                    ("b" "cmd" 0 t always t simple ("a") t 30)
+                    ("c" "cmd" 0 t always t simple nil t 30)
+                    ("d" "cmd" 0 t always t simple ("b" "c") t 30)))
          (sorted (supervisor--stable-topo-sort entries))
          (order (mapcar #'car sorted)))
     ;; a must come before b
@@ -944,10 +942,10 @@ restart-timer cancellation on `no'."
         (supervisor--dag-timeout-timers nil)
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
-    ;; Entry: (id cmd delay enabled-p restart-policy logging-p type stage after oneshot-blocking oneshot-timeout)
-    (let ((entries '(("blocking" "cmd" 0 t always t oneshot stage3 nil t 30)
-                     ("non-blocking" "cmd" 0 t always t oneshot stage3 nil nil 30)
-                     ("simple" "cmd" 0 t always t simple stage3 nil t 30))))
+    ;; Entry: (id cmd delay enabled-p restart-policy logging-p type after oneshot-blocking oneshot-timeout)
+    (let ((entries '(("blocking" "cmd" 0 t always t oneshot nil t 30)
+                     ("non-blocking" "cmd" 0 t always t oneshot nil nil 30)
+                     ("simple" "cmd" 0 t always t simple nil t 30))))
       (supervisor--dag-init entries)
       ;; Blocking oneshot should be in blocking set
       (should (gethash "blocking" supervisor--dag-blocking))
@@ -967,9 +965,9 @@ restart-timer cancellation on `no'."
         (supervisor--dag-timeout-timers nil)
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
-    (let ((entries '(("a" "cmd" 0 t always t simple stage3 nil t 30)
-                     ("b" "cmd" 0 t always t simple stage3 ("a") t 30)
-                     ("c" "cmd" 0 t always t simple stage3 ("a" "b") t 30))))
+    (let ((entries '(("a" "cmd" 0 t always t simple nil t 30)
+                     ("b" "cmd" 0 t always t simple ("a") t 30)
+                     ("c" "cmd" 0 t always t simple ("a" "b") t 30))))
       (supervisor--dag-init entries)
       ;; a has no dependencies
       (should (= (gethash "a" supervisor--dag-in-degree) 0))
@@ -989,9 +987,9 @@ restart-timer cancellation on `no'."
         (supervisor--dag-timeout-timers nil)
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
-    (let ((entries '(("a" "cmd" 0 t always t simple stage3 nil t 30)
-                     ("b" "cmd" 0 t always t simple stage3 ("a") t 30)
-                     ("c" "cmd" 0 t always t simple stage3 ("a") t 30))))
+    (let ((entries '(("a" "cmd" 0 t always t simple nil t 30)
+                     ("b" "cmd" 0 t always t simple ("a") t 30)
+                     ("c" "cmd" 0 t always t simple ("a") t 30))))
       (supervisor--dag-init entries)
       ;; a should have b and c as dependents
       (let ((deps (gethash "a" supervisor--dag-dependents)))
@@ -1012,9 +1010,9 @@ restart-timer cancellation on `no'."
         (supervisor--entry-state (make-hash-table :test 'equal))
         (supervisor--ready-times (make-hash-table :test 'equal)))
     ;; "a" is disabled, "b" depends on "a"
-    ;;           (id   cmd   delay enabled-p restart-policy logging-p type   stage   after oneshot-blocking timeout)
-    (let ((entries '(("a" "cmd" 0 nil always t simple stage3 nil t 30)
-                     ("b" "cmd" 0 t   always t simple stage3 ("a") t 30))))
+    ;;           (id   cmd   delay enabled-p restart-policy logging-p type   after oneshot-blocking timeout)
+    (let ((entries '(("a" "cmd" 0 nil always t simple nil t 30)
+                     ("b" "cmd" 0 t   always t simple ("a") t 30))))
       (supervisor--dag-init entries)
       ;; Disabled entry should be marked ready immediately
       (should (gethash "a" supervisor--dag-ready))
@@ -1025,7 +1023,7 @@ restart-timer cancellation on `no'."
       (should (= 0 (gethash "b" supervisor--dag-in-degree))))))
 
 (ert-deftest supervisor-test-async-oneshot-not-blocking ()
-  "Async oneshots (oneshot-blocking nil) do not block stage completion."
+  "Async oneshots (oneshot-blocking nil) do not block convergence."
   (let ((supervisor--dag-blocking nil)
         (supervisor--dag-in-degree nil)
         (supervisor--dag-dependents nil)
@@ -1036,7 +1034,7 @@ restart-timer cancellation on `no'."
         (supervisor--dag-delay-timers nil)
         (supervisor--dag-id-to-index nil))
     ;; Entry with :oneshot-async t means oneshot-blocking = nil
-    (let ((entries '(("async-oneshot" "cmd" 0 t always t oneshot stage3 nil nil 30))))
+    (let ((entries '(("async-oneshot" "cmd" 0 t always t oneshot nil nil 30))))
       (supervisor--dag-init entries)
       ;; Async oneshot should NOT be in blocking set
       (should-not (gethash "async-oneshot" supervisor--dag-blocking)))))
@@ -1056,7 +1054,7 @@ restart-timer cancellation on `no'."
         (supervisor--shutting-down nil)
         (callback-called nil))
     ;; Entry with delay
-    (puthash "delayed" '("delayed" "echo hi" 5 t t t simple stage3 nil t 30) supervisor--dag-entries)
+    (puthash "delayed" '("delayed" "echo hi" 5 t t t simple nil t 30) supervisor--dag-entries)
     (puthash "delayed" 0 supervisor--dag-in-degree)
     (puthash "delayed" 0 supervisor--dag-id-to-index)
     (puthash "delayed" nil supervisor--dag-dependents)
@@ -1065,7 +1063,7 @@ restart-timer cancellation on `no'."
     (puthash "delayed" 'mock-timer supervisor--dag-delay-timers)
     ;; Mark as "started" from scheduler's perspective
     (puthash "delayed" t supervisor--dag-started)
-    ;; Try to complete stage - should NOT call callback because delay timer exists
+    ;; Try to complete startup - should NOT call callback because delay timer exists
     (supervisor--dag-check-complete)
     (should-not callback-called)))
 
@@ -1083,13 +1081,13 @@ restart-timer cancellation on `no'."
         (supervisor--dag-complete-callback nil)
         (callback-called nil))
     ;; Blocking oneshot entry
-    (puthash "blocking" '("blocking" "sleep 10" 0 t always t oneshot stage3 nil t 30) supervisor--dag-entries)
+    (puthash "blocking" '("blocking" "sleep 10" 0 t always t oneshot nil t 30) supervisor--dag-entries)
     (puthash "blocking" 0 supervisor--dag-in-degree)
     (puthash "blocking" t supervisor--dag-started)
     ;; Oneshot is blocking
     (puthash "blocking" t supervisor--dag-blocking)
     (setq supervisor--dag-complete-callback (lambda () (setq callback-called t)))
-    ;; Try to complete stage - should NOT call callback because blocking oneshot exists
+    ;; Try to complete startup - should NOT call callback because blocking oneshot exists
     (supervisor--dag-check-complete)
     (should-not callback-called)))
 
@@ -1107,7 +1105,7 @@ restart-timer cancellation on `no'."
         (supervisor--dag-complete-callback nil)
         (supervisor-verbose nil))
     ;; Set up blocking oneshot
-    (puthash "oneshot" '("oneshot" "cmd" 0 t always t oneshot stage3 nil t 30) supervisor--dag-entries)
+    (puthash "oneshot" '("oneshot" "cmd" 0 t always t oneshot nil t 30) supervisor--dag-entries)
     (puthash "oneshot" 0 supervisor--dag-in-degree)
     (puthash "oneshot" t supervisor--dag-started)
     (puthash "oneshot" t supervisor--dag-blocking)
@@ -1138,8 +1136,8 @@ restart-timer cancellation on `no'."
     (cl-letf (((symbol-function 'supervisor--dag-start-entry-async)
                (lambda (entry) (push (car entry) started-ids))))
       ;; Set up: b depends on a
-      (puthash "a" '("a" "cmd" 0 t always t simple stage3 nil t 30) supervisor--dag-entries)
-      (puthash "b" '("b" "cmd" 0 t always t simple stage3 ("a") t 30) supervisor--dag-entries)
+      (puthash "a" '("a" "cmd" 0 t always t simple nil t 30) supervisor--dag-entries)
+      (puthash "b" '("b" "cmd" 0 t always t simple ("a") t 30) supervisor--dag-entries)
       (puthash "a" 0 supervisor--dag-in-degree)
       (puthash "b" 1 supervisor--dag-in-degree)
       (puthash "a" t supervisor--dag-started)
@@ -1156,7 +1154,7 @@ restart-timer cancellation on `no'."
       (should (member "b" started-ids)))))
 
 (ert-deftest supervisor-test-oneshot-timeout-unlocks-dependents ()
-  "Oneshot timeout calls mark-ready which unlocks dependents and stage."
+  "Oneshot timeout calls mark-ready which unlocks dependents and convergence."
   (let ((supervisor--dag-blocking (make-hash-table :test 'equal))
         (supervisor--dag-in-degree (make-hash-table :test 'equal))
         (supervisor--dag-dependents (make-hash-table :test 'equal))
@@ -1169,14 +1167,14 @@ restart-timer cancellation on `no'."
         (supervisor--dag-complete-callback nil)
         (supervisor--shutting-down nil)
         (supervisor-verbose nil)
-        (stage-complete nil)
+        (startup-complete nil)
         (started-ids nil))
     ;; Stub start function
     (cl-letf (((symbol-function 'supervisor--dag-start-entry-async)
                (lambda (entry) (push (car entry) started-ids))))
       ;; Set up: blocking oneshot "slow" with dependent "after-slow"
-      (puthash "slow" '("slow" "sleep 999" 0 t always t oneshot stage3 nil t 5) supervisor--dag-entries)
-      (puthash "after-slow" '("after-slow" "echo done" 0 t always t simple stage3 ("slow") t 30) supervisor--dag-entries)
+      (puthash "slow" '("slow" "sleep 999" 0 t always t oneshot nil t 5) supervisor--dag-entries)
+      (puthash "after-slow" '("after-slow" "echo done" 0 t always t simple ("slow") t 30) supervisor--dag-entries)
       (puthash "slow" 0 supervisor--dag-in-degree)
       (puthash "after-slow" 1 supervisor--dag-in-degree)
       (puthash "slow" t supervisor--dag-started)
@@ -1188,9 +1186,9 @@ restart-timer cancellation on `no'."
       (puthash "after-slow" 1 supervisor--dag-id-to-index)
       ;; Set up a mock timeout timer
       (puthash "slow" 'mock-timer supervisor--dag-timeout-timers)
-      ;; Stage completion callback
+      ;; Startup completion callback
       (setq supervisor--dag-complete-callback
-            (lambda () (setq stage-complete t)))
+            (lambda () (setq startup-complete t)))
       ;; Simulate timeout firing: this is what the timeout timer does
       (supervisor--dag-mark-ready "slow")
       ;; Blocking oneshot should be removed from blocking set
@@ -1262,8 +1260,8 @@ restart-timer cancellation on `no'."
         (supervisor-max-concurrent-starts 2)
         (started-ids nil))
     ;; Queue entries
-    (puthash "a" '("a" "true" 0 t always t simple stage3 nil t 30) supervisor--dag-entries)
-    (puthash "b" '("b" "true" 0 t always t simple stage3 nil t 30) supervisor--dag-entries)
+    (puthash "a" '("a" "true" 0 t always t simple nil t 30) supervisor--dag-entries)
+    (puthash "b" '("b" "true" 0 t always t simple nil t 30) supervisor--dag-entries)
     (setq supervisor--dag-pending-starts '("a" "b"))
     ;; Before processing, count should be 0
     (should (= supervisor--dag-active-starts 0))
@@ -1311,10 +1309,10 @@ restart-timer cancellation on `no'."
         (supervisor--entry-state (make-hash-table :test 'equal))
         (callback-called nil))
     ;; Set up entry that hasn't started
-    (puthash "delayed" '("delayed" "cmd" 5 t t t simple stage3 nil t 30)
+    (puthash "delayed" '("delayed" "cmd" 5 t t t simple nil t 30)
              supervisor--dag-entries)
     (setq supervisor--dag-complete-callback (lambda () (setq callback-called t)))
-    ;; Force stage complete should mark unstarted as stage-timeout
+    ;; Force complete should mark unstarted as startup-timeout
     (supervisor--dag-force-complete)
     (should (eq (gethash "delayed" supervisor--entry-state) 'startup-timeout))
     (should callback-called)))
@@ -1387,9 +1385,9 @@ Only auto-started (not manually-started) disabled units are stopped."
   "Topo-sort populates computed-deps with validated dependencies."
   (let ((supervisor--computed-deps (make-hash-table :test 'equal))
         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
-    ;; Entry c depends on a and b, but b doesn't exist in this stage
-    (let ((entries '(("a" "cmd" 0 t always t simple stage3 nil t 30)
-                     ("c" "cmd" 0 t always t simple stage3 ("a" "b") t 30))))
+    ;; Entry c depends on a and b, but b doesn't exist
+    (let ((entries '(("a" "cmd" 0 t always t simple nil t 30)
+                     ("c" "cmd" 0 t always t simple ("a" "b") t 30))))
       (supervisor--stable-topo-sort entries)
       ;; c's computed deps should only include "a" (b doesn't exist)
       (should (equal (gethash "c" supervisor--computed-deps) '("a")))
@@ -1401,8 +1399,8 @@ Only auto-started (not manually-started) disabled units are stopped."
   (let ((supervisor--computed-deps (make-hash-table :test 'equal))
         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
     ;; Create a cycle: a -> b -> a
-    (let ((entries '(("a" "cmd" 0 t always t simple stage3 ("b") t 30)
-                     ("b" "cmd" 0 t always t simple stage3 ("a") t 30))))
+    (let ((entries '(("a" "cmd" 0 t always t simple ("b") t 30)
+                     ("b" "cmd" 0 t always t simple ("a") t 30))))
       (supervisor--stable-topo-sort entries)
       ;; Both should be marked as cycle fallback
       (should (gethash "a" supervisor--cycle-fallback-ids))
@@ -1488,8 +1486,7 @@ Only auto-started (not manually-started) disabled units are stopped."
 
 (ert-deftest supervisor-test-separator-row-detection ()
   "Separator rows are correctly identified as symbol IDs."
-  (should (supervisor--separator-row-p '--stage1--))
-  (should (supervisor--separator-row-p '--stage4--))
+  (should (supervisor--separator-row-p '--services--))
   (should (supervisor--separator-row-p '--health--))
   (should (supervisor--separator-row-p '--timers--))
   (should (supervisor--separator-row-p '--blank-1--))
@@ -1744,7 +1741,7 @@ Unit-file loader already deduplicates, so only one entry is loaded."
     (should (equal '("a") (gethash "b" (supervisor-plan-deps plan))))
     ;; c's dep on nonexistent should be removed
     (should (null (gethash "c" (supervisor-plan-deps plan))))
-    ;; d's dep on a (same stage now) should be preserved
+    ;; d's dep on a should be preserved
     (should (equal '("a") (gethash "d" (supervisor-plan-deps plan))))))
 
 (ert-deftest supervisor-test-plan-duplicate-id-first-occurrence-order ()
@@ -1840,8 +1837,6 @@ Note: Does not call supervisor-start directly to avoid process spawning."
           (supervisor--start-times (make-hash-table :test 'equal))
           (supervisor--ready-times (make-hash-table :test 'equal))
           (supervisor--timers nil)
-          (supervisor--current-stage nil)
-          (supervisor--completed-stages nil)
           (supervisor--shutting-down t))  ; Prevent actual process starts
       ;; Build plan and populate globals (same as supervisor-start)
       (let* ((progs (supervisor--effective-programs))
@@ -2035,8 +2030,6 @@ Regression test: M-x supervisor must use shared snapshot like refresh does."
           (supervisor--enabled-override (make-hash-table :test 'equal))
           (supervisor--restart-override (make-hash-table :test 'equal))
           (supervisor--logging (make-hash-table :test 'equal))
-          (supervisor--current-stage nil)
-          (supervisor--completed-stages nil)
           (snapshots-built 0))
       ;; Track how many snapshots are built during initial render
       (cl-letf (((symbol-function 'supervisor--build-snapshot)
@@ -2510,7 +2503,7 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
   (let ((supervisor--entry-state (make-hash-table :test 'equal)))
     ;; Initial state with deps
     (supervisor--transition-state "proc" 'waiting-on-deps)
-    ;; Stage times out before deps complete
+    ;; Startup times out before deps complete
     (supervisor--transition-state "proc" 'startup-timeout)
     (should (eq 'startup-timeout (gethash "proc" supervisor--entry-state)))))
 
@@ -2563,8 +2556,7 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
       (let ((event (car events)))
         (should (eq 'startup-begin (plist-get event :type)))
         (should (numberp (plist-get event :ts)))
-        (should (null (plist-get event :id)))
-        (should (null (plist-get event :stage)))))))
+        (should (null (plist-get event :id)))))))
 
 (ert-deftest supervisor-test-emit-event-startup-begin ()
   "Startup-begin event is emitted with correct data."
@@ -2577,8 +2569,7 @@ Returns nil (not t) and emits a warning for forced invalid transitions."
       (supervisor--emit-event 'startup-begin nil nil nil)
       (should (= 1 (length events)))
       (let ((event (car events)))
-        (should (eq 'startup-begin (plist-get event :type)))
-        (should (null (plist-get event :stage)))))))
+        (should (eq 'startup-begin (plist-get event :type)))))))
 
 (ert-deftest supervisor-test-emit-event-process-exit ()
   "Process-exit event carries status and code in data."
@@ -2631,7 +2622,7 @@ Regression test: process-ready was incorrectly emitted for failures."
         (supervisor--dag-entries (make-hash-table :test 'equal)))
     ;; Set up initial state
     (supervisor--transition-state "test" 'pending)
-    (puthash "test" '("test" "cmd" 0 t always t simple stage3 nil t 30 nil)
+    (puthash "test" '("test" "cmd" 0 t always t simple nil t 30 nil)
              supervisor--dag-entries)
     ;; Capture events
     (cl-letf (((symbol-function 'run-hook-with-args)
@@ -2660,7 +2651,7 @@ Regression test: process-ready was incorrectly emitted for disabled entries."
         (supervisor--dag-entries (make-hash-table :test 'equal))
         (supervisor--enabled-override (make-hash-table :test 'equal)))
     ;; Set up as disabled entry
-    (puthash "test" '("test" "cmd" 0 nil always t simple stage3 nil t 30 nil)
+    (puthash "test" '("test" "cmd" 0 nil always t simple nil t 30 nil)
              supervisor--dag-entries)
     ;; Capture events
     (cl-letf (((symbol-function 'run-hook-with-args)
@@ -2669,7 +2660,7 @@ Regression test: process-ready was incorrectly emitted for disabled entries."
                    (push (car args) events))))
               ((symbol-function 'run-hooks) #'ignore))
       (supervisor--dag-start-entry-async
-       '("test" "cmd" 0 nil always t simple stage3 nil t 30 nil)))
+       '("test" "cmd" 0 nil always t simple nil t 30 nil)))
     ;; Should NOT have process-ready
     (should-not (cl-find 'process-ready events :key (lambda (e) (plist-get e :type))))))
 
@@ -2690,7 +2681,7 @@ Regression test: process-ready was incorrectly emitted for disabled entries."
         (supervisor--dag-entries (make-hash-table :test 'equal)))
     ;; Set up initial state
     (supervisor--transition-state "test" 'pending)
-    (puthash "test" '("test" "sleep" 0 t always t simple stage3 nil t 30 nil)
+    (puthash "test" '("test" "sleep" 0 t always t simple nil t 30 nil)
              supervisor--dag-entries)
     ;; Capture events
     (cl-letf (((symbol-function 'run-hook-with-args)
@@ -2826,7 +2817,7 @@ Regression test: stderr pipe processes used to pollute the process list."
             (supervisor-dashboard-mode)
             (let ((tabulated-list-entries
                    (list (list (cons :service "test-svc")
-                               (vector "test-svc" "simple" "stage3"
+                               (vector "test-svc" "simple"
                                        "yes" "running" "yes" "yes"
                                        "1234" "-")))))
               (tabulated-list-init-header)
@@ -2857,7 +2848,7 @@ Regression test: stderr pipe processes used to pollute the process list."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
-           (list (list "my-svc" (vector "my-svc" "simple" "stage3"
+           (list (list "my-svc" (vector "my-svc" "simple"
                                        "yes" "running" "yes" "yes" "1234" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -2879,7 +2870,7 @@ Regression test: stderr pipe processes used to pollute the process list."
         (supervisor-dashboard-mode)
         ;; Row has type "simple" — this is a service row, not a timer row
         (let ((tabulated-list-entries
-               (list (list "dup" (vector "dup" "simple" "stage3"
+               (list (list "dup" (vector "dup" "simple"
                                         "yes" "stopped" "yes" "yes" "-" "-")))))
           (tabulated-list-init-header)
           (tabulated-list-print)
@@ -2898,7 +2889,7 @@ Regression test: stderr pipe processes used to pollute the process list."
       (with-temp-buffer
         (supervisor-dashboard-mode)
         (let ((tabulated-list-entries
-               (list (list "my-oneshot" (vector "my-oneshot" "oneshot" "stage3"
+               (list (list "my-oneshot" (vector "my-oneshot" "oneshot"
                                                "yes" "done" "n/a" "yes" "-" "-")))))
           (tabulated-list-init-header)
           (tabulated-list-print)
@@ -2920,7 +2911,7 @@ proceed to call start unconditionally."
         (supervisor-dashboard-mode)
         (let ((tabulated-list-entries
                (list (list (cons :service "my-oneshot")
-                           (vector "my-oneshot" "oneshot" "stage3"
+                           (vector "my-oneshot" "oneshot"
                                    "yes" "done" "n/a" "yes" "-" "-")))))
           (tabulated-list-init-header)
           (tabulated-list-print)
@@ -2942,7 +2933,7 @@ proceed to call start unconditionally."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :timer "my-timer")
-                       (vector "my-timer" "timer" "-"
+                       (vector "my-timer" "timer"
                                "-" "pending" "-" "-" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -2957,7 +2948,7 @@ proceed to call start unconditionally."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :timer "my-timer")
-                       (vector "my-timer" "timer" "-"
+                       (vector "my-timer" "timer"
                                "-" "pending" "-" "-" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -2980,7 +2971,7 @@ proceed to call start unconditionally."
         (supervisor-dashboard-mode)
         (let ((tabulated-list-entries
                (list (list (cons :service "my-svc")
-                           (vector "my-svc" "simple" "stage3"
+                           (vector "my-svc" "simple"
                                    "yes" "stopped" "yes" "yes" "-" "-")))))
           (tabulated-list-init-header)
           (tabulated-list-print)
@@ -3014,7 +3005,7 @@ proceed to call start unconditionally."
 
 (ert-deftest supervisor-test-typed-row-id-separator ()
   "Separator row IDs are symbols."
-  (should (supervisor--separator-row-p '--stage1--))
+  (should (supervisor--separator-row-p '--services--))
   (should (supervisor--separator-row-p '--health--))
   (should (supervisor--separator-row-p '--timers--))
   (should-not (supervisor--separator-row-p (cons :service "foo")))
@@ -3024,7 +3015,7 @@ proceed to call start unconditionally."
   "Row kind returns correct kind for all ID types."
   (should (eq :service (supervisor--row-kind (cons :service "x"))))
   (should (eq :timer (supervisor--row-kind (cons :timer "x"))))
-  (should (eq :separator (supervisor--row-kind '--stage1--)))
+  (should (eq :separator (supervisor--row-kind '--services--)))
   (should-not (supervisor--row-kind nil)))
 
 (ert-deftest supervisor-test-row-id-extraction ()
@@ -3055,10 +3046,10 @@ proceed to call start unconditionally."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :service "backup")
-                       (vector "backup" "simple" "stage1"
+                       (vector "backup" "simple"
                                "yes" "running" "yes" "yes" "-" "-"))
                  (list (cons :timer "backup")
-                       (vector "backup" "backup-svc" "yes"
+                       (vector "backup" "backup-svc"
                                "-" "-" "-" "-" "" "")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3075,7 +3066,7 @@ proceed to call start unconditionally."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :service "svc")
-                       (vector "svc" "simple" "stage1"
+                       (vector "svc" "simple"
                                "yes" "running" "yes" "yes" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3088,7 +3079,7 @@ proceed to call start unconditionally."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :timer "my-timer")
-                       (vector "my-timer" "target" "yes"
+                       (vector "my-timer" "target"
                                "-" "-" "-" "-" "" "")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3101,8 +3092,8 @@ proceed to call start unconditionally."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
-           (list (list '--stage1--
-                       (vector "── stage1" "" "" "" "" "" "" "" "")))))
+           (list (list '--services--
+                       (vector "── Services" "" "" "" "" "" "" "")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
       (goto-char (point-min))
@@ -3239,7 +3230,7 @@ configured timers must be visible for analysis."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :service "svc")
-                       (vector "svc" "simple" "stage1"
+                       (vector "svc" "simple"
                                "yes" "running" "yes" "yes" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3253,7 +3244,7 @@ configured timers must be visible for analysis."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :service "svc")
-                       (vector "svc" "simple" "stage1"
+                       (vector "svc" "simple"
                                "yes" "running" "yes" "yes" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3267,7 +3258,7 @@ configured timers must be visible for analysis."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :service "svc")
-                       (vector "svc" "simple" "stage1"
+                       (vector "svc" "simple"
                                "yes" "running" "yes" "yes" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3281,7 +3272,7 @@ configured timers must be visible for analysis."
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
            (list (list (cons :service "svc")
-                       (vector "svc" "simple" "stage1"
+                       (vector "svc" "simple"
                                "yes" "running" "yes" "yes" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -3297,10 +3288,10 @@ configured timers must be visible for analysis."
       (supervisor-dashboard-mode)
       (let ((tabulated-list-entries
              (list (list (cons :service "my-svc")
-                         (vector "my-svc" "simple" "stage1"
+                         (vector "my-svc" "simple"
                                  "yes" "running" "yes" "yes" "-" "-"))
                    (list (cons :timer "t1")
-                         (vector "t1" "my-svc" "yes"
+                         (vector "t1" "my-svc"
                                  "-" "-" "-" "-" "" "")))))
         (tabulated-list-init-header)
         (tabulated-list-print)
@@ -5182,7 +5173,7 @@ conflicting ID, proving precedence derives from list position."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
-           (list (list '--stage3-- (vector "" "" "" "" "" "" "" "" "")))))
+           (list (list '--services-- (vector "" "" "" "" "" "" "" "")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
       (goto-char (point-min))
@@ -5194,7 +5185,7 @@ conflicting ID, proving precedence derives from list position."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
-           (list (list "t1" (vector "t1" "timer" "---" "yes"
+           (list (list "t1" (vector "t1" "timer" "yes"
                                     "waiting" "---" "---" "-" "-")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
@@ -5216,7 +5207,7 @@ conflicting ID, proving precedence derives from list position."
           (supervisor-dashboard-mode)
           (let ((tabulated-list-entries
                  (list (list (cons :service "logrotate")
-                             (vector "logrotate" "oneshot" "stage4"
+                             (vector "logrotate" "oneshot"
                                      "yes" "pending" "n/a" "yes" "-" "-")))))
             (tabulated-list-init-header)
             (tabulated-list-print)
@@ -5232,7 +5223,7 @@ conflicting ID, proving precedence derives from list position."
   (with-temp-buffer
     (supervisor-dashboard-mode)
     (let ((tabulated-list-entries
-           (list (list '--stage3-- (vector "" "" "" "" "" "" "" "" "")))))
+           (list (list '--services-- (vector "" "" "" "" "" "" "" "")))))
       (tabulated-list-init-header)
       (tabulated-list-print)
       (goto-char (point-min))
@@ -5312,7 +5303,7 @@ conflicting ID, proving precedence derives from list position."
             (supervisor-dashboard-mode)
             (let ((tabulated-list-entries
                    (list (list (cons :service "test-svc")
-                               (vector "test-svc" "simple" "stage3"
+                               (vector "test-svc" "simple"
                                        "yes" "running" "yes" "---"
                                        "-" "-")))))
               (tabulated-list-init-header)
@@ -5367,7 +5358,7 @@ conflicting ID, proving precedence derives from list position."
             (supervisor-dashboard-mode)
             (let ((tabulated-list-entries
                    (list (list (cons :service "hook-svc")
-                               (vector "hook-svc" "simple" "stage3"
+                               (vector "hook-svc" "simple"
                                        "yes" "running" "yes" "---"
                                        "-" "-")))))
               (tabulated-list-init-header)
@@ -5418,7 +5409,6 @@ conflicting ID, proving precedence derives from list position."
                   :id "test"
                   :command "sleep 100"
                   :type 'simple
-                  :stage 'stage2
                   :delay 5
                   :enabled t
                   :restart 'no
@@ -5431,7 +5421,6 @@ conflicting ID, proving precedence derives from list position."
     (should (equal "test" (supervisor-service-id service)))
     (should (equal "sleep 100" (supervisor-service-command service)))
     (should (eq 'simple (supervisor-service-type service)))
-    (should (eq 'stage2 (supervisor-service-stage service)))
     (should (= 5 (supervisor-service-delay service)))
     (should (supervisor-service-enabled service))
     (should (eq 'no (supervisor-service-restart service)))
@@ -5449,7 +5438,6 @@ conflicting ID, proving precedence derives from list position."
     (should (equal "test" (supervisor-entry-id entry)))
     (should (equal "sleep 100" (supervisor-entry-command entry)))
     (should (eq 'simple (supervisor-entry-type entry)))
-    (should (eq 'stage3 (supervisor-entry-stage entry)))
     (should (= 5 (supervisor-entry-delay entry)))
     (should-not (supervisor-entry-restart-p entry))
     (should (equal '("dep1") (supervisor-entry-after entry)))
@@ -5463,7 +5451,6 @@ conflicting ID, proving precedence derives from list position."
     (should (equal "test" (supervisor-service-id service)))
     (should (equal "sleep 100" (supervisor-service-command service)))
     (should (eq 'oneshot (supervisor-service-type service)))
-    (should (eq 'stage3 (supervisor-service-stage service)))
     (should (equal '("dep") (supervisor-service-after service)))
     (should (equal '("req") (supervisor-service-requires service)))
     (should (equal '(t1 t2) (supervisor-service-tags service)))))
@@ -5474,7 +5461,6 @@ conflicting ID, proving precedence derives from list position."
                    :id "test"
                    :command "sleep 100"
                    :type 'oneshot
-                   :stage 'stage1
                    :delay 10
                    :enabled nil
                    :restart 'always
@@ -5488,7 +5474,6 @@ conflicting ID, proving precedence derives from list position."
     (should (equal "test" (supervisor-entry-id entry)))
     (should (equal "sleep 100" (supervisor-entry-command entry)))
     (should (eq 'oneshot (supervisor-entry-type entry)))
-    (should (eq 'stage1 (supervisor-entry-stage entry)))
     (should (= 10 (supervisor-entry-delay entry)))
     (should-not (supervisor-entry-enabled-p entry))
     (should (supervisor-entry-restart-p entry))
@@ -5690,9 +5675,7 @@ conflicting ID, proving precedence derives from list position."
                  '("sleep 100" :type oneshot))))
     (should (listp result))
     (should (equal "sleep 100" (car result)))
-    (should (eq 'oneshot (plist-get (cdr result) :type)))
-    ;; No :stage in output since it defaults to stage3
-    (should-not (plist-get (cdr result) :stage))))
+    (should (eq 'oneshot (plist-get (cdr result) :type)))))
 
 (ert-deftest supervisor-test-migrate-all-entries-skips-invalid ()
   "Migration skips invalid entries with reason."
@@ -5780,8 +5763,8 @@ conflicting ID, proving precedence derives from list position."
 
 (ert-deftest supervisor-test-dag-uses-requires-edges ()
   "DAG scheduler uses :requires edges for in-degree calculation."
-  (let* ((entries '(("a" "sleep 1" 0 t always t simple stage3 nil t 30 nil nil)
-                    ("b" "sleep 1" 0 t always t simple stage3 nil t 30 nil ("a"))))
+  (let* ((entries '(("a" "sleep 1" 0 t always t simple nil t 30 nil nil)
+                    ("b" "sleep 1" 0 t always t simple nil t 30 nil ("a"))))
          ;; Entry "b" has :requires "a" at index 12
          (supervisor--dag-in-degree (make-hash-table :test 'equal))
          (supervisor--dag-dependents (make-hash-table :test 'equal))
@@ -10608,7 +10591,7 @@ could incorrectly preserve a non-running disabled unit."
 (ert-deftest supervisor-test-parse-entry-new-fields-defaults ()
   "Parsed entry has nil defaults for P2 and PT3 fields."
   (let ((entry (supervisor--parse-entry "echo hello")))
-    (should (= (length entry) 39))
+    (should (= (length entry) 38))
     (should-not (supervisor-entry-working-directory entry))
     (should-not (supervisor-entry-environment entry))
     (should-not (supervisor-entry-environment-file entry))
@@ -10957,7 +10940,7 @@ could incorrectly preserve a non-running disabled unit."
                :kill-signal 'SIGTERM
                :kill-mode 'mixed))
          (entry (supervisor-service-to-entry svc)))
-    (should (= (length entry) 39))
+    (should (= (length entry) 38))
     (should (equal (supervisor-entry-working-directory entry) "/opt"))
     (should (equal (supervisor-entry-environment entry) '(("K" . "V"))))
     (should (equal (supervisor-entry-environment-file entry) '("/etc/env")))
@@ -10992,7 +10975,7 @@ could incorrectly preserve a non-running disabled unit."
          (entries (supervisor-plan-entries plan)))
     ;; Both entries must be full parsed tuples.
     (dolist (entry entries)
-      (should (= (length entry) 39)))
+      (should (= (length entry) 38)))
     ;; svc-a new fields preserved
     (let ((a (cl-find "svc-a" entries :key #'car :test #'equal)))
       (should (equal (supervisor-entry-working-directory a) "/opt"))
@@ -11009,23 +10992,23 @@ could incorrectly preserve a non-running disabled unit."
   "Cycle fallback in stable-topo-sort preserves fields 13-26."
   (let ((supervisor--computed-deps (make-hash-table :test 'equal))
         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
-    ;; 27-element entries with cycle: a -> b -> a
-    (let* ((entries (list (list "a" "cmd" 0 t 'always t 'simple 'stage3 '("b")
+    ;; 26-element entries with cycle: a -> b -> a
+    (let* ((entries (list (list "a" "cmd" 0 t 'always t 'simple '("b")
                                 t 30 nil nil "/opt" '(("K" . "V")) nil
                                 '("stop") nil 3
                                 "desc-a" nil nil nil nil nil nil nil)
-                          (list "b" "cmd" 0 t 'always t 'simple 'stage3 '("a")
+                          (list "b" "cmd" 0 t 'always t 'simple '("a")
                                 t 30 nil nil nil nil '("/env") nil
                                 '("reload") nil
                                 nil nil nil nil 'SIGTERM nil nil nil)))
            (sorted (supervisor--stable-topo-sort entries)))
-      ;; All entries must remain 27 fields
+      ;; All entries must remain 26 fields
       (dolist (entry sorted)
-        (should (= (length entry) 27)))
-      ;; :after (8) and :requires (12) cleared
+        (should (= (length entry) 26)))
+      ;; :after (7) and :requires (11) cleared
       (dolist (entry sorted)
-        (should (null (nth 8 entry)))
-        (should (null (nth 12 entry))))
+        (should (null (nth 7 entry)))
+        (should (null (nth 11 entry))))
       ;; P2 fields preserved
       (let ((a (cl-find "a" sorted :key #'car :test #'equal)))
         (should (equal (supervisor-entry-working-directory a) "/opt"))
@@ -11039,15 +11022,15 @@ could incorrectly preserve a non-running disabled unit."
         (should (eq (supervisor-entry-kill-signal b) 'SIGTERM))))))
 
 (ert-deftest supervisor-test-build-plan-topo-cycle-preserves-new-fields ()
-  "Cycle fallback in build-plan-topo-sort preserves fields 13-26."
-  ;; 27-element entries with cycle: a -> b -> a
+  "Cycle fallback in build-plan-topo-sort preserves fields 12-25."
+  ;; 26-element entries with cycle: a -> b -> a
   (let* ((deps (make-hash-table :test 'equal))
          (order-index (make-hash-table :test 'equal))
          (cycle-fallback-ids (make-hash-table :test 'equal))
-         (entries (list (list "a" "cmd" 0 t 'always t 'simple 'stage3 '("b")
+         (entries (list (list "a" "cmd" 0 t 'always t 'simple '("b")
                               t 30 nil nil "/tmp" nil nil '("s1") '("r1") 2
                               "desc" nil nil nil nil 'mixed nil nil)
-                        (list "b" "cmd" 0 t 'always t 'simple 'stage3 '("a")
+                        (list "b" "cmd" 0 t 'always t 'simple '("a")
                               t 30 nil nil nil '(("X" . "Y")) '("/e") nil nil 0
                               nil '("man:b(1)") nil nil 'SIGHUP nil nil nil))))
     (puthash "a" '("b") deps)
@@ -11056,9 +11039,9 @@ could incorrectly preserve a non-running disabled unit."
     (puthash "b" 1 order-index)
     (let ((sorted (supervisor--build-plan-topo-sort
                    entries deps order-index cycle-fallback-ids)))
-      ;; All entries must remain 27 fields
+      ;; All entries must remain 26 fields
       (dolist (entry sorted)
-        (should (= (length entry) 27)))
+        (should (= (length entry) 26)))
       ;; P2 fields preserved
       (let ((a (cl-find "a" sorted :key #'car :test #'equal)))
         (should (equal (supervisor-entry-working-directory a) "/tmp"))
@@ -11422,7 +11405,7 @@ could incorrectly preserve a non-running disabled unit."
           (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
                      (lambda (_id)
                        (list "test-stop" "sleep 300" 0 t 'no t 'simple
-                             'stage1 nil nil 30 nil nil
+                             nil nil 30 nil nil
                              nil nil nil
                              '("my-stop-cmd") nil nil)))
                     ((symbol-function 'supervisor--exec-command-chain)
@@ -11461,7 +11444,7 @@ could incorrectly preserve a non-running disabled unit."
                      (lambda (_id)
                        ;; Entry with no exec-stop (nil at index 16)
                        (list "test-stop2" "sleep 300" 0 t 'no t 'simple
-                             'stage1 nil nil 30 nil nil
+                             nil nil 30 nil nil
                              nil nil nil
                              nil nil nil)))
                     ((symbol-function 'supervisor--exec-command-chain)
@@ -11490,7 +11473,7 @@ could incorrectly preserve a non-running disabled unit."
           (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
                      (lambda (_id)
                        (list "test-stop3" "sleep 300" 0 t 'no t 'simple
-                             'stage1 nil nil 30 nil nil
+                             nil nil 30 nil nil
                              nil nil nil
                              '("false") nil nil)))
                     ((symbol-function 'supervisor--exec-command-chain)
@@ -11527,7 +11510,7 @@ could incorrectly preserve a non-running disabled unit."
           (cl-letf (((symbol-function 'supervisor--reload-find-entry)
                      (lambda (_id)
                        (list "test-reload" "sleep 300" 0 t 'no t 'simple
-                             'stage1 nil nil 30 nil nil
+                             nil nil 30 nil nil
                              nil nil nil
                              nil '("my-reload-cmd") nil)))
                     ((symbol-function 'supervisor--exec-command-chain)
@@ -11569,7 +11552,7 @@ could incorrectly preserve a non-running disabled unit."
                      (lambda (_id)
                        ;; No exec-reload (nil at index 17)
                        (list "test-reload2" "sleep 300" 0 t 'no t 'simple
-                             'stage1 nil nil 30 nil nil
+                             nil nil 30 nil nil
                              nil nil nil
                              nil nil nil)))
                     ((symbol-function 'supervisor--manual-stop)
@@ -11605,7 +11588,7 @@ could incorrectly preserve a non-running disabled unit."
           (cl-letf (((symbol-function 'supervisor--reload-find-entry)
                      (lambda (_id)
                        (list "test-reload3" "sleep 300" 0 t 'no t 'simple
-                             'stage1 nil nil 30 nil nil
+                             nil nil 30 nil nil
                              nil nil nil
                              nil '("false") nil)))
                     ((symbol-function 'supervisor--exec-command-chain)
@@ -11658,7 +11641,7 @@ could incorrectly preserve a non-running disabled unit."
     (cl-letf (((symbol-function 'supervisor--reload-find-entry)
                (lambda (_id)
                  (list "stopped-svc" "echo hi" 0 t 'no t 'simple
-                       'stage1 nil nil 30 nil nil
+                       nil nil 30 nil nil
                        nil nil nil
                        nil '("reload-cmd") nil)))
               ((symbol-function 'supervisor--exec-command-chain)
@@ -11685,7 +11668,7 @@ could incorrectly preserve a non-running disabled unit."
           (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
                      (lambda (_id)
                        (list "test-cwd-err" "sleep 300" 0 t 'no t 'simple
-                             'stage1 nil nil 30 nil nil
+                             nil nil 30 nil nil
                              "/nonexistent/dir" nil nil
                              '("stop-cmd") nil nil)))
                     ((symbol-function 'supervisor--exec-command-chain)
@@ -11714,7 +11697,7 @@ could incorrectly preserve a non-running disabled unit."
           (cl-letf (((symbol-function 'supervisor--get-entry-for-id)
                      (lambda (_id)
                        (list "test-env-err" "sleep 300" 0 t 'no t 'simple
-                             'stage1 nil nil 30 nil nil
+                             nil nil 30 nil nil
                              nil nil '("/nonexistent/env-file")
                              '("stop-cmd") nil nil)))
                     ((symbol-function 'supervisor--exec-command-chain)
@@ -11746,7 +11729,7 @@ could incorrectly preserve a non-running disabled unit."
           (cl-letf (((symbol-function 'supervisor--reload-find-entry)
                      (lambda (_id)
                        (list "test-reload-ctx" "sleep 300" 0 t 'no t 'simple
-                             'stage1 nil nil 30 nil nil
+                             nil nil 30 nil nil
                              "/nonexistent/dir" nil nil
                              nil '("reload-cmd") nil)))
                     ((symbol-function 'supervisor--unit-file-directory-for-id)
@@ -11972,7 +11955,7 @@ could incorrectly preserve a non-running disabled unit."
 (ert-deftest supervisor-test-parse-entry-33-elements ()
   "Parse entry returns 39 elements."
   (let ((entry (supervisor--parse-entry "sleep 300")))
-    (should (= (length entry) 39))))
+    (should (= (length entry) 38))))
 
 ;; Validation tests for PT3 keys
 
@@ -12592,7 +12575,7 @@ could incorrectly preserve a non-running disabled unit."
     (should (member "b" (gethash "a" supervisor--dag-dependents)))))
 
 (ert-deftest supervisor-test-dag-init-missing-wants-ignored ()
-  "DAG init ignores wants for entries not in the stage."
+  "DAG init ignores wants for missing entries."
   (let* ((entries (list (supervisor--parse-entry
                          '("cmd-b" :id "b" :wants ("nonexistent")))))
          (supervisor--entry-state (make-hash-table :test 'equal)))
@@ -12633,11 +12616,11 @@ could incorrectly preserve a non-running disabled unit."
   "Stable topo sort cycle fallback clears :wants."
   (let ((supervisor--computed-deps (make-hash-table :test 'equal))
         (supervisor--cycle-fallback-ids (make-hash-table :test 'equal)))
-    ;; 27-element entries with :wants cycle
-    (let* ((entries (list (list "a" "cmd" 0 t 'always t 'simple 'stage3 nil
+    ;; 26-element entries with :wants cycle
+    (let* ((entries (list (list "a" "cmd" 0 t 'always t 'simple nil
                                 t 30 nil nil nil nil nil nil nil nil
                                 nil nil nil '("b") nil nil nil nil)
-                          (list "b" "cmd" 0 t 'always t 'simple 'stage3 nil
+                          (list "b" "cmd" 0 t 'always t 'simple nil
                                 t 30 nil nil nil nil nil nil nil nil
                                 nil nil nil '("a") nil nil nil nil)))
            (sorted (supervisor--stable-topo-sort entries)))
@@ -12655,7 +12638,7 @@ in-degree of dependents including :wants edges."
          (supervisor--mask-override (make-hash-table :test 'equal))
          (supervisor--dag-active-starts 0)
          (supervisor--dag-pending-starts nil)
-         (supervisor--dag-stage-callback nil))
+         (supervisor--dag-complete-callback nil))
     (supervisor--dag-init entries)
     ;; b depends on a (in-degree 1)
     (should (= 1 (gethash "b" supervisor--dag-in-degree)))
@@ -14442,7 +14425,7 @@ No warning is emitted when there are simply no child processes."
 
 (ert-deftest supervisor-test-cli-describe-human-log-tail ()
   "Describe human output includes log tail when present."
-  (let ((info '((id . "svc") (type . simple) (stage . stage1)
+  (let ((info '((id . "svc") (type . simple)
                 (enabled . t) (enabled-config . t)
                 (restart . always) (restart-config . always)
                 (logging . t) (logging-config . t)
@@ -14457,7 +14440,7 @@ No warning is emitted when there are simply no child processes."
 
 (ert-deftest supervisor-test-cli-describe-human-process-tree ()
   "Describe human output includes process tree when present."
-  (let ((info '((id . "svc") (type . simple) (stage . stage1)
+  (let ((info '((id . "svc") (type . simple)
                 (enabled . t) (enabled-config . t)
                 (restart . always) (restart-config . always)
                 (logging . t) (logging-config . t)
@@ -14472,7 +14455,7 @@ No warning is emitted when there are simply no child processes."
 
 (ert-deftest supervisor-test-cli-describe-human-authority-tier ()
   "Describe human output shows tier when unit-file and tier are present."
-  (let ((info '((id . "svc") (type . simple) (stage . stage1)
+  (let ((info '((id . "svc") (type . simple)
                 (enabled . t) (enabled-config . t)
                 (restart . always) (restart-config . always)
                 (logging . t) (logging-config . t)
@@ -14487,7 +14470,7 @@ No warning is emitted when there are simply no child processes."
 
 (ert-deftest supervisor-test-cli-json-includes-log-tail ()
   "JSON output includes log_tail field."
-  (let ((info '((id . "svc") (type . simple) (stage . stage1)
+  (let ((info '((id . "svc") (type . simple)
                 (enabled . t) (status . "running")
                 (restart . always) (logging . t)
                 (pid . nil) (reason . nil) (delay . 0)
@@ -14498,7 +14481,7 @@ No warning is emitted when there are simply no child processes."
 
 (ert-deftest supervisor-test-cli-json-includes-process-tree ()
   "JSON output includes process_tree field."
-  (let ((info '((id . "svc") (type . simple) (stage . stage1)
+  (let ((info '((id . "svc") (type . simple)
                 (enabled . t) (status . "running")
                 (restart . always) (logging . t)
                 (pid . nil) (reason . nil) (delay . 0)
@@ -14512,7 +14495,7 @@ No warning is emitted when there are simply no child processes."
 
 (ert-deftest supervisor-test-cli-json-includes-authority-tier ()
   "JSON output includes authority_tier field."
-  (let ((info '((id . "svc") (type . simple) (stage . stage1)
+  (let ((info '((id . "svc") (type . simple)
                 (enabled . t) (status . "running")
                 (restart . always) (logging . t)
                 (pid . nil) (reason . nil) (delay . 0)
@@ -15668,7 +15651,7 @@ No warning is emitted when there are simply no child processes."
           (cl-letf (((symbol-function 'supervisor--reload-find-entry)
                      (lambda (_id)
                        (list "test-reload-id" "sleep 300" 0 t 'always t
-                             'simple 'stage3 nil nil 30 nil nil
+                             'simple nil nil 30 nil nil
                              nil nil nil nil nil nil
                              nil nil nil nil nil nil nil nil
                              "webuser" "webgrp")))
@@ -17065,10 +17048,8 @@ PATH set to exclude fuser."
       (should (member "logrotate" ids))
       (should (member "log-prune" ids))
       (should (eq 'oneshot (plist-get (cdr rotate) :type)))
-      (should-not (plist-get (cdr rotate) :stage))
       (should-not (plist-member (cdr rotate) :wanted-by))
       (should (eq 'oneshot (plist-get (cdr prune) :type)))
-      (should-not (plist-get (cdr prune) :stage))
       (should (equal '("logrotate") (plist-get (cdr prune) :after)))
       (should (equal '("logrotate") (plist-get (cdr prune) :requires)))
       (should-not (plist-member (cdr prune) :wanted-by)))))
@@ -17759,8 +17740,8 @@ An invalid entry ID that happens to end in .target must not pass."
     (should (equal (supervisor-entry-required-by entry)
                    '("net.target" "gui.target")))
     ;; Verify index positions
-    (should (equal (nth 31 entry) '("multi.target")))
-    (should (equal (nth 32 entry) '("net.target" "gui.target")))))
+    (should (equal (nth 30 entry) '("multi.target")))
+    (should (equal (nth 31 entry) '("net.target" "gui.target")))))
 
 (ert-deftest supervisor-test-target-id-without-suffix-invalid ()
   "Target entry ID not ending in .target is rejected."
@@ -17782,14 +17763,14 @@ An invalid entry ID that happens to end in .target must not pass."
     (should (equal (supervisor-entry-id entry) "multi.target"))
     (should (null (supervisor-entry-command entry)))
     (should (eq (supervisor-entry-type entry) 'target))
-    (should (= (length entry) 39)))
+    (should (= (length entry) 38)))
   ;; Nil car form
   (let ((entry (supervisor--parse-entry
                 '(nil :type target :id "multi.target"))))
     (should (equal (supervisor-entry-id entry) "multi.target"))
     (should (null (supervisor-entry-command entry)))
     (should (eq (supervisor-entry-type entry) 'target))
-    (should (= (length entry) 39))))
+    (should (= (length entry) 38))))
 
 (ert-deftest supervisor-test-wanted-by-shape-string-valid ()
   ":wanted-by as a string passes validation."
@@ -18353,7 +18334,7 @@ They are inert fallback definitions activated only by timers."
     (should (member "basic.target" (supervisor-entry-requires multi-entry)))
     (should (member "svc-a" (supervisor-entry-requires multi-entry)))
     ;; Tuple length unchanged
-    (should (= 39 (length multi-entry)))))
+    (should (= 38 (length multi-entry)))))
 
 (ert-deftest supervisor-test-target-auto-ordering-wants-implies-after ()
   "Target :wants automatically implies :after ordering edge."
@@ -18375,7 +18356,7 @@ They are inert fallback definitions activated only by timers."
     (should (member "basic.target" (supervisor-entry-wants multi-entry)))
     (should (member "svc-opt" (supervisor-entry-wants multi-entry)))
     ;; Tuple length unchanged
-    (should (= 39 (length multi-entry)))))
+    (should (= 38 (length multi-entry)))))
 
 (ert-deftest supervisor-test-service-requires-no-auto-after ()
   "Service :requires does NOT auto-inject :after (only targets do)."
@@ -18391,7 +18372,7 @@ They are inert fallback definitions activated only by timers."
     ;; Structural integrity: :type and :requires preserved
     (should (eq 'simple (supervisor-entry-type svc-b)))
     (should (equal '("svc-a") (supervisor-entry-requires svc-b)))
-    (should (= 39 (length svc-b)))))
+    (should (= 38 (length svc-b)))))
 
 (ert-deftest supervisor-test-builtin-targets-no-redundant-after ()
   "Built-in targets rely on auto-ordering, no explicit :after."
@@ -18465,7 +18446,7 @@ They are inert fallback definitions activated only by timers."
          (svc-b (cl-find "svc-b" (supervisor-plan-by-target plan)
                          :key #'supervisor-entry-id :test #'equal)))
     ;; After invalid dep removal, entry must retain correct structure
-    (should (= 39 (length svc-b)))
+    (should (= 38 (length svc-b)))
     (should (equal "svc-b" (supervisor-entry-id svc-b)))
     (should (equal "true" (supervisor-entry-command svc-b)))
     (should (eq 'simple (supervisor-entry-type svc-b)))
@@ -18490,7 +18471,7 @@ They are inert fallback definitions activated only by timers."
     (should (eq 'target (supervisor-entry-type upper)))
     (should (member "base.target" (supervisor-entry-after upper)))
     (should (equal '("base.target") (supervisor-entry-requires upper)))
-    (should (= 39 (length upper)))))
+    (should (= 38 (length upper)))))
 
 (ert-deftest supervisor-test-mixed-target-service-cycle-fallback ()
   "Cycle involving both target and service entries triggers fallback."
@@ -19096,7 +19077,7 @@ They are inert fallback definitions activated only by timers."
   (let* ((supervisor--target-members (make-hash-table :test 'equal))
          ;; A simple entry, not a target
          (entry (list "svc-a" "sleep 1" 0 t nil nil nil nil
-                      'simple 'stage3 nil nil nil nil nil
+                      'simple nil nil nil nil nil
                       nil nil nil nil nil nil nil nil nil nil
                       nil nil nil nil nil nil nil nil)))
     (should (eq 'simple (supervisor-entry-type entry)))
@@ -21836,7 +21817,7 @@ the invalid-hash must not contain the alias ID."
   "Parse entry extracts sandbox-profile as symbol."
   (let ((entry (supervisor--parse-entry
                 '("sleep 300" :id "svc" :sandbox-profile strict))))
-    (should (= (length entry) 39))
+    (should (= (length entry) 38))
     (should (eq (supervisor-entry-sandbox-profile entry) 'strict))))
 
 (ert-deftest supervisor-test-sandbox-parse-profile-string ()
@@ -22483,7 +22464,7 @@ even when both identity wrapper and sandbox wrapper are active."
                :sandbox-tmpfs '("/tmp/work")
                :sandbox-raw-args '("--cap-add" "CAP_NET_RAW")))
          (entry (supervisor-service-to-entry svc)))
-    (should (= (length entry) 39))
+    (should (= (length entry) 38))
     (should (eq (supervisor-entry-sandbox-profile entry) 'strict))
     (should (eq (supervisor-entry-sandbox-network entry) 'isolated))
     (should (equal (supervisor-entry-sandbox-ro-bind entry) '("/opt")))

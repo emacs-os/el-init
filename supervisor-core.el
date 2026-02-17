@@ -238,8 +238,8 @@ The first command found in variable `exec-path' is used."
 
 (defcustom supervisor-oneshot-default-blocking t
   "Default blocking behavior for oneshot processes.
-When t, oneshots block stage completion (wait for exit).
-When nil, oneshots are async (fire-and-forget, don't block stage)."
+When t, oneshots block convergence (wait for exit).
+When nil, oneshots are async (fire-and-forget, don't block convergence)."
   :type 'boolean
   :group 'supervisor)
 
@@ -258,7 +258,7 @@ Set to nil (default) for no timeout."
   :group 'supervisor)
 
 (defcustom supervisor-max-concurrent-starts nil
-  "Maximum number of processes to start concurrently within a stage.
+  "Maximum number of processes to start concurrently during startup.
 When set, limits parallel process spawning to avoid thundering herd.
 Set to nil (default) for unlimited concurrent starts."
   :type '(choice integer (const nil))
@@ -288,7 +288,7 @@ is intended for expert users only."
 (defcustom supervisor-verbose nil
   "When non-nil, log all events including informational messages.
 When nil, only warnings and errors are logged.
-Verbose events include stage start/completion, process start,
+Verbose events include startup transitions, process start,
 dependency unlocks, and restarts."
   :type 'boolean
   :group 'supervisor)
@@ -406,7 +406,7 @@ written to the supervisor log file."
         (t nil)))
 
 (defun supervisor--oneshot-blocking-p (plist)
-  "Return non-nil if oneshot should block stage completion.
+  "Return non-nil if oneshot should block convergence.
 Check PLIST for `:oneshot-blocking', `:oneshot-async', and fall back to default."
   (cond
    ((plist-member plist :oneshot-blocking)
@@ -445,7 +445,7 @@ Scan PLIST and collect any key that appears more than once."
 ;;; Entry Validation
 
 (defconst supervisor--valid-keywords
-  '(:id :type :stage :delay :after :requires :enabled :disabled
+  '(:id :type :delay :after :requires :enabled :disabled
     :restart :no-restart :logging :oneshot-blocking :oneshot-async :oneshot-timeout :tags
     :stdout-log-file :stderr-log-file
     :working-directory :environment :environment-file
@@ -467,7 +467,7 @@ Scan PLIST and collect any key that appears more than once."
     :working-directory :environment :environment-file
     :exec-stop :exec-reload :restart-sec
     :kill-signal :kill-mode :remain-after-exit :success-exit-status
-    :user :group :stage :wanted-by :required-by
+    :user :group :wanted-by :required-by
     :sandbox-profile :sandbox-network :sandbox-ro-bind :sandbox-rw-bind
     :sandbox-tmpfs :sandbox-raw-args)
   "Keywords invalid for :type target entries.")
@@ -1216,7 +1216,7 @@ and `supervisor--invalid-timers' so the dashboard reflects validation state."
 ;;;###autoload
 (defun supervisor-dry-run ()
   "Validate entries and show startup order without starting processes.
-Display staged startup order, including dependency resolution and
+Display startup order, including dependency resolution and
 cycle fallback behavior.  Uses the pure plan builder internally."
   (interactive)
 
@@ -1667,7 +1667,7 @@ When a cycle is detected, :after, :requires, and :wants edges are
 all cleared for the affected entries.")
 
 (defvar supervisor--computed-deps (make-hash-table :test 'equal)
-  "Hash table of ID -> validated :after list (same-stage, existing deps only).")
+  "Hash table of ID -> validated :after list (existing deps only).")
 
 (defvar supervisor--entry-state (make-hash-table :test 'equal)
   "Hash table of ID -> state symbol for detailed status.
@@ -1760,11 +1760,10 @@ Called with one argument: an event plist with the following keys:
   :type  - event type symbol (see `supervisor--event-types')
   :ts    - timestamp (float-time)
   :id    - entry ID string (for process events, nil for startup/global)
-  :stage - stage name symbol (for startup events, nil otherwise)
   :data  - additional payload plist (event-type specific)")
 
-(defun supervisor--emit-event (type &optional id stage data)
-  "Emit a structured event of TYPE with optional ID, STAGE, and DATA.
+(defun supervisor--emit-event (type &optional id data)
+  "Emit a structured event of TYPE with optional ID and DATA.
 TYPE must be a member of `supervisor--event-types'.
 Runs `supervisor-event-hook' with the event plist."
   (unless (memq type supervisor--event-types)
@@ -1772,7 +1771,6 @@ Runs `supervisor-event-hook' with the event plist."
   (let ((event (list :type type
                      :ts (float-time)
                      :id id
-                     :stage stage
                      :data data)))
     (run-hook-with-args 'supervisor-event-hook event)
     ;; Log startup transitions to *Messages*
@@ -1887,8 +1885,6 @@ Field documentation:
   command        - Shell command string to execute (required)
   type           - Entry type: `simple' (daemon), `oneshot' (run-once),
                    or `target' (grouping unit).  Default: `simple'
-  stage          - Startup stage: `stage1', `stage2', `stage3', or `stage4'
-                   Default: `stage3'
   delay          - Seconds to wait before starting (non-negative number)
                    Default: 0
   enabled        - Whether to start this service (boolean)
@@ -1903,14 +1899,13 @@ Field documentation:
   stderr-log-file - Optional stderr log file path (string or nil)
                    When nil, stderr follows stdout target (merged by default).
                    Default: nil
-  after          - Ordering dependencies: list of service IDs (same stage only)
+  after          - Ordering dependencies: list of service IDs
                    These control start ORDER but do not pull in services.
                    Default: nil
   requires       - Requirement dependencies: list of service IDs
                    These PULL IN services and also imply ordering.
-                   Cross-stage requires cause an error (must use after).
                    Default: nil
-  oneshot-blocking - For oneshots: block stage completion until exit (boolean)
+  oneshot-blocking - For oneshots: block convergence until exit (boolean)
                    Default: value of `supervisor-oneshot-default-blocking'
   oneshot-timeout - For oneshots: timeout in seconds, or nil for infinite
                    Default: value of `supervisor-oneshot-timeout'
@@ -1932,10 +1927,10 @@ Field documentation:
                    Default: nil
   documentation  - List of documentation URIs/paths, or nil
                    Default: nil
-  before         - Before-ordering deps: list of IDs (same stage only)
+  before         - Before-ordering deps: list of IDs
                    Inverted into :after edges during scheduling.
                    Default: nil
-  wants          - Soft dependencies: list of IDs (same stage only)
+  wants          - Soft dependencies: list of IDs
                    Missing/disabled/failed wanted units do not block.
                    Default: nil
   kill-signal    - Graceful stop signal symbol (e.g., `SIGTERM'), or nil
@@ -1965,7 +1960,6 @@ Field documentation:
   (id nil :type string :documentation "Unique identifier (required)")
   (command nil :type string :documentation "Shell command to execute (required)")
   (type 'simple :type symbol :documentation "Process type: simple or oneshot")
-  (stage 'stage3 :type symbol :documentation "Startup stage")
   (delay 0 :type number :documentation "Delay before starting (seconds)")
   (enabled t :type boolean :documentation "Whether to start this service")
   (restart 'always :type symbol :documentation "Restart policy: always, no, on-success, on-failure")
@@ -1974,9 +1968,9 @@ Field documentation:
                    :documentation "Optional stdout log file path")
   (stderr-log-file nil :type (or null string)
                    :documentation "Optional stderr log file path")
-  (after nil :type list :documentation "Ordering dependencies (same stage)")
+  (after nil :type list :documentation "Ordering dependencies")
   (requires nil :type list :documentation "Requirement dependencies")
-  (oneshot-blocking nil :type boolean :documentation "Block stage for oneshot exit")
+  (oneshot-blocking nil :type boolean :documentation "Block convergence for oneshot exit")
   (oneshot-timeout nil :type (or null number) :documentation "Oneshot timeout")
   (tags nil :type list :documentation "Filter tags")
   (working-directory nil :type (or null string) :documentation "Process working directory")
@@ -1988,7 +1982,7 @@ Field documentation:
   (description nil :type (or null string) :documentation "Human-readable description")
   (documentation nil :type list :documentation "Documentation URI/path list")
   (before nil :type list :documentation "Before-ordering dependencies")
-  (wants nil :type list :documentation "Soft dependencies (same stage)")
+  (wants nil :type list :documentation "Soft dependencies")
   (kill-signal nil :type (or null symbol) :documentation "Graceful stop signal")
   (kill-mode nil :type (or null symbol) :documentation "Kill mode: process or mixed")
   (remain-after-exit nil :type boolean :documentation "Oneshot active latch")
@@ -2009,7 +2003,6 @@ Field documentation:
 
 (defconst supervisor-service-optional-fields
   '((type . simple)
-    (stage . stage3)
     (delay . 0)
     (enabled . t)
     (restart . always)
@@ -2055,7 +2048,7 @@ A value of :defer means the default is resolved at runtime.")
 ;; The tuple format is:
 ;;   (id cmd delay enabled-p restart-policy logging-p
 ;;    stdout-log-file stderr-log-file
-;;    type stage after
+;;    type after
 ;;    oneshot-blocking oneshot-timeout tags requires
 ;;    working-directory environment environment-file
 ;;    exec-stop exec-reload restart-sec
@@ -2096,137 +2089,133 @@ Value is one of `always', `no', `on-success', or `on-failure'."
 
 (defun supervisor-entry-stdout-log-file (entry)
   "Return the stdout log file path for parsed ENTRY, or nil."
-  (and (>= (length entry) 31)
+  (and (>= (length entry) 30)
        (nth 6 entry)))
 
 (defun supervisor-entry-stderr-log-file (entry)
   "Return the stderr log file path for parsed ENTRY, or nil."
-  (and (>= (length entry) 31)
+  (and (>= (length entry) 30)
        (nth 7 entry)))
 
 (defun supervisor-entry-type (entry)
   "Return the type (`simple', `oneshot', or `target') of parsed ENTRY."
-  (nth (if (>= (length entry) 31) 8 6) entry))
-
-(defun supervisor-entry-stage (entry)
-  "Return the stage symbol of parsed ENTRY."
-  (nth (if (>= (length entry) 31) 9 7) entry))
+  (nth (if (>= (length entry) 30) 8 6) entry))
 
 (defun supervisor-entry-after (entry)
   "Return the ordering dependencies (after) of parsed ENTRY."
-  (nth (if (>= (length entry) 31) 10 8) entry))
+  (nth (if (>= (length entry) 30) 9 7) entry))
 
 (defun supervisor-entry-oneshot-blocking (entry)
-  "Return non-nil if oneshot ENTRY blocks stage completion."
-  (nth (if (>= (length entry) 31) 11 9) entry))
+  "Return non-nil if oneshot ENTRY blocks convergence."
+  (nth (if (>= (length entry) 30) 10 8) entry))
 
 (defun supervisor-entry-oneshot-timeout (entry)
   "Return the timeout in seconds for oneshot ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 12 10) entry))
+  (nth (if (>= (length entry) 30) 11 9) entry))
 
 (defun supervisor-entry-tags (entry)
   "Return the tags list of parsed ENTRY."
-  (nth (if (>= (length entry) 31) 13 11) entry))
+  (nth (if (>= (length entry) 30) 12 10) entry))
 
 (defun supervisor-entry-requires (entry)
   "Return the requirement dependencies of parsed ENTRY."
-  (nth (if (>= (length entry) 31) 14 12) entry))
+  (nth (if (>= (length entry) 30) 13 11) entry))
 
 (defun supervisor-entry-working-directory (entry)
   "Return the working directory of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 15 13) entry))
+  (nth (if (>= (length entry) 30) 14 12) entry))
 
 (defun supervisor-entry-environment (entry)
   "Return the environment alist of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 16 14) entry))
+  (nth (if (>= (length entry) 30) 15 13) entry))
 
 (defun supervisor-entry-environment-file (entry)
   "Return the environment file list of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 17 15) entry))
+  (nth (if (>= (length entry) 30) 16 14) entry))
 
 (defun supervisor-entry-exec-stop (entry)
   "Return the stop command list of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 18 16) entry))
+  (nth (if (>= (length entry) 30) 17 15) entry))
 
 (defun supervisor-entry-exec-reload (entry)
   "Return the reload command list of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 19 17) entry))
+  (nth (if (>= (length entry) 30) 18 16) entry))
 
 (defun supervisor-entry-restart-sec (entry)
   "Return the per-unit restart delay of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 20 18) entry))
+  (nth (if (>= (length entry) 30) 19 17) entry))
 
 (defun supervisor-entry-description (entry)
   "Return the description string of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 21 19) entry))
+  (nth (if (>= (length entry) 30) 20 18) entry))
 
 (defun supervisor-entry-documentation (entry)
   "Return the documentation list of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 22 20) entry))
+  (nth (if (>= (length entry) 30) 21 19) entry))
 
 (defun supervisor-entry-before (entry)
   "Return the before-ordering dependencies of parsed ENTRY."
-  (nth (if (>= (length entry) 31) 23 21) entry))
+  (nth (if (>= (length entry) 30) 22 20) entry))
 
 (defun supervisor-entry-wants (entry)
   "Return the soft dependencies of parsed ENTRY."
-  (nth (if (>= (length entry) 31) 24 22) entry))
+  (nth (if (>= (length entry) 30) 23 21) entry))
 
 (defun supervisor-entry-kill-signal (entry)
   "Return the kill signal symbol of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 25 23) entry))
+  (nth (if (>= (length entry) 30) 24 22) entry))
 
 (defun supervisor-entry-kill-mode (entry)
   "Return the kill mode symbol of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 26 24) entry))
+  (nth (if (>= (length entry) 30) 25 23) entry))
 
 (defun supervisor-entry-remain-after-exit (entry)
   "Return non-nil if oneshot ENTRY latches active on success."
-  (nth (if (>= (length entry) 31) 27 25) entry))
+  (nth (if (>= (length entry) 30) 26 24) entry))
 
 (defun supervisor-entry-success-exit-status (entry)
   "Return the success-exit-status plist of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 28 26) entry))
+  (nth (if (>= (length entry) 30) 27 25) entry))
 
 (defun supervisor-entry-user (entry)
   "Return the run-as user of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 29 27) entry))
+  (nth (if (>= (length entry) 30) 28 26) entry))
 
 (defun supervisor-entry-group (entry)
   "Return the run-as group of parsed ENTRY, or nil."
-  (nth (if (>= (length entry) 31) 30 28) entry))
+  (nth (if (>= (length entry) 30) 29 27) entry))
 
 (defun supervisor-entry-wanted-by (entry)
   "Return the wanted-by target list of parsed ENTRY."
-  (and (>= (length entry) 33) (nth 31 entry)))
+  (and (>= (length entry) 32) (nth 30 entry)))
 
 (defun supervisor-entry-required-by (entry)
   "Return the required-by target list of parsed ENTRY."
-  (and (>= (length entry) 33) (nth 32 entry)))
+  (and (>= (length entry) 32) (nth 31 entry)))
 
 (defun supervisor-entry-sandbox-profile (entry)
   "Return the sandbox profile symbol of parsed ENTRY, or nil."
-  (and (>= (length entry) 39) (nth 33 entry)))
+  (and (>= (length entry) 38) (nth 32 entry)))
 
 (defun supervisor-entry-sandbox-network (entry)
   "Return the sandbox network mode symbol of parsed ENTRY, or nil."
-  (and (>= (length entry) 39) (nth 34 entry)))
+  (and (>= (length entry) 38) (nth 33 entry)))
 
 (defun supervisor-entry-sandbox-ro-bind (entry)
   "Return the sandbox read-only bind list of parsed ENTRY, or nil."
-  (and (>= (length entry) 39) (nth 35 entry)))
+  (and (>= (length entry) 38) (nth 34 entry)))
 
 (defun supervisor-entry-sandbox-rw-bind (entry)
   "Return the sandbox read-write bind list of parsed ENTRY, or nil."
-  (and (>= (length entry) 39) (nth 36 entry)))
+  (and (>= (length entry) 38) (nth 35 entry)))
 
 (defun supervisor-entry-sandbox-tmpfs (entry)
   "Return the sandbox tmpfs mount list of parsed ENTRY, or nil."
-  (and (>= (length entry) 39) (nth 37 entry)))
+  (and (>= (length entry) 38) (nth 36 entry)))
 
 (defun supervisor-entry-sandbox-raw-args (entry)
   "Return the sandbox raw argument list of parsed ENTRY, or nil."
-  (and (>= (length entry) 39) (nth 38 entry)))
+  (and (>= (length entry) 38) (nth 37 entry)))
 
 (defun supervisor--sandbox-requesting-p (entry)
   "Return non-nil if parsed ENTRY requests sandbox.
@@ -2827,7 +2816,7 @@ The plan includes:
     ;; Phase 1b: Validate cross-entry references
     (setq valid-entries
           (supervisor--validate-references valid-entries invalid))
-    ;; Phase 2: Global dep validation and topo sort (single pass, no stage partitioning)
+    ;; Phase 2: Global dep validation and topo sort (single pass)
     (let ((all-ids (mapcar #'car valid-entries))
           (combined-deps (make-hash-table :test 'equal)))
       ;; Pre-pass: build :before inversion map across ALL entries
@@ -2920,18 +2909,18 @@ The plan includes:
                                   valid-wants))
                              combined-deps)
                     ;; Return entry with validated deps
-                    ;; :after is at index 10, :requires at index 14
+                    ;; :after is at index 9, :requires at index 13
                     (let ((new-entry entry))
                       (unless (equal after valid-after)
                         (setq new-entry
-                              (append (cl-subseq new-entry 0 10)
+                              (append (cl-subseq new-entry 0 9)
                                       (list valid-after)
-                                      (cl-subseq new-entry 11))))
+                                      (cl-subseq new-entry 10))))
                       (unless (equal requires valid-requires)
                         (setq new-entry
-                              (append (cl-subseq new-entry 0 14)
+                              (append (cl-subseq new-entry 0 13)
                                       (list valid-requires)
-                                      (cl-subseq new-entry 15))))
+                                      (cl-subseq new-entry 14))))
                       new-entry)))
                 valid-entries)))
           ;; Filter out entries marked invalid during validation
@@ -3059,35 +3048,35 @@ Returns sorted entries list."
            (let ((len (length entry)))
              (cond
               ;; Current schema entry.
-              ((>= len 31)
-               (append (cl-subseq entry 0 10)
-                       (list nil)                ; clear :after (index 10)
-                       (cl-subseq entry 11 14)
-                       (list nil)                ; clear :requires (index 14)
-                       (cl-subseq entry 15 24)
-                       (list nil)                ; clear :wants (index 24)
-                       (cl-subseq entry 25)))
+              ((>= len 30)
+               (append (cl-subseq entry 0 9)
+                       (list nil)                ; clear :after (index 9)
+                       (cl-subseq entry 10 13)
+                       (list nil)                ; clear :requires (index 13)
+                       (cl-subseq entry 14 23)
+                       (list nil)                ; clear :wants (index 23)
+                       (cl-subseq entry 24)))
               ;; Legacy full entry.
-              ((>= len 23)
-               (append (cl-subseq entry 0 8)
-                       (list nil)                ; clear :after (index 8)
-                       (cl-subseq entry 9 12)
-                       (list nil)                ; clear :requires (index 12)
-                       (cl-subseq entry 13 22)
-                       (list nil)                ; clear :wants (index 22)
-                       (cl-subseq entry 23)))
-              ;; Legacy 13+ entry.
-              ((>= len 13)
-               (append (cl-subseq entry 0 8)
+              ((>= len 22)
+               (append (cl-subseq entry 0 7)
+                       (list nil)                ; clear :after (index 7)
+                       (cl-subseq entry 8 11)
+                       (list nil)                ; clear :requires (index 11)
+                       (cl-subseq entry 12 21)
+                       (list nil)                ; clear :wants (index 21)
+                       (cl-subseq entry 22)))
+              ;; Legacy 12+ entry.
+              ((>= len 12)
+               (append (cl-subseq entry 0 7)
                        (list nil)                ; clear :after
-                       (cl-subseq entry 9 12)
+                       (cl-subseq entry 8 11)
                        (list nil)                ; clear :requires
-                       (cl-subseq entry 13)))
-              ;; Legacy 11+ entry.
-              ((>= len 11)
-               (append (cl-subseq entry 0 8)
+                       (cl-subseq entry 12)))
+              ;; Legacy 10+ entry.
+              ((>= len 10)
+               (append (cl-subseq entry 0 7)
                        (list nil)                ; clear :after
-                       (cl-subseq entry 9)))
+                       (cl-subseq entry 8)))
               (t entry))))
          entries)))))
 
@@ -3165,8 +3154,8 @@ or nil if VAL is nil."
 
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
-Return a 39-element list: (id cmd delay enabled-p restart-policy
-logging-p stdout-log-file stderr-log-file type stage after
+Return a 38-element list: (id cmd delay enabled-p restart-policy
+logging-p stdout-log-file stderr-log-file type after
 oneshot-blocking oneshot-timeout tags requires working-directory
 environment environment-file exec-stop exec-reload restart-sec
 description documentation before wants kill-signal kill-mode
@@ -3184,36 +3173,35 @@ Indices (schema v1):
   6  stdout-log-file     - explicit stdout log file path or nil
   7  stderr-log-file     - explicit stderr log file path or nil
   8  type                - `simple', `oneshot', or `target'
-  9  stage               - startup stage symbol
-  10 after               - ordering dependencies (same stage)
-  11 oneshot-blocking    - block stage for oneshot exit
-  12 oneshot-timeout     - timeout for blocking oneshots
-  13 tags                - list of filter tags
-  14 requires            - requirement dependencies
-  15 working-directory   - process working directory or nil
-  16 environment         - environment alist or nil
-  17 environment-file    - list of env-file paths or nil
-  18 exec-stop           - list of stop commands or nil
-  19 exec-reload         - list of reload commands or nil
-  20 restart-sec         - per-unit restart delay or nil
-  21 description         - human-readable description or nil
-  22 documentation       - list of doc URIs/paths or nil
-  23 before              - before-ordering deps or nil
-  24 wants               - soft deps or nil
-  25 kill-signal         - canonical signal symbol or nil
-  26 kill-mode           - `process' or `mixed' or nil
-  27 remain-after-exit   - oneshot active latch boolean
-  28 success-exit-status - plist (:codes :signals) or nil
-  29 user                - run-as user string/int or nil
-  30 group               - run-as group string/int or nil
-  31 wanted-by           - target IDs (soft membership) or nil
-  32 required-by         - target IDs (hard requirement) or nil
-  33 sandbox-profile     - sandbox profile symbol or nil
-  34 sandbox-network     - sandbox network mode symbol or nil
-  35 sandbox-ro-bind     - list of read-only bind paths or nil
-  36 sandbox-rw-bind     - list of read-write bind paths or nil
-  37 sandbox-tmpfs       - list of tmpfs mount paths or nil
-  38 sandbox-raw-args    - list of raw bwrap argument strings or nil
+  9  after               - ordering dependencies
+  10 oneshot-blocking    - block convergence for oneshot exit
+  11 oneshot-timeout     - timeout for blocking oneshots
+  12 tags                - list of filter tags
+  13 requires            - requirement dependencies
+  14 working-directory   - process working directory or nil
+  15 environment         - environment alist or nil
+  16 environment-file    - list of env-file paths or nil
+  17 exec-stop           - list of stop commands or nil
+  18 exec-reload         - list of reload commands or nil
+  19 restart-sec         - per-unit restart delay or nil
+  20 description         - human-readable description or nil
+  21 documentation       - list of doc URIs/paths or nil
+  22 before              - before-ordering deps or nil
+  23 wants               - soft deps or nil
+  24 kill-signal         - canonical signal symbol or nil
+  25 kill-mode           - `process' or `mixed' or nil
+  26 remain-after-exit   - oneshot active latch boolean
+  27 success-exit-status - plist (:codes :signals) or nil
+  28 user                - run-as user string/int or nil
+  29 group               - run-as group string/int or nil
+  30 wanted-by           - target IDs (soft membership) or nil
+  31 required-by         - target IDs (hard requirement) or nil
+  32 sandbox-profile     - sandbox profile symbol or nil
+  33 sandbox-network     - sandbox network mode symbol or nil
+  34 sandbox-ro-bind     - list of read-only bind paths or nil
+  35 sandbox-rw-bind     - list of read-write bind paths or nil
+  36 sandbox-tmpfs       - list of tmpfs mount paths or nil
+  37 sandbox-raw-args    - list of raw bwrap argument strings or nil
 
 ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
@@ -3222,7 +3210,7 @@ Use accessor functions instead of direct indexing for new code."
              (id (or (car tokens)
                      (error "Supervisor: empty command string")))
              (id (file-name-nondirectory id)))
-        (list id entry 0 t 'always t nil nil 'simple 'stage3 nil
+        (list id entry 0 t 'always t nil nil 'simple nil
               supervisor-oneshot-default-blocking supervisor-oneshot-timeout nil nil
               nil nil nil nil nil nil
               nil nil nil nil nil nil nil nil
@@ -3268,9 +3256,7 @@ Use accessor functions instead of direct indexing for new code."
                       t))
            (stdout-log-file (plist-get plist :stdout-log-file))
            (stderr-log-file (plist-get plist :stderr-log-file))
-           ;; :stage is vestigial (always stage3)
-           (stage 'stage3)
-           ;; :after - ordering dependencies (same stage only, start order)
+           ;; :after - ordering dependencies (start order)
            (after (supervisor--normalize-after (plist-get plist :after)))
            ;; :requires - requirement dependencies (pull-in + ordering)
            (requires (supervisor--normalize-after (plist-get plist :requires)))
@@ -3282,7 +3268,7 @@ Use accessor functions instead of direct indexing for new code."
            (tags (cond ((null tags-raw) nil)
                        ((listp tags-raw) tags-raw)
                        (t (list tags-raw))))
-           ;; P2 fields (indices 13-18)
+           ;; P2 fields (indices 14-19)
            (working-directory (plist-get plist :working-directory))
            (environment (plist-get plist :environment))
            (environment-file
@@ -3295,7 +3281,7 @@ Use accessor functions instead of direct indexing for new code."
             (supervisor--normalize-string-or-list
              (plist-get plist :exec-reload)))
            (restart-sec (plist-get plist :restart-sec))
-           ;; PT3 fields (indices 19-26)
+           ;; PT3 fields (indices 20-27)
            (description (plist-get plist :description))
            (documentation-raw (plist-get plist :documentation))
            (documentation
@@ -3317,17 +3303,17 @@ Use accessor functions instead of direct indexing for new code."
            (success-exit-status-raw (plist-get plist :success-exit-status))
            (success-exit-status
             (supervisor--normalize-success-exit-status success-exit-status-raw))
-           ;; Identity fields (indices 27-28)
+           ;; Identity fields (indices 28-29)
            (user (plist-get plist :user))
            (group (plist-get plist :group))
-           ;; Target membership fields (indices 29-30)
+           ;; Target membership fields (indices 30-31)
            (wanted-by
             (supervisor--deduplicate-stable
              (supervisor--normalize-after (plist-get plist :wanted-by))))
            (required-by
             (supervisor--deduplicate-stable
              (supervisor--normalize-after (plist-get plist :required-by))))
-           ;; Sandbox fields (indices 33-38)
+           ;; Sandbox fields (indices 32-37)
            (sandbox-profile-raw (plist-get plist :sandbox-profile))
            (sandbox-profile (when sandbox-profile-raw
                               (if (stringp sandbox-profile-raw)
@@ -3355,7 +3341,7 @@ Use accessor functions instead of direct indexing for new code."
              (plist-get plist :sandbox-raw-args))))
       (list id cmd delay enabled restart logging
             stdout-log-file stderr-log-file
-            type stage after
+            type after
             oneshot-blocking oneshot-timeout tags requires
             working-directory environment environment-file
             exec-stop exec-reload restart-sec
@@ -3373,7 +3359,6 @@ Use accessor functions instead of direct indexing for new code."
    :id (supervisor-entry-id entry)
    :command (supervisor-entry-command entry)
    :type (supervisor-entry-type entry)
-   :stage (supervisor-entry-stage entry)
    :delay (supervisor-entry-delay entry)
    :enabled (supervisor-entry-enabled-p entry)
    :restart (supervisor-entry-restart-policy entry)
@@ -3421,7 +3406,6 @@ Use accessor functions instead of direct indexing for new code."
         (supervisor-service-stdout-log-file service)
         (supervisor-service-stderr-log-file service)
         (supervisor-service-type service)
-        (supervisor-service-stage service)
         (supervisor-service-after service)
         (supervisor-service-oneshot-blocking service)
         (supervisor-service-oneshot-timeout service)
@@ -3614,7 +3598,7 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
         (puthash id 0 in-degree)
         (puthash id nil dependents)
         (cl-incf idx)))
-    ;; Build graph and record computed deps (validated, same-stage only)
+    ;; Build graph and record computed deps (validated, existing only)
     ;; Combine :after, :requires, and :wants for dependency tracking
     (dolist (entry entries)
       (let* ((id (supervisor-entry-id entry))
@@ -3657,49 +3641,49 @@ Use original order as tie-breaker.  Return sorted list or original on cycle."
       (if (= (length result) (length entries))
           (nreverse result)
         (supervisor--log 'warning "cycle detected in dependencies, using list order")
-        ;; Mark all entries in this stage as having cycle fallback and clear
+        ;; Mark all entries as having cycle fallback and clear
         ;; computed deps to reflect post-fallback state (no edges)
         (dolist (entry entries)
           (let ((id (supervisor-entry-id entry)))
             (puthash id t supervisor--cycle-fallback-ids)
             (puthash id nil supervisor--computed-deps)))
         ;; Return entries with :after, :requires, and :wants stripped
-        ;; Handle full (31-element), 13-element, and 11-element entries
+        ;; Handle full (30-element), 13-element, and 11-element entries
         (mapcar (lambda (entry)
                   (let ((len (length entry)))
                     (cond
-                     ;; Current schema entry: clear :after (10), :requires (14),
-                     ;; and :wants (24).
-                     ((>= len 31)
-                      (append (cl-subseq entry 0 10)
+                     ;; Current schema entry: clear :after (9), :requires (13),
+                     ;; and :wants (23).
+                     ((>= len 30)
+                      (append (cl-subseq entry 0 9)
                               (list nil)                ; clear :after
-                              (cl-subseq entry 11 14)
+                              (cl-subseq entry 10 13)
                               (list nil)                ; clear :requires
-                              (cl-subseq entry 15 24)
+                              (cl-subseq entry 14 23)
                               (list nil)                ; clear :wants
-                              (cl-subseq entry 25)))    ; preserve remaining
-                     ;; Legacy full entry: clear :after (8), :requires (12),
-                     ;; and :wants (22).
-                     ((>= len 23)
-                      (append (cl-subseq entry 0 8)
+                              (cl-subseq entry 24)))    ; preserve remaining
+                     ;; Legacy full entry: clear :after (7), :requires (11),
+                     ;; and :wants (21).
+                     ((>= len 22)
+                      (append (cl-subseq entry 0 7)
                               (list nil)                ; clear :after
-                              (cl-subseq entry 9 12)
+                              (cl-subseq entry 8 11)
                               (list nil)                ; clear :requires
-                              (cl-subseq entry 13 22)
+                              (cl-subseq entry 12 21)
                               (list nil)                ; clear :wants
-                              (cl-subseq entry 23)))
-                     ;; 13+ element entry: clear :after (8) and :requires (12)
-                     ((>= len 13)
-                      (append (cl-subseq entry 0 8)
+                              (cl-subseq entry 22)))
+                     ;; 12+ element entry: clear :after (7) and :requires (11)
+                     ((>= len 12)
+                      (append (cl-subseq entry 0 7)
                               (list nil)                ; clear :after
-                              (cl-subseq entry 9 12)
+                              (cl-subseq entry 8 11)
                               (list nil)                ; clear :requires
-                              (cl-subseq entry 13)))    ; preserve new fields
-                     ;; 11-element legacy entry: just clear :after (8)
-                     ((>= len 11)
-                      (append (cl-subseq entry 0 8)
+                              (cl-subseq entry 12)))    ; preserve new fields
+                     ;; 10-element legacy entry: just clear :after (7)
+                     ((>= len 10)
+                      (append (cl-subseq entry 0 7)
                               (list nil)                ; clear :after
-                              (cl-subseq entry 9)))
+                              (cl-subseq entry 8)))
                      ;; Shorter entries: return as-is
                      (t entry))))
                 entries)))))
@@ -4156,7 +4140,7 @@ No-op if DAG scheduler is not active (e.g., manual starts)."
                                    (gethash b supervisor--dag-id-to-index 999)))))
       (dolist (dep-id newly-ready)
         (supervisor--dag-try-start-entry dep-id)))
-    ;; Check if stage is complete
+    ;; Check if startup is complete
     (supervisor--dag-check-complete)))
 
 (defun supervisor--dag-process-pending-starts ()
@@ -4250,11 +4234,11 @@ degraded (any failed).  Wanted-member failures do not block convergence."
                                            (gethash id
                                                     supervisor--target-convergence-reasons)
                                            ", "))
-            (supervisor--emit-event 'target-degraded id nil
+            (supervisor--emit-event 'target-degraded id
                                     (list :reasons degraded-reasons)))
         (puthash id 'reached supervisor--target-convergence)
         (supervisor--log 'info "target %s reached" id)
-        (supervisor--emit-event 'target-reached id nil nil))
+        (supervisor--emit-event 'target-reached id nil))
       ;; Unlock dependents regardless of reached/degraded
       (supervisor--dag-mark-ready id))))
 
@@ -4333,7 +4317,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
 (defun supervisor--dag-handle-spawn-failure (id)
   "Handle spawn failure for ID by marking state and unblocking dependents."
   (supervisor--transition-state id 'failed-to-spawn)
-  (supervisor--emit-event 'process-failed id nil nil)
+  (supervisor--emit-event 'process-failed id nil)
   (supervisor--dag-finish-spawn-attempt)
   (supervisor--dag-mark-ready id))
 
@@ -4344,14 +4328,14 @@ Mark ready immediately for simple processes, on exit for oneshot."
                         (lambda ()
                           (supervisor--log 'warning "oneshot %s timed out after %ds" id timeout)
                           (supervisor--dag-mark-ready id)
-                          (supervisor--emit-event 'process-ready id nil
+                          (supervisor--emit-event 'process-ready id
                                                   (list :type 'oneshot :timeout t))))
            supervisor--dag-timeout-timers))
 
 (defun supervisor--dag-handle-spawn-success (id type oneshot-timeout)
   "Handle successful spawn of ID with TYPE and ONESHOT-TIMEOUT."
   (supervisor--transition-state id 'started)
-  (supervisor--emit-event 'process-started id nil (list :type type))
+  (supervisor--emit-event 'process-started id (list :type type))
   (supervisor--dag-finish-spawn-attempt)
   (if (eq type 'oneshot)
       (progn
@@ -4361,7 +4345,7 @@ Mark ready immediately for simple processes, on exit for oneshot."
     ;; Simple process: spawned = ready
     (supervisor--log 'info "started %s" id)
     (supervisor--dag-mark-ready id)
-    (supervisor--emit-event 'process-ready id nil (list :type type))))
+    (supervisor--emit-event 'process-ready id (list :type type))))
 
 (defun supervisor--dag-do-start (id cmd logging-p stdout-log-file stderr-log-file
                                     type restart-policy
@@ -4398,7 +4382,7 @@ are passed through to `supervisor--start-process'."
           (supervisor--dag-handle-spawn-success id type oneshot-timeout))))))
 
 (defun supervisor--dag-check-complete ()
-  "Check if current stage is complete and invoke callback if so."
+  "Check if startup is complete and invoke callback if so."
   (when (and supervisor--dag-complete-callback
              ;; All entries started (actually spawned, not just scheduled)
              (= (hash-table-count supervisor--dag-started)
@@ -4429,7 +4413,7 @@ are passed through to `supervisor--start-process'."
                (when (timerp timer)
                  (cancel-timer timer)))
              supervisor--dag-delay-timers))
-  ;; Cancel stage timeout timer
+  ;; Cancel startup timeout timer
   (when (timerp supervisor--dag-timeout-timer)
     (cancel-timer supervisor--dag-timeout-timer))
   (setq supervisor--dag-in-degree nil)
@@ -4687,7 +4671,7 @@ latch so the unit reports status `active' until explicitly stopped."
     (funcall (car cb-entry) (not supervisor--shutting-down)))
   ;; Notify DAG scheduler and emit ready event
   (supervisor--dag-mark-ready name)
-  (supervisor--emit-event 'process-ready name nil
+  (supervisor--emit-event 'process-ready name
                           (list :type 'oneshot :exit-code exit-code)))
 
 (defun supervisor--handle-shutdown-exit ()
@@ -4773,7 +4757,7 @@ SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox."
                             :timestamp (float-time))
                  supervisor--last-exit-info)
         ;; Emit process exit event
-        (supervisor--emit-event 'process-exit name nil
+        (supervisor--emit-event 'process-exit name
                                 (list :status exit-status :code exit-code))
         ;; Handle oneshot completion
         (when (eq type 'oneshot)
@@ -5531,7 +5515,7 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
         (if (not (executable-find (car args)))
             (progn
               (supervisor--log 'warning "executable not found for %s: %s" id (car args))
-              (supervisor--emit-event 'process-failed id nil nil)
+              (supervisor--emit-event 'process-failed id nil)
               (when callback (funcall callback nil)))
           ;; Start the process
           (let ((proc (supervisor--start-process
@@ -5544,9 +5528,9 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
                        sandbox-entry)))
             (if (not proc)
                 (progn
-                  (supervisor--emit-event 'process-failed id nil nil)
+                  (supervisor--emit-event 'process-failed id nil)
                   (when callback (funcall callback nil)))
-              (supervisor--emit-event 'process-started id nil (list :type type))
+              (supervisor--emit-event 'process-started id (list :type type))
               (if (eq type 'oneshot)
                   ;; Wait for oneshot via timer (no polling loop)
                   ;; process-ready is emitted by oneshot exit handler
@@ -5561,7 +5545,7 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
                        (when callback (funcall callback completed)))))
                 ;; Simple process: spawned = ready
                 (supervisor--log 'info "started %s" id)
-                (supervisor--emit-event 'process-ready id nil (list :type type))
+                (supervisor--emit-event 'process-ready id (list :type type))
                 (when callback (funcall callback t))))))))))
 
 (defun supervisor--manual-start (id)
@@ -6130,7 +6114,7 @@ briefly for processes to terminate, ensuring a clean exit."
            supervisor--restart-timers)
   (clrhash supervisor--restart-timers)
   (supervisor--dag-cleanup)
-  (supervisor--emit-event 'cleanup nil nil nil)
+  (supervisor--emit-event 'cleanup nil nil)
   ;; Send SIGKILL to all processes immediately
   (maphash (lambda (_name proc)
              (when (process-live-p proc)
@@ -6180,7 +6164,7 @@ For `kill-emacs-hook', use `supervisor-stop-now' instead."
   (clrhash supervisor--restart-timers)
   ;; Clean up DAG scheduler
   (supervisor--dag-cleanup)
-  (supervisor--emit-event 'cleanup nil nil nil)
+  (supervisor--emit-event 'cleanup nil nil)
   ;; Run exec-stop for applicable units before signal escalation.
   ;; The shutdown-remaining guard in supervisor--handle-shutdown-exit
   ;; prevents premature completion if processes exit during this phase.
@@ -6376,7 +6360,7 @@ Returns a plist with :stopped and :started counts."
                        (progn
                          (supervisor--log 'warning "reconcile: executable not found for %s: %s"
                                           id (car args))
-                         (supervisor--emit-event 'process-failed id nil nil))
+                         (supervisor--emit-event 'process-failed id nil))
                      (supervisor--log 'info "reconcile: starting %s entry %s" reason id)
                      (let ((proc (supervisor--start-process
                                   id cmd logging-p type restart-policy nil
@@ -6388,12 +6372,12 @@ Returns a plist with :stopped and :started counts."
                                   sandbox-entry)))
                        (if proc
                            (progn
-                             (supervisor--emit-event 'process-started id nil (list :type type))
+                             (supervisor--emit-event 'process-started id (list :type type))
                              ;; Simple processes are immediately ready; oneshots ready on exit
                              (when (eq type 'simple)
-                               (supervisor--emit-event 'process-ready id nil (list :type type)))
+                               (supervisor--emit-event 'process-ready id (list :type type)))
                              (cl-incf started))
-                         (supervisor--emit-event 'process-failed id nil nil)))))))))
+                         (supervisor--emit-event 'process-failed id nil)))))))))
           ;; noop and skip actions require no work
           (_ nil))))
     (list :stopped stopped :started started)))
@@ -6708,8 +6692,7 @@ Services are defined as unit files in `supervisor-unit-authority-path'
   ;; ~/.config/supervisor.el/nm-applet.el
   \\=(:id \"nm-applet\"
    :command \"nm-applet\"
-   :type simple
-   :stage stage3)
+   :type simple)
 
 Enable in your init file:
 
@@ -6725,9 +6708,7 @@ Or with `use-package':
 Process types:
 - simple: Long-running daemons, restarted on crash per :restart policy
 - oneshot: Run-once scripts, exit is expected
-
-Stages (run sequentially):
-- stage1, stage2, stage3, stage4: run in order (stage3 is default)
+- target: Grouping units for dependency ordering
 
 Use `M-x supervisor' to open the dashboard for monitoring and control.
 Use `M-x supervisor-verify' to check config without starting processes."

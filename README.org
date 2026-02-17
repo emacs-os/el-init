@@ -367,7 +367,7 @@ Duplicate IDs are deterministic:
 
 Planner rules:
 
-- Dependencies are global (no stage partitioning).
+- Dependencies are global.
 - ~:before~ is inverted into ~:after~ edges before sorting.
 - Missing ~:after~ and ~:before~ refs are dropped with warning.
 - Missing ~:wants~ refs are dropped.
@@ -390,7 +390,7 @@ Valid entries are normalized to schema v1 tuple form:
 #+begin_src elisp
 (id cmd delay enabled-p restart-policy logging-p
     stdout-log-file stderr-log-file
-    type stage after
+    type after
     oneshot-blocking oneshot-timeout tags requires
     working-directory environment environment-file
     exec-stop exec-reload restart-sec
@@ -403,8 +403,6 @@ Valid entries are normalized to schema v1 tuple form:
 
 Accessor functions (~supervisor-entry-id~, ~supervisor-entry-command~, etc.) are
 the canonical way to read entry fields.
-The internal ~stage~ slot is retained for compatibility and is currently fixed
-to ~stage3~ for user-defined entries.
 
 ** Validation and Dry-Run Commands
 
@@ -701,7 +699,7 @@ targets activate only when explicitly requested via ~isolate~ or ~init~.
 
 ** Async DAG Scheduler Semantics
 
-Scheduling is a global DAG over the activation closure (no stage partitioning).
+Scheduling is a global DAG over the activation closure.
 
 - In-degree 0 entries are eligible to start.
 - Dependents unlock when prerequisites become ready.
@@ -1467,14 +1465,10 @@ All dashboard faces are in customization group ~supervisor~:
 | ~supervisor-type-simple~ | Type ~simple~ |
 | ~supervisor-type-oneshot~ | Type ~oneshot~ |
 | ~supervisor-type-timer~ | Type ~timer~ rows |
-| ~supervisor-stage-1~ | Compatibility face (currently unused) |
-| ~supervisor-stage-2~ | Compatibility face (currently unused) |
-| ~supervisor-stage-3~ | Compatibility face (currently unused) |
-| ~supervisor-stage-4~ | Compatibility face (currently unused) |
 | ~supervisor-enabled-yes~ | Enabled column (~yes~) |
 | ~supervisor-enabled-no~ | Enabled column (~no~) |
 | ~supervisor-reason~ | Reason column values |
-| ~supervisor-stage-separator~ | Section header/separator rows |
+| ~supervisor-section-separator~ | Section header/separator rows |
 
 * CLI (~sbin/supervisorctl~)
 :PROPERTIES:
@@ -1684,7 +1678,7 @@ Status JSON top-level keys (~status ID...~):
 
 Per-entry status JSON object keys (~entries~ array):
 
-- ~id~, ~type~, ~stage~, ~enabled~, ~status~, ~restart~, ~logging~, ~pid~,
+- ~id~, ~type~, ~enabled~, ~status~, ~restart~, ~logging~, ~pid~,
   ~reason~, ~delay~, ~after~, ~requires~
 - ~start_time~, ~ready_time~, ~duration~, ~unit_file~, ~authority_tier~
 - ~working_directory~, ~environment~, ~environment_file~, ~exec_stop~,
@@ -1754,7 +1748,6 @@ Empty collections are encoded as arrays (not ~null~).
 - ~:type~ (symbol)
 - ~:ts~ (float timestamp)
 - ~:id~ (string or ~nil~)
-- ~:stage~ (symbol or ~nil~; currently emitted as ~nil~)
 - ~:data~ (plist)
 
 Event types:
