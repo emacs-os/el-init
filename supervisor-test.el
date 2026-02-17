@@ -20763,6 +20763,80 @@ the invalid-hash must not contain the alias ID."
                        plan)))
           (should-not reason))))))
 
+(ert-deftest supervisor-test-cli-list-timers-init-transition-human ()
+  "The `list-timers' human output carries init-transition reason text."
+  (supervisor-test-with-unit-files
+      '((nil :id "poweroff.target" :type target))
+    (let ((supervisor-timer-subsystem-mode t)
+          (supervisor-mode t)
+          (supervisor-timers '((:id "timer-poweroff"
+                               :target "poweroff.target"
+                               :on-startup-sec 60)))
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal)))
+      (let ((result (supervisor--cli-dispatch '("list-timers"))))
+        (should (supervisor-cli-result-p result))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let ((output (supervisor-cli-result-output result)))
+          (should (string-match-p "timer-poweroff" output))
+          (should (string-match-p "init-transition" output))
+          (should (string-match-p "not timer-eligible" output)))))))
+
+(ert-deftest supervisor-test-cli-list-timers-init-transition-json ()
+  "The `list-timers --json' output carries init-transition reason text."
+  (supervisor-test-with-unit-files
+      '((nil :id "poweroff.target" :type target))
+    (let ((supervisor-timer-subsystem-mode t)
+          (supervisor-mode t)
+          (supervisor-timers '((:id "timer-poweroff"
+                               :target "poweroff.target"
+                               :on-startup-sec 60)))
+          (supervisor--timer-list nil)
+          (supervisor--timer-state (make-hash-table :test 'equal))
+          (supervisor--invalid-timers (make-hash-table :test 'equal)))
+      (let ((result (supervisor--cli-dispatch '("--json" "list-timers"))))
+        (should (supervisor-cli-result-p result))
+        (should (= supervisor-cli-exit-success
+                    (supervisor-cli-result-exitcode result)))
+        (let* ((json-object-type 'alist)
+               (json-array-type 'list)
+               (data (json-read-from-string
+                      (supervisor-cli-result-output result)))
+               (invalid (alist-get 'invalid data))
+               (entry (car invalid)))
+          (should invalid)
+          (should (equal "timer-poweroff" (alist-get 'id entry)))
+          (should (string-match-p "init-transition"
+                                  (alist-get 'reason entry)))
+          (should (string-match-p "not timer-eligible"
+                                  (alist-get 'reason entry))))))))
+
+(ert-deftest supervisor-test-dashboard-timer-init-transition-reason ()
+  "Dashboard timer section carries init-transition reason text."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--timer-state (make-hash-table :test 'equal))
+           (supervisor--invalid-timers (make-hash-table :test 'equal))
+           (supervisor-dashboard-show-timers t)
+           (supervisor-timer-subsystem-mode t)
+           (supervisor--timer-list nil)
+           (reason ":target 'poweroff.target' is an init-transition target and is not timer-eligible"))
+      (puthash "timer-poweroff" reason supervisor--invalid-timers)
+      (let ((entries (supervisor--get-entries)))
+        (let ((bad-row (cl-find (cons :timer "timer-poweroff") entries
+                                :key #'car :test #'equal)))
+          (should bad-row)
+          ;; Reason is at index 6 in dashboard vector
+          (should (string-match-p "init-transition"
+                                  (aref (cadr bad-row) 6)))
+          (should (string-match-p "not timer-eligible"
+                                  (aref (cadr bad-row) 6))))))))
+
 (ert-deftest supervisor-test-cli-explain-target-alias-shows-resolved ()
   "Explain-target for alias shows resolved canonical target."
   (supervisor-test-with-unit-files
