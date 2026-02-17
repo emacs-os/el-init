@@ -21584,18 +21584,22 @@ entries list and eligible for DAG startup."
                                   (string-match-p "sandboxed-svc" w)))
                            warnings)))))))
 
-(ert-deftest supervisor-test-sandbox-nil-bind-not-requesting ()
-  "Entry with :sandbox-ro-bind nil is not treated as sandbox-requesting.
-Both validation and runtime must agree: nil-valued sandbox keys are not
-sandbox-requesting, so the entry validates even without bwrap."
+(ert-deftest supervisor-test-sandbox-nil-bind-key-presence-requesting ()
+  "Entry with :sandbox-ro-bind nil is sandbox-requesting at validation.
+Per plan contract, key presence (not truthy value) triggers sandbox-request
+detection in validation.  Validation uses plist-member and rejects when
+bwrap is missing.  Runtime uses truthy checks on parsed tuples (where nil
+and absent are indistinguishable) and correctly does not apply sandbox."
   (cl-letf (((symbol-function 'executable-find)
              (lambda (name)
                (unless (equal name "bwrap")
                  (executable-find name)))))
-    ;; Validation should pass (not sandbox-requesting, so no bwrap check)
-    (should-not (supervisor--validate-entry
-                 '("cmd" :id "svc" :sandbox-ro-bind nil)))
-    ;; Runtime detection should also report not sandbox-requesting
+    ;; Validation detects key presence: sandbox-requesting, rejected for bwrap
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc" :sandbox-ro-bind nil))))
+      (should (string-match-p "bwrap" reason)))
+    ;; Runtime detection uses truthy checks on parsed tuple: not requesting
+    ;; (harmless -- validation already gated entry acceptance)
     (let ((entry (supervisor--parse-entry
                   '("cmd" :id "svc" :sandbox-ro-bind nil))))
       (should-not (supervisor--sandbox-requesting-p entry)))))
