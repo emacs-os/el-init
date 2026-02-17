@@ -2196,8 +2196,15 @@ Value is one of `always', `no', `on-success', or `on-failure'."
 (defun supervisor--sandbox-requesting-p (entry)
   "Return non-nil if parsed ENTRY requests sandbox.
 A unit is sandbox-requesting when `:sandbox-profile' is set to
-anything other than `none', or when any sandbox key other than
-`:sandbox-profile' is present."
+anything other than `none', or when any other sandbox field has a
+truthy (non-nil) value.
+
+NOTE: This function operates on parsed tuples where nil and absent
+are indistinguishable.  An entry with a nil-valued sandbox key
+\(e.g., `:sandbox-ro-bind nil') will not be detected here.
+Validation (`supervisor--validate-entry') is the authoritative
+gating point and uses `plist-member' for key-presence semantics.
+All runtime call sites are behind validation, so this is safe."
   (or (and (supervisor-entry-sandbox-profile entry)
            (not (eq (supervisor-entry-sandbox-profile entry) 'none)))
       (supervisor-entry-sandbox-network entry)
