@@ -9,25 +9,44 @@ familiar systemd-like interface (service types, dependencies, restart
 policies) adapted for Emacs.  ~M-x supervisor~ is the main interface:
 start, stop, inspect, and manage everything from inside Emacs.
 
-** Features (at a glance)
+** Features
 
-- *Dashboard*: ~M-x supervisor~ -- live view with lifecycle actions, policy
-  changes, dependency inspection, and log viewing.
-- *Target-based startup*: systemd-style targets with DAG ordering
-  (~:after~, ~:before~), pull-in (~:requires~, ~:wants~), and membership
-  (~:wanted-by~, ~:required-by~).
-- *Service types*: long-running ~simple~ services and run-once ~oneshot~ tasks
-  with configurable restart policies.
-- *Persistent overrides*: enable/disable, mask/unmask, restart-policy, and
+- *DAG-based startup ordering* -- topological sort with ~:after~, ~:requires~,
+  ~:wants~, ~:before~ dependency edges.  Targets (~default.target~,
+  ~multi-user.target~, ~graphical.target~) group services into activation
+  stages, just like systemd.
+- *Event-driven process monitoring* -- uses Emacs's built-in
+  ~set-process-sentinel~ for zero-overhead exit detection.  No polling.
+  The hot path is a sentinel lambda that does a few hash lookups and
+  optionally schedules a ~run-at-time~ restart.
+- *Crash loop detection* -- configurable restart window (default: 3 restarts
+  within 60 seconds marks a service as FAILED).  Per-unit ~:restart-sec~ for
+  individual restart delays.
+- *Lifecycle FSM* -- proper state machine with validated transitions:
+  pending -> waiting-on-deps -> delayed -> started -> failed-to-spawn.
+- *Structured event system* -- hook-based events for process-exit,
+  process-started, target-reached, target-degraded, timer-trigger, and more.
+  Full programmatic integration via ~supervisor-event-hook~.
+- *Service types* -- long-running ~simple~ daemons with restart policies and
+  run-once ~oneshot~ tasks with configurable blocking and timeout.
+- *Graceful shutdown* -- SIGTERM with configurable timeout, then SIGKILL.
+  Sentinel-driven completion tracking (no polling).
+- *3-tier authority model* -- ~/usr/lib/supervisor.el/~ (vendor),
+  ~/etc/supervisor.el/~ (admin), =~/.config/supervisor.el/= (user).
+  Higher tiers override lower tiers completely.  Daemon-reload support.
+- *Persistent overrides* -- enable/disable, mask/unmask, restart-policy, and
   logging overrides persist across restarts.
-- *Authority-tier unit files*: shipped defaults overridden by higher-precedence
-  user tiers, with daemon-reload support.
-- *CLI*: ~sbin/supervisorctl~ for scripting and remote use (human and JSON).
-- *Timers*: calendar and relative timers for oneshot, simple, and target units
-  with persistent catch-up semantics.
-- *Logging*: external log writers plus rotate/prune tooling for bounded growth.
-- *Sandbox*: optional bubblewrap integration with curated profiles for process
-  isolation (Linux only).
+- *Timers* -- calendar and relative timers for oneshot, simple, and target
+  units with persistent catch-up semantics after downtime.
+- *Dashboard* -- ~M-x supervisor~ for a live view with lifecycle actions,
+  policy changes, dependency inspection, and log viewing.
+- *CLI* -- ~sbin/supervisorctl~ for scripting and remote use (human and JSON
+  output).
+- *Logging* -- external log writer helpers with rotation and pruning for
+  bounded growth (configurable per-file and total size caps).
+- *Sandbox* -- optional bubblewrap integration with curated profiles for
+  process isolation (Linux only).
+- *22,000 lines of tests* -- comprehensive test suite.
 
 ** Requirements
 
