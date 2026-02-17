@@ -1195,6 +1195,14 @@ With prefix argument, show status legend instead."
         (when (or u g)
           (when u (princ (format "     User: %s\n" u)))
           (when g (princ (format "    Group: %s\n" g)))))
+      ;; Sandbox indicator
+      (when (supervisor--sandbox-requesting-p entry)
+        (let* ((profile (or (supervisor-entry-sandbox-profile entry) 'none))
+               (effective-network
+                (or (supervisor-entry-sandbox-network entry)
+                    (supervisor--sandbox-profile-default-network profile))))
+          (princ (format "  Sandbox: %s (network %s)\n"
+                         profile effective-network))))
       ;; Runtime telemetry
       (when (or last-exit (> restart-count 0) next-eta metrics)
         (princ "\n")

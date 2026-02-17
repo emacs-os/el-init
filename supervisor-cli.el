@@ -335,6 +335,12 @@ Returns alist with all fields needed for status display."
       (group . ,(supervisor-entry-group entry))
       (description . ,(supervisor-entry-description entry))
       (documentation . ,(supervisor-entry-documentation entry))
+      (sandbox-profile . ,(supervisor-entry-sandbox-profile entry))
+      (sandbox-network . ,(let ((profile (or (supervisor-entry-sandbox-profile entry) 'none)))
+                            (or (supervisor-entry-sandbox-network entry)
+                                (supervisor--sandbox-profile-default-network
+                                 profile))))
+      (sandbox-enabled . ,(supervisor--sandbox-requesting-p entry))
       (log-tail . ,(supervisor--telemetry-log-tail id 5)))))
 
 (defun supervisor--cli-all-entries-info (&optional snapshot)
@@ -491,6 +497,10 @@ Includes both plan-level and unit-file-level invalid entries."
          (concat
           (when u (format "User: %s\n" u))
           (when g (format "Group: %s\n" g)))))
+     (when (alist-get 'sandbox-enabled info)
+       (format "Sandbox: %s (network %s)\n"
+               (or (alist-get 'sandbox-profile info) "none")
+               (alist-get 'sandbox-network info)))
      (when pid (format "PID: %d\n" pid))
      (let ((tree (alist-get 'process-tree info)))
        (when tree
@@ -594,6 +604,11 @@ Includes both plan-level and unit-file-level invalid entries."
     (restart_sec . ,(alist-get 'restart-sec info))
     (user . ,(alist-get 'user info))
     (group . ,(alist-get 'group info))
+    (sandbox_enabled . ,(if (alist-get 'sandbox-enabled info) t :json-false))
+    (sandbox_profile . ,(let ((p (alist-get 'sandbox-profile info)))
+                          (if p (symbol-name p) "none")))
+    (sandbox_network . ,(let ((n (alist-get 'sandbox-network info)))
+                          (if n (symbol-name n) "shared")))
     (uptime . ,(alist-get 'uptime info))
     (restart_count . ,(or (alist-get 'restart-count info) 0))
     (last_exit . ,(let ((exit-info (alist-get 'last-exit info)))
