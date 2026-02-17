@@ -10576,7 +10576,7 @@ could incorrectly preserve a non-running disabled unit."
 (ert-deftest supervisor-test-parse-entry-new-fields-defaults ()
   "Parsed entry has nil defaults for P2 and PT3 fields."
   (let ((entry (supervisor--parse-entry "echo hello")))
-    (should (= (length entry) 33))
+    (should (= (length entry) 39))
     (should-not (supervisor-entry-working-directory entry))
     (should-not (supervisor-entry-environment entry))
     (should-not (supervisor-entry-environment-file entry))
@@ -10925,7 +10925,7 @@ could incorrectly preserve a non-running disabled unit."
                :kill-signal 'SIGTERM
                :kill-mode 'mixed))
          (entry (supervisor-service-to-entry svc)))
-    (should (= (length entry) 33))
+    (should (= (length entry) 39))
     (should (equal (supervisor-entry-working-directory entry) "/opt"))
     (should (equal (supervisor-entry-environment entry) '(("K" . "V"))))
     (should (equal (supervisor-entry-environment-file entry) '("/etc/env")))
@@ -10960,7 +10960,7 @@ could incorrectly preserve a non-running disabled unit."
          (entries (supervisor-plan-entries plan)))
     ;; Both entries must be full parsed tuples.
     (dolist (entry entries)
-      (should (= (length entry) 33)))
+      (should (= (length entry) 39)))
     ;; svc-a new fields preserved
     (let ((a (cl-find "svc-a" entries :key #'car :test #'equal)))
       (should (equal (supervisor-entry-working-directory a) "/opt"))
@@ -11938,9 +11938,9 @@ could incorrectly preserve a non-running disabled unit."
     (should-not (supervisor-entry-success-exit-status entry))))
 
 (ert-deftest supervisor-test-parse-entry-33-elements ()
-  "Parse entry returns 33 elements."
+  "Parse entry returns 39 elements."
   (let ((entry (supervisor--parse-entry "sleep 300")))
-    (should (= (length entry) 33))))
+    (should (= (length entry) 39))))
 
 ;; Validation tests for PT3 keys
 
@@ -15108,7 +15108,7 @@ No warning is emitted when there are simply no child processes."
               ((symbol-function 'supervisor--identity-source-trusted-p)
                (lambda (_id) t))
               ((symbol-function 'supervisor--build-launch-command)
-               (lambda (cmd &optional user group)
+               (lambda (cmd &optional user group _sandbox-entry)
                  (setq captured-user user)
                  (setq captured-group group)
                  (split-string-and-unquote cmd))))
@@ -15426,7 +15426,8 @@ No warning is emitted when there are simply no child processes."
                     ((symbol-function 'supervisor--start-process)
                      (lambda (_id _cmd _logging _type _restart
                               &optional _is-restart _wd _env _ef _rs _ufd
-                              user group _stdout-log-file _stderr-log-file)
+                              user group _stdout-log-file _stderr-log-file
+                              _sandbox-entry)
                        (setq captured-user user)
                        (setq captured-group group)
                        t))
@@ -15676,7 +15677,7 @@ No warning is emitted when there are simply no child processes."
                   ((symbol-function 'supervisor--make-process-sentinel)
                    (lambda (&rest _args) #'ignore))
                   ((symbol-function 'supervisor--build-launch-command)
-                   (lambda (_cmd _user _group) (list "sleep" "300"))))
+                   (lambda (_cmd &rest _args) (list "sleep" "300"))))
           (let ((proc (supervisor--start-process
                        "svc2" "sleep 300" nil 'simple 'always)))
             (should proc)
@@ -15773,7 +15774,7 @@ No warning is emitted when there are simply no child processes."
                   ((symbol-function 'supervisor--make-process-sentinel)
                    (lambda (&rest _args) #'ignore))
                   ((symbol-function 'supervisor--build-launch-command)
-                   (lambda (_cmd _user _group) (list "sleep" "300")))
+                   (lambda (_cmd &rest _args) (list "sleep" "300")))
                   ((symbol-function 'process-send-string)
                    (lambda (_proc data)
                      (push data sent-data))))
@@ -15928,7 +15929,7 @@ No warning is emitted when there are simply no child processes."
                   ((symbol-function 'supervisor--make-process-sentinel)
                    (lambda (&rest _args) #'ignore))
                   ((symbol-function 'supervisor--build-launch-command)
-                   (lambda (_cmd _user _group) (list "sleep" "300"))))
+                   (lambda (_cmd &rest _args) (list "sleep" "300"))))
           (let ((proc (supervisor--start-process
                        "svc-nolog" "sleep 300" t 'simple 'always)))
             ;; Service should still start
@@ -16020,7 +16021,7 @@ No warning is emitted when there are simply no child processes."
                   ((symbol-function 'supervisor--make-process-sentinel)
                    (lambda (&rest _args) #'ignore))
                   ((symbol-function 'supervisor--build-launch-command)
-                   (lambda (_cmd _user _group) (list "/nonexistent/cmd")))
+                   (lambda (_cmd &rest _args) (list "/nonexistent/cmd")))
                   ((symbol-function 'supervisor--log) #'ignore))
           (let ((proc (supervisor--start-process
                        "svc-fail" "/nonexistent/cmd" t 'simple 'always)))
@@ -17214,7 +17215,7 @@ An invalid entry ID that happens to end in .target must not pass."
                   ((symbol-function 'supervisor--make-process-sentinel)
                    (lambda (&rest _args) #'ignore))
                   ((symbol-function 'supervisor--build-launch-command)
-                   (lambda (_cmd _user _group) (list "sleep" "300"))))
+                   (lambda (_cmd &rest _args) (list "sleep" "300"))))
           (let ((proc (supervisor--start-process
                        "svc" "sleep 300" nil 'simple 'always)))
             (should proc)
@@ -17264,7 +17265,7 @@ An invalid entry ID that happens to end in .target must not pass."
                   ((symbol-function 'supervisor--make-process-sentinel)
                    (lambda (&rest _args) #'ignore))
                   ((symbol-function 'supervisor--build-launch-command)
-                   (lambda (_cmd _user _group) (list "sleep" "300"))))
+                   (lambda (_cmd &rest _args) (list "sleep" "300"))))
           (let ((proc (supervisor--start-process
                        "svc" "sleep 300" t 'simple 'always
                        nil nil nil nil nil nil nil nil
@@ -17311,7 +17312,7 @@ An invalid entry ID that happens to end in .target must not pass."
                   ((symbol-function 'supervisor--make-process-sentinel)
                    (lambda (&rest _args) #'ignore))
                   ((symbol-function 'supervisor--build-launch-command)
-                   (lambda (_cmd _user _group) (list "sleep" "300"))))
+                   (lambda (_cmd &rest _args) (list "sleep" "300"))))
           (let ((proc (supervisor--start-process
                        "svc" "sleep 300" t 'simple 'always
                        nil nil nil nil nil nil nil nil
@@ -17529,14 +17530,14 @@ An invalid entry ID that happens to end in .target must not pass."
     (should (equal (supervisor-entry-id entry) "multi.target"))
     (should (null (supervisor-entry-command entry)))
     (should (eq (supervisor-entry-type entry) 'target))
-    (should (= (length entry) 33)))
+    (should (= (length entry) 39)))
   ;; Nil car form
   (let ((entry (supervisor--parse-entry
                 '(nil :type target :id "multi.target"))))
     (should (equal (supervisor-entry-id entry) "multi.target"))
     (should (null (supervisor-entry-command entry)))
     (should (eq (supervisor-entry-type entry) 'target))
-    (should (= (length entry) 33))))
+    (should (= (length entry) 39))))
 
 (ert-deftest supervisor-test-wanted-by-shape-string-valid ()
   ":wanted-by as a string passes validation."
@@ -18100,7 +18101,7 @@ They are inert fallback definitions activated only by timers."
     (should (member "basic.target" (supervisor-entry-requires multi-entry)))
     (should (member "svc-a" (supervisor-entry-requires multi-entry)))
     ;; Tuple length unchanged
-    (should (= 33 (length multi-entry)))))
+    (should (= 39 (length multi-entry)))))
 
 (ert-deftest supervisor-test-target-auto-ordering-wants-implies-after ()
   "Target :wants automatically implies :after ordering edge."
@@ -18122,7 +18123,7 @@ They are inert fallback definitions activated only by timers."
     (should (member "basic.target" (supervisor-entry-wants multi-entry)))
     (should (member "svc-opt" (supervisor-entry-wants multi-entry)))
     ;; Tuple length unchanged
-    (should (= 33 (length multi-entry)))))
+    (should (= 39 (length multi-entry)))))
 
 (ert-deftest supervisor-test-service-requires-no-auto-after ()
   "Service :requires does NOT auto-inject :after (only targets do)."
@@ -18138,7 +18139,7 @@ They are inert fallback definitions activated only by timers."
     ;; Structural integrity: :type and :requires preserved
     (should (eq 'simple (supervisor-entry-type svc-b)))
     (should (equal '("svc-a") (supervisor-entry-requires svc-b)))
-    (should (= 33 (length svc-b)))))
+    (should (= 39 (length svc-b)))))
 
 (ert-deftest supervisor-test-builtin-targets-no-redundant-after ()
   "Built-in targets rely on auto-ordering, no explicit :after."
@@ -18212,7 +18213,7 @@ They are inert fallback definitions activated only by timers."
          (svc-b (cl-find "svc-b" (supervisor-plan-by-target plan)
                          :key #'supervisor-entry-id :test #'equal)))
     ;; After invalid dep removal, entry must retain correct structure
-    (should (= 33 (length svc-b)))
+    (should (= 39 (length svc-b)))
     (should (equal "svc-b" (supervisor-entry-id svc-b)))
     (should (equal "true" (supervisor-entry-command svc-b)))
     (should (eq 'simple (supervisor-entry-type svc-b)))
@@ -18237,7 +18238,7 @@ They are inert fallback definitions activated only by timers."
     (should (eq 'target (supervisor-entry-type upper)))
     (should (member "base.target" (supervisor-entry-after upper)))
     (should (equal '("base.target") (supervisor-entry-requires upper)))
-    (should (= 33 (length upper)))))
+    (should (= 39 (length upper)))))
 
 (ert-deftest supervisor-test-mixed-target-service-cycle-fallback ()
   "Cycle involving both target and service entries triggers fallback."
@@ -18916,12 +18917,13 @@ They are inert fallback definitions activated only by timers."
          (supervisor--logging-override (make-hash-table :test 'equal))
          (supervisor--last-exit-info (make-hash-table :test 'equal))
          (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
-         ;; 33-element target entry
+         ;; 39-element target entry
          (entry (list "app.target" nil 0 t nil nil nil nil
                       'target nil nil nil nil nil nil
                       nil nil nil nil nil nil
                       "Test target" nil nil nil nil nil nil nil nil nil
-                      '("multi-user.target") nil)))
+                      '("multi-user.target") nil
+                      nil nil nil nil nil nil)))
     (puthash "app.target" 'degraded supervisor--target-convergence)
     (puthash "app.target" '("svc-x failed")
              supervisor--target-convergence-reasons)
@@ -19090,16 +19092,18 @@ They are inert fallback definitions activated only by timers."
 (ert-deftest supervisor-test-all-target-ids-includes-empty-targets ()
   "All-target-ids includes targets with no members."
   (let* ((members-hash (make-hash-table :test 'equal))
-         ;; 33-element target entry for empty-target (no members)
+         ;; 39-element target entry for empty-target (no members)
          (empty-entry (list "empty.target" nil 0 t nil nil nil nil
                             'target nil nil nil nil nil nil
                             nil nil nil nil nil nil nil nil nil nil
-                            nil nil nil nil nil nil nil nil nil))
-         ;; 33-element target entry for pop.target (has members)
+                            nil nil nil nil nil nil nil nil nil
+                            nil nil nil nil nil nil))
+         ;; 39-element target entry for pop.target (has members)
          (pop-entry (list "pop.target" nil 0 t nil nil nil nil
                           'target nil nil nil nil nil nil
                           nil nil nil nil nil nil nil nil nil nil
-                          nil nil nil nil nil nil nil nil nil))
+                          nil nil nil nil nil nil nil nil nil
+                          nil nil nil nil nil nil))
          (supervisor--current-plan
           (supervisor-plan--create
            :target-members members-hash
@@ -20666,6 +20670,387 @@ They are inert fallback definitions activated only by timers."
                      (supervisor-cli-result-exitcode result)))
         (should (string-match "target"
                               (supervisor-cli-result-output result)))))))
+
+;;;; Sandbox (bubblewrap) Integration Tests
+
+(ert-deftest supervisor-test-sandbox-parse-profile ()
+  "Parse entry extracts sandbox-profile as symbol."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc" :sandbox-profile strict))))
+    (should (= (length entry) 39))
+    (should (eq (supervisor-entry-sandbox-profile entry) 'strict))))
+
+(ert-deftest supervisor-test-sandbox-parse-profile-string ()
+  "Parse entry converts string sandbox-profile to symbol."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc" :sandbox-profile "service"))))
+    (should (eq (supervisor-entry-sandbox-profile entry) 'service))))
+
+(ert-deftest supervisor-test-sandbox-parse-network ()
+  "Parse entry extracts sandbox-network as symbol."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc" :sandbox-network isolated))))
+    (should (eq (supervisor-entry-sandbox-network entry) 'isolated))))
+
+(ert-deftest supervisor-test-sandbox-parse-ro-bind ()
+  "Parse entry extracts and deduplicates sandbox-ro-bind."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc"
+                  :sandbox-ro-bind ("/opt" "/usr" "/opt")))))
+    (should (equal (supervisor-entry-sandbox-ro-bind entry)
+                   '("/opt" "/usr")))))
+
+(ert-deftest supervisor-test-sandbox-parse-rw-bind ()
+  "Parse entry extracts sandbox-rw-bind."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc"
+                  :sandbox-rw-bind ("/var/lib/app")))))
+    (should (equal (supervisor-entry-sandbox-rw-bind entry)
+                   '("/var/lib/app")))))
+
+(ert-deftest supervisor-test-sandbox-parse-tmpfs ()
+  "Parse entry extracts sandbox-tmpfs."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc" :sandbox-tmpfs ("/tmp")))))
+    (should (equal (supervisor-entry-sandbox-tmpfs entry)
+                   '("/tmp")))))
+
+(ert-deftest supervisor-test-sandbox-parse-raw-args ()
+  "Parse entry extracts sandbox-raw-args."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc"
+                  :sandbox-raw-args ("--cap-add" "CAP_NET_RAW")))))
+    (should (equal (supervisor-entry-sandbox-raw-args entry)
+                   '("--cap-add" "CAP_NET_RAW")))))
+
+(ert-deftest supervisor-test-sandbox-parse-none-defaults ()
+  "Parse entry defaults sandbox fields to nil."
+  (let ((entry (supervisor--parse-entry '("sleep 300" :id "svc"))))
+    (should-not (supervisor-entry-sandbox-profile entry))
+    (should-not (supervisor-entry-sandbox-network entry))
+    (should-not (supervisor-entry-sandbox-ro-bind entry))
+    (should-not (supervisor-entry-sandbox-rw-bind entry))
+    (should-not (supervisor-entry-sandbox-tmpfs entry))
+    (should-not (supervisor-entry-sandbox-raw-args entry))))
+
+(ert-deftest supervisor-test-sandbox-requesting-p-profile ()
+  "Sandbox-requesting-p returns t when profile is not none."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc" :sandbox-profile strict))))
+    (should (supervisor--sandbox-requesting-p entry))))
+
+(ert-deftest supervisor-test-sandbox-requesting-p-none ()
+  "Sandbox-requesting-p returns nil for profile none with no knobs."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc" :sandbox-profile none))))
+    (should-not (supervisor--sandbox-requesting-p entry))))
+
+(ert-deftest supervisor-test-sandbox-requesting-p-knob-only ()
+  "Sandbox-requesting-p returns t when knobs set without profile."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc"
+                  :sandbox-network isolated))))
+    (should (supervisor--sandbox-requesting-p entry))))
+
+(ert-deftest supervisor-test-sandbox-requesting-p-no-sandbox ()
+  "Sandbox-requesting-p returns nil for non-sandbox entry."
+  (let ((entry (supervisor--parse-entry '("sleep 300" :id "svc"))))
+    (should-not (supervisor--sandbox-requesting-p entry))))
+
+;; Validation tests
+
+(ert-deftest supervisor-test-sandbox-validate-profile-valid ()
+  "Valid sandbox profiles pass validation."
+  (dolist (profile '(none strict service desktop))
+    (should-not (supervisor--validate-entry
+                 `("cmd" :id "svc" :sandbox-profile ,profile)))))
+
+(ert-deftest supervisor-test-sandbox-validate-profile-invalid ()
+  "Invalid sandbox profile is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-profile bogus))))
+    (should (string-match-p ":sandbox-profile must be one of" reason))))
+
+(ert-deftest supervisor-test-sandbox-validate-network-valid ()
+  "Valid network modes pass validation."
+  (dolist (mode '(shared isolated))
+    (should-not (supervisor--validate-entry
+                 `("cmd" :id "svc" :sandbox-network ,mode)))))
+
+(ert-deftest supervisor-test-sandbox-validate-network-invalid ()
+  "Invalid network mode is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-network bogus))))
+    (should (string-match-p ":sandbox-network must be one of" reason))))
+
+(ert-deftest supervisor-test-sandbox-validate-path-absolute ()
+  "Relative paths in bind lists are rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-ro-bind ("relative/path")))))
+    (should (string-match-p "paths must be absolute" reason))))
+
+(ert-deftest supervisor-test-sandbox-validate-path-empty ()
+  "Empty paths in bind lists are rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-rw-bind ("")))))
+    (should (string-match-p "must not contain empty paths" reason))))
+
+(ert-deftest supervisor-test-sandbox-validate-path-forbidden ()
+  "Forbidden paths in bind lists are rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-tmpfs ("/proc")))))
+    (should (string-match-p "must not include forbidden path" reason))))
+
+(ert-deftest supervisor-test-sandbox-validate-path-forbidden-dev ()
+  "Forbidden /dev path in bind lists is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-ro-bind ("/dev")))))
+    (should (string-match-p "must not include forbidden path" reason))))
+
+(ert-deftest supervisor-test-sandbox-validate-path-valid ()
+  "Valid absolute paths pass validation."
+  (should-not (supervisor--validate-entry
+               '("cmd" :id "svc" :sandbox-ro-bind ("/opt/data")))))
+
+(ert-deftest supervisor-test-sandbox-validate-path-invalid-type ()
+  "Non-string path list is rejected."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :sandbox-rw-bind (42)))))
+    (should (string-match-p "must be a string or list of absolute" reason))))
+
+(ert-deftest supervisor-test-sandbox-validate-raw-args-gate-off ()
+  "Raw args rejected when gate is off."
+  (let ((supervisor-sandbox-allow-raw-bwrap nil))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc"
+                     :sandbox-raw-args ("--cap-add" "CAP_NET_RAW")))))
+      (should (string-match-p "requires supervisor-sandbox-allow-raw-bwrap" reason)))))
+
+(ert-deftest supervisor-test-sandbox-validate-raw-args-gate-on ()
+  "Raw args accepted when gate is on."
+  (let ((supervisor-sandbox-allow-raw-bwrap t))
+    (should-not (supervisor--validate-entry
+                 '("cmd" :id "svc"
+                   :sandbox-raw-args ("--cap-add" "CAP_NET_RAW"))))))
+
+(ert-deftest supervisor-test-sandbox-validate-raw-args-shape ()
+  "Raw args must be list of strings."
+  (let ((supervisor-sandbox-allow-raw-bwrap t))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc" :sandbox-raw-args (42)))))
+      (should (string-match-p "must be a list of strings" reason)))))
+
+(ert-deftest supervisor-test-sandbox-validate-target-rejects ()
+  "Sandbox keys are rejected for target type."
+  (let ((reason (supervisor--validate-entry
+                 '(nil :id "app.target" :type target
+                       :sandbox-profile strict))))
+    (should (string-match-p ":sandbox-profile is invalid for :type target"
+                            reason))))
+
+(ert-deftest supervisor-test-sandbox-validate-non-linux ()
+  "Sandbox-requesting units on non-Linux are rejected."
+  (cl-letf (((symbol-value 'system-type) 'darwin))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc" :sandbox-profile strict))))
+      (should (string-match-p "only supported on GNU/Linux" reason)))))
+
+(ert-deftest supervisor-test-sandbox-validate-missing-bwrap ()
+  "Sandbox-requesting units without bwrap are rejected."
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name)
+               (unless (equal name "bwrap")
+                 (executable-find name)))))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc" :sandbox-profile strict))))
+      (should (string-match-p "bwrap.*not found" reason)))))
+
+(ert-deftest supervisor-test-sandbox-validate-non-sandbox-ignores-bwrap ()
+  "Non-sandbox units validate fine without bwrap."
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name)
+               (unless (equal name "bwrap")
+                 (executable-find name)))))
+    (should-not (supervisor--validate-entry '("cmd" :id "svc")))))
+
+;; Profile registry and command builder tests
+
+(ert-deftest supervisor-test-sandbox-profile-none-no-argv ()
+  "Profile none produces no argv."
+  (should-not (supervisor--sandbox-profile-args 'none)))
+
+(ert-deftest supervisor-test-sandbox-profile-strict-deterministic ()
+  "Profile strict produces deterministic argv."
+  (let ((args (supervisor--sandbox-profile-args 'strict)))
+    (should (member "--unshare-all" args))
+    (should (member "--die-with-parent" args))
+    (should (member "--ro-bind" args))))
+
+(ert-deftest supervisor-test-sandbox-profile-service-shared-network ()
+  "Profile service defaults to shared network."
+  (should (eq (supervisor--sandbox-profile-default-network 'service)
+              'shared)))
+
+(ert-deftest supervisor-test-sandbox-profile-strict-isolated-network ()
+  "Profile strict defaults to isolated network."
+  (should (eq (supervisor--sandbox-profile-default-network 'strict)
+              'isolated)))
+
+(ert-deftest supervisor-test-sandbox-build-argv-none ()
+  "Build-argv returns nil for non-sandbox entry."
+  (let ((entry (supervisor--parse-entry '("sleep 300" :id "svc"))))
+    (should-not (supervisor--sandbox-build-argv entry))))
+
+(ert-deftest supervisor-test-sandbox-build-argv-strict ()
+  "Build-argv returns bwrap wrapper for strict profile."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc" :sandbox-profile strict))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_name) "/usr/bin/bwrap")))
+      (let ((argv (supervisor--sandbox-build-argv entry)))
+        (should argv)
+        (should (equal (car argv) "/usr/bin/bwrap"))
+        (should (member "--unshare-all" argv))
+        (should (member "--unshare-net" argv))
+        (should (equal (car (last argv)) "--"))))))
+
+(ert-deftest supervisor-test-sandbox-build-argv-network-override ()
+  "Build-argv respects network override."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc"
+                  :sandbox-profile strict
+                  :sandbox-network shared))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_name) "/usr/bin/bwrap")))
+      (let ((argv (supervisor--sandbox-build-argv entry)))
+        ;; strict defaults to isolated, but override is shared
+        ;; so --unshare-net should NOT be added
+        (should-not (member "--unshare-net" argv))))))
+
+(ert-deftest supervisor-test-sandbox-build-argv-ro-bind ()
+  "Build-argv appends read-only bind mounts."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc"
+                  :sandbox-profile service
+                  :sandbox-ro-bind ("/opt/data")))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_name) "/usr/bin/bwrap")))
+      (let ((argv (supervisor--sandbox-build-argv entry)))
+        ;; Find the custom ro-bind (profile already has ro-bind / /)
+        (let ((pos (cl-position "/opt/data" argv :test #'equal)))
+          (should pos)
+          (should (equal (nth (1- pos) argv) "--ro-bind")))))))
+
+(ert-deftest supervisor-test-sandbox-build-argv-rw-bind ()
+  "Build-argv appends read-write bind mounts."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc"
+                  :sandbox-profile service
+                  :sandbox-rw-bind ("/var/lib/app")))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_name) "/usr/bin/bwrap")))
+      (let ((argv (supervisor--sandbox-build-argv entry)))
+        (let ((pos (cl-position "/var/lib/app" argv :test #'equal)))
+          (should pos)
+          (should (equal (nth (1- pos) argv) "--bind")))))))
+
+(ert-deftest supervisor-test-sandbox-build-argv-tmpfs ()
+  "Build-argv appends tmpfs mounts."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc"
+                  :sandbox-profile service
+                  :sandbox-tmpfs ("/run/scratch")))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_name) "/usr/bin/bwrap")))
+      (let ((argv (supervisor--sandbox-build-argv entry)))
+        (let ((pos (cl-position "/run/scratch" argv :test #'equal)))
+          (should pos)
+          (should (equal (nth (1- pos) argv) "--tmpfs")))))))
+
+(ert-deftest supervisor-test-sandbox-build-argv-raw-args ()
+  "Build-argv appends raw args."
+  (let ((supervisor-sandbox-allow-raw-bwrap t))
+    (let ((entry (supervisor--parse-entry
+                  '("sleep 300" :id "svc"
+                    :sandbox-profile service
+                    :sandbox-raw-args ("--cap-add" "CAP_NET_RAW")))))
+      (cl-letf (((symbol-function 'executable-find)
+                 (lambda (_name) "/usr/bin/bwrap")))
+        (let ((argv (supervisor--sandbox-build-argv entry)))
+          (should (member "--cap-add" argv))
+          (should (member "CAP_NET_RAW" argv)))))))
+
+;; Launch command integration tests
+
+(ert-deftest supervisor-test-sandbox-build-launch-no-sandbox ()
+  "Build-launch-command without sandbox produces normal argv."
+  (let ((args (supervisor--build-launch-command "sleep 300")))
+    (should (equal args '("sleep" "300")))))
+
+(ert-deftest supervisor-test-sandbox-build-launch-with-sandbox ()
+  "Build-launch-command with sandbox prepends bwrap."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc" :sandbox-profile service))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_name) "/usr/bin/bwrap")))
+      (let ((args (supervisor--build-launch-command "sleep 300" nil nil
+                                                    entry)))
+        (should (equal (car args) "/usr/bin/bwrap"))
+        ;; Should end with -- sleep 300
+        (let ((sep-pos (cl-position "--" args :test #'equal :from-end t)))
+          (should sep-pos)
+          (should (equal (nth (+ sep-pos 1) args) "/usr/bin/bwrap")))))))
+
+(ert-deftest supervisor-test-sandbox-build-launch-runas-then-bwrap ()
+  "Build-launch-command with identity + sandbox uses correct order."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 300" :id "svc" :sandbox-profile service))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_name) "/usr/bin/bwrap")))
+      (let ((args (supervisor--build-launch-command "sleep 300" "alice" nil
+                                                    entry)))
+        ;; First element should be runas helper
+        (should (equal (car args) supervisor-runas-command))
+        ;; Should contain --user alice
+        (should (member "--user" args))
+        (should (member "alice" args))
+        ;; bwrap should appear after the first -- separator (runas --)
+        (let* ((first-sep (cl-position "--" args :test #'equal))
+               (after-sep (nth (1+ first-sep) args)))
+          (should (equal after-sep "/usr/bin/bwrap")))))))
+
+;; Service struct roundtrip tests
+
+(ert-deftest supervisor-test-sandbox-service-roundtrip ()
+  "Service-to-entry conversion preserves sandbox fields."
+  (let* ((svc (supervisor-service--create
+               :id "svc" :command "cmd"
+               :sandbox-profile 'strict
+               :sandbox-network 'isolated
+               :sandbox-ro-bind '("/opt")
+               :sandbox-rw-bind '("/var")
+               :sandbox-tmpfs '("/tmp/work")
+               :sandbox-raw-args '("--cap-add" "CAP_NET_RAW")))
+         (entry (supervisor-service-to-entry svc)))
+    (should (= (length entry) 39))
+    (should (eq (supervisor-entry-sandbox-profile entry) 'strict))
+    (should (eq (supervisor-entry-sandbox-network entry) 'isolated))
+    (should (equal (supervisor-entry-sandbox-ro-bind entry) '("/opt")))
+    (should (equal (supervisor-entry-sandbox-rw-bind entry) '("/var")))
+    (should (equal (supervisor-entry-sandbox-tmpfs entry) '("/tmp/work")))
+    (should (equal (supervisor-entry-sandbox-raw-args entry)
+                   '("--cap-add" "CAP_NET_RAW")))))
+
+;; Non-regression test
+
+(ert-deftest supervisor-test-sandbox-non-sandbox-unchanged ()
+  "Non-sandbox entry launch behavior is unchanged."
+  (let ((entry (supervisor--parse-entry '("sleep 300" :id "svc"))))
+    (should-not (supervisor--sandbox-requesting-p entry))
+    ;; Build-launch-command with nil sandbox-entry is identical to no sandbox
+    (let ((with (supervisor--build-launch-command "sleep 300" nil nil entry))
+          (without (supervisor--build-launch-command "sleep 300" nil nil nil)))
+      (should (equal with without)))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

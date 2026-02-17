@@ -277,6 +277,14 @@ Must end in \".target\" and must not be \"default.target\"."
   :type 'string
   :group 'supervisor)
 
+(defcustom supervisor-sandbox-allow-raw-bwrap nil
+  "When non-nil, allow per-unit raw bubblewrap arguments.
+The `:sandbox-raw-args' unit key is rejected unless this gate is
+enabled.  Enabling raw args bypasses the curated profile model and
+is intended for expert users only."
+  :type 'boolean
+  :group 'supervisor)
+
 (defcustom supervisor-verbose nil
   "When non-nil, log all events including informational messages.
 When nil, only warnings and errors are logged.
@@ -444,7 +452,9 @@ Scan PLIST and collect any key that appears more than once."
     :description :documentation :before :wants
     :kill-signal :kill-mode :remain-after-exit :success-exit-status
     :user :group
-    :wanted-by :required-by)
+    :wanted-by :required-by
+    :sandbox-profile :sandbox-network :sandbox-ro-bind :sandbox-rw-bind
+    :sandbox-tmpfs :sandbox-raw-args)
   "List of valid keywords for entry plists.")
 
 (defconst supervisor--valid-types '(simple oneshot target)
@@ -456,7 +466,9 @@ Scan PLIST and collect any key that appears more than once."
     :working-directory :environment :environment-file
     :exec-stop :exec-reload :restart-sec
     :kill-signal :kill-mode :remain-after-exit :success-exit-status
-    :user :group :stage :wanted-by :required-by)
+    :user :group :stage :wanted-by :required-by
+    :sandbox-profile :sandbox-network :sandbox-ro-bind :sandbox-rw-bind
+    :sandbox-tmpfs :sandbox-raw-args)
   "Keywords invalid for :type target entries.")
 
 (defconst supervisor--valid-restart-policies '(no on-success on-failure always)
@@ -478,6 +490,19 @@ HUP (1), INT (2), PIPE (13), TERM (15).")
 (defconst supervisor--oneshot-only-keywords
   '(:oneshot-blocking :oneshot-async :oneshot-timeout :remain-after-exit)
   "Keywords valid only for :type oneshot.")
+
+(defconst supervisor--sandbox-profiles '(none strict service desktop)
+  "Valid sandbox profile symbols.
+`none' disables sandboxing (default).  `strict' isolates all
+namespaces with no host home bind.  `service' is restrictive
+filesystem with shared network.  `desktop' extends service with
+runtime socket and bus paths.")
+
+(defconst supervisor--sandbox-network-modes '(shared isolated)
+  "Valid sandbox network mode symbols.")
+
+(defconst supervisor--sandbox-forbidden-paths '("/proc" "/dev")
+  "Paths forbidden in custom sandbox bind and tmpfs lists.")
 
 (defconst supervisor--signal-number-alist
   '((SIGHUP . 1) (SIGINT . 2) (SIGQUIT . 3) (SIGILL . 4) (SIGTRAP . 5)
@@ -942,6 +967,90 @@ Return nil if valid, or a reason string if invalid."
         (let ((val (plist-get plist :group)))
           (unless (or (null val) (stringp val) (integerp val))
             (push ":group must be a string, integer, or nil" errors))))
+      ;; Sandbox validation
+      ;; Check :sandbox-profile value
+      (when (plist-member plist :sandbox-profile)
+        (let ((val (plist-get plist :sandbox-profile)))
+          (let ((sym (cond ((symbolp val) val)
+                           ((stringp val) (intern val))
+                           (t nil))))
+            (unless (memq sym supervisor--sandbox-profiles)
+              (push (format ":sandbox-profile must be one of %s"
+                            supervisor--sandbox-profiles)
+                    errors)))))
+      ;; Check :sandbox-network value
+      (when (plist-member plist :sandbox-network)
+        (let ((val (plist-get plist :sandbox-network)))
+          (let ((sym (cond ((symbolp val) val)
+                           ((stringp val) (intern val))
+                           (t nil))))
+            (unless (memq sym supervisor--sandbox-network-modes)
+              (push (format ":sandbox-network must be one of %s"
+                            supervisor--sandbox-network-modes)
+                    errors)))))
+      ;; Check path-list sandbox keys
+      (dolist (spec '((:sandbox-ro-bind . ":sandbox-ro-bind")
+                      (:sandbox-rw-bind . ":sandbox-rw-bind")
+                      (:sandbox-tmpfs . ":sandbox-tmpfs")))
+        (when (plist-member plist (car spec))
+          (let ((val (plist-get plist (car spec))))
+            (cond
+             ((null val))
+             ((stringp val)
+              (cond
+               ((string-empty-p val)
+                (push (format "%s must not contain empty paths" (cdr spec))
+                      errors))
+               ((not (file-name-absolute-p val))
+                (push (format "%s paths must be absolute" (cdr spec))
+                      errors))
+               ((member val supervisor--sandbox-forbidden-paths)
+                (push (format "%s must not include forbidden path %s"
+                              (cdr spec) val)
+                      errors))))
+             ((and (proper-list-p val) (cl-every #'stringp val))
+              (dolist (path val)
+                (cond
+                 ((string-empty-p path)
+                  (push (format "%s must not contain empty paths" (cdr spec))
+                        errors))
+                 ((not (file-name-absolute-p path))
+                  (push (format "%s paths must be absolute" (cdr spec))
+                        errors))
+                 ((member path supervisor--sandbox-forbidden-paths)
+                  (push (format "%s must not include forbidden path %s"
+                                (cdr spec) path)
+                        errors)))))
+             (t
+              (push (format "%s must be a string or list of absolute path strings"
+                            (cdr spec))
+                    errors))))))
+      ;; Check :sandbox-raw-args shape and gate
+      (when (plist-member plist :sandbox-raw-args)
+        (let ((val (plist-get plist :sandbox-raw-args)))
+          (cond
+           ((not supervisor-sandbox-allow-raw-bwrap)
+            (push ":sandbox-raw-args requires supervisor-sandbox-allow-raw-bwrap to be enabled"
+                  errors))
+           ((null val))
+           ((not (and (proper-list-p val) (cl-every #'stringp val)))
+            (push ":sandbox-raw-args must be a list of strings" errors)))))
+      ;; Check sandbox-requesting units for OS and binary prerequisites
+      (let ((sandbox-requesting
+             (or (and (plist-member plist :sandbox-profile)
+                      (let ((p (plist-get plist :sandbox-profile)))
+                        (not (memq (if (stringp p) (intern p) p) '(nil none)))))
+                 (plist-member plist :sandbox-network)
+                 (plist-member plist :sandbox-ro-bind)
+                 (plist-member plist :sandbox-rw-bind)
+                 (plist-member plist :sandbox-tmpfs)
+                 (plist-member plist :sandbox-raw-args))))
+        (when sandbox-requesting
+          (unless (eq system-type 'gnu/linux)
+            (push "sandbox is only supported on GNU/Linux" errors))
+          (unless (executable-find "bwrap")
+            (push "sandbox requires bwrap (bubblewrap) but bwrap is not found in PATH"
+                  errors))))
           ;; Return nil if valid, or joined error string
           (when errors
             (mapconcat #'identity (nreverse errors) "; ")))))))))
@@ -1773,6 +1882,18 @@ Field documentation:
   wanted-by      - List of target IDs this service belongs to (soft)
                    Default: nil
   required-by    - List of target IDs this service is required by
+                   Default: nil
+  sandbox-profile - Sandbox profile symbol: none, strict, service, desktop
+                   Default: nil (no sandbox)
+  sandbox-network - Network mode symbol: shared or isolated
+                   Default: nil (profile default)
+  sandbox-ro-bind - List of read-only bind mount absolute paths
+                   Default: nil
+  sandbox-rw-bind - List of read-write bind mount absolute paths
+                   Default: nil
+  sandbox-tmpfs  - List of tmpfs mount absolute paths
+                   Default: nil
+  sandbox-raw-args - List of raw bwrap argument strings (expert gate)
                    Default: nil"
   (id nil :type string :documentation "Unique identifier (required)")
   (command nil :type string :documentation "Shell command to execute (required)")
@@ -1808,7 +1929,13 @@ Field documentation:
   (user nil :type (or null string integer) :documentation "Run-as user (root only)")
   (group nil :type (or null string integer) :documentation "Run-as group (root only)")
   (wanted-by nil :type list :documentation "Target IDs this service belongs to (soft)")
-  (required-by nil :type list :documentation "Target IDs this service is required by"))
+  (required-by nil :type list :documentation "Target IDs this service is required by")
+  (sandbox-profile nil :type (or null symbol) :documentation "Sandbox profile symbol")
+  (sandbox-network nil :type (or null symbol) :documentation "Sandbox network mode")
+  (sandbox-ro-bind nil :type list :documentation "Read-only bind mount paths")
+  (sandbox-rw-bind nil :type list :documentation "Read-write bind mount paths")
+  (sandbox-tmpfs nil :type list :documentation "Tmpfs mount paths")
+  (sandbox-raw-args nil :type list :documentation "Raw bwrap argument list"))
 
 (defconst supervisor-service-required-fields '(id command)
   "List of required fields in a service record.")
@@ -1844,7 +1971,13 @@ Field documentation:
     (user . nil)
     (group . nil)
     (wanted-by . nil)
-    (required-by . nil))
+    (required-by . nil)
+    (sandbox-profile . nil)
+    (sandbox-network . nil)
+    (sandbox-ro-bind . nil)
+    (sandbox-rw-bind . nil)
+    (sandbox-tmpfs . nil)
+    (sandbox-raw-args . nil))
   "Alist of optional fields with their default values.
 A value of :defer means the default is resolved at runtime.")
 
@@ -1861,7 +1994,9 @@ A value of :defer means the default is resolved at runtime.")
 ;;    exec-stop exec-reload restart-sec
 ;;    description documentation before wants
 ;;    kill-signal kill-mode remain-after-exit success-exit-status
-;;    user group wanted-by required-by)
+;;    user group wanted-by required-by
+;;    sandbox-profile sandbox-network sandbox-ro-bind sandbox-rw-bind
+;;    sandbox-tmpfs sandbox-raw-args)
 
 (defun supervisor-entry-id (entry)
   "Return the ID of parsed ENTRY."
@@ -2001,6 +2136,43 @@ Value is one of `always', `no', `on-success', or `on-failure'."
 (defun supervisor-entry-required-by (entry)
   "Return the required-by target list of parsed ENTRY."
   (and (>= (length entry) 33) (nth 32 entry)))
+
+(defun supervisor-entry-sandbox-profile (entry)
+  "Return the sandbox profile symbol of parsed ENTRY, or nil."
+  (and (>= (length entry) 39) (nth 33 entry)))
+
+(defun supervisor-entry-sandbox-network (entry)
+  "Return the sandbox network mode symbol of parsed ENTRY, or nil."
+  (and (>= (length entry) 39) (nth 34 entry)))
+
+(defun supervisor-entry-sandbox-ro-bind (entry)
+  "Return the sandbox read-only bind list of parsed ENTRY, or nil."
+  (and (>= (length entry) 39) (nth 35 entry)))
+
+(defun supervisor-entry-sandbox-rw-bind (entry)
+  "Return the sandbox read-write bind list of parsed ENTRY, or nil."
+  (and (>= (length entry) 39) (nth 36 entry)))
+
+(defun supervisor-entry-sandbox-tmpfs (entry)
+  "Return the sandbox tmpfs mount list of parsed ENTRY, or nil."
+  (and (>= (length entry) 39) (nth 37 entry)))
+
+(defun supervisor-entry-sandbox-raw-args (entry)
+  "Return the sandbox raw argument list of parsed ENTRY, or nil."
+  (and (>= (length entry) 39) (nth 38 entry)))
+
+(defun supervisor--sandbox-requesting-p (entry)
+  "Return non-nil if parsed ENTRY requests sandbox.
+A unit is sandbox-requesting when `:sandbox-profile' is set to
+anything other than `none', or when any sandbox key other than
+`:sandbox-profile' is present."
+  (or (and (supervisor-entry-sandbox-profile entry)
+           (not (eq (supervisor-entry-sandbox-profile entry) 'none)))
+      (supervisor-entry-sandbox-network entry)
+      (supervisor-entry-sandbox-ro-bind entry)
+      (supervisor-entry-sandbox-rw-bind entry)
+      (supervisor-entry-sandbox-tmpfs entry)
+      (supervisor-entry-sandbox-raw-args entry)))
 
 ;; Forward declarations for timer state variables (defined in supervisor-timer.el)
 ;; These are only accessed when timer module is loaded.
@@ -2911,13 +3083,14 @@ or nil if VAL is nil."
 
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
-Return a 33-element list: (id cmd delay enabled-p restart-policy
+Return a 39-element list: (id cmd delay enabled-p restart-policy
 logging-p stdout-log-file stderr-log-file type stage after
 oneshot-blocking oneshot-timeout tags requires working-directory
 environment environment-file exec-stop exec-reload restart-sec
 description documentation before wants kill-signal kill-mode
 remain-after-exit success-exit-status user group wanted-by
-required-by).
+required-by sandbox-profile sandbox-network sandbox-ro-bind
+sandbox-rw-bind sandbox-tmpfs sandbox-raw-args).
 
 Indices (schema v1):
   0  id                  - unique identifier string
@@ -2953,6 +3126,12 @@ Indices (schema v1):
   30 group               - run-as group string/int or nil
   31 wanted-by           - target IDs (soft membership) or nil
   32 required-by         - target IDs (hard requirement) or nil
+  33 sandbox-profile     - sandbox profile symbol or nil
+  34 sandbox-network     - sandbox network mode symbol or nil
+  35 sandbox-ro-bind     - list of read-only bind paths or nil
+  36 sandbox-rw-bind     - list of read-write bind paths or nil
+  37 sandbox-tmpfs       - list of tmpfs mount paths or nil
+  38 sandbox-raw-args    - list of raw bwrap argument strings or nil
 
 ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
@@ -2965,7 +3144,8 @@ Use accessor functions instead of direct indexing for new code."
               supervisor-oneshot-default-blocking supervisor-oneshot-timeout nil nil
               nil nil nil nil nil nil
               nil nil nil nil nil nil nil nil
-              nil nil nil nil))
+              nil nil nil nil
+              nil nil nil nil nil nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
            (type-raw (plist-get plist :type))
@@ -3064,7 +3244,33 @@ Use accessor functions instead of direct indexing for new code."
              (supervisor--normalize-after (plist-get plist :wanted-by))))
            (required-by
             (supervisor--deduplicate-stable
-             (supervisor--normalize-after (plist-get plist :required-by)))))
+             (supervisor--normalize-after (plist-get plist :required-by))))
+           ;; Sandbox fields (indices 33-38)
+           (sandbox-profile-raw (plist-get plist :sandbox-profile))
+           (sandbox-profile (when sandbox-profile-raw
+                              (if (stringp sandbox-profile-raw)
+                                  (intern sandbox-profile-raw)
+                                sandbox-profile-raw)))
+           (sandbox-network-raw (plist-get plist :sandbox-network))
+           (sandbox-network (when sandbox-network-raw
+                              (if (stringp sandbox-network-raw)
+                                  (intern sandbox-network-raw)
+                                sandbox-network-raw)))
+           (sandbox-ro-bind
+            (supervisor--deduplicate-stable
+             (supervisor--normalize-string-or-list
+              (plist-get plist :sandbox-ro-bind))))
+           (sandbox-rw-bind
+            (supervisor--deduplicate-stable
+             (supervisor--normalize-string-or-list
+              (plist-get plist :sandbox-rw-bind))))
+           (sandbox-tmpfs
+            (supervisor--deduplicate-stable
+             (supervisor--normalize-string-or-list
+              (plist-get plist :sandbox-tmpfs))))
+           (sandbox-raw-args
+            (supervisor--normalize-string-or-list
+             (plist-get plist :sandbox-raw-args))))
       (list id cmd delay enabled restart logging
             stdout-log-file stderr-log-file
             type stage after
@@ -3073,7 +3279,9 @@ Use accessor functions instead of direct indexing for new code."
             exec-stop exec-reload restart-sec
             description documentation before wants
             kill-signal kill-mode remain-after-exit success-exit-status
-            user group wanted-by required-by))))
+            user group wanted-by required-by
+            sandbox-profile sandbox-network sandbox-ro-bind sandbox-rw-bind
+            sandbox-tmpfs sandbox-raw-args))))
 
 ;;; Entry/Service Conversion Functions
 
@@ -3112,7 +3320,13 @@ Use accessor functions instead of direct indexing for new code."
    :user (supervisor-entry-user entry)
    :group (supervisor-entry-group entry)
    :wanted-by (supervisor-entry-wanted-by entry)
-   :required-by (supervisor-entry-required-by entry)))
+   :required-by (supervisor-entry-required-by entry)
+   :sandbox-profile (supervisor-entry-sandbox-profile entry)
+   :sandbox-network (supervisor-entry-sandbox-network entry)
+   :sandbox-ro-bind (supervisor-entry-sandbox-ro-bind entry)
+   :sandbox-rw-bind (supervisor-entry-sandbox-rw-bind entry)
+   :sandbox-tmpfs (supervisor-entry-sandbox-tmpfs entry)
+   :sandbox-raw-args (supervisor-entry-sandbox-raw-args entry)))
 
 (defun supervisor-service-to-entry (service)
   "Convert SERVICE struct to a parsed entry tuple."
@@ -3148,7 +3362,13 @@ Use accessor functions instead of direct indexing for new code."
         (supervisor-service-user service)
         (supervisor-service-group service)
         (supervisor-service-wanted-by service)
-        (supervisor-service-required-by service)))
+        (supervisor-service-required-by service)
+        (supervisor-service-sandbox-profile service)
+        (supervisor-service-sandbox-network service)
+        (supervisor-service-sandbox-ro-bind service)
+        (supervisor-service-sandbox-rw-bind service)
+        (supervisor-service-sandbox-tmpfs service)
+        (supervisor-service-sandbox-raw-args service)))
 
 (defun supervisor--check-crash-loop (id)
   "Check if ID is crash-looping.  Return t if should NOT restart."
@@ -3977,7 +4197,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
         (unit-file-directory (supervisor--unit-file-directory-for-id
                               (supervisor-entry-id entry)))
         (user (supervisor-entry-user entry))
-        (group (supervisor-entry-group entry)))
+        (group (supervisor-entry-group entry))
+        (sandbox-entry (when (supervisor--sandbox-requesting-p entry) entry)))
     ;; Check effective enabled state (config + runtime override)
     (let ((effective-enabled (supervisor--get-effective-enabled id enabled-p)))
       (cond
@@ -4007,7 +4228,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
                                  working-directory environment
                                  environment-file restart-sec
                                  unit-file-directory
-                                 user group)))
+                                 user group
+                                 sandbox-entry)))
                  supervisor--dag-delay-timers))
        ;; Start immediately
        (t
@@ -4018,7 +4240,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
          working-directory environment
          environment-file restart-sec
          unit-file-directory
-         user group))))))
+         user group
+         sandbox-entry))))))
 
 (defun supervisor--dag-finish-spawn-attempt ()
   "Finish a spawn attempt by decrementing count and processing queue."
@@ -4064,16 +4287,18 @@ Mark ready immediately for simple processes, on exit for oneshot."
                                     &optional working-directory environment
                                     environment-file restart-sec
                                     unit-file-directory
-                                    user group)
+                                    user group
+                                    sandbox-entry)
   "Start process ID with CMD, LOGGING-P, TYPE, RESTART-POLICY, ONESHOT-TIMEOUT.
 STDOUT-LOG-FILE and STDERR-LOG-FILE are per-stream log file overrides.
 Optional WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE,
-RESTART-SEC, UNIT-FILE-DIRECTORY, USER, and GROUP are passed through to
-`supervisor--start-process'."
+RESTART-SEC, UNIT-FILE-DIRECTORY, USER, GROUP, and SANDBOX-ENTRY
+are passed through to `supervisor--start-process'."
   (puthash id t supervisor--dag-started)
   (puthash id (float-time) supervisor--start-times)
   (cl-incf supervisor--dag-active-starts)
-  (let ((args (supervisor--build-launch-command cmd user group)))
+  (let ((args (supervisor--build-launch-command cmd user group
+                                                sandbox-entry)))
     (if (not (executable-find (car args)))
         (progn
           (supervisor--log 'warning "executable not found for %s: %s" id (car args))
@@ -4084,7 +4309,8 @@ RESTART-SEC, UNIT-FILE-DIRECTORY, USER, and GROUP are passed through to
                    environment-file restart-sec
                    unit-file-directory
                    user group
-                   stdout-log-file stderr-log-file)))
+                   stdout-log-file stderr-log-file
+                   sandbox-entry)))
         (if (not proc)
             (supervisor--dag-handle-spawn-failure id)
           (supervisor--dag-handle-spawn-success id type oneshot-timeout))))))
@@ -4409,14 +4635,16 @@ ignored."
                                         environment-file restart-sec
                                         unit-file-directory
                                         user group
-                                        stdout-log-file stderr-log-file)
+                                        stdout-log-file stderr-log-file
+                                        sandbox-entry)
   "Schedule restart of process ID after crash.
 CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are original process params.
 PROC-STATUS and EXIT-CODE describe the exit for logging.
 WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, RESTART-SEC,
 and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts.
 USER and GROUP are identity parameters preserved for restart.
-STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets."
+STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets.
+SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox."
   (supervisor--log 'info "%s %s, restarting..."
                    id (supervisor--format-exit-status proc-status exit-code))
   (let ((delay (or restart-sec supervisor-restart-delay)))
@@ -4428,7 +4656,8 @@ STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets."
                           environment-file restart-sec
                           unit-file-directory
                           user group
-                          stdout-log-file stderr-log-file)
+                          stdout-log-file stderr-log-file
+                          sandbox-entry)
              supervisor--restart-timers)))
 
 (defun supervisor--make-process-sentinel (id cmd default-logging type config-restart
@@ -4436,13 +4665,15 @@ STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets."
                                              environment-file restart-sec
                                              unit-file-directory
                                              user group
-                                             stdout-log-file stderr-log-file)
+                                             stdout-log-file stderr-log-file
+                                             sandbox-entry)
   "Create a process sentinel for ID with captured parameters.
 CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart.
 WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, RESTART-SEC,
 and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts.
 USER and GROUP are identity parameters preserved for restart.
-STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets."
+STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets.
+SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox."
   (lambda (p _event)
     (unless (process-live-p p)
       (let* ((name (process-name p))
@@ -4487,7 +4718,8 @@ STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets."
 	                                        environment-file restart-sec
 	                                        unit-file-directory
 	                                        user group
-	                                        stdout-log-file stderr-log-file))))))
+	                                        stdout-log-file stderr-log-file
+	                                        sandbox-entry))))))
 
 ;;; Process Environment and Working Directory Helpers
 
@@ -4871,22 +5103,131 @@ directly, because `split-string-and-unquote' does not interpret
 shell operators like `&&', `||', pipes, or redirections."
   (string-match-p "[&|;<>$`\n]" cmd))
 
-(defun supervisor--build-launch-command (cmd &optional user group)
+;;; Sandbox Profile Registry
+
+(defun supervisor--sandbox-profile-args (profile)
+  "Return the bwrap argument list for sandbox PROFILE.
+PROFILE is a symbol: `none', `strict', `service', or `desktop'.
+Returns nil for `none' (no sandbox).  The returned list does not
+include the `bwrap' executable itself -- callers prepend that."
+  (pcase profile
+    ('none nil)
+    ('strict
+     (list "--unshare-all"
+           "--die-with-parent"
+           "--ro-bind" "/" "/"
+           "--tmpfs" "/tmp"
+           "--proc" "/proc"
+           "--dev" "/dev"))
+    ('service
+     (list "--unshare-pid"
+           "--unshare-ipc"
+           "--unshare-uts"
+           "--die-with-parent"
+           "--ro-bind" "/" "/"
+           "--tmpfs" "/tmp"
+           "--proc" "/proc"
+           "--dev" "/dev"
+           "--dev-bind" "/dev/null" "/dev/null"
+           "--dev-bind" "/dev/urandom" "/dev/urandom"))
+    ('desktop
+     (list "--unshare-pid"
+           "--unshare-ipc"
+           "--unshare-uts"
+           "--die-with-parent"
+           "--ro-bind" "/" "/"
+           "--tmpfs" "/tmp"
+           "--proc" "/proc"
+           "--dev" "/dev"
+           "--dev-bind" "/dev/null" "/dev/null"
+           "--dev-bind" "/dev/urandom" "/dev/urandom"
+           "--bind" (or (getenv "XDG_RUNTIME_DIR")
+                        (format "/run/user/%d" (user-uid)))
+           (or (getenv "XDG_RUNTIME_DIR")
+               (format "/run/user/%d" (user-uid)))
+           "--ro-bind" "/tmp/.X11-unix" "/tmp/.X11-unix"))
+    (_ nil)))
+
+(defun supervisor--sandbox-profile-default-network (profile)
+  "Return the default network mode symbol for PROFILE.
+`strict' defaults to `isolated'; others default to `shared'."
+  (if (eq profile 'strict) 'isolated 'shared))
+
+(defun supervisor--sandbox-build-argv (entry)
+  "Build the bwrap wrapper argv for a sandbox-requesting ENTRY.
+Return a list of strings starting with the bwrap executable path,
+or nil if the entry does not request sandbox.  The returned argv
+does not include the service command itself -- callers append that."
+  (let ((profile (or (supervisor-entry-sandbox-profile entry) 'none)))
+    (when (or (not (eq profile 'none))
+              (supervisor-entry-sandbox-network entry)
+              (supervisor-entry-sandbox-ro-bind entry)
+              (supervisor-entry-sandbox-rw-bind entry)
+              (supervisor-entry-sandbox-tmpfs entry)
+              (supervisor-entry-sandbox-raw-args entry))
+      (let* ((bwrap (or (executable-find "bwrap") "bwrap"))
+             (base-args (or (supervisor--sandbox-profile-args profile)
+                            ;; Minimal base when profile is none but knobs set
+                            (list "--die-with-parent"
+                                  "--ro-bind" "/" "/"
+                                  "--proc" "/proc"
+                                  "--dev" "/dev")))
+             (effective-network
+              (or (supervisor-entry-sandbox-network entry)
+                  (supervisor--sandbox-profile-default-network profile)))
+             (argv (list bwrap)))
+        ;; Append profile base args
+        (setq argv (append argv base-args))
+        ;; Apply network override
+        (when (eq effective-network 'isolated)
+          (unless (member "--unshare-net" argv)
+            (setq argv (append argv (list "--unshare-net")))))
+        ;; Apply read-only bind overrides
+        (dolist (path (supervisor-entry-sandbox-ro-bind entry))
+          (setq argv (append argv (list "--ro-bind" path path))))
+        ;; Apply read-write bind overrides
+        (dolist (path (supervisor-entry-sandbox-rw-bind entry))
+          (setq argv (append argv (list "--bind" path path))))
+        ;; Apply tmpfs overrides
+        (dolist (path (supervisor-entry-sandbox-tmpfs entry))
+          (setq argv (append argv (list "--tmpfs" path))))
+        ;; Apply raw args (expert mode, already validated)
+        (when (supervisor-entry-sandbox-raw-args entry)
+          (setq argv (append argv (supervisor-entry-sandbox-raw-args entry))))
+        ;; Separator before service command
+        (append argv (list "--"))))))
+
+(defun supervisor--build-launch-command (cmd &optional user group
+                                                       sandbox-entry)
   "Build the command argument list for launching CMD.
 CMD is a shell command string.  USER and GROUP are optional
 identity parameters for privilege drop.  When either is non-nil,
 `supervisor-runas-command' is prepended with identity arguments
 and the target program is resolved to an absolute path (the helper
 uses direct execv without PATH search).
+SANDBOX-ENTRY, when non-nil, is a parsed entry tuple from which
+sandbox wrapper arguments are extracted.  Launch ordering is:
+supervisor-runas -> bwrap -> service executable.
 When CMD contains shell metacharacters (`&&', pipes, etc.), it is
 wrapped as `sh -c CMD' so the shell interprets operators correctly.
 Return a list suitable for the `make-process' :command keyword."
-  (let ((args (if (supervisor--shell-metachar-p cmd)
-                  (list shell-file-name shell-command-switch cmd)
-                (split-string-and-unquote cmd))))
+  (let* ((args (if (supervisor--shell-metachar-p cmd)
+                   (list shell-file-name shell-command-switch cmd)
+                 (split-string-and-unquote cmd)))
+         (sandbox-argv (when sandbox-entry
+                         (supervisor--sandbox-build-argv sandbox-entry))))
+    ;; Build from inside out: args -> sandbox-argv+args -> runas+all
+    (when sandbox-argv
+      ;; Resolve program to absolute path inside sandbox
+      (let ((resolved (executable-find (car args))))
+        (when resolved
+          (setcar args resolved)))
+      (setq args (append sandbox-argv args)))
     (if (or user group)
         (let ((helper-args (list supervisor-runas-command))
-              (resolved (executable-find (car args))))
+              (resolved (unless sandbox-argv
+                          ;; Only resolve when not already resolved above
+                          (executable-find (car args)))))
           ;; Resolve program to absolute path for execv
           (when resolved
             (setcar args resolved))
@@ -4911,7 +5252,8 @@ Return a list suitable for the `make-process' :command keyword."
                                      environment-file restart-sec
                                      unit-file-directory
                                      user group
-                                     stdout-log-file stderr-log-file)
+                                     stdout-log-file stderr-log-file
+                                     sandbox-entry)
   "Start CMD with identifier ID.
 DEFAULT-LOGGING is the config value; runtime override is checked at restart.
 TYPE is `simple' (long-running) or `oneshot' (run once).
@@ -4925,7 +5267,9 @@ USER and GROUP are optional identity parameters for privilege drop.
 When set, `supervisor-runas-command' is used to launch the process
 as the specified identity.  Requires root privileges.
 STDOUT-LOG-FILE and STDERR-LOG-FILE are optional per-unit stream log
-targets.  By default stderr follows stdout into the same log file."
+targets.  By default stderr follows stdout into the same log file.
+SANDBOX-ENTRY, when non-nil, is a parsed entry tuple from which
+sandbox wrapper arguments are built via bubblewrap."
   ;; Clear any pending restart timer for this ID first
   (when-let* ((timer (gethash id supervisor--restart-timers)))
     (when (timerp timer)
@@ -4989,7 +5333,8 @@ targets.  By default stderr follows stdout into the same log file."
                    nil))
               process-environment)))
       (when (and default-directory process-environment)
-        (let* ((args (supervisor--build-launch-command cmd user group))
+        (let* ((args (supervisor--build-launch-command cmd user group
+                                                        sandbox-entry))
                (logging (supervisor--get-effective-logging id default-logging))
                (default-log-file (when logging
                                    (supervisor--log-file id)))
@@ -5029,7 +5374,8 @@ targets.  By default stderr follows stdout into the same log file."
                                      environment-file restart-sec
                                      unit-file-directory
                                      user group
-                                     stdout-log-file stderr-log-file))
+                                     stdout-log-file stderr-log-file
+                                     sandbox-entry))
                        (error
                         (supervisor--stop-writer id)
                         (puthash id (error-message-string err)
@@ -5086,12 +5432,14 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
         (unit-file-directory (supervisor--unit-file-directory-for-id
                               (supervisor-entry-id entry)))
         (user (supervisor-entry-user entry))
-        (group (supervisor-entry-group entry)))
+        (group (supervisor-entry-group entry))
+        (sandbox-entry (when (supervisor--sandbox-requesting-p entry) entry)))
     (if (not (supervisor--get-effective-enabled id enabled-p))
         (progn
           (supervisor--log 'info "%s disabled (config or override), skipping" id)
           (when callback (funcall callback t)))
-      (let ((args (supervisor--build-launch-command cmd user group)))
+      (let ((args (supervisor--build-launch-command cmd user group
+                                                    sandbox-entry)))
         (if (not (executable-find (car args)))
             (progn
               (supervisor--log 'warning "executable not found for %s: %s" id (car args))
@@ -5104,7 +5452,8 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
                        environment-file restart-sec
                        unit-file-directory
                        user group
-                       stdout-log-file stderr-log-file)))
+                       stdout-log-file stderr-log-file
+                       sandbox-entry)))
             (if (not proc)
                 (progn
                   (supervisor--emit-event 'process-failed id nil nil)
@@ -5172,7 +5521,9 @@ are blocked.  Manually started disabled units are tracked in
               (restart-sec (supervisor-entry-restart-sec entry))
               (unit-file-directory (supervisor--unit-file-directory-for-id id))
               (user (supervisor-entry-user entry))
-              (group (supervisor-entry-group entry)))
+              (group (supervisor-entry-group entry))
+              (sandbox-entry (when (supervisor--sandbox-requesting-p entry)
+                               entry)))
           (cond
            ;; Masked (highest precedence - only mask blocks manual start)
            ((eq (gethash id supervisor--mask-override) 'masked)
@@ -5190,7 +5541,8 @@ are blocked.  Manually started disabled units are tracked in
                                   user group)))
            ;; Executable not found
            ((not (executable-find
-                  (car (supervisor--build-launch-command cmd user group))))
+                  (car (supervisor--build-launch-command cmd user group
+                                                        sandbox-entry))))
             (list :status 'error :reason "executable not found"))
            ;; All checks passed - start
            (t
@@ -5208,7 +5560,8 @@ are blocked.  Manually started disabled units are tracked in
                          environment-file restart-sec
                          unit-file-directory
                          user group
-                         stdout-log-file stderr-log-file)))
+                         stdout-log-file stderr-log-file
+                         sandbox-entry)))
               (if proc
                   (progn
                     ;; Track manual start only on success so reconcile
@@ -5914,9 +6267,12 @@ Returns a plist with :stopped and :started counts."
                    (restart-sec (supervisor-entry-restart-sec entry))
                    (unit-file-directory (supervisor--unit-file-directory-for-id id))
                    (user (supervisor-entry-user entry))
-                   (group (supervisor-entry-group entry)))
+                   (group (supervisor-entry-group entry))
+                   (sandbox-entry (when (supervisor--sandbox-requesting-p entry)
+                                    entry)))
                (when (supervisor--get-effective-enabled id enabled-p)
-                 (let ((args (supervisor--build-launch-command cmd user group)))
+                 (let ((args (supervisor--build-launch-command cmd user group
+                                                              sandbox-entry)))
                    (if (not (executable-find (car args)))
                        (progn
                          (supervisor--log 'warning "reconcile: executable not found for %s: %s"
@@ -5929,7 +6285,8 @@ Returns a plist with :stopped and :started counts."
                                   environment-file restart-sec
                                   unit-file-directory
                                   user group
-                                  stdout-log-file stderr-log-file)))
+                                  stdout-log-file stderr-log-file
+                                  sandbox-entry)))
                        (if proc
                            (progn
                              (supervisor--emit-event 'process-started id nil (list :type type))
@@ -6098,7 +6455,10 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
                    (unit-file-directory (supervisor--unit-file-directory-for-id id))
                    (user (supervisor-entry-user entry))
                    (group (supervisor-entry-group entry))
-                   (exe (car (supervisor--build-launch-command cmd user group))))
+                   (sandbox-entry (when (supervisor--sandbox-requesting-p entry)
+                                    entry))
+                   (exe (car (supervisor--build-launch-command cmd user group
+                                                              sandbox-entry))))
               (if (not (executable-find exe))
                   (list :id id :action "error: executable not found")
                 (let ((new-proc (supervisor--start-process
@@ -6107,7 +6467,8 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
                                  environment-file restart-sec
                                  unit-file-directory
                                  user group
-                                 stdout-log-file stderr-log-file)))
+                                 stdout-log-file stderr-log-file
+                                 sandbox-entry)))
                   (if new-proc
                       (list :id id :action "reloaded")
                     (list :id id

@@ -26,6 +26,8 @@ start, stop, inspect, and manage everything from inside Emacs.
 - *Timers*: calendar and relative timers for oneshot, simple, and target units
   with persistent catch-up semantics.
 - *Logging*: external log writers plus rotate/prune tooling for bounded growth.
+- *Sandbox*: optional bubblewrap integration with curated profiles for process
+  isolation (Linux only).
 
 ** Requirements
 
@@ -172,6 +174,12 @@ Each unit file is a single plist expression with ~:id~ and ~:command~ required.
 | ~:success-exit-status~ | int, signal symbol/string, or list | ~nil~ | ~simple~ only: extra clean exit criteria |
 | ~:user~ | string, integer, or ~nil~ | ~nil~ | Run-as user (requires root, trusted unit source) |
 | ~:group~ | string, integer, or ~nil~ | ~nil~ | Run-as group (requires root, trusted unit source) |
+| ~:sandbox-profile~ | symbol | ~nil~ | ~none~, ~strict~, ~service~, or ~desktop~ (Linux only) |
+| ~:sandbox-network~ | symbol | profile default | ~shared~ or ~isolated~ |
+| ~:sandbox-ro-bind~ | list of absolute path strings | ~nil~ | Read-only bind mounts inside sandbox |
+| ~:sandbox-rw-bind~ | list of absolute path strings | ~nil~ | Read-write bind mounts inside sandbox |
+| ~:sandbox-tmpfs~ | list of absolute path strings | ~nil~ | Tmpfs mounts inside sandbox |
+| ~:sandbox-raw-args~ | list of strings | ~nil~ | Raw bwrap arguments (expert gate required) |
 
 ** Validation Rules
 
@@ -226,6 +234,18 @@ Validation is performed by unit-file validation
 - ~:user~ and ~:group~ must be a string, integer, or ~nil~.  Identity
   requirements (root privileges, trust gate) are enforced at launch time, not
   during validation.  See [[#security][Security]] for details.
+- ~:sandbox-profile~ must be one of ~none~, ~strict~, ~service~, or ~desktop~.
+- ~:sandbox-network~ must be ~shared~ or ~isolated~.
+- ~:sandbox-ro-bind~, ~:sandbox-rw-bind~, and ~:sandbox-tmpfs~ must be strings
+  or proper lists of absolute path strings.  Empty paths and forbidden
+  destinations (~/proc~, ~/dev~) are rejected.  Duplicate paths are
+  deduplicated (first occurrence wins).
+- ~:sandbox-raw-args~ must be a list of strings.  Rejected unless
+  ~supervisor-sandbox-allow-raw-bwrap~ is non-nil.
+- Sandbox keys are rejected for ~:type target~.
+- Units requesting sandbox (any sandbox key present or profile not ~none~) on
+  non-Linux hosts are rejected.
+- Units requesting sandbox without =bwrap= (bubblewrap) installed are rejected.
 
 Invalid entries are skipped at start and shown as ~invalid~ in dashboard
 and CLI status/validate output.
@@ -1895,6 +1915,7 @@ All user options (defcustom) are listed below.
 | ~supervisor-libexec-build-on-startup~ | ~prompt~ | Build bundled helper binaries on startup (~prompt/automatic/never~) |
 | ~supervisor-libexec-compiler-candidates~ | ~("cc" "clang" "gcc")~ | Candidate compiler commands, checked in order |
 | ~supervisor-libexec-cflags~ | ~("-Wall" "-Wextra" "-Werror" "-pedantic" "-std=c99" "-O2")~ | C flags used when building bundled helpers |
+| ~supervisor-sandbox-allow-raw-bwrap~ | ~nil~ | Enable raw bwrap arguments (~:sandbox-raw-args~) |
 
 ** Unit-File Options
 
@@ -2022,6 +2043,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Reload unit (~reload~, ~u~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Reset failed state (~reset-failed~, ~F~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Manager targeting (caller identity, ~emacsclient~ discovery): [[#security][Security]]
+- Process sandbox (bubblewrap profiles, knobs, raw mode): [[#sandbox][Process Sandbox (bubblewrap)]]
 - Privilege-drop trust gate (~:user~, ~:group~, root-owned unit files): [[#security][Security]]
 - Privilege-drop troubleshooting (identity errors, trust gate failures): [[#privilege-drop-troubleshooting][Privilege-Drop Troubleshooting]]
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
@@ -2106,6 +2128,100 @@ validation normally; the service appears with status ~stopped~ and a
 ~failed-to-spawn~ reason containing identity context.  This prevents
 unprivileged users from escalating through writable unit files.
 
+** Process Sandbox (bubblewrap)
+:PROPERTIES:
+:CUSTOM_ID: sandbox
+:END:
+
+supervisor.el provides optional process sandboxing via [[https://github.com/containers/bubblewrap][bubblewrap]] (=bwrap=).
+Sandboxing is Linux-only, opt-in, and disabled by default.
+
+*** Overview
+
+Sandbox is configured per-unit via ~:sandbox-profile~ and optional knob
+overrides.  The feature model is profile-first:
+
+1. Select a curated built-in profile.
+2. Optionally override network mode and bind mounts.
+3. For advanced use, enable the global expert gate for raw arguments.
+
+bubblewrap is an optional dependency.  Units without sandbox settings launch
+exactly as before.  Units requesting sandbox without =bwrap= installed are
+rejected at validation time with an explicit reason -- they never fall back to
+unsandboxed execution.
+
+*** Profiles
+
+| Profile | Namespaces | Filesystem | Network | Use case |
+|---------+------------+------------+---------+----------|
+| ~none~ | (no sandbox) | (no sandbox) | (no sandbox) | Default -- no wrapper |
+| ~strict~ | All (--unshare-all) | Read-only root, tmpfs /tmp | Isolated | Batch jobs, build tasks |
+| ~service~ | PID, IPC, UTS | Read-only root, tmpfs /tmp | Shared | Network daemons |
+| ~desktop~ | PID, IPC, UTS | Read-only root, tmpfs /tmp, XDG_RUNTIME_DIR, X11 socket | Shared | Desktop userland apps |
+
+*** Safe Knobs
+
+These per-unit overrides adjust the effective sandbox without bypassing the
+profile model:
+
+- ~:sandbox-network~ -- Force ~shared~ or ~isolated~ network mode, overriding
+  the profile default.
+- ~:sandbox-ro-bind~ -- Add read-only bind mounts inside the sandbox.
+- ~:sandbox-rw-bind~ -- Add read-write bind mounts inside the sandbox.
+- ~:sandbox-tmpfs~ -- Add tmpfs mounts inside the sandbox.
+
+Path validation rules:
+
+- All paths must be absolute.
+- Empty paths are rejected.
+- ~/proc~ and ~/dev~ are forbidden destinations (profiles handle these).
+- Duplicate paths are deduplicated (first occurrence wins).
+
+*** Expert Raw Mode
+
+~:sandbox-raw-args~ allows passing arbitrary bwrap arguments.  This key is
+rejected at validation time unless the global gate is enabled:
+
+#+begin_src emacs-lisp
+(setq supervisor-sandbox-allow-raw-bwrap t)
+#+end_src
+
+When enabled, the raw arguments are appended after profile and knob arguments.
+Expert mode is unsupported on non-Linux and rejected.
+
+*** Launch Order
+
+When both identity drop (~:user~ / ~:group~) and sandbox are configured, the
+launch wrapper ordering is fixed:
+
+#+begin_example
+supervisor-runas -> bwrap -> service executable
+#+end_example
+
+The runas helper drops to the target identity, then bwrap creates the sandbox
+namespace, then the service runs inside.
+
+*** Unit File Example
+
+#+begin_src emacs-lisp
+;; ~/.config/supervisor/units/myapp.el
+(:id "myapp"
+ :command "/usr/bin/myapp --serve"
+ :sandbox-profile service
+ :sandbox-network shared
+ :sandbox-rw-bind ("/var/lib/myapp")
+ :description "My application (sandboxed)")
+#+end_src
+
+*** Troubleshooting
+
+- *"sandbox is only supported on GNU/Linux"* -- bubblewrap uses Linux
+  namespaces.  Non-Linux hosts cannot use sandbox features.
+- *"sandbox requires bwrap (bubblewrap) but bwrap is not found in PATH"* --
+  Install bubblewrap (e.g., =apt install bubblewrap=).
+- *":sandbox-raw-args requires supervisor-sandbox-allow-raw-bwrap"* -- Set
+  the global gate variable before loading units.
+
 * Service Management Systems Comparison
 :PROPERTIES:
 :CUSTOM_ID: service-management-systems-comparison
@@ -2166,12 +2282,13 @@ Where behavior diverges across systems, parenthetical notes explain.
 | Resource accounting | yes (CPUAccounting, etc.) | no | no | no |
 | Resource limits (ulimit-style) | yes (LimitNOFILE, etc.) | yes (chpst) | yes (s6-softlimit) | no |
 | *Sandboxing* | | | | |
-| Namespace isolation | yes (PrivateTmp, PrivateNetwork, etc.) | no | no | no |
+| Namespace isolation | yes (PrivateTmp, PrivateNetwork, etc.) | no | no | yes (bubblewrap profiles) |
 | Seccomp syscall filtering | yes (SystemCallFilter) | no | no | no |
 | Capability restriction | yes (CapabilityBoundingSet) | no | no | no |
-| Filesystem protection | yes (ProtectSystem, ReadOnlyPaths) | no | no | no |
+| Filesystem protection | yes (ProtectSystem, ReadOnlyPaths) | no | no | yes (sandbox-ro-bind, sandbox-rw-bind) |
 | Dynamic user allocation | yes (DynamicUser) | no | no | no |
 | Security audit scoring | yes (systemd-analyze security) | no | no | no |
+| Sandbox profiles | partial (systemd-analyze security) | no | no | yes (none, strict, service, desktop) |
 | *Environment and Execution Context* | | | | |
 | Environment variables | yes (Environment, EnvironmentFile) | partial (chpst -e envdir) | yes (s6-envdir) | yes (environment, environment-file) |
 | Working directory | yes (WorkingDirectory) | yes (set in run script) | yes (set in run script) | yes (working-directory) |
