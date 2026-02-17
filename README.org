@@ -181,9 +181,11 @@ into the startup transaction.
 
 *** Reading a default dashboard
 
-Below is a representative view of what ~M-x supervisor~ shows after a default
-graphical boot with two user services (~ssh-agent~ and ~emacs-server~) and the
+Below is what ~M-x supervisor~ shows after a default graphical boot with the
 timer subsystem enabled.
+
+#+CAPTION: Default dashboard view after graphical boot
+[[file:dashboard-default.png]]
 
 **** Services section
 
