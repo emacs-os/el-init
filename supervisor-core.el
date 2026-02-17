@@ -1063,16 +1063,28 @@ Return nil if valid, or a reason string if invalid."
             (push ":sandbox-raw-args must be a list of strings" errors))
            (t
             ;; Validate against conflicting/unsafe raw arg combinations.
-            (let ((network (plist-get plist :sandbox-network)))
+            ;; Resolve effective network: explicit :sandbox-network wins,
+            ;; otherwise use profile default (strict -> isolated, others
+            ;; -> shared) per PLAN-bubble-wrap-integration.md line 133.
+            (let* ((raw-network (plist-get plist :sandbox-network))
+                   (raw-profile (plist-get plist :sandbox-profile))
+                   (profile-sym (if (stringp raw-profile)
+                                    (intern raw-profile)
+                                  (or raw-profile 'none)))
+                   (effective-network
+                    (if raw-network
+                        (if (stringp raw-network)
+                            (intern raw-network)
+                          raw-network)
+                      (supervisor--sandbox-profile-default-network
+                       profile-sym))))
               (when (and (member "--share-net" val)
-                         (eq (if (stringp network) (intern network) network)
-                             'isolated))
-                (push ":sandbox-raw-args \"--share-net\" conflicts with :sandbox-network isolated"
+                         (eq effective-network 'isolated))
+                (push ":sandbox-raw-args \"--share-net\" conflicts with effective network isolated"
                       errors))
               (when (and (member "--unshare-net" val)
-                         (eq (if (stringp network) (intern network) network)
-                             'shared))
-                (push ":sandbox-raw-args \"--unshare-net\" conflicts with :sandbox-network shared"
+                         (eq effective-network 'shared))
+                (push ":sandbox-raw-args \"--unshare-net\" conflicts with effective network shared"
                       errors)))
             ;; Reject args that duplicate or conflict with profile-managed
             ;; namespace and mount setup.

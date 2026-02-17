@@ -21537,25 +21537,45 @@ the invalid-hash must not contain the alias ID."
       (should (string-match-p "must be a list of strings" reason)))))
 
 (ert-deftest supervisor-test-sandbox-validate-raw-args-share-net-conflicts-isolated ()
-  "Raw --share-net conflicts with :sandbox-network isolated."
+  "Raw --share-net conflicts with explicit :sandbox-network isolated."
   (let ((supervisor-sandbox-allow-raw-bwrap t))
     (let ((reason (supervisor--validate-entry
                    '("cmd" :id "svc"
                      :sandbox-profile strict
                      :sandbox-network isolated
                      :sandbox-raw-args ("--share-net")))))
-      (should (string-match-p "\"--share-net\" conflicts with :sandbox-network isolated"
+      (should (string-match-p "\"--share-net\" conflicts with effective network isolated"
                               reason)))))
 
 (ert-deftest supervisor-test-sandbox-validate-raw-args-unshare-net-conflicts-shared ()
-  "Raw --unshare-net conflicts with :sandbox-network shared."
+  "Raw --unshare-net conflicts with explicit :sandbox-network shared."
   (let ((supervisor-sandbox-allow-raw-bwrap t))
     (let ((reason (supervisor--validate-entry
                    '("cmd" :id "svc"
                      :sandbox-profile service
                      :sandbox-network shared
                      :sandbox-raw-args ("--unshare-net")))))
-      (should (string-match-p "\"--unshare-net\" conflicts with :sandbox-network shared"
+      (should (string-match-p "\"--unshare-net\" conflicts with effective network shared"
+                              reason)))))
+
+(ert-deftest supervisor-test-sandbox-validate-raw-args-share-net-conflicts-strict-default ()
+  "Raw --share-net conflicts with strict profile default (isolated)."
+  (let ((supervisor-sandbox-allow-raw-bwrap t))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc"
+                     :sandbox-profile strict
+                     :sandbox-raw-args ("--share-net")))))
+      (should (string-match-p "\"--share-net\" conflicts with effective network isolated"
+                              reason)))))
+
+(ert-deftest supervisor-test-sandbox-validate-raw-args-unshare-net-conflicts-service-default ()
+  "Raw --unshare-net conflicts with service profile default (shared)."
+  (let ((supervisor-sandbox-allow-raw-bwrap t))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc"
+                     :sandbox-profile service
+                     :sandbox-raw-args ("--unshare-net")))))
+      (should (string-match-p "\"--unshare-net\" conflicts with effective network shared"
                               reason)))))
 
 (ert-deftest supervisor-test-sandbox-validate-raw-args-unshare-all-conflicts ()
