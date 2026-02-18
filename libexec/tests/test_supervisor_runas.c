@@ -157,8 +157,10 @@ void test_runas_nonroot_group_only_fails(void)
 		return;
 	}
 
+	/* Use "root" (gid 0) which exists on all Linux distros.
+	 * "nobody" group does not exist on Ubuntu (it's "nogroup"). */
 	const char *argv[] = { RUNAS_PATH,
-			       "--group", "nobody",
+			       "--group", "root",
 			       "--", "/bin/true", NULL };
 	struct run_result r;
 	TEST_CHECK(run_cmd(argv, NULL, 0, &r) == 0);
