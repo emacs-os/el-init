@@ -322,6 +322,14 @@
                           (gethash "app.target"
                                    (supervisor-plan-invalid plan))))))
 
+;;; Libexec build-target registration
+
+(ert-deftest supervisor-test-rlimits-in-libexec-build-targets ()
+  "Supervisor-rlimits appears in libexec build targets."
+  (let ((names (mapcar (lambda (target) (plist-get target :name))
+                       (supervisor--libexec-build-targets))))
+    (should (member "supervisor-rlimits" names))))
+
 (provide 'supervisor-test-rlimits)
 
 ;;; supervisor-test-rlimits.el ends here
