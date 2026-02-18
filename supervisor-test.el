@@ -91,6 +91,25 @@ and clean up afterward."
                        `(delete-directory ,sym t))
                      dir-syms))))))
 
+(defun supervisor-test--ensure-logd-binary ()
+  "Build supervisor-logd if missing or stale, return path.
+Compares source mtime against binary mtime to detect staleness."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (logd (expand-file-name "libexec/supervisor-logd" root))
+         (src (expand-file-name "libexec/supervisor-logd.c" root))
+         (stale (and (file-exists-p logd)
+                     (file-exists-p src)
+                     (time-less-p
+                      (nth 5 (file-attributes logd))
+                      (nth 5 (file-attributes src))))))
+    (when (or (not (file-executable-p logd)) stale)
+      (let ((result (supervisor-build-libexec-helpers t)))
+        (unless (file-executable-p logd)
+          (error "Cannot build supervisor-logd: %S"
+                 (or (plist-get result :failed)
+                     (plist-get result :missing-source))))))
+    logd))
+
 ;;; Package structure tests
 
 (ert-deftest supervisor-test-feature-provided ()
@@ -17645,17 +17664,9 @@ stderr through the stdout writer for correct stream=2 tagging."
 
 (ert-deftest supervisor-test-logd-rotates-on-size-cap-exceed ()
   "Logd rotates the log file when it exceeds the size cap."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
-         (logd (expand-file-name "libexec/supervisor-logd" root))
+  (let* ((logd (supervisor-test--ensure-logd-binary))
          (dir (make-temp-file "logd-rotate-" t))
          (log-file (expand-file-name "log-svc.log" dir)))
-    ;; Build the binary if it is missing or stale.
-    (unless (file-executable-p logd)
-      (let ((result (supervisor-build-libexec-helpers t)))
-        (unless (file-executable-p logd)
-          (error "Cannot build supervisor-logd: %S"
-                 (or (plist-get result :failed)
-                     (plist-get result :missing-source))))))
     (unwind-protect
         (let* ((proc (make-process
                       :name "test-logd"
@@ -17689,16 +17700,9 @@ stderr through the stdout writer for correct stream=2 tagging."
 
 (ert-deftest supervisor-test-logd-text-framed-round-trip ()
   "End-to-end: framed input to logd --format text produces decodable records."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
-         (logd (expand-file-name "libexec/supervisor-logd" root))
+  (let* ((logd (supervisor-test--ensure-logd-binary))
          (dir (make-temp-file "logd-text-rt-" t))
          (log-file (expand-file-name "log-svc.log" dir)))
-    (unless (file-executable-p logd)
-      (let ((result (supervisor-build-libexec-helpers t)))
-        (unless (file-executable-p logd)
-          (error "Cannot build supervisor-logd: %S"
-                 (or (plist-get result :failed)
-                     (plist-get result :missing-source))))))
     (unwind-protect
         (let ((proc (make-process
                      :name "test-logd-text-rt"
@@ -17744,13 +17748,18 @@ stderr through the stdout writer for correct stream=2 tagging."
                     (should (eq (plist-get r1 :event) 'output))
                     (should (eq (plist-get r1 :stream) 'stdout))
                     (should (equal (plist-get r1 :payload) "-"))
+                    ;; Rule 1: output status=- and code=-
+                    (should-not (plist-get r1 :status))
+                    (should (= (plist-get r1 :code) 0))
                     ;; Empty payload round-trips correctly
                     (should (eq (plist-get r2 :event) 'output))
                     (should (equal (plist-get r2 :payload) ""))
-                    ;; Stderr output has correct stream tag
+                    (should-not (plist-get r2 :status))
+                    ;; Stderr output has correct stream tag and status=-
                     (should (eq (plist-get r3 :stream) 'stderr))
                     (should (equal (plist-get r3 :payload) "hello world\n"))
-                    ;; Exit event decodes correctly
+                    (should-not (plist-get r3 :status))
+                    ;; Exit event decodes correctly with status/code
                     (should (eq (plist-get r4 :event) 'exit))
                     (should (eq (plist-get r4 :stream) 'meta))
                     (should (eq (plist-get r4 :status) 'exited))

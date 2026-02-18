@@ -415,30 +415,31 @@ static ssize_t write_text_record(int fd, const struct frame *f,
 	const char *event_str =
 	    (f->event == EVT_EXIT) ? "exit" : "output";
 
-	const char *status_str;
-	switch (f->exit_status) {
-	case STATUS_EXITED:
-		status_str = "exited";
-		break;
-	case STATUS_SIGNALED:
-		status_str = "signaled";
-		break;
-	case STATUS_SPAWN_FAILED:
-		status_str = "spawn-failed";
-		break;
-	default:
-		status_str = "-";
-		break;
+	/* Output events always have status=- and code=-. */
+	const char *status_str = "-";
+	char code_str[32];
+	if (f->event == EVT_EXIT) {
+		switch (f->exit_status) {
+		case STATUS_EXITED:
+			status_str = "exited";
+			break;
+		case STATUS_SIGNALED:
+			status_str = "signaled";
+			break;
+		case STATUS_SPAWN_FAILED:
+			status_str = "spawn-failed";
+			break;
+		default:
+			status_str = "-";
+			break;
+		}
+		snprintf(code_str, sizeof(code_str), "%d", f->exit_code);
+	} else {
+		snprintf(code_str, sizeof(code_str), "-");
 	}
 
 	char ts[64];
 	format_timestamp(ts, sizeof(ts));
-
-	char code_str[32];
-	if (f->event == EVT_EXIT)
-		snprintf(code_str, sizeof(code_str), "%d", f->exit_code);
-	else
-		snprintf(code_str, sizeof(code_str), "-");
 
 	/* Escape payload for output events (even empty); "-" for exit. */
 	char *escaped = NULL;
