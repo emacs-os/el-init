@@ -1,0 +1,24 @@
+SHELL := /bin/sh
+
+SCRIPTS := supervisor-logrotate supervisor-log-prune supervisorctl
+TESTS   := tests/test-logrotate.sh tests/test-log-prune.sh tests/test-supervisorctl.sh
+
+.PHONY: all check lint test clean
+
+all: check
+
+check: lint test
+
+lint:
+	@echo "=== shellcheck ==="
+	@shellcheck -x -P tests -s sh $(SCRIPTS) $(TESTS) tests/testlib.sh
+
+test:
+	@echo "=== sbin tests ==="
+	@for t in $(TESTS); do \
+		echo "=== $$t ==="; \
+		sh "$$t" || exit 1; \
+	done
+
+clean:
+	@printf 'Nothing to clean.\n'
