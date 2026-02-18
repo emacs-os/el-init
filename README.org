@@ -83,7 +83,6 @@ provides detailed reference material:
 - [[#command-reference][Command Reference]] - every interactive command
 - [[#topical-index][Topical Index]] - targeted lookup for specific behaviors
 - [[#service-management-systems-comparison][Systems Comparison]] - supervisor vs systemd vs runit vs s6
-- [[#supervisor-import][systemd Import]] - automated conversion of systemd service files
 
 * Quick Start
 :PROPERTIES:
