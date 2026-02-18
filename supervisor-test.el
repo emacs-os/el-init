@@ -22579,6 +22579,50 @@ even when both identity wrapper and sandbox wrapper are active."
   ":log-format is in unit-file keyword allowlist."
   (should (memq :log-format supervisor--unit-file-keywords)))
 
+(ert-deftest supervisor-test-log-format-oneshot-parse ()
+  "Parse :type oneshot with :log-format preserves both."
+  (let ((entry (supervisor--parse-entry
+                '("sleep 1" :id "job" :type oneshot :log-format text))))
+    (should (eq (supervisor-entry-type entry) 'oneshot))
+    (should (eq (supervisor-entry-log-format entry) 'text))))
+
+(ert-deftest supervisor-test-log-format-oneshot-round-trip ()
+  "Entry->service->entry round-trip preserves :log-format for oneshot."
+  (let ((supervisor-log-format-binary-enable t))
+    (let* ((entry (supervisor--parse-entry
+                   '("sleep 1" :id "job" :type oneshot :log-format binary)))
+           (service (supervisor-entry-to-service entry))
+           (entry2 (supervisor-service-to-entry service)))
+      (should (eq (supervisor-entry-type entry2) 'oneshot))
+      (should (eq (supervisor-entry-log-format entry2) 'binary)))))
+
+(ert-deftest supervisor-test-log-format-oneshot-validate-ok ()
+  ":type oneshot + :log-format text passes validation."
+  (should-not (supervisor--validate-entry
+               '("cmd" :id "job" :type oneshot :log-format text))))
+
+(ert-deftest supervisor-test-log-format-unit-file-validates ()
+  "Unit-file plist with :log-format passes through entry validation."
+  (should-not (supervisor--validate-unit-file-plist
+               '(:id "svc" :command "cmd" :log-format text)
+               "test.el" 1)))
+
+(ert-deftest supervisor-test-log-format-unit-file-rejects-string ()
+  "Unit-file plist with string :log-format is rejected."
+  (let ((reason (supervisor--validate-unit-file-plist
+                 '(:id "svc" :command "cmd" :log-format "text")
+                 "test.el" 1)))
+    (should (stringp reason))
+    (should (string-match-p ":log-format must be" reason))))
+
+(ert-deftest supervisor-test-log-format-unit-file-rejects-unknown ()
+  "Unit-file plist with unknown :log-format value is rejected."
+  (let ((reason (supervisor--validate-unit-file-plist
+                 '(:id "svc" :command "cmd" :log-format json)
+                 "test.el" 1)))
+    (should (stringp reason))
+    (should (string-match-p ":log-format must be" reason))))
+
 ;;;; Phase 2: Frame encoding and transport tests
 
 (ert-deftest supervisor-test-frame-encode-round-trip ()
