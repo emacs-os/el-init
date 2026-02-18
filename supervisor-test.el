@@ -24889,27 +24889,75 @@ identity must be correct regardless of whether log-format is set."
       (delete-file tmpfile))))
 
 (ert-deftest supervisor-test-journal-n-passes-max-bytes ()
-  "Journal with -n passes max-bytes = n*512 to decode."
+  "Journal with -n tries n*512 first, then retries full on shortfall."
   (let ((tmpfile (make-temp-file "log-jmb-"))
-        (captured-max-bytes nil))
+        (call-log nil))
     (unwind-protect
         (progn
           (with-temp-file tmpfile
             (insert "ts=1000 unit=svc pid=1 stream=stdout "
                     "event=output status=- code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'supervisor--log-file)
-                     (lambda (_id) tmpfile))
-                    ((symbol-function 'supervisor--log-decode-file)
-                     (lambda (_file &optional _limit _offset max-bytes)
-                       (setq captured-max-bytes max-bytes)
-                       (list :records
-                             (list (list :ts 1000.0 :unit "svc" :pid 1
+          (let ((records (cl-loop for i from 1 to 10
+                                  collect (list :ts (float i) :unit "svc"
+                                                :pid 1 :stream 'stdout
+                                                :event 'output :status nil
+                                                :code 0 :payload "x"))))
+            (cl-letf (((symbol-function 'supervisor--log-file)
+                       (lambda (_id) tmpfile))
+                      ((symbol-function 'supervisor--log-decode-file)
+                       (lambda (_file &optional _limit _offset max-bytes)
+                         (push max-bytes call-log)
+                         (list :records records
+                               :offset 100 :format 'text :warning nil))))
+              (supervisor--cli-cmd-journal '("-u" "svc" "-n" "10") nil)
+              ;; First call uses n*512 heuristic
+              (should (= 5120 (car (last call-log))))
+              ;; Since 10 records >= 10 requested, no retry needed
+              (should (= 1 (length call-log))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-n-retries-on-shortfall ()
+  "Journal with -n retries with full decode when tail has too few records."
+  (let ((tmpfile (make-temp-file "log-jmb2-"))
+        (call-log nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (let ((few-records (list (list :ts 1.0 :unit "svc" :pid 1
                                          :stream 'stdout :event 'output
                                          :status nil :code 0
-                                         :payload "hello"))
-                             :offset 100 :format 'text :warning nil))))
-            (supervisor--cli-cmd-journal '("-u" "svc" "-n" "10") nil)
-            (should (= 5120 captured-max-bytes))))
+                                         :payload "big-payload")))
+                (all-records (cl-loop for i from 1 to 5
+                                      collect (list :ts (float i)
+                                                    :unit "svc" :pid 1
+                                                    :stream 'stdout
+                                                    :event 'output
+                                                    :status nil :code 0
+                                                    :payload "x"))))
+            (cl-letf (((symbol-function 'supervisor--log-file)
+                       (lambda (_id) tmpfile))
+                      ((symbol-function 'supervisor--log-decode-file)
+                       (lambda (_file &optional _limit _offset max-bytes)
+                         (push max-bytes call-log)
+                         (if max-bytes
+                             ;; Tail read returns fewer than requested
+                             (list :records few-records
+                                   :offset 100 :format 'text :warning nil)
+                           ;; Full read returns all
+                           (list :records all-records
+                                 :offset 500 :format 'text :warning nil)))))
+              (let* ((result (supervisor--cli-cmd-journal
+                              '("-u" "svc" "-n" "5") nil))
+                     (output (supervisor-cli-result-output result))
+                     (lines (split-string output "\n" t)))
+                ;; Two calls: first with heuristic, second with nil
+                (should (= 2 (length call-log)))
+                (should (= 2560 (car (last call-log))))
+                (should (null (car call-log)))
+                ;; Got all 5 records from the retry
+                (should (= 5 (length lines)))))))
       (delete-file tmpfile))))
 
 (ert-deftest supervisor-test-binary-scan-to-record ()

@@ -1938,8 +1938,17 @@ Display structured log records for a unit.  Requires -u/--unit."
                                        (format "No log file for '%s'" unit)
                                        (if json-p 'json 'human))
               (let* ((tail-bytes (when n (* n 512)))
-                     (decoded (supervisor--log-decode-file
-                               log-file nil nil tail-bytes))
+                     (tail-decoded (supervisor--log-decode-file
+                                    log-file nil nil tail-bytes))
+                     (tail-records (plist-get tail-decoded :records))
+                     ;; If tail heuristic returned fewer records than
+                     ;; requested, retry with full file to guarantee
+                     ;; correctness for large payloads.
+                     (decoded (if (and tail-bytes
+                                       (< (length tail-records) n))
+                                  (supervisor--log-decode-file
+                                   log-file nil nil nil)
+                                tail-decoded))
                      (records (plist-get decoded :records))
                      (filtered (supervisor--log-filter-records
                                 records since-ts until-ts priority))
