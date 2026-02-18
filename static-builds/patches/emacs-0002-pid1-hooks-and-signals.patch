@@ -1,0 +1,285 @@
+From 7c41ed4ab54fa31faf763f09f38ef2084c8893a7 Mon Sep 17 00:00:00 2001
+From: telecommuter <telecommuter@riseup.net>
+Date: Wed, 18 Feb 2026 09:52:55 -0700
+Subject: [PATCH 2/3] Add PID1 hooks, signal handling, and child reaping
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When --pid1 is active, this patch provides:
+
+Signal handling (follows sinit conventions):
+- SIGTERM, SIGUSR1 → set pid1_poweroff_pending flag
+- SIGINT, SIGUSR2  → set pid1_reboot_pending flag
+- SIGHUP           → ignored (no controlling terminal as PID1)
+- Handlers only set flags; processing happens in main loop
+
+Child reaping:
+- handle_child_signal() in process.c now reaps orphaned children
+  (waitpid(-1, ..., WNOHANG)) when pid1_mode is true
+- Prevents zombie accumulation from inherited orphan processes
+
+Lisp hooks:
+- pid1-boot-hook: runs after emacs-startup-hook in PID1 mode
+- pid1-poweroff-hook: runs before kill-emacs-hook on SIGTERM/SIGUSR1
+- pid1-reboot-hook: runs before kill-emacs-hook on SIGINT/SIGUSR2
+
+All hooks and signal handling are completely inert when --pid1 is
+not specified.  No behavior change for normal Emacs usage.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+---
+ lisp/startup.el |  9 ++++++
+ src/emacs.c     | 41 ++++++++++++++++++++++++++
+ src/lisp.h      |  4 +++
+ src/process.c   | 11 +++++++
+ src/sysdep.c    | 77 +++++++++++++++++++++++++++++++++++++++++++++----
+ 5 files changed, 136 insertions(+), 6 deletions(-)
+
+diff --git a/lisp/startup.el b/lisp/startup.el
+index 7ec500dfecb..9ebe6fd44a7 100644
+--- a/lisp/startup.el
++++ b/lisp/startup.el
+@@ -808,6 +808,11 @@ normal-top-level
+ 	(unless inhibit-startup-hooks
+ 	  (run-hooks 'emacs-startup-hook 'term-setup-hook))
+ 
++	;; Run PID1 boot hook after startup hooks when in PID1 mode.
++	(when (and (bound-and-true-p pid1-mode)
++		   (not inhibit-startup-hooks))
++	  (run-hooks 'pid1-boot-hook))
++
+ 	;; Don't do this if we failed to create the initial frame,
+ 	;; for instance due to a dense colormap.
+ 	(when (or frame-initial-frame
+@@ -2892,6 +2897,10 @@ command-line-1
+         ;; before doing any output.
+         (run-hooks 'emacs-startup-hook 'term-setup-hook)
+ 
++	;; Run PID1 boot hook after startup hooks when in PID1 mode.
++	(when (bound-and-true-p pid1-mode)
++	  (run-hooks 'pid1-boot-hook))
++
+         ;; See the commentary in `normal-top-level' for why we do
+         ;; this.
+ 	(when (and (display-multi-font-p)
+diff --git a/src/emacs.c b/src/emacs.c
+index 00a0a096823..5fec3f3ad0d 100644
+--- a/src/emacs.c
++++ b/src/emacs.c
+@@ -3011,6 +3011,20 @@ DEFUN ("kill-emacs", Fkill_emacs, Skill_emacs, 0, 2, "P",
+   /* Fsignal calls emacs_abort () if it sees that waiting_for_input is
+      set.  */
+   waiting_for_input = 0;
++
++  /* In PID1 mode, run the appropriate shutdown hook before
++     kill-emacs-hook.  The signal handlers set pid1_poweroff_pending
++     or pid1_reboot_pending to indicate the shutdown reason.  */
++  if (pid1_mode)
++    {
++      if (pid1_poweroff_pending
++	  && !NILP (find_symbol_value (Qpid1_poweroff_hook)))
++	safe_run_hooks (Qpid1_poweroff_hook);
++      else if (pid1_reboot_pending
++	       && !NILP (find_symbol_value (Qpid1_reboot_hook)))
++	safe_run_hooks (Qpid1_reboot_hook);
++    }
++
+   if (!NILP (find_symbol_value (Qkill_emacs_hook)))
+     {
+       if (noninteractive)
+@@ -3593,6 +3607,9 @@ syms_of_emacs (void)
+   DEFSYM (Qrisky_local_variable, "risky-local-variable");
+   DEFSYM (Qkill_emacs, "kill-emacs");
+   DEFSYM (Qkill_emacs_hook, "kill-emacs-hook");
++  DEFSYM (Qpid1_boot_hook, "pid1-boot-hook");
++  DEFSYM (Qpid1_reboot_hook, "pid1-reboot-hook");
++  DEFSYM (Qpid1_poweroff_hook, "pid1-poweroff-hook");
+   DEFSYM (Qrun_hook_query_error_with_timeout,
+ 	  "run-hook-query-error-with-timeout");
+   DEFSYM (Qfile_truename, "file-truename");
+@@ -3669,6 +3686,30 @@ syms_of_emacs (void)
+ `noninteractive' was non-nil.  */);
+   Vkill_emacs_hook = Qnil;
+ 
++  DEFVAR_LISP ("pid1-boot-hook", Vpid1_boot_hook,
++	       doc: /* Hook run after init when Emacs is in PID1 mode.
++This hook runs after `emacs-startup-hook' when `pid1-mode' is non-nil.
++Functions on this hook can set up supervisor processes, start services,
++or perform other init-system bootstrap tasks.
++Not run when `pid1-mode' is nil.  */);
++  Vpid1_boot_hook = Qnil;
++
++  DEFVAR_LISP ("pid1-reboot-hook", Vpid1_reboot_hook,
++	       doc: /* Hook run before reboot when Emacs is in PID1 mode.
++This hook is triggered by SIGINT or SIGUSR2 signals when `pid1-mode'
++is non-nil.  Functions on this hook should perform cleanup before the
++system reboots.  Runs before `kill-emacs-hook'.
++Not run when `pid1-mode' is nil.  */);
++  Vpid1_reboot_hook = Qnil;
++
++  DEFVAR_LISP ("pid1-poweroff-hook", Vpid1_poweroff_hook,
++	       doc: /* Hook run before poweroff when Emacs is in PID1 mode.
++This hook is triggered by SIGTERM or SIGUSR1 signals when `pid1-mode'
++is non-nil.  Functions on this hook should perform cleanup before the
++system powers off.  Runs before `kill-emacs-hook'.
++Not run when `pid1-mode' is nil.  */);
++  Vpid1_poweroff_hook = Qnil;
++
+   DEFVAR_LISP ("path-separator", Vpath_separator,
+ 	       doc: /* String containing the character that separates directories in
+ search paths, such as PATH and other similar environment variables.  */);
+diff --git a/src/lisp.h b/src/lisp.h
+index 2e2c2f506b8..ed44ce9724e 100644
+--- a/src/lisp.h
++++ b/src/lisp.h
+@@ -5214,6 +5214,10 @@ fast_c_string_match_ignore_case (Lisp_Object regexp,
+ /* True if Emacs is running as PID1 (init process).  */
+ extern bool pid1_mode;
+ 
++/* PID1 shutdown signal flags, set by signal handlers in sysdep.c.  */
++extern int volatile pid1_poweroff_pending;
++extern int volatile pid1_reboot_pending;
++
+ #ifndef WINDOWSNT
+ /* 0 not a daemon, 1 foreground daemon, 2 background daemon.  */
+ extern int daemon_type;
+diff --git a/src/process.c b/src/process.c
+index fff9dfecb17..3b2849a1f35 100644
+--- a/src/process.c
++++ b/src/process.c
+@@ -7689,6 +7689,17 @@ handle_child_signal (int sig)
+ 	}
+     }
+ 
++  /* In PID1 mode, reap orphaned children that are not tracked by
++     Emacs's process list.  As PID1, we inherit all orphaned processes
++     in the system and must wait on them to prevent zombies.  This
++     uses waitpid with WNOHANG which is async-signal-safe.  */
++  if (pid1_mode)
++    {
++      int orphan_status;
++      while (waitpid (-1, &orphan_status, WNOHANG) > 0)
++	changed = true;
++    }
++
+   if (changed)
+     /* Wake up `wait_reading_process_output'.  */
+     child_signal_notify ();
+diff --git a/src/sysdep.c b/src/sysdep.c
+index 92f6f732e23..5af7b0c8707 100644
+--- a/src/sysdep.c
++++ b/src/sysdep.c
+@@ -1661,6 +1661,10 @@ init_system_name (void)
+ 
+ sigset_t empty_mask;
+ 
++/* PID1 mode shutdown flags.  Set by signal handlers, read by main loop.  */
++int volatile pid1_poweroff_pending;
++int volatile pid1_reboot_pending;
++
+ static struct sigaction process_fatal_action;
+ 
+ static int
+@@ -1812,6 +1816,37 @@ deliver_fatal_thread_signal (int sig)
+   deliver_thread_signal (sig, handle_fatal_signal);
+ }
+ 
++/* PID1 mode signal handlers.  These only set flags and wake the main
++   loop; actual processing (running Lisp hooks, exiting) happens in a
++   safe context.  Follows sinit conventions: SIGTERM/SIGUSR1 for
++   poweroff, SIGINT/SIGUSR2 for reboot.  */
++
++static void
++handle_pid1_poweroff_signal (int sig)
++{
++  pid1_poweroff_pending = 1;
++  Vquit_flag = Qkill_emacs;
++}
++
++static void
++deliver_pid1_poweroff_signal (int sig)
++{
++  deliver_process_signal (sig, handle_pid1_poweroff_signal);
++}
++
++static void
++handle_pid1_reboot_signal (int sig)
++{
++  pid1_reboot_pending = 1;
++  Vquit_flag = Qkill_emacs;
++}
++
++static void
++deliver_pid1_reboot_signal (int sig)
++{
++  deliver_process_signal (sig, handle_pid1_reboot_signal);
++}
++
+ static AVOID
+ handle_arith_signal (int sig)
+ {
+@@ -2056,9 +2091,35 @@ init_signals (void)
+      Please update the doc of kill-emacs, kill-emacs-hook, and
+      NEWS if you change this.  */
+ 
+-  maybe_fatal_sig (SIGHUP);
+-  maybe_fatal_sig (SIGINT);
+-  maybe_fatal_sig (SIGTERM);
++  if (pid1_mode)
++    {
++      /* In PID1 mode, SIGTERM and SIGUSR1 trigger poweroff, while
++	 SIGINT and SIGUSR2 trigger reboot.  This follows sinit
++	 conventions.  SIGHUP is ignored (no controlling terminal).  */
++      struct sigaction pid1_poweroff_action;
++      struct sigaction pid1_reboot_action;
++
++      emacs_sigaction_init (&pid1_poweroff_action,
++			    deliver_pid1_poweroff_signal);
++      emacs_sigaction_init (&pid1_reboot_action,
++			    deliver_pid1_reboot_signal);
++
++      signal (SIGHUP, SIG_IGN);
++      sigaction (SIGTERM, &pid1_poweroff_action, 0);
++      sigaction (SIGINT, &pid1_reboot_action, 0);
++#ifdef SIGUSR1
++      sigaction (SIGUSR1, &pid1_poweroff_action, 0);
++#endif
++#ifdef SIGUSR2
++      sigaction (SIGUSR2, &pid1_reboot_action, 0);
++#endif
++    }
++  else
++    {
++      maybe_fatal_sig (SIGHUP);
++      maybe_fatal_sig (SIGINT);
++      maybe_fatal_sig (SIGTERM);
++    }
+ 
+   /* Emacs checks for write errors, so it can safely ignore SIGPIPE.
+      However, in batch mode leave SIGPIPE alone, as that causes Emacs
+@@ -2090,14 +2151,18 @@ init_signals (void)
+     }
+ 
+   /* SIGUSR1 and SIGUSR2 are used internally by the android_select
+-     function.  */
++     function.  In PID1 mode they are used for poweroff/reboot signals
++     and must not be registered as user signals.  */
+ #if !defined HAVE_ANDROID
++  if (!pid1_mode)
++    {
+ #ifdef SIGUSR1
+-  add_user_signal (SIGUSR1, "sigusr1");
++      add_user_signal (SIGUSR1, "sigusr1");
+ #endif
+ #ifdef SIGUSR2
+-  add_user_signal (SIGUSR2, "sigusr2");
++      add_user_signal (SIGUSR2, "sigusr2");
+ #endif
++    }
+ #endif
+ 
+   sigaction (SIGABRT, &thread_fatal_action, 0);
+-- 
+2.53.0
+

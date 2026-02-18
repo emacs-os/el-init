@@ -1,0 +1,135 @@
+From c32b67d2b7327145538f7e20ddfca398b80787cb Mon Sep 17 00:00:00 2001
+From: telecommuter <telecommuter@riseup.net>
+Date: Wed, 18 Feb 2026 10:24:19 -0700
+Subject: [PATCH 3/3] Fix PID1 signal handlers being overridden after
+ installation
+
+Three issues with the PID1 signal handling:
+
+1. SIGTERM handler overridden: init_signals() installs PID1 handlers
+   early, but then unconditionally sets SIGTERM to process_fatal_action
+   later in the same function. Guard with !pid1_mode.
+
+2. SIGINT handler overridden: keyboard.c's init_keyboard() installs
+   deliver_interrupt_signal for SIGINT, overriding PID1's reboot
+   handler. Guard with !pid1_mode.
+
+3. PID1 shutdown hooks fired twice: Fkill_emacs can be re-entered
+   through quit/signal handling during hook execution. Add a static
+   boolean guard to ensure pid1-poweroff-hook/pid1-reboot-hook run
+   at most once.
+
+Also fix DEFVAR_BOOL for pid1-mode to use pid1_mode1 (following the
+noninteractive/noninteractive1 pattern) to avoid macro collision.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+---
+ src/emacs.c    | 29 ++++++++++++++++++-----------
+ src/keyboard.c | 20 +++++++++++++-------
+ src/sysdep.c   |  3 ++-
+ 3 files changed, 33 insertions(+), 19 deletions(-)
+
+diff --git a/src/emacs.c b/src/emacs.c
+index 5fec3f3ad0d..5d07d1e6d56 100644
+--- a/src/emacs.c
++++ b/src/emacs.c
+@@ -1971,6 +1971,7 @@ main (int argc, char **argv)
+   init_signals ();
+ 
+   noninteractive1 = noninteractive;
++  pid1_mode1 = pid1_mode;
+ 
+   /* Perform basic initializations (not merely interning symbols).  */
+ 
+@@ -3014,16 +3015,22 @@ DEFUN ("kill-emacs", Fkill_emacs, Skill_emacs, 0, 2, "P",
+ 
+   /* In PID1 mode, run the appropriate shutdown hook before
+      kill-emacs-hook.  The signal handlers set pid1_poweroff_pending
+-     or pid1_reboot_pending to indicate the shutdown reason.  */
+-  if (pid1_mode)
+-    {
+-      if (pid1_poweroff_pending
+-	  && !NILP (find_symbol_value (Qpid1_poweroff_hook)))
+-	safe_run_hooks (Qpid1_poweroff_hook);
+-      else if (pid1_reboot_pending
+-	       && !NILP (find_symbol_value (Qpid1_reboot_hook)))
+-	safe_run_hooks (Qpid1_reboot_hook);
+-    }
++     or pid1_reboot_pending to indicate the shutdown reason.
++     Use a static guard to prevent re-entry (kill-emacs can be called
++     recursively from hook error handling paths).  */
++  {
++    static bool pid1_shutdown_hooks_done;
++    if (pid1_mode && !pid1_shutdown_hooks_done)
++      {
++	pid1_shutdown_hooks_done = true;
++	if (pid1_poweroff_pending
++	    && !NILP (find_symbol_value (Qpid1_poweroff_hook)))
++	  safe_run_hooks (Qpid1_poweroff_hook);
++	else if (pid1_reboot_pending
++		 && !NILP (find_symbol_value (Qpid1_reboot_hook)))
++	  safe_run_hooks (Qpid1_reboot_hook);
++      }
++  }
+ 
+   if (!NILP (find_symbol_value (Qkill_emacs_hook)))
+     {
+@@ -3668,7 +3675,7 @@ syms_of_emacs (void)
+   DEFVAR_BOOL ("noninteractive", noninteractive1,
+                doc: /* Non-nil means Emacs is running without interactive terminal.  */);
+ 
+-  DEFVAR_BOOL ("pid1-mode", pid1_mode,
++  DEFVAR_BOOL ("pid1-mode", pid1_mode1,
+ 	       doc: /* Non-nil means Emacs is running as PID1 (init process).
+ When non-nil, Emacs automatically reaps orphaned child processes and
+ installs signal handlers for graceful shutdown.  SIGTERM and SIGUSR1
+diff --git a/src/keyboard.c b/src/keyboard.c
+index a9548011c93..07443e47a71 100644
+--- a/src/keyboard.c
++++ b/src/keyboard.c
+@@ -12709,15 +12709,21 @@ init_keyboard (void)
+          session may have multiple display types, so we always handle
+          SIGINT.  There is special code in handle_interrupt_signal to exit
+          Emacs on SIGINT when there are no termcap frames on the
+-         controlling terminal.  */
+-      struct sigaction action;
+-      emacs_sigaction_init (&action, deliver_interrupt_signal);
+-      sigaction (SIGINT, &action, 0);
++         controlling terminal.
++
++	 In PID1 mode, SIGINT is used for reboot signaling (sinit
++	 convention), so don't override it with the interrupt handler.  */
++      if (!pid1_mode)
++	{
++	  struct sigaction action;
++	  emacs_sigaction_init (&action, deliver_interrupt_signal);
++	  sigaction (SIGINT, &action, 0);
+ #ifndef DOS_NT
+-      /* For systems with SysV TERMIO, C-g is set up for both SIGINT and
+-	 SIGQUIT and we can't tell which one it will give us.  */
+-      sigaction (SIGQUIT, &action, 0);
++	  /* For systems with SysV TERMIO, C-g is set up for both SIGINT and
++	     SIGQUIT and we can't tell which one it will give us.  */
++	  sigaction (SIGQUIT, &action, 0);
+ #endif /* not DOS_NT */
++	}
+     }
+ #if defined (USABLE_SIGIO) || defined (USABLE_SIGPOLL)
+   if (!noninteractive)
+diff --git a/src/sysdep.c b/src/sysdep.c
+index 5af7b0c8707..fb7bdbfdc06 100644
+--- a/src/sysdep.c
++++ b/src/sysdep.c
+@@ -2198,7 +2198,8 @@ init_signals (void)
+ #ifdef SIGSYS
+   sigaction (SIGSYS, &thread_fatal_action, 0);
+ #endif
+-  sigaction (SIGTERM, &process_fatal_action, 0);
++  if (!pid1_mode)
++    sigaction (SIGTERM, &process_fatal_action, 0);
+ #ifdef SIGPROF
+   signal (SIGPROF, SIG_IGN);
+ #endif
+-- 
+2.53.0
+

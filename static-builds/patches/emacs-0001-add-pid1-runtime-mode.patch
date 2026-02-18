@@ -1,0 +1,98 @@
+From 863452cca1bf259a66b46ff8c169dd73753bd219 Mon Sep 17 00:00:00 2001
+From: telecommuter <telecommuter@riseup.net>
+Date: Wed, 18 Feb 2026 09:46:40 -0700
+Subject: [PATCH 1/3] Add --pid1 command-line option and pid1-mode state
+ exposure
+
+Add optional PID1 (init process) mode to Emacs, enabled via the
+--pid1 command-line flag.  When enabled, pid1-mode is exposed as a
+Lisp-visible boolean variable that can be queried during startup
+and runtime.
+
+This is the first of two patches adding PID1 support for running
+Emacs as a system init process.  This patch only adds the option
+parsing and state exposure; signal handling, child reaping, and
+Lisp hooks are added in the next patch.
+
+Without --pid1, behavior is completely unchanged from upstream.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+---
+ src/emacs.c | 18 ++++++++++++++++++
+ src/lisp.h  |  3 +++
+ 2 files changed, 21 insertions(+)
+
+diff --git a/src/emacs.c b/src/emacs.c
+index 1beb295c9b1..00a0a096823 100644
+--- a/src/emacs.c
++++ b/src/emacs.c
+@@ -240,6 +240,9 @@ #define MAIN_PROGRAM
+    A negative value means the daemon initialization was already done.  */
+ int daemon_type;
+ 
++/* True if Emacs is running as PID1 (init process).  */
++bool pid1_mode;
++
+ #ifndef WINDOWSNT
+ /* Pipe used to send exit notification to the background daemon parent at
+    startup.  On Windows, we use a kernel event instead.  */
+@@ -301,6 +304,8 @@ #define MAIN_PROGRAM
+     "\
+ --no-build-details          do not add build details such as time stamps\n\
+ --no-desktop                do not load a saved desktop\n\
++--pid1                      enable PID1 init-process mode (child reaping,\n\
++                              shutdown signal hooks)\n\
+ --no-init-file, -q          load neither ~/.emacs nor default.el\n\
+ --no-loadup, -nl            do not load loadup.el into bare Emacs\n\
+ --no-site-file              do not load site-start.el\n\
+@@ -1769,6 +1774,11 @@ main (int argc, char **argv)
+ 	}
+     }
+ 
++  /* Handle the --pid1 switch for init-process mode.  */
++  pid1_mode = false;
++  if (argmatch (argv, argc, "-pid1", "--pid1", 5, NULL, &skip_args))
++    pid1_mode = true;
++
+   if (daemon_type > 0)
+     {
+ #ifndef DOS_NT
+@@ -2675,6 +2685,7 @@ main (int argc, char **argv)
+   { "-daemon", "--daemon", 99, 0 },
+   { "-bg-daemon", "--bg-daemon", 99, 0 },
+   { "-fg-daemon", "--fg-daemon", 99, 0 },
++  { "-pid1", "--pid1", 98, 0 },
+   { "-help", "--help", 90, 0 },
+   { "-nl", "--no-loadup", 70, 0 },
+   { "-nsl", "--no-site-lisp", 65, 0 },
+@@ -3640,6 +3651,13 @@ syms_of_emacs (void)
+   DEFVAR_BOOL ("noninteractive", noninteractive1,
+                doc: /* Non-nil means Emacs is running without interactive terminal.  */);
+ 
++  DEFVAR_BOOL ("pid1-mode", pid1_mode,
++	       doc: /* Non-nil means Emacs is running as PID1 (init process).
++When non-nil, Emacs automatically reaps orphaned child processes and
++installs signal handlers for graceful shutdown.  SIGTERM and SIGUSR1
++trigger `pid1-poweroff-hook', while SIGINT and SIGUSR2 trigger
++`pid1-reboot-hook'.  Enable with the `--pid1' command-line option.  */);
++
+   DEFVAR_LISP ("kill-emacs-hook", Vkill_emacs_hook,
+ 	       doc: /* Hook run when `kill-emacs' is called.
+ Since `kill-emacs' may be invoked when the terminal is disconnected (or
+diff --git a/src/lisp.h b/src/lisp.h
+index 7ddde5071e8..2e2c2f506b8 100644
+--- a/src/lisp.h
++++ b/src/lisp.h
+@@ -5211,6 +5211,9 @@ fast_c_string_match_ignore_case (Lisp_Object regexp,
+ /* True means put details like time stamps into builds.  */
+ extern bool build_details;
+ 
++/* True if Emacs is running as PID1 (init process).  */
++extern bool pid1_mode;
++
+ #ifndef WINDOWSNT
+ /* 0 not a daemon, 1 foreground daemon, 2 background daemon.  */
+ extern int daemon_type;
+-- 
+2.53.0
+
