@@ -17687,6 +17687,77 @@ stderr through the stdout writer for correct stream=2 tagging."
               (delete-process proc))))
       (delete-directory dir t))))
 
+(ert-deftest supervisor-test-logd-text-framed-round-trip ()
+  "End-to-end: framed input to logd --format text produces decodable records."
+  (let* ((root (file-name-directory (locate-library "supervisor")))
+         (logd (expand-file-name "libexec/supervisor-logd" root))
+         (dir (make-temp-file "logd-text-rt-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unless (file-executable-p logd)
+      (let ((result (supervisor-build-libexec-helpers t)))
+        (unless (file-executable-p logd)
+          (error "Cannot build supervisor-logd: %S"
+                 (or (plist-get result :failed)
+                     (plist-get result :missing-source))))))
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-text-rt"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "test-svc"
+                                   "--format" "text"
+                                   "--max-file-size-bytes" "1048576")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                ;; Frame 1: output with literal "-" payload
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 1 42 "test-svc" "-"))
+                ;; Frame 2: output with empty payload
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 1 42 "test-svc" ""))
+                ;; Frame 3: stderr output with normal payload
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 2 42 "test-svc"
+                                                    "hello world\n"))
+                ;; Frame 4: exit event
+                (process-send-string
+                 proc (supervisor--log-frame-encode 2 3 42 "test-svc"
+                                                    nil 0 1))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                ;; Read and decode the text log file
+                (should (file-exists-p log-file))
+                (let* ((content (with-temp-buffer
+                                  (insert-file-contents log-file)
+                                  (buffer-string)))
+                       (records (supervisor--log-decode-text-records content)))
+                  (should (= 4 (length records)))
+                  (let ((r1 (nth 0 records))
+                        (r2 (nth 1 records))
+                        (r3 (nth 2 records))
+                        (r4 (nth 3 records)))
+                    ;; Literal "-" round-trips correctly
+                    (should (eq (plist-get r1 :event) 'output))
+                    (should (eq (plist-get r1 :stream) 'stdout))
+                    (should (equal (plist-get r1 :payload) "-"))
+                    ;; Empty payload round-trips correctly
+                    (should (eq (plist-get r2 :event) 'output))
+                    (should (equal (plist-get r2 :payload) ""))
+                    ;; Stderr output has correct stream tag
+                    (should (eq (plist-get r3 :stream) 'stderr))
+                    (should (equal (plist-get r3 :payload) "hello world\n"))
+                    ;; Exit event decodes correctly
+                    (should (eq (plist-get r4 :event) 'exit))
+                    (should (eq (plist-get r4 :stream) 'meta))
+                    (should (eq (plist-get r4 :status) 'exited))
+                    (should (= (plist-get r4 :code) 0)))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
 (ert-deftest supervisor-test-timer-enabled-triggers-maintenance ()
   "Enabled logrotate-daily timer triggers target oneshot on schedule."
   (supervisor-test-with-unit-files

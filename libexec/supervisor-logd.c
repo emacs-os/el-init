@@ -149,6 +149,14 @@ static int parse_frame(const unsigned char *buf, size_t len,
 	out->exit_code = read_i32be(body + 8);
 	out->exit_status = body[12];
 
+	/* Validate enum ranges */
+	if (out->event != EVT_OUTPUT && out->event != EVT_EXIT)
+		return -1;
+	if (out->stream < STREAM_STDOUT || out->stream > STREAM_META)
+		return -1;
+	if (out->exit_status > STATUS_SPAWN_FAILED)
+		return -1;
+
 	/* Validate unit_len fits within body */
 	if (13 + (unsigned int)out->unit_len > body_len)
 		return -1;
