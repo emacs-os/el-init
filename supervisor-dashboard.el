@@ -195,8 +195,8 @@ Default is nil, hiding targets for a service-first view.")
 
 (defvar-local supervisor--dashboard-show-init-targets nil
   "Non-nil means include init-transition targets when targets are shown.
-Init-transition targets are systemd-style shutdown, reboot, rescue, and
-runlevel alias targets that are not relevant for non-PID1 usage.")
+Init-transition targets are rescue, shutdown, poweroff, reboot,
+runlevel0, runlevel1, and runlevel6 targets.")
 
 (defconst supervisor--init-transition-target-ids
   '("rescue.target" "shutdown.target" "poweroff.target" "reboot.target"
@@ -459,8 +459,8 @@ SNAPSHOT and PROGRAMS are forwarded to `supervisor--health-counts'."
 
 (defun supervisor--init-transition-target-p (id)
   "Return non-nil if ID is an init-transition target.
-Init-transition targets are shutdown, reboot, rescue, and runlevel
-alias targets that are not relevant for non-PID1 usage."
+Init-transition targets are rescue, shutdown, poweroff, reboot,
+runlevel0, runlevel1, and runlevel6."
   (member id supervisor--init-transition-target-ids))
 
 (defun supervisor--row-kind (id)
@@ -1100,8 +1100,8 @@ toggled with \\[supervisor-dashboard-toggle-init-targets]."
 
 (defun supervisor-dashboard-toggle-init-targets ()
   "Toggle visibility of init-transition targets in the dashboard.
-Init-transition targets (rescue, shutdown, poweroff, reboot, runlevel
-aliases) are hidden by default even when regular targets are shown.
+Init-transition targets (rescue, shutdown, poweroff, reboot, runlevel0,
+runlevel1, runlevel6) are hidden by default even when regular targets are shown.
 This toggle has no effect when targets are hidden entirely."
   (interactive)
   (setq supervisor--dashboard-show-init-targets
