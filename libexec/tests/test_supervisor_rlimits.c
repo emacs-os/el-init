@@ -283,6 +283,21 @@ void test_exec_nonexistent(void)
 	run_result_free(&r);
 }
 
+/* --- setrlimit failure (exit 112) --- */
+
+void test_setrlimit_failure_soft_exceeds_hard(void)
+{
+	/* soft > hard is EINVAL on all POSIX systems */
+	const char *argv[] = { RLIMITS_PATH, "--nofile", "9999:1",
+	                        "--", "true", NULL };
+	struct run_result r = {0};
+	TEST_CHECK(run_cmd(argv, NULL, 0, &r) == 0);
+	TEST_CHECK(r.exit_code == 112);
+	TEST_CHECK(strstr(r.err, "setrlimit") != NULL);
+	TEST_MSG("exit_code: %d, stderr: %s", r.exit_code, r.err);
+	run_result_free(&r);
+}
+
 /* --- Command exit code pass-through --- */
 
 void test_exit_code_passthrough(void)
@@ -324,6 +339,8 @@ TEST_LIST = {
 	{ "nofile_applied",              test_nofile_applied },
 	{ "nproc_applied",               test_nproc_applied },
 	{ "core_applied",                test_core_applied },
+	/* setrlimit failure */
+	{ "setrlimit_failure",           test_setrlimit_failure_soft_exceeds_hard },
 	/* Exec failure */
 	{ "exec_nonexistent",            test_exec_nonexistent },
 	/* Exit code pass-through */
