@@ -1834,7 +1834,9 @@ Display structured log records for a unit.  Requires -u/--unit."
                 (supervisor--cli-error supervisor-cli-exit-failure
                                        (format "No log file for '%s'" unit)
                                        (if json-p 'json 'human))
-              (let* ((decoded (supervisor--log-decode-file log-file))
+              (let* ((tail-bytes (when n (* n 512)))
+                     (decoded (supervisor--log-decode-file
+                               log-file nil nil tail-bytes))
                      (records (plist-get decoded :records))
                      (filtered (supervisor--log-filter-records
                                 records since-ts until-ts priority))

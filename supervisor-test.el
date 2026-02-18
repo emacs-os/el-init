@@ -24812,5 +24812,124 @@ identity must be correct regardless of whether log-format is set."
       (when (process-live-p fake-stderr-writer)
         (delete-process fake-stderr-writer)))))
 
+;;;; Bounded decode (max-bytes) tests
+
+(ert-deftest supervisor-test-decode-text-max-bytes-limits-records ()
+  "Text log with max-bytes smaller than file returns fewer records."
+  (let ((tmpfile (make-temp-file "log-mb-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (dotimes (i 100)
+              (insert (format "ts=%d unit=svc pid=1 stream=stdout " (+ 1000 i))
+                      "event=output status=- code=- payload=data\n")))
+          (let* ((all (supervisor--log-decode-file tmpfile))
+                 (all-count (length (plist-get all :records)))
+                 (partial (supervisor--log-decode-file tmpfile nil nil 500))
+                 (partial-recs (plist-get partial :records)))
+            ;; All records from full read
+            (should (= 100 all-count))
+            ;; Partial should have fewer records, all valid
+            (should (< (length partial-recs) all-count))
+            (should (> (length partial-recs) 0))
+            (dolist (r partial-recs)
+              (should (plist-get r :unit)))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-decode-binary-max-bytes-limits-records ()
+  "Binary log with max-bytes smaller than file returns valid records."
+  (let ((tmpfile (make-temp-file "log-bmb-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (set-buffer-multibyte nil)
+            (insert supervisor--log-binary-magic)
+            (dotimes (i 10)
+              (insert (supervisor-test--make-binary-record
+                       1 1 42 "svc" (format "line-%d" i) 0 0
+                       (+ 1000000000000 (* i 1000000000))))))
+          (let* ((all (supervisor--log-decode-file tmpfile))
+                 (all-count (length (plist-get all :records)))
+                 ;; Read only last 200 bytes
+                 (partial (supervisor--log-decode-file tmpfile nil nil 200))
+                 (partial-recs (plist-get partial :records)))
+            (should (= 10 all-count))
+            (should (< (length partial-recs) all-count))
+            (should (> (length partial-recs) 0))
+            (dolist (r partial-recs)
+              (should (equal (plist-get r :unit) "svc")))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-decode-max-bytes-nil-returns-all ()
+  "Nil max-bytes returns all records (backward compat)."
+  (let ((tmpfile (make-temp-file "log-mbn-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (dotimes (i 10)
+              (insert (format "ts=%d unit=svc pid=1 stream=stdout " (+ 1000 i))
+                      "event=output status=- code=- payload=line\n")))
+          (let* ((result (supervisor--log-decode-file tmpfile nil nil nil))
+                 (records (plist-get result :records)))
+            (should (= 10 (length records)))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-decode-max-bytes-larger-than-file ()
+  "Max-bytes larger than file returns all records."
+  (let ((tmpfile (make-temp-file "log-mblg-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (dotimes (i 5)
+              (insert (format "ts=%d unit=svc pid=1 stream=stdout " (+ 1000 i))
+                      "event=output status=- code=- payload=line\n")))
+          (let* ((result (supervisor--log-decode-file tmpfile nil nil 999999))
+                 (records (plist-get result :records)))
+            (should (= 5 (length records)))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-n-passes-max-bytes ()
+  "Journal with -n passes max-bytes = n*512 to decode."
+  (let ((tmpfile (make-temp-file "log-jmb-"))
+        (captured-max-bytes nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'supervisor--log-decode-file)
+                     (lambda (_file &optional _limit _offset max-bytes)
+                       (setq captured-max-bytes max-bytes)
+                       (list :records
+                             (list (list :ts 1000.0 :unit "svc" :pid 1
+                                         :stream 'stdout :event 'output
+                                         :status nil :code 0
+                                         :payload "hello"))
+                             :offset 100 :format 'text :warning nil))))
+            (supervisor--cli-cmd-journal '("-u" "svc" "-n" "10") nil)
+            (should (= 5120 captured-max-bytes))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-binary-scan-to-record ()
+  "Binary scan finds first valid record in partial chunk."
+  (let* ((rec1 (supervisor-test--make-binary-record
+                1 1 42 "svc" "hello" 0 0 1000000000000))
+         (rec2 (supervisor-test--make-binary-record
+                1 1 42 "svc" "world" 0 0 2000000000000))
+         ;; Prepend 7 garbage bytes to simulate a truncated first record
+         (garbage (make-string 7 ?X))
+         (chunk (concat garbage rec1 rec2)))
+    ;; Scan should skip garbage and find rec1
+    (let ((pos (supervisor--log-binary-scan-to-record chunk)))
+      (should pos)
+      (should (= pos 7))
+      ;; Decode from found position should yield 2 records
+      (let* ((result (supervisor--log-decode-binary-records chunk pos))
+             (records (plist-get result :records)))
+        (should (= 2 (length records)))
+        (should (equal "hello" (plist-get (car records) :payload)))))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

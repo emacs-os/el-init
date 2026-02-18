@@ -4015,6 +4015,25 @@ declared %d, computed %d" pos record-len expected-len))
                 (setq pos (+ pos total))))))))
     (list :records (nreverse records) :offset pos :warning warning)))
 
+(defun supervisor--log-binary-scan-to-record (str)
+  "Return offset of first valid binary record in STR, or nil.
+Scan by trying each byte position as a potential record start.
+Read u32be length, check that 4+length fits remaining data and
+that the version byte is 1.  Only called on tail-read chunks
+so linear scan is acceptable."
+  (let ((len (length str))
+        (found nil))
+    (cl-loop for pos from 0 below len
+             until found
+             do (when (>= (- len pos) supervisor--log-binary-header-size)
+                  (let* ((record-len (supervisor--log-read-u32be str pos))
+                         (total (+ 4 record-len)))
+                    (when (and (<= total (- len pos))
+                               (> record-len 0)
+                               (= 1 (aref str (+ pos 4))))
+                      (setq found pos)))))
+    found))
+
 ;;;; Log decoders and record utilities
 
 (defun supervisor--log-unescape-payload (escaped)
@@ -4143,50 +4162,74 @@ Return `binary', `text', or `legacy'."
          (t 'legacy)))
     (error 'legacy)))
 
-(defun supervisor--log-decode-file (file &optional limit offset)
+(defun supervisor--log-decode-file (file &optional limit offset max-bytes)
   "Decode structured log FILE into records.
 LIMIT is maximum number of records to return (from end).
 OFFSET is byte offset to start reading (for incremental reads).
+MAX-BYTES, when non-nil and OFFSET is nil, reads only the last
+MAX-BYTES of the file (tail read).  The first record in a tail
+chunk may be truncated; text/legacy decoders skip malformed lines,
+and for binary the chunk is scanned to find the first valid record
+boundary.
 Return (:records LIST :offset INT :format SYMBOL :warning STRING-OR-NIL)."
   (let ((fmt (supervisor--log-detect-format file)))
     (condition-case err
         (with-temp-buffer
           (set-buffer-multibyte nil)
-          (if offset
-              (insert-file-contents-literally file nil offset)
-            (insert-file-contents-literally file))
-          (let* ((content (buffer-string))
-                 (end-offset (+ (or offset 0) (length content))))
-            (pcase fmt
-              ('binary
-               (let ((result (supervisor--log-decode-binary-records
-                              content (if offset 0 nil))))
-                 (let ((records (plist-get result :records)))
+          (let ((tail-offset nil))
+            (cond
+             (offset
+              (insert-file-contents-literally file nil offset))
+             ((and max-bytes (not offset))
+              (let ((file-size (file-attribute-size (file-attributes file))))
+                (if (and file-size (> file-size max-bytes))
+                    (progn
+                      (setq tail-offset (- file-size max-bytes))
+                      (insert-file-contents-literally
+                       file nil tail-offset file-size))
+                  (insert-file-contents-literally file))))
+             (t
+              (insert-file-contents-literally file)))
+            (let* ((content (buffer-string))
+                   (read-start (or tail-offset offset 0))
+                   (end-offset (+ read-start (length content))))
+              (pcase fmt
+                ('binary
+                 (let* ((scan-start
+                         (cond
+                          (offset 0)
+                          (tail-offset
+                           (or (supervisor--log-binary-scan-to-record content)
+                               (length content)))
+                          (t nil)))
+                        (result (supervisor--log-decode-binary-records
+                                 content scan-start)))
+                   (let ((records (plist-get result :records)))
+                     (list :records (if (and limit (> (length records) limit))
+                                        (last records limit)
+                                      records)
+                           :offset (+ read-start
+                                      (plist-get result :offset))
+                           :format 'binary
+                           :warning (plist-get result :warning)))))
+                ('text
+                 (let* ((str (decode-coding-string content 'utf-8))
+                        (records (supervisor--log-decode-text-records str)))
                    (list :records (if (and limit (> (length records) limit))
-                                      (last records limit)
-                                    records)
-                         :offset (+ (or offset 0)
-                                    (plist-get result :offset))
-                         :format 'binary
-                         :warning (plist-get result :warning)))))
-              ('text
-               (let* ((str (decode-coding-string content 'utf-8))
-                      (records (supervisor--log-decode-text-records str)))
-                 (list :records (if (and limit (> (length records) limit))
-                                    (last records limit)
-                                  records)
-                       :offset end-offset
-                       :format 'text
-                       :warning nil)))
-              (_
-               (let* ((str (decode-coding-string content 'utf-8))
-                      (records (supervisor--log-decode-legacy-lines str)))
-                 (list :records (if (and limit (> (length records) limit))
-                                    (last records limit)
-                                  records)
-                       :offset end-offset
-                       :format 'legacy
-                       :warning nil))))))
+                                       (last records limit)
+                                     records)
+                         :offset end-offset
+                         :format 'text
+                         :warning nil)))
+                (_
+                 (let* ((str (decode-coding-string content 'utf-8))
+                        (records (supervisor--log-decode-legacy-lines str)))
+                   (list :records (if (and limit (> (length records) limit))
+                                       (last records limit)
+                                     records)
+                         :offset end-offset
+                         :format 'legacy
+                         :warning nil)))))))
       (error (list :records nil :offset 0 :format fmt
                    :warning (error-message-string err))))))
 
