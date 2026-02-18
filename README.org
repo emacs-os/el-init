@@ -96,9 +96,6 @@ provides detailed reference material:
 ;; Don't ask about running processes on exit - supervisor handles cleanup
 (setq confirm-kill-processes nil)
 
-;; Ensure timer subsystem is enabled (default is enabled)
-(supervisor-timer-subsystem-mode 1)
-
 ;; Start supervisor and config watcher
 (supervisor-mode 1)
 #+end_src
