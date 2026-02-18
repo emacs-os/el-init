@@ -9,9 +9,10 @@
 ~supervisor.el~ is an Emacs Lisp-based, systemd-inspired init and
 supervisor solution.  Whether you are building a full-send Emacs-OS, or
 simply want to manage your =.xinitrc= style startup commands and services
-before EXWM starts, supervisor.el has you covered.  ~M-x supervisor~
-opens the interactive dashboard; ~supervisorctl~ provides the same
-control from the terminal or scripts.
+before EXWM starts, or keep project daemons running while you work,
+supervisor.el has you covered.  ~M-x supervisor~
+opens the interactive dashboard from within your EXWM session;
+~supervisorctl~ provides the same control from the terminal or scripts.
 
 ** Features
 
