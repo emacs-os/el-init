@@ -17643,6 +17643,87 @@ stderr through the stdout writer for correct stream=2 tagging."
               (delete-process proc))))
       (delete-directory dir t))))
 
+(ert-deftest supervisor-test-logd-binary-rotation-both-files-decodable ()
+  "Binary logd rotation produces SLG1 headers and decodable records in both files."
+  (let* ((logd (supervisor-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-binrot-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-binrot"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "svc"
+                                   "--format" "binary"
+                                   "--max-file-size-bytes" "100")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                ;; Each binary record: 34 hdr + 3 unit + 8 payload = 45 bytes.
+                ;; First record + SLG1 header = 49 bytes.
+                ;; Second record brings total to 94 -- still under 100.
+                ;; Third record crosses 100, triggering rotation.
+                ;; Fourth record lands in the fresh active file.
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 1 10 "svc" "data-001"))
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 1 10 "svc" "data-002"))
+                (sleep-for 0.2)
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 1 10 "svc" "data-003"))
+                (sleep-for 0.2)
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 1 10 "svc" "data-004"))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                ;; Rotated file(s) should exist
+                (let ((rotated (directory-files dir t
+                                               "^log-svc\\.[0-9].*\\.log")))
+                  (should (>= (length rotated) 1))
+                  ;; Decode the rotated file
+                  (let* ((rot-content
+                          (with-temp-buffer
+                            (set-buffer-multibyte nil)
+                            (insert-file-contents-literally (car rotated))
+                            (buffer-string)))
+                         (rot-result (supervisor--log-decode-binary-records
+                                     rot-content))
+                         (rot-records (plist-get rot-result :records)))
+                    ;; Rotated file starts with SLG1
+                    (should (>= (length rot-content) 4))
+                    (should (equal (substring rot-content 0 4) "SLG1"))
+                    (should (null (plist-get rot-result :warning)))
+                    ;; At least one record in rotated file
+                    (should (>= (length rot-records) 1))
+                    ;; All rotated records have valid payloads
+                    (dolist (r rot-records)
+                      (should (string-match-p "\\`data-00[0-9]\\'"
+                                              (plist-get r :payload))))))
+                ;; Active file should exist and be decodable
+                (should (file-exists-p log-file))
+                (let* ((act-content
+                        (with-temp-buffer
+                          (set-buffer-multibyte nil)
+                          (insert-file-contents-literally log-file)
+                          (buffer-string)))
+                       (act-result (supervisor--log-decode-binary-records
+                                   act-content))
+                       (act-records (plist-get act-result :records)))
+                  ;; Active file starts with SLG1
+                  (should (>= (length act-content) 4))
+                  (should (equal (substring act-content 0 4) "SLG1"))
+                  (should (null (plist-get act-result :warning)))
+                  ;; At least one record in active file
+                  (should (>= (length act-records) 1))
+                  (dolist (r act-records)
+                    (should (string-match-p "\\`data-00[0-9]\\'"
+                                            (plist-get r :payload))))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
 (ert-deftest supervisor-test-logd-text-framed-round-trip ()
   "End-to-end: framed input to logd --format text produces decodable records."
   (let* ((logd (supervisor-test--ensure-logd-binary))
