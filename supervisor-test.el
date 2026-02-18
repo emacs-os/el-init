@@ -25099,8 +25099,8 @@ identity must be correct regardless of whether log-format is set."
                                     supervisor--cli-follow-sessions)))
               (when (plist-get session :timer)
                 (cancel-timer (plist-get session :timer)))
-              ;; Backdate the session creation time
-              (plist-put session :created (- (float-time) 100)))
+              ;; Backdate the last activity time
+              (plist-put session :last-activity (- (float-time) 100)))
             ;; Poll should auto-expire
             (supervisor--cli-follow-poll session-id)
             (should-not (gethash session-id
@@ -25382,6 +25382,48 @@ identity must be correct regardless of whether log-format is set."
           ;; Session ID should match the subsecond pattern
           (should (string-match-p "^follow-svc-[0-9]+\\.[0-9]+" session-id))
           (supervisor--cli-follow-stop session-id))
+      (delete-directory tmpdir t))))
+
+(ert-deftest supervisor-test-follow-poll-resets-activity-timer ()
+  "Follow poll resets last-activity so active sessions never expire."
+  (let ((tmpdir (make-temp-file "follow-test-" t))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal))
+        (supervisor-cli-follow-max-age 10))
+    (unwind-protect
+        (let* ((log-file (expand-file-name "svc.log" tmpdir)))
+          (with-temp-file log-file
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=initial\n"))
+          (let* ((decoded (supervisor--log-decode-file log-file))
+                 (offset (plist-get decoded :offset))
+                 (finfo (supervisor--cli-follow-start
+                         "svc" log-file offset nil nil nil nil))
+                 (session-id (plist-get finfo :session-id)))
+            ;; Cancel scheduled timer
+            (let ((session (gethash session-id
+                                    supervisor--cli-follow-sessions)))
+              (when (plist-get session :timer)
+                (cancel-timer (plist-get session :timer)))
+              ;; Set last-activity to 8 seconds ago (close to 10s max)
+              (plist-put session :last-activity (- (float-time) 8)))
+            ;; Append data so poll has records to process
+            (with-temp-buffer
+              (insert "ts=2000 unit=svc pid=1 stream=stdout "
+                      "event=output status=- code=- payload=new\n")
+              (append-to-file (point-min) (point-max) log-file))
+            ;; Poll should succeed and reset the timer
+            (supervisor--cli-follow-poll session-id)
+            ;; Cancel rescheduled timer
+            (let ((session (gethash session-id
+                                    supervisor--cli-follow-sessions)))
+              (should session)  ;; Session still alive
+              (when (plist-get session :timer)
+                (cancel-timer (plist-get session :timer)))
+              ;; last-activity should be recent (within 2 seconds)
+              (should (< (- (float-time)
+                            (plist-get session :last-activity))
+                         2.0)))
+            (supervisor--cli-follow-stop session-id)))
       (delete-directory tmpdir t))))
 
 (provide 'supervisor-test)

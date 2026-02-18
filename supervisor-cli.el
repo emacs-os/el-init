@@ -85,7 +85,10 @@ Uses sysexits.h EX_UNAVAILABLE to avoid collision with systemctl codes.")
   "CLI version string.")
 
 (defcustom supervisor-cli-follow-max-age 3600
-  "Maximum seconds before a follow session auto-expires."
+  "Seconds of inactivity before a follow session auto-expires.
+The timer resets on each successful poll, so active sessions never
+expire.  Only sessions with no new data for this duration are
+cleaned up."
   :type 'integer
   :group 'supervisor)
 
@@ -93,7 +96,7 @@ Uses sysexits.h EX_UNAVAILABLE to avoid collision with systemctl codes.")
   "Active follow sessions.  Keys are session-id strings.
 Values are plists with keys: `:unit', `:log-file', `:offset',
 `:since-ts', `:until-ts', `:priority', `:json-p', `:follow-file',
-`:timer', `:created'.")
+`:timer', `:last-activity'.")
 
 (cl-defstruct (supervisor-cli-result (:constructor supervisor-cli-result--create))
   "Result returned from CLI dispatcher.
@@ -1823,7 +1826,7 @@ and formatting.  Return a plist (:session-id STRING :follow-file STRING)."
                         :json-p json-p
                         :follow-file follow-file
                         :timer nil
-                        :created (float-time))))
+                        :last-activity (float-time))))
     ;; Create follow file
     (with-temp-file follow-file
       (insert ""))
@@ -1851,13 +1854,14 @@ Append formatted records to the follow file and reschedule."
             (until-ts (plist-get session :until-ts))
             (priority (plist-get session :priority))
             (json-p (plist-get session :json-p))
-            (created (plist-get session :created)))
+            (last-activity (plist-get session :last-activity)))
         (cond
          ;; Guard: follow file deleted externally
          ((not (file-exists-p follow-file))
           (supervisor--cli-follow-stop session-id))
-         ;; Guard: session too old
-         ((> (- (float-time) created) supervisor-cli-follow-max-age)
+         ;; Guard: session inactive too long
+         ((> (- (float-time) last-activity)
+             supervisor-cli-follow-max-age)
           (supervisor--cli-follow-stop session-id))
          (t
           (let* ((decoded (supervisor--log-decode-file log-file nil offset))
@@ -1874,6 +1878,8 @@ Append formatted records to the follow file and reschedule."
                 (when (and filtered (> (length text) 0))
                   (append-to-file (concat text "\n") nil follow-file))))
             (plist-put session :offset new-offset)
+            ;; Reset activity timer so active sessions never expire
+            (plist-put session :last-activity (float-time))
             (supervisor--cli-follow-schedule-poll session-id))))))))
 
 (defun supervisor--cli-follow-stop (session-id)
