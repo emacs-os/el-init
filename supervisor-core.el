@@ -4102,10 +4102,15 @@ Accept RFC3339 format or epoch integer."
            (frac (if frac-str
                      (/ (float (string-to-number frac-str))
                         (expt 10.0 (length frac-str)))
-                   0.0))
-           (encoded (encode-time (list sec min hour day month year
-                                       nil nil t 0))))
-      (+ (float-time encoded) frac)))
+                   0.0)))
+      (when (and (<= 1 month 12)
+                 (<= 1 day 31)
+                 (<= 0 hour 23)
+                 (<= 0 min 59)
+                 (<= 0 sec 60))
+        (+ (float-time (encode-time (list sec min hour day month year
+                                          nil nil t 0)))
+           frac))))
    ((string-match "\\`[0-9]+\\'" ts-string)
     (float (string-to-number ts-string)))
    (t nil)))

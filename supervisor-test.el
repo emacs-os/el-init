@@ -25509,5 +25509,60 @@ identity must be correct regardless of whether log-format is set."
     (should (string-match-p "Unknown option: -fux"
                             (plist-get parsed :unknown)))))
 
+;;;; RFC3339 range validation tests
+
+(ert-deftest supervisor-test-timestamp-rejects-month-13 ()
+  "Out-of-range month 13 returns nil, not a normalized timestamp."
+  (should (null (supervisor--log-parse-timestamp
+                 "2026-13-01T00:00:00Z"))))
+
+(ert-deftest supervisor-test-timestamp-rejects-hour-25 ()
+  "Out-of-range hour 25 returns nil."
+  (should (null (supervisor--log-parse-timestamp
+                 "2026-01-01T25:00:00Z"))))
+
+(ert-deftest supervisor-test-timestamp-rejects-day-32 ()
+  "Out-of-range day 32 returns nil."
+  (should (null (supervisor--log-parse-timestamp
+                 "2026-01-32T00:00:00Z"))))
+
+(ert-deftest supervisor-test-timestamp-rejects-minute-60 ()
+  "Out-of-range minute 60 returns nil."
+  (should (null (supervisor--log-parse-timestamp
+                 "2026-01-01T00:60:00Z"))))
+
+(ert-deftest supervisor-test-timestamp-accepts-leap-second ()
+  "Second 60 (leap second) is accepted."
+  (should (supervisor--log-parse-timestamp
+           "2026-01-01T23:59:60Z")))
+
+(ert-deftest supervisor-test-timestamp-valid-rfc3339 ()
+  "Valid RFC3339 timestamp parses to non-nil float."
+  (let ((result (supervisor--log-parse-timestamp
+                 "2026-02-16T12:00:00Z")))
+    (should result)
+    (should (floatp result))))
+
+(ert-deftest supervisor-test-journal-rejects-invalid-since-timestamp ()
+  "Journal --since with out-of-range timestamp returns error."
+  (let ((tmpfile (make-temp-file "log-ts-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (supervisor--cli-cmd-journal
+                           '("-u" "svc" "--since"
+                             "2026-13-01T00:00:00Z")
+                           nil)))
+              (should (= supervisor-cli-exit-invalid-args
+                         (supervisor-cli-result-exitcode result)))
+              (should (string-match-p
+                       "Invalid --since"
+                       (supervisor-cli-result-output result))))))
+      (delete-file tmpfile))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
