@@ -1226,31 +1226,34 @@
           (w2 (start-process "fw-rst2" nil "sleep" "300")))
       (unwind-protect
           (progn
-            ;; First cycle: writer w1
-            (puthash "rst-svc" w1 supervisor--writers)
-            (cl-letf (((symbol-function 'supervisor--log-send-frame)
-                       (lambda (&rest _args)
-                         (cl-incf exit-frame-count)))
-                      ((symbol-function 'supervisor--stop-writer-if-same) #'ignore)
-                      ((symbol-function 'supervisor--emit-event) #'ignore)
-                      ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
-                      ((symbol-function 'supervisor--should-restart-p)
-                       (lambda (&rest _) nil))
-                      ((symbol-function 'run-at-time)
-                       (lambda (&rest _) nil)))
-              (let ((sentinel (supervisor--make-process-sentinel
-                               "rst-svc" '("sleep" "300") t 'simple t)))
-                (let ((p1 (start-process "rst-svc" nil "true")))
-                  (puthash "rst-svc" p1 supervisor--processes)
-                  (while (process-live-p p1) (sit-for 0.05))
-                  (funcall sentinel p1 "finished\n"))
-                ;; Simulate restart: replace writer
-                (puthash "rst-svc" w2 supervisor--writers)
-                ;; Second cycle with new writer
-                (let ((p2 (start-process "rst-svc" nil "true")))
-                  (puthash "rst-svc" p2 supervisor--processes)
-                  (while (process-live-p p2) (sit-for 0.05))
-                  (funcall sentinel p2 "finished\n"))))
+            ;; Create both service processes outside the mock scope so
+            ;; sit-for does not intercept Emacs-internal timers.
+            (let ((p1 (start-process "rst-svc" nil "true")))
+              (while (process-live-p p1) (sit-for 0.05))
+              (let ((p2 (start-process "rst-svc" nil "true")))
+                (while (process-live-p p2) (sit-for 0.05))
+                ;; First cycle: writer w1
+                (puthash "rst-svc" w1 supervisor--writers)
+                (cl-letf (((symbol-function 'supervisor--log-send-frame)
+                           (lambda (&rest _args)
+                             (cl-incf exit-frame-count)))
+                          ((symbol-function 'supervisor--stop-writer-if-same)
+                           #'ignore)
+                          ((symbol-function 'supervisor--emit-event) #'ignore)
+                          ((symbol-function 'supervisor--maybe-refresh-dashboard)
+                           #'ignore)
+                          ((symbol-function 'supervisor--should-restart-p)
+                           (lambda (&rest _) nil))
+                          ((symbol-function 'run-at-time)
+                           (lambda (&rest _) nil)))
+                  (let ((sentinel (supervisor--make-process-sentinel
+                                   "rst-svc" '("sleep" "300") t 'simple t)))
+                    (puthash "rst-svc" p1 supervisor--processes)
+                    (funcall sentinel p1 "finished\n")
+                    ;; Simulate restart: replace writer
+                    (puthash "rst-svc" w2 supervisor--writers)
+                    (puthash "rst-svc" p2 supervisor--processes)
+                    (funcall sentinel p2 "finished\n")))))
             ;; Each termination produces exactly 1 exit frame
             ;; (only stdout writer present in each cycle)
             (should (= 2 exit-frame-count)))
