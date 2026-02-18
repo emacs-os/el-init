@@ -1,13 +1,14 @@
 # PLAN: Project Rebrand from supervisor to elinit
 
 Date: 2026-02-18
-Status: Draft
+Status: Phase 1 Complete
 
 ## Final Naming Contract
 
 - Elisp files: `elinit-*.el`
 - Interactive UI: `M-x elinit`
 - CLI tool: `elinitctl`
+- Mode line: `Elinit`
 
 ## What Users Type
 
@@ -38,6 +39,10 @@ In scope:
 - Test file names, test symbol names, and test docs.
 - README/CLAUDE/docs and static-build documentation references.
 - Build system/Makefile targets and package entry points.
+- Face names.
+- Logo/asset file names.
+- .gitignore entries referencing old names.
+- CI workflow gist filename reference.
 
 Out of scope:
 - Functional behavior redesign.
@@ -45,7 +50,8 @@ Out of scope:
 
 ## Rename Matrix (Authoritative)
 
-Core package and modules:
+### Elisp modules (10 files)
+
 - `supervisor.el` -> `elinit.el`
 - `supervisor-core.el` -> `elinit-core.el`
 - `supervisor-log.el` -> `elinit-log.el`
@@ -57,7 +63,8 @@ Core package and modules:
 - `supervisor-dashboard.el` -> `elinit-dashboard.el`
 - `supervisor-cli.el` -> `elinit-cli.el`
 
-Scripts and helpers:
+### Scripts and helpers (7 files)
+
 - `sbin/supervisorctl` -> `sbin/elinitctl`
 - `sbin/supervisor-import` -> `sbin/elinit-import`
 - `sbin/supervisor-logrotate` -> `sbin/elinit-logrotate`
@@ -65,20 +72,107 @@ Scripts and helpers:
 - `libexec/supervisor-logd.c` -> `libexec/elinit-logd.c`
 - `libexec/supervisor-runas.c` -> `libexec/elinit-runas.c`
 - `libexec/supervisor-rlimits.c` -> `libexec/elinit-rlimits.c`
-- built binaries match new source names.
+- Built binaries match new source names.
 
-Tests:
-- `tests/supervisor-test-*.el` -> `tests/elinit-test-*.el`
-- `libexec/tests/test_supervisor_*.c` -> `libexec/tests/test_elinit_*.c`
-- `sbin/tests/test-supervisor*.sh` -> `sbin/tests/test-elinit*.sh`
+### Elisp test files (18 files)
 
-Symbols and features:
-- all public `supervisor-*` -> `elinit-*`
-- all private `supervisor--*` -> `elinit--*`
-- feature/provide names `supervisor*` -> `elinit*`
-- customization group `supervisor` -> `elinit`
-- user entry command `supervisor` -> `elinit`
-- major mode names `supervisor-*mode` -> `elinit-*mode`
+- `tests/supervisor-test-helpers.el` -> `tests/elinit-test-helpers.el`
+- `tests/supervisor-test-core.el` -> `tests/elinit-test-core.el`
+- `tests/supervisor-test-restart.el` -> `tests/elinit-test-restart.el`
+- `tests/supervisor-test-validation.el` -> `tests/elinit-test-validation.el`
+- `tests/supervisor-test-dag.el` -> `tests/elinit-test-dag.el`
+- `tests/supervisor-test-plan.el` -> `tests/elinit-test-plan.el`
+- `tests/supervisor-test-units.el` -> `tests/elinit-test-units.el`
+- `tests/supervisor-test-timer.el` -> `tests/elinit-test-timer.el`
+- `tests/supervisor-test-cli.el` -> `tests/elinit-test-cli.el`
+- `tests/supervisor-test-policy.el` -> `tests/elinit-test-policy.el`
+- `tests/supervisor-test-dashboard.el` -> `tests/elinit-test-dashboard.el`
+- `tests/supervisor-test-sandbox.el` -> `tests/elinit-test-sandbox.el`
+- `tests/supervisor-test-targets.el` -> `tests/elinit-test-targets.el`
+- `tests/supervisor-test-keywords.el` -> `tests/elinit-test-keywords.el`
+- `tests/supervisor-test-identity.el` -> `tests/elinit-test-identity.el`
+- `tests/supervisor-test-logformat.el` -> `tests/elinit-test-logformat.el`
+- `tests/supervisor-test-logging.el` -> `tests/elinit-test-logging.el`
+- `tests/supervisor-test-rlimits.el` -> `tests/elinit-test-rlimits.el`
+
+### C test files (3 files)
+
+- `libexec/tests/test_supervisor_logd.c` -> `libexec/tests/test_elinit_logd.c`
+- `libexec/tests/test_supervisor_runas.c` -> `libexec/tests/test_elinit_runas.c`
+- `libexec/tests/test_supervisor_rlimits.c` -> `libexec/tests/test_elinit_rlimits.c`
+
+### Shell test files (2 files)
+
+- `sbin/tests/test-supervisorctl.sh` -> `sbin/tests/test-elinitctl.sh`
+- `sbin/tests/test-supervisor-import.sh` -> `sbin/tests/test-elinit-import.sh`
+- `sbin/tests/test-logrotate.sh` -- no rename (no supervisor prefix)
+- `sbin/tests/test-log-prune.sh` -- no rename (no supervisor prefix)
+
+### Assets (2 files)
+
+- `supervisor_logo.png` -> `elinit_logo.png`
+- `supervisor_logo_small.png` -> `elinit_logo_small.png`
+
+### Static-build files with supervisor in name (2 files)
+
+- `static-builds/PKGBUILD-static-nox-supervisor-patched-for-pid1` -> `static-builds/PKGBUILD-static-nox-elinit-patched-for-pid1`
+- `static-builds/emacs-static-nox-supervisor-patched-for-pid1.nix` -> `static-builds/emacs-static-nox-elinit-patched-for-pid1.nix`
+
+### Build system and config files (content updates, no rename)
+
+- `Makefile` -- update module/test file references
+- `libexec/Makefile` -- update binary names, LOGD_PATH/RUNAS_PATH/RLIMITS_PATH macros
+- `sbin/Makefile` -- update script references
+- `libexec/.gitignore` -- update binary name entries
+- `.github/workflows/ci.yml` -- update gist filename `supervisor-el-tests.json`
+
+### Symbols and features
+
+- All public `supervisor-*` -> `elinit-*` (140 public functions)
+- All private `supervisor--*` -> `elinit--*` (325 private functions)
+- Feature/provide names: `supervisor` -> `elinit`, `supervisor-core` -> `elinit-core`, etc. (10 features)
+- Test feature/provide names: `supervisor-test-*` -> `elinit-test-*` (18 features)
+- Customization groups: `supervisor` -> `elinit`, `supervisor-timer` -> `elinit-timer`
+- User entry command: `supervisor` -> `elinit`
+- Mode names: `supervisor-mode` -> `elinit-mode`, `supervisor-dashboard-mode` -> `elinit-dashboard-mode`, `supervisor-edit-mode` -> `elinit-edit-mode`, `supervisor-timer-subsystem-mode` -> `elinit-timer-subsystem-mode`
+- Keymaps: `supervisor-dashboard-mode-map` -> `elinit-dashboard-mode-map`, `supervisor-edit-mode-map` -> `elinit-edit-mode-map`
+- Mode line string: `"Supervisor"` -> `"Elinit"` (in define-derived-mode)
+- Faces (16): `supervisor-status-*` -> `elinit-status-*`, `supervisor-type-*` -> `elinit-type-*`, `supervisor-enabled-*` -> `elinit-enabled-*`, `supervisor-reason` -> `elinit-reason`, `supervisor-section-separator` -> `elinit-section-separator`
+- Defcustom variables (42): all `supervisor-*` -> `elinit-*`
+- Defvar variables (140): all `supervisor-*`/`supervisor--*` -> `elinit-*`/`elinit--*`
+- Hook variable: `supervisor-event-hook` -> `elinit-event-hook`
+- Autoload-marked functions (10): all renamed with prefix
+- Declare-function forms (100+): all target names updated
+- CLI branding: `"supervisorctl"` -> `"elinitctl"` in usage/version strings
+
+### Internal string references
+
+- C sources: `supervisor-logd`, `supervisor-runas`, `supervisor-rlimits` in usage/error messages
+- Shell scripts: `supervisor-logrotate`, `supervisor-log-prune`, `supervisorctl` in help text
+- sbin scripts internally reference `supervisor-logrotate`, `supervisor-log-prune` as helper names
+- `sbin/tests/test-logrotate.sh` and `sbin/tests/test-log-prune.sh` reference old script names internally
+
+## Symbol Counts Summary
+
+| Category | Count |
+|----------|-------|
+| Elisp module files | 10 |
+| Elisp test files | 18 |
+| C source files | 3 |
+| C test files | 3 |
+| sbin scripts | 4 |
+| sbin test scripts | 2 |
+| Defun public | 140 |
+| Defun private | 325 |
+| Defcustom | 42 |
+| Defvar | 140 |
+| Defface | 16 |
+| Defgroup | 2 |
+| Mode definitions | 4 |
+| Keymaps | 2 |
+| Autoloads | 10 |
+| Provide forms | 28 (10 modules + 18 tests) |
+| Declare-function | 100+ |
 
 ## Compatibility Policy
 
@@ -89,8 +183,23 @@ Recommended migration policy:
 
 Compatibility mechanisms:
 - `defalias` for key interactive commands (`supervisor` -> `elinit`).
-- wrapper scripts `supervisorctl` and old helper names exec new binaries.
-- optional `define-obsolete-function-alias` / variable aliases where feasible.
+- Wrapper scripts `supervisorctl` and old helper names exec new binaries.
+- Optional `define-obsolete-function-alias` / variable aliases where feasible.
+
+## Intentional Supervisor References Allowlist
+
+The following `supervisor` references are intentionally retained after the rebrand,
+for migration compatibility or historical documentation:
+
+- `PLAN-project-rebrand.md` -- this plan file (references old names throughout)
+- `PLAN-*.md` files in `sbin/`, `libexec/`, `static-builds/` -- historical dev docs
+- `static-builds/patches/README-pid1-supervisor-integration.md` -- historical patch docs
+- `.github/workflows/ci.yml` -- external gist filename `supervisor-el-tests.json` (rename separately)
+- Compatibility aliases in `elinit.el` (Phase 7 removal candidates):
+  - `(defalias 'supervisor #'elinit)` and similar key command aliases
+- Any `define-obsolete-function-alias` / `define-obsolete-variable-alias` forms
+
+All other `supervisor` references must be eliminated by Phase 6 completion.
 
 ## Phase Plan
 
