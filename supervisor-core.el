@@ -1106,14 +1106,17 @@ Return nil if valid, or a reason string if invalid."
       ;; Check :log-format value and gate
       (when (plist-member plist :log-format)
         (let ((val (plist-get plist :log-format)))
-          (let ((sym (if (stringp val) (intern val) val)))
-            (unless (memq sym '(text binary))
-              (push (format ":log-format must be `text' or `binary', got: %S" val)
-                    errors))
-            (when (and (eq sym 'binary)
-                       (not supervisor-log-format-binary-enable))
-              (push ":log-format binary requires supervisor-log-format-binary-enable to be enabled"
-                    errors)))))
+          (cond
+           ((not (symbolp val))
+            (push (format ":log-format must be symbol `text' or `binary', got: %S" val)
+                  errors))
+           ((not (memq val '(text binary)))
+            (push (format ":log-format must be `text' or `binary', got: %S" val)
+                  errors))
+           ((and (eq val 'binary)
+                 (not supervisor-log-format-binary-enable))
+            (push ":log-format binary requires supervisor-log-format-binary-enable to be enabled"
+                  errors)))))
       ;; Check sandbox-requesting units for OS and binary prerequisites.
       ;; Per plan contract: a unit is sandbox-requesting when
       ;; :sandbox-profile is set to anything other than none, OR any

@@ -22523,6 +22523,21 @@ even when both identity wrapper and sandbox wrapper are active."
     (should (stringp reason))
     (should (string-match-p ":log-format must be" reason))))
 
+(ert-deftest supervisor-test-log-format-validate-string-text ()
+  "String \"text\" for :log-format is rejected (must be symbol)."
+  (let ((reason (supervisor--validate-entry
+                 '("cmd" :id "svc" :log-format "text"))))
+    (should (stringp reason))
+    (should (string-match-p ":log-format must be" reason))))
+
+(ert-deftest supervisor-test-log-format-validate-string-binary ()
+  "String \"binary\" for :log-format is rejected (must be symbol)."
+  (let ((supervisor-log-format-binary-enable t))
+    (let ((reason (supervisor--validate-entry
+                   '("cmd" :id "svc" :log-format "binary"))))
+      (should (stringp reason))
+      (should (string-match-p ":log-format must be" reason)))))
+
 (ert-deftest supervisor-test-log-format-validate-target ()
   ":log-format on target is a validation error."
   (let ((reason (supervisor--validate-entry
