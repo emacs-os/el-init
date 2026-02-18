@@ -24182,6 +24182,266 @@ TS-NS are the record fields."
                  '("-p" "debug" "-u" "svc"))))
     (should (plist-get parsed :unknown))))
 
+;;;; Phase 5 Remediation: P1 -- Non-follow journal fixes
+
+(ert-deftest supervisor-test-journal-default-all-records ()
+  "Journal without -n returns all records (no 50-record cap)."
+  (let ((tmpfile (make-temp-file "journal-all-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (dotimes (i 60)
+              (insert (format "ts=2026-02-16T12:00:%02dZ unit=svc pid=1 "
+                              (mod i 60))
+                      "stream=stdout event=output status=- "
+                      "code=- payload=line\n")))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (supervisor--cli-cmd-journal
+                            '("-u" "svc") nil))
+                   (output (supervisor-cli-result-output result))
+                   (lines (split-string output "\n" t)))
+              (should (= (supervisor-cli-result-exitcode result) 0))
+              (should (= 60 (length lines))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-invalid-since-timestamp ()
+  "Journal --since with invalid timestamp returns actionable error."
+  (let ((tmpfile (make-temp-file "journal-ts-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=x\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (supervisor--cli-cmd-journal
+                           '("--since" "not-a-timestamp" "-u" "svc")
+                           nil)))
+              (should (equal (supervisor-cli-result-exitcode result)
+                             supervisor-cli-exit-invalid-args))
+              (should (string-match-p "Invalid --since"
+                                      (supervisor-cli-result-output result))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-invalid-until-timestamp ()
+  "Journal --until with invalid timestamp returns actionable error."
+  (let ((tmpfile (make-temp-file "journal-ts-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=x\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (supervisor--cli-cmd-journal
+                           '("--until" "garbage" "-u" "svc") nil)))
+              (should (equal (supervisor-cli-result-exitcode result)
+                             supervisor-cli-exit-invalid-args))
+              (should (string-match-p "Invalid --until"
+                                      (supervisor-cli-result-output result))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-json-envelope-metadata ()
+  "Journal JSON output includes metadata fields in envelope."
+  (let ((tmpfile (make-temp-file "journal-json-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (supervisor--cli-cmd-journal
+                            '("--since" "500" "--until" "2000"
+                              "-p" "info" "-n" "10" "-u" "svc")
+                            t))
+                   (json-data (json-read-from-string
+                               (supervisor-cli-result-output result))))
+              (should (= (supervisor-cli-result-exitcode result) 0))
+              ;; Envelope metadata fields
+              (should (equal (cdr (assq 'since json-data)) "500"))
+              (should (equal (cdr (assq 'until json-data)) "2000"))
+              (should (equal (cdr (assq 'priority json-data)) "info"))
+              (should (equal (cdr (assq 'limit json-data)) 10))
+              (should (eq (cdr (assq 'follow json-data)) :json-false)))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-json-record-priority ()
+  "Journal JSON records include per-record priority field."
+  (let ((tmpfile (make-temp-file "journal-pri-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=out\n")
+            (insert "ts=1001 unit=svc pid=1 stream=stderr "
+                    "event=output status=- code=- payload=err\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (supervisor--cli-cmd-journal
+                            '("-u" "svc") t))
+                   (json-data (json-read-from-string
+                               (supervisor-cli-result-output result)))
+                   (records (cdr (assq 'records json-data))))
+              (should (= (supervisor-cli-result-exitcode result) 0))
+              (should (= 2 (length records)))
+              ;; First record: stdout -> info
+              (should (equal (cdr (assq 'priority (aref records 0)))
+                             "info"))
+              ;; Second record: stderr -> err
+              (should (equal (cdr (assq 'priority (aref records 1)))
+                             "err")))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-follow-flag-accepted ()
+  "Journal --follow flag is accepted without error."
+  (let ((parsed (supervisor--cli-parse-journal-args
+                 '("--follow" "-u" "svc"))))
+    (should (plist-get parsed :follow))
+    (should (equal "svc" (plist-get parsed :unit)))
+    (should-not (plist-get parsed :unknown))))
+
+(ert-deftest supervisor-test-journal-f-flag-sets-follow ()
+  "Journal -f flag sets :follow in parsed args."
+  (let ((parsed (supervisor--cli-parse-journal-args
+                 '("-f" "-u" "svc"))))
+    (should (plist-get parsed :follow))
+    (should-not (plist-get parsed :unknown))))
+
+(ert-deftest supervisor-test-journal-fu-sets-follow ()
+  "Journal -fu ID sets both :follow and :unit."
+  (let ((parsed (supervisor--cli-parse-journal-args
+                 '("-fu" "svc"))))
+    (should (plist-get parsed :follow))
+    (should (equal "svc" (plist-get parsed :unit)))
+    (should-not (plist-get parsed :unknown))))
+
+;;;; Phase 5 Remediation: P2 -- Journal follow mode
+
+(ert-deftest supervisor-test-journal-follow-incremental-read ()
+  "Follow mode reads new records from offset."
+  (let ((tmpfile (make-temp-file "journal-follow-")))
+    (unwind-protect
+        (progn
+          ;; Write initial content
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=first\n"))
+          ;; Decode initial
+          (let* ((initial (supervisor--log-decode-file tmpfile))
+                 (offset (plist-get initial :offset))
+                 (recs (plist-get initial :records)))
+            (should (= 1 (length recs)))
+            ;; Append more data
+            (with-temp-buffer
+              (insert "ts=2000 unit=svc pid=1 stream=stdout "
+                      "event=output status=- code=- payload=second\n")
+              (append-to-file (point-min) (point-max) tmpfile))
+            ;; Read from offset -- should get only the new record
+            (let* ((incremental (supervisor--log-decode-file
+                                 tmpfile nil offset))
+                   (new-recs (plist-get incremental :records)))
+              (should (= 1 (length new-recs)))
+              (should (equal "second"
+                             (plist-get (car new-recs) :payload))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-ndjson-record-format ()
+  "NDJSON record is valid JSON with all expected fields."
+  (let ((record (list :ts 1000.0 :unit "svc" :pid 42
+                      :stream 'stdout :event 'output
+                      :status nil :code 0
+                      :payload "hello")))
+    (let* ((json-str (supervisor--log-record-to-json record))
+           (parsed (json-read-from-string json-str)))
+      (should (= (cdr (assq 'ts parsed)) 1000.0))
+      (should (equal (cdr (assq 'unit parsed)) "svc"))
+      (should (= (cdr (assq 'pid parsed)) 42))
+      (should (equal (cdr (assq 'stream parsed)) "stdout"))
+      (should (equal (cdr (assq 'event parsed)) "output"))
+      (should (equal (cdr (assq 'payload parsed)) "hello"))
+      (should (equal (cdr (assq 'priority parsed)) "info")))))
+
+(ert-deftest supervisor-test-journal-ndjson-exit-record ()
+  "NDJSON encodes exit record with err priority."
+  (let ((record (list :ts 1000.0 :unit "svc" :pid 42
+                      :stream 'meta :event 'exit
+                      :status 'signaled :code 9
+                      :payload "")))
+    (let* ((json-str (supervisor--log-record-to-json record))
+           (parsed (json-read-from-string json-str)))
+      (should (equal (cdr (assq 'priority parsed)) "err"))
+      (should (equal (cdr (assq 'status parsed)) "signaled")))))
+
+(ert-deftest supervisor-test-journal-follow-no-new-data ()
+  "Follow-mode poll with no new data returns empty records."
+  (let ((tmpfile (make-temp-file "journal-follow-empty-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=only\n"))
+          (let* ((initial (supervisor--log-decode-file tmpfile))
+                 (offset (plist-get initial :offset)))
+            ;; Poll at end -- no new data
+            (let* ((poll (supervisor--log-decode-file tmpfile nil offset))
+                   (new-recs (plist-get poll :records)))
+              (should (= 0 (length new-recs))))))
+      (delete-file tmpfile))))
+
+;;;; Phase 5 Remediation: P3 -- Consistent decoded rendering
+
+(ert-deftest supervisor-test-dashboard-view-log-decodes-text ()
+  "Dashboard view-log decodes text format through structured decoder."
+  (let ((tmpfile (make-temp-file "dash-view-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'supervisor--require-service-row)
+                     (lambda () "svc")))
+            (save-window-excursion
+              (supervisor-dashboard-view-log)
+              ;; Buffer should contain human-formatted record
+              (let ((buf (get-buffer "*supervisor-log-svc*")))
+                (should buf)
+                (with-current-buffer buf
+                  ;; Should have formatted timestamp, not raw ts= line
+                  (should (string-match-p "svc\\[1\\]"
+                                          (buffer-string)))
+                  (should (string-match-p "hello"
+                                          (buffer-string)))
+                  (should-not (string-match-p "\\`ts="
+                                              (buffer-string))))
+                (kill-buffer buf)))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-telemetry-log-tail-decodes-text ()
+  "Telemetry log-tail decodes text format through structured decoder."
+  (let ((tmpfile (make-temp-file "telem-tail-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n")
+            (insert "ts=1001 unit=svc pid=1 stream=stderr "
+                    "event=output status=- code=- payload=world\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((output (supervisor--telemetry-log-tail "svc" 5)))
+              (should (stringp output))
+              ;; Should contain human-formatted output
+              (should (string-match-p "svc\\[1\\]" output))
+              (should (string-match-p "hello" output))
+              (should (string-match-p "world" output))
+              ;; Should not contain raw ts= format
+              (should-not (string-match-p "\\`ts=" output)))))
+      (delete-file tmpfile))))
+
 (ert-deftest supervisor-test-timestamp-parsing-rfc3339-nano ()
   "Timestamp parser handles RFC3339 with nanoseconds."
   (let ((ts (supervisor--log-parse-timestamp

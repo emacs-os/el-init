@@ -1530,33 +1530,28 @@ Prompt with `completing-read' to choose on or off explicitly."
 
 (defun supervisor-dashboard-view-log ()
   "Open the log file for process at point.
-Binary format files are decoded and displayed in a read-only buffer.
-Text and legacy files are opened with `find-file'."
+Decode all formats through the structured decoder and display in a
+read-only buffer with formatted timestamps and stream labels."
   (interactive)
   (let ((id (supervisor--require-service-row)))
     (let ((log-file (supervisor--log-file id)))
       (if (not (file-exists-p log-file))
           (message "No log file for %s" id)
-        (let ((fmt (supervisor--log-detect-format log-file)))
-          (if (eq fmt 'binary)
-              ;; Decode binary and display in read-only buffer
-              (let* ((decoded (supervisor--log-decode-file log-file))
-                     (records (plist-get decoded :records))
-                     (buf-name (format "*supervisor-log-%s*" id)))
-                (with-current-buffer (get-buffer-create buf-name)
-                  (let ((inhibit-read-only t))
-                    (erase-buffer)
-                    (if records
-                        (insert (mapconcat
-                                 #'supervisor--log-format-record-human
-                                 records "\n")
-                                "\n")
-                      (insert (format "No records in %s\n" log-file))))
-                  (goto-char (point-min))
-                  (special-mode))
-                (pop-to-buffer buf-name))
-            ;; Text and legacy: open directly
-            (find-file log-file)))))))
+        (let* ((decoded (supervisor--log-decode-file log-file))
+               (records (plist-get decoded :records))
+               (buf-name (format "*supervisor-log-%s*" id)))
+          (with-current-buffer (get-buffer-create buf-name)
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (if records
+                  (insert (mapconcat
+                           #'supervisor--log-format-record-human
+                           records "\n")
+                          "\n")
+                (insert (format "No records in %s\n" log-file))))
+            (goto-char (point-min))
+            (special-mode))
+          (pop-to-buffer buf-name))))))
 
 (defun supervisor-dashboard-cat ()
   "View unit file for entry at point in read-only mode.

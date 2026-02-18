@@ -62,6 +62,7 @@ See supervisor-timer.el for the full mode definition.")
 
 ;; Forward declarations for optional features
 (declare-function file-notify-add-watch "filenotify" (file flags callback))
+(declare-function json-encode "json" (object))
 (declare-function file-notify-rm-watch "filenotify" (descriptor))
 
 ;; Forward declaration for dashboard refresh (optional cross-module call)
@@ -184,6 +185,11 @@ directory is at or below this cap."
   "Minimum seconds between logd-triggered prune invocations.
 Throttles prune calls from the log writer to avoid excessive I/O."
   :type 'integer
+  :group 'supervisor)
+
+(defcustom supervisor-log-follow-interval 1.0
+  "Seconds between polls in journal follow mode."
+  :type 'number
   :group 'supervisor)
 
 (defcustom supervisor-logd-pid-directory nil
@@ -3574,27 +3580,17 @@ Gracefully returns nil if process attributes are unavailable."
 (defun supervisor--telemetry-log-tail (id &optional lines)
   "Return last LINES lines from the log file for ID.
 LINES defaults to 5.  Returns nil if no log file exists.
-Automatically detects binary format and decodes records."
+All formats are decoded through the structured decoder."
   (let ((log-file (supervisor--log-file id))
         (n (or lines 5)))
     (when (file-exists-p log-file)
       (condition-case nil
-          (let ((fmt (supervisor--log-detect-format log-file)))
-            (if (eq fmt 'binary)
-                ;; Decode binary records and format as text
-                (let* ((decoded (supervisor--log-decode-file log-file n))
-                       (records (plist-get decoded :records)))
-                  (when records
-                    (concat (mapconcat
-                             #'supervisor--log-format-record-human
-                             records "\n")
-                            "\n")))
-              ;; Text or legacy: read last N lines
-              (with-temp-buffer
-                (insert-file-contents log-file)
-                (goto-char (point-max))
-                (forward-line (- n))
-                (buffer-substring-no-properties (point) (point-max)))))
+          (let* ((decoded (supervisor--log-decode-file log-file n))
+                 (records (plist-get decoded :records)))
+            (when records
+              (concat (mapconcat #'supervisor--log-format-record-human
+                                 records "\n")
+                      "\n")))
         (error nil)))))
 
 (defun supervisor--telemetry-process-tree (pid)
@@ -4239,6 +4235,24 @@ PRIORITY, when non-nil, filters to records matching that priority."
       (format "%s %s[%d] %s: %s"
               ts-str unit pid stream
               (or payload "")))))
+
+(defun supervisor--log-record-to-json (record)
+  "Encode structured log RECORD as a JSON object string.
+Return a single-line JSON string suitable for NDJSON output."
+  (require 'json)
+  (json-encode
+   `((ts . ,(plist-get record :ts))
+     (unit . ,(plist-get record :unit))
+     (pid . ,(plist-get record :pid))
+     (stream . ,(symbol-name (plist-get record :stream)))
+     (event . ,(symbol-name (plist-get record :event)))
+     (status . ,(if (plist-get record :status)
+                     (symbol-name (plist-get record :status))
+                   :null))
+     (code . ,(plist-get record :code))
+     (payload . ,(plist-get record :payload))
+     (priority . ,(symbol-name
+                   (supervisor--log-record-priority record))))))
 
 ;;;; Log writer lifecycle
 
