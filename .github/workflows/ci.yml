@@ -7,7 +7,8 @@ on:
     branches: [master, main]
 
 jobs:
-  test:
+  elisp:
+    name: Elisp (Emacs ${{ matrix.emacs-version }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -35,14 +36,36 @@ jobs:
             --eval "(package-refresh-contents)" \
             --eval "(package-install 'package-lint)"
 
-      - name: Run byte-compile
+      - name: Byte-compile
         run: make byte-compile
 
-      - name: Run checkdoc
+      - name: Checkdoc
         run: make checkdoc
 
-      - name: Run package-lint
+      - name: Package-lint
         run: make package-lint
 
-      - name: Run tests
+      - name: ERT tests
         run: make test
+
+  c-tests:
+    name: C (libexec)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and test
+        run: make libexec-check
+
+  shell-tests:
+    name: Shell (sbin)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint and test
+        run: make sbin-check
