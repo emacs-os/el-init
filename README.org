@@ -6,11 +6,12 @@
 
 *A proper process supervisor with a systemd-inspired dependency model.*
 
-~supervisor.el~ is an Emacs Lisp-based service supervisor.  It follows a
-familiar systemd-like interface (service types, dependencies, restart
-policies) adapted for Emacs.  ~M-x supervisor~ opens the interactive
-dashboard; ~supervisorctl~ provides the same control from the terminal
-or scripts.
+~supervisor.el~ is an Emacs Lisp-based, systemd-inspired init and
+supervisor solution.  Whether you are building a full-send Emacs-OS, or
+simply want to manage your =.xinitrc= style startup commands and services
+before EXWM starts, supervisor.el has you covered.  ~M-x supervisor~
+opens the interactive dashboard; ~supervisorctl~ provides the same
+control from the terminal or scripts.
 
 ** Features
 
