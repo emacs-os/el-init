@@ -31,6 +31,10 @@
 ;;; Code:
 
 (require 'supervisor-core)
+(require 'supervisor-log)
+(require 'supervisor-overrides)
+(require 'supervisor-sandbox)
+(require 'supervisor-libexec)
 (require 'supervisor-units)
 (require 'supervisor-timer)
 (require 'supervisor-dashboard)

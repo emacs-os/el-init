@@ -13,21 +13,30 @@ The package is split into focused modules:
 | File | Purpose |
 |------|---------|
 | `supervisor-core.el` | Engine, parsing, scheduling, process lifecycle, state management |
+| `supervisor-log.el` | Log framing, encode/decode, record filtering/formatting, writer lifecycle |
+| `supervisor-overrides.el` | Overrides persistence, effective state getters, policy mutators |
+| `supervisor-libexec.el` | Libexec build targets, compiler selection, build invocation |
+| `supervisor-sandbox.el` | Sandbox profile argument construction and bwrap argv wrapping |
 | `supervisor-units.el` | Unit-file loading, validation, merge with legacy config |
+| `supervisor-timer.el` | Timer subsystem for scheduled and calendar-based triggers |
 | `supervisor-dashboard.el` | UI rendering, keymaps, interactive commands |
 | `supervisor-cli.el` | CLI dispatcher, formatters, command handlers |
 | `supervisor.el` | Entry point that loads all modules and provides the `supervisor` feature |
 
-**Load order:** core → units → timer → dashboard → cli (loaded by entry point).
+**Load order:** core (requires log, overrides, libexec, sandbox) then units, timer, dashboard, cli (loaded by entry point).
 
 **Dependency rules:**
-- `supervisor-core.el` has no dependencies on other modules (can load standalone)
+- `supervisor-core.el` requires `supervisor-log`, `supervisor-overrides`, `supervisor-libexec`, and `supervisor-sandbox` (these are extracted subsystems, not optional)
+- `supervisor-log.el` uses `declare-function` for core's `supervisor--log` (no hard require back to core)
+- `supervisor-overrides.el` uses `declare-function` for core entry accessors and helpers (no hard require back to core)
+- `supervisor-libexec.el` uses `declare-function` for core's `supervisor--log` (no hard require back to core)
+- `supervisor-sandbox.el` uses `declare-function` for core entry accessors (no hard require back to core)
 - `supervisor-units.el` uses `declare-function` for core (no hard require)
 - `supervisor-dashboard.el` requires only `supervisor-core`
 - `supervisor-cli.el` requires only `supervisor-core`
 - `supervisor.el` requires all modules
 
-Cross-module calls use `declare-function` for proper byte-compilation.
+Cross-module calls use `declare-function` for proper byte-compilation. The extracted subsystem modules (log, overrides, libexec, sandbox) use `defvar` forward declarations for variables defined in core.
 
 ## Emacs Lisp Standards (MANDATORY)
 
@@ -61,10 +70,18 @@ Rules:
 ## Development Commands
 
 ```bash
-make check          # Run all CI checks (byte-compile, checkdoc, package-lint, ERT tests)
+make check          # Run all CI checks (Elisp + C + shell)
 make lint           # Run byte-compile, checkdoc, package-lint only
 make test           # Run ERT tests only
 make test-one TEST=supervisor-test-parse-string-entry  # Run single test
+make libexec-check  # Build and test C helpers (supervisor-logd, supervisor-runas)
+make sbin-check     # Run shellcheck + shell tests for sbin/ scripts
+
+# Subsystem checks in isolation
+make -C libexec check
+make -C sbin check          # shellcheck lint + all shell tests
+make -C sbin test           # shell tests only (skip shellcheck)
+make -C sbin lint           # shellcheck only
 
 # Load and test interactively
 emacs -Q -l supervisor.el
@@ -95,6 +112,10 @@ modes work.
 This matches CI exactly (GitHub Actions runs `make check` on Emacs 28.2, 29.4, and snapshot).
 CI failures that pass locally often involve Emacs version differences (e.g., `when-let` → `when-let*` for Emacs 31+).
 
+`make check` validates Elisp (lint + ERT), C helper tests (`libexec/`), and shell script
+tests (`sbin/`).  To run subsystems in isolation: `make -C libexec check` or
+`make -C sbin check`.
+
 ## Code Quality Standards
 
 See PLAN-INIT-followups.md for the authoritative spec. Key requirements:
@@ -120,10 +141,46 @@ A stage is complete only when:
 2. All blocking oneshots have exited or timed out
 3. All delayed entries have actually started
 
-### Testing
+### Testing (Elisp)
 - Use ERT for all tests
 - If a behavior can be tested, it must be tested
 - Required test coverage: whitelist validation, cycle fallback, stable ordering, oneshot timeout unlock, delayed entry handling, async oneshot non-blocking
+
+### Testing (Shell -- sbin/)
+
+Shell scripts in `sbin/` have their own test suite under `sbin/tests/`.
+
+**Framework:** `sbin/tests/testlib.sh` is a minimal POSIX-sh test framework
+(no external dependencies).  Source it, define `test_*` functions, call
+`run_tests "$(basename "${0}")"` at the end.
+
+**Test files:**
+- `sbin/tests/test-logrotate.sh` -- tests for `supervisor-logrotate`
+- `sbin/tests/test-log-prune.sh` -- tests for `supervisor-log-prune`
+- `sbin/tests/test-supervisorctl.sh` -- tests for `supervisorctl`
+
+**Writing new tests:**
+- First test in every file must be `test_shellcheck` (runs shellcheck on the script under test).
+- Use `run_cmd SCRIPT ARGS...` to capture `TEST_STDOUT`, `TEST_STDERR`, `TEST_STATUS`.
+- Use `${TEST_TMPDIR}` (auto-created per test, cleaned up after) for fixtures.
+- Assertions: `assert_eq`, `assert_ne`, `assert_contains`, `assert_not_contains`,
+  `assert_status`, `assert_file_exists`, `assert_file_not_exists`, `assert_match`.
+- Keep tests hermetic: never depend on global state or real services.
+- For `supervisorctl` tests, stub `emacsclient` via PATH manipulation (write args
+  to a temp file, not stderr, because supervisorctl captures stderr with `2>&1`).
+- Prefer `--dry-run` for testing output contracts without side effects.
+
+**What to test for each script:**
+- Argument parsing: required flags, missing values, unknown options, validation.
+- Exit codes: correct codes for success, failure, and edge cases.
+- Output contracts: dry-run output format, info/error message content.
+- Behavioral correctness: file creation/deletion, naming patterns, ordering.
+- Edge cases: empty directories, lock contention, missing dependencies.
+
+**Style rules (must pass shellcheck):**
+- POSIX sh only, no bashisms.  See `sbin/shell-scripting-style.txt`.
+- All test files and testlib.sh are checked by `make -C sbin lint`.
+- Use `# shellcheck disable=SCXXXX` sparingly and only with justification.
 
 ## Documentation Files
 
@@ -172,7 +229,7 @@ make check   # Must pass before commits (runs lint + test)
 - GPL-compatible license with boilerplate above `;;; Commentary:`
 - Must include LICENSE file
 - Main feature provided by entry point: `(provide 'supervisor)`
-- Each module provides its own feature: `supervisor-core`, `supervisor-units`, `supervisor-timer`, `supervisor-dashboard`, `supervisor-cli`
+- Each module provides its own feature: `supervisor-core`, `supervisor-log`, `supervisor-overrides`, `supervisor-libexec`, `supervisor-sandbox`, `supervisor-units`, `supervisor-timer`, `supervisor-dashboard`, `supervisor-cli`
 
 **CRITICAL: All code must follow the GNU Coding Standards and Emacs Lisp conventions.**
 

@@ -58,6 +58,16 @@
 (declare-function supervisor--authority-root-for-id "supervisor-units" (id))
 (declare-function supervisor--authority-tier-for-id "supervisor-units" (id))
 
+;; Forward declarations for logging module (defined in supervisor-log.el)
+(declare-function supervisor--log-file "supervisor-log" (prog))
+(declare-function supervisor--log-format-record-human "supervisor-log" (record))
+(declare-function supervisor--log-decode-file "supervisor-log"
+                  (file &optional limit offset max-bytes))
+(declare-function supervisor--log-filter-records "supervisor-log"
+                  (records &optional since until priority))
+(declare-function supervisor--log-record-to-json "supervisor-log" (record))
+(declare-function supervisor--log-record-priority "supervisor-log" (record))
+
 ;; Forward declarations for timer state variables (defined in supervisor-timer.el)
 (defvar supervisor--timer-state)
 (defvar supervisor--timer-list)

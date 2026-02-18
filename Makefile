@@ -2,7 +2,7 @@ EMACS ?= emacs
 BATCH = $(EMACS) -Q --batch -L . -L $(TEST_DIR)
 
 EL_MAIN = supervisor.el
-EL_MODULES = supervisor-core.el supervisor-units.el supervisor-timer.el supervisor-dashboard.el supervisor-cli.el
+EL_MODULES = supervisor-core.el supervisor-log.el supervisor-overrides.el supervisor-libexec.el supervisor-sandbox.el supervisor-units.el supervisor-timer.el supervisor-dashboard.el supervisor-cli.el
 EL_ALL = $(EL_MODULES) $(EL_MAIN)
 TEST_DIR = tests
 TEST_HELPERS = $(TEST_DIR)/supervisor-test-helpers.el
@@ -24,11 +24,12 @@ TEST_ELS = $(TEST_HELPERS) \
            $(TEST_DIR)/supervisor-test-sandbox.el \
            $(TEST_DIR)/supervisor-test-logformat.el
 
-.PHONY: all check lint test byte-compile checkdoc package-lint clean
+.PHONY: all check lint test byte-compile checkdoc package-lint \
+       libexec-check sbin-check clean
 
 all: check
 
-check: lint test
+check: lint test libexec-check sbin-check
 
 lint: byte-compile checkdoc package-lint
 
@@ -65,5 +66,12 @@ test-verbose: $(EL_ALL) $(TEST_ELS)
 test-one: $(EL_ALL) $(TEST_ELS)
 	@$(BATCH) -l $(EL_MAIN) $(foreach f,$(TEST_ELS),-l $(f)) --eval "(ert-run-tests-batch-and-exit '$(TEST))"
 
+libexec-check:
+	@$(MAKE) -C libexec check
+
+sbin-check:
+	@$(MAKE) -C sbin check
+
 clean:
 	rm -f *.elc tests/*.elc
+	@$(MAKE) -C libexec clean
