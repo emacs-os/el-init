@@ -5946,10 +5946,12 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
                (stderr-writer (when split-stderr
                                 (supervisor--start-stderr-writer
                                  id stderr-log-target log-format)))
-               ;; In framed mode with merged streams, stderr still needs a
-               ;; dedicated pipe so its output is tagged stream=2 (stderr).
-               ;; The pipe sends frames to the stdout writer.
-               (merged-stderr-pipe (when (and log-format writer
+               ;; When logging is enabled with merged streams, stderr
+               ;; still needs a dedicated pipe so its output is tagged
+               ;; stream=2 (stderr).  The pipe sends frames to the
+               ;; stdout writer.  This applies whether log-format is
+               ;; explicit or omitted (framed transport is always used).
+               (merged-stderr-pipe (when (and writer
                                               (not split-stderr)
                                               stderr-log-target)
                                      (supervisor--start-stderr-pipe

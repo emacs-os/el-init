@@ -17527,7 +17527,9 @@ An invalid entry ID that happens to end in .target must not pass."
       (when (process-live-p fake-stderr) (delete-process fake-stderr)))))
 
 (ert-deftest supervisor-test-start-process-merged-stderr-when-targets-equal ()
-  "Start-process keeps merged stderr when stream targets are the same."
+  "Start-process uses merged stderr pipe (not separate writer) when targets match.
+No separate stderr writer is spawned, but a merged stderr pipe routes
+stderr through the stdout writer for correct stream=2 tagging."
   (let ((supervisor--writers (make-hash-table :test 'equal))
         (supervisor--stderr-writers (make-hash-table :test 'equal))
         (supervisor--stderr-pipes (make-hash-table :test 'equal))
@@ -17565,10 +17567,14 @@ An invalid entry ID that happens to end in .target must not pass."
                        nil nil nil nil nil nil nil nil
                        "/tmp/svc.shared.log" "/tmp/svc.shared.log")))
             (should proc)
+            ;; No separate stderr writer (targets are same)
             (should-not stderr-writer-called)
-            (should-not captured-stderr)))
+            ;; But merged stderr pipe IS created for stream identity
+            (should captured-stderr)))
       (when (process-live-p fake-proc) (delete-process fake-proc))
-      (when (process-live-p fake-writer) (delete-process fake-writer)))))
+      (when (process-live-p fake-writer) (delete-process fake-writer))
+      (when-let* ((pipe (gethash "svc" supervisor--stderr-pipes)))
+        (when (process-live-p pipe) (delete-process pipe))))))
 
 (ert-deftest supervisor-test-writer-reopen-sighup-real-process ()
   "Signal-writers-reopen sends SIGHUP to live writer processes."
@@ -23763,8 +23769,10 @@ TS-NS are the record fields."
       (when-let* ((pipe (gethash "svc" supervisor--stderr-pipes)))
         (when (process-live-p pipe) (delete-process pipe))))))
 
-(ert-deftest supervisor-test-merged-no-pipe-without-log-format ()
-  "Merged mode without log-format keeps stderr merged (no pipe)."
+(ert-deftest supervisor-test-merged-stderr-pipe-without-log-format ()
+  "Merged mode without explicit log-format still creates stderr pipe.
+Framed transport is always used when a writer exists, so stream
+identity must be correct regardless of whether log-format is set."
   (let ((supervisor--writers (make-hash-table :test 'equal))
         (supervisor--stderr-writers (make-hash-table :test 'equal))
         (supervisor--stderr-pipes (make-hash-table :test 'equal))
@@ -23799,10 +23807,13 @@ TS-NS are the record fields."
                        nil nil nil nil nil nil nil nil
                        "/tmp/svc.shared.log" "/tmp/svc.shared.log")))
             (should proc)
-            ;; Without log-format, merged mode has no stderr pipe
-            (should-not captured-stderr)))
+            ;; Omitted log-format uses framed transport like explicit text,
+            ;; so merged mode must still use a stderr pipe for stream identity
+            (should captured-stderr)))
       (when (process-live-p fake-proc) (delete-process fake-proc))
-      (when (process-live-p fake-writer) (delete-process fake-writer)))))
+      (when (process-live-p fake-writer) (delete-process fake-writer))
+      (when-let* ((pipe (gethash "svc" supervisor--stderr-pipes)))
+        (when (process-live-p pipe) (delete-process pipe))))))
 
 (ert-deftest supervisor-test-merged-stderr-pipe-tags-stream-2 ()
   "Merged stderr pipe filter tags output as stream=2."
@@ -23836,7 +23847,7 @@ TS-NS are the record fields."
         (when (process-live-p pipe) (delete-process pipe))))))
 
 (ert-deftest supervisor-test-sentinel-sends-eof-before-teardown ()
-  "Sentinel sends EOF to writers after exit frame for drain."
+  "Sentinel sends exit frame, then EOF, then schedules deferred teardown."
   (let ((supervisor--writers (make-hash-table :test 'equal))
         (supervisor--stderr-writers (make-hash-table :test 'equal))
         (supervisor--processes (make-hash-table :test 'equal))
@@ -23851,31 +23862,87 @@ TS-NS are the record fields."
         (supervisor--crash-log (make-hash-table :test 'equal))
         (supervisor--last-exit-info (make-hash-table :test 'equal))
         (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
-        (eof-sent nil))
-    (let ((fake-writer (start-process "fw" nil "sleep" "300")))
+        (action-log nil)
+        (deferred-fn nil))
+    (let ((fake-writer (start-process "eof-drain-fw" nil "sleep" "300")))
       (unwind-protect
           (progn
-            (puthash "test-svc" fake-writer supervisor--writers)
-            (cl-letf (((symbol-function 'supervisor--log-send-frame)
-                       (lambda (&rest _args) nil))
-                      ((symbol-function 'process-send-eof)
-                       (lambda (_proc)
-                         (setq eof-sent t)))
-                      ((symbol-function 'supervisor--stop-writer) #'ignore)
-                      ((symbol-function 'supervisor--emit-event) #'ignore)
-                      ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
-                      ((symbol-function 'supervisor--should-restart-p) (lambda (&rest _) nil))
-                      ((symbol-function 'run-at-time)
-                       (lambda (_time _repeat fn) (funcall fn))))
-              (let ((sentinel (supervisor--make-process-sentinel
-                               "test-svc" '("sleep" "300") t 'simple t)))
-                (let ((fake-proc (start-process "test-svc" nil "true")))
-                  (puthash "test-svc" fake-proc supervisor--processes)
-                  (while (process-live-p fake-proc) (sit-for 0.05))
+            ;; Use a unique name to avoid timer collisions from prior
+            ;; tests that schedule deferred stop-writer via run-at-time.
+            (puthash "eof-drain-svc" fake-writer supervisor--writers)
+            (let ((fake-proc (start-process "eof-drain-svc" nil "true")))
+              (puthash "eof-drain-svc" fake-proc supervisor--processes)
+              (while (process-live-p fake-proc) (sit-for 0.05))
+              (cl-letf (((symbol-function 'supervisor--log-send-frame)
+                         (lambda (_w event _stream &rest _args)
+                           (push (list 'frame event) action-log)))
+                        ((symbol-function 'process-send-eof)
+                         (lambda (_proc)
+                           (push '(eof) action-log)))
+                        ((symbol-function 'supervisor--emit-event) #'ignore)
+                        ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
+                        ((symbol-function 'supervisor--should-restart-p) (lambda (&rest _) nil))
+                        ((symbol-function 'run-at-time)
+                         (lambda (_time _repeat fn)
+                           (push '(deferred-teardown) action-log)
+                           (setq deferred-fn fn)
+                           nil)))
+                (let ((sentinel (supervisor--make-process-sentinel
+                                 "eof-drain-svc" '("sleep" "300") t 'simple t)))
                   (funcall sentinel fake-proc "finished\n")))))
         (when (process-live-p fake-writer) (delete-process fake-writer))))
-    ;; EOF should have been sent after exit frame
-    (should eof-sent)))
+    ;; Verify ordering: exit frame -> EOF -> deferred teardown scheduled
+    (setq action-log (nreverse action-log))
+    (should (>= (length action-log) 3))
+    ;; First: exit frame (event=2)
+    (should (equal (car (nth 0 action-log)) 'frame))
+    (should (= 2 (cadr (nth 0 action-log))))
+    ;; Second: EOF
+    (should (equal (nth 1 action-log) '(eof)))
+    ;; Third: deferred teardown was SCHEDULED (not executed inline)
+    (should (equal (nth 2 action-log) '(deferred-teardown)))
+    ;; Deferred function, when called, invokes stop-writer
+    (should deferred-fn)
+    (let ((stopped nil))
+      (cl-letf (((symbol-function 'supervisor--stop-writer)
+                 (lambda (_name) (setq stopped t))))
+        (funcall deferred-fn))
+      (should stopped))))
+
+(ert-deftest supervisor-test-merged-no-pipe-when-logging-disabled ()
+  "Merged mode with logging disabled does not create stderr pipe."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--stderr-pipes (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (captured-stderr 'unset)
+        (fake-proc (start-process "fake-svc" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+                   (lambda (_id _default) nil))
+                  ((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (setq captured-stderr (plist-get args :stderr))
+                     fake-proc))
+                  ((symbol-function 'supervisor--make-process-sentinel)
+                   (lambda (&rest _args) #'ignore))
+                  ((symbol-function 'supervisor--build-launch-command)
+                   (lambda (_cmd &rest _args) (list "sleep" "300"))))
+          (let ((proc (supervisor--start-process
+                       "svc" "sleep 300" nil 'simple 'always
+                       nil nil nil nil nil nil nil nil
+                       nil nil)))
+            (should proc)
+            ;; No writer -> no pipe needed
+            (should-not captured-stderr)))
+      (when (process-live-p fake-proc) (delete-process fake-proc)))))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
