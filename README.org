@@ -2660,7 +2660,7 @@ Each limit key accepts one of three forms:
 
 *** Status Surfaces
 
-- CLI ~supervisorctl describe ID~ includes a "Resource limits" section listing
+- CLI ~supervisorctl show ID~ includes a "Resource limits" section listing
   each non-nil limit.
 - CLI JSON output (~--json~) includes ~limit_nofile~, ~limit_nproc~,
   ~limit_core~, ~limit_fsize~, ~limit_as~ fields.
@@ -2682,8 +2682,9 @@ Each limit key accepts one of three forms:
 *** Portability
 
 - The ~supervisor-rlimits~ C helper is compiled as part of
-  ~make -C libexec check~.  If it fails to compile (e.g., missing RLIMIT
-  constants on an exotic platform), units with limit keys will fail validation.
+  ~make -C libexec check~.  If the helper binary is missing at launch time
+  (e.g., compilation failed on an exotic platform), the service fails to
+  start with an "executable not found" error rather than a validation error.
 - Setting ~RLIMIT_NOFILE~ or ~RLIMIT_NPROC~ to ~infinity~ may require root
   privileges.  Other limits such as ~RLIMIT_CORE~ accept ~infinity~ as an
   unprivileged user because the kernel caps it at the current hard limit.

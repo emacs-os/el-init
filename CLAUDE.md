@@ -161,7 +161,7 @@ A stage is complete only when:
 ### Testing (Elisp)
 - Use ERT for all tests
 - If a behavior can be tested, it must be tested
-- Required test coverage: whitelist validation, cycle fallback, stable ordering, oneshot timeout unlock, delayed entry handling, async oneshot non-blocking
+- Required test coverage: whitelist validation, cycle fallback, stable ordering, oneshot timeout unlock, delayed entry handling, async oneshot non-blocking, limit-key validation (value shapes, target rejection, plan-level invalid plumbing), rlimits launch-argv composition
 
 ### Testing (Shell -- sbin/)
 
