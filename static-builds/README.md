@@ -8,14 +8,13 @@ gates live in plan files:
 - `static-builds/PLAN-pid1-emacs-patch-support.md` -- Emacs upstream patch prerequisite
 - `static-builds/PLAN.md` -- packaging/integration execution plan
 
-## Dependency and status chain
+## Dependency chain
 
-1. `static-builds/PLAN-pid1-emacs-patch-support.md` is the prerequisite for all
-   `*-patched-for-pid1` build outputs.
-2. `static-builds/PLAN.md` consumes that prerequisite to produce concrete
-   PKGBUILD/Nix variants and final static-builds documentation wiring.
-3. This `README.md` remains the administrator handbook and is updated as those
-   plan gates are completed.
+1. `PLAN-pid1-emacs-patch-support.md` defines the Emacs patch prerequisite.
+   Status: **complete** — patches in `patches/`.
+2. `PLAN.md` defines the packaging/integration plan.
+   Status: **Track A complete** — all 8 variants available.
+3. This `README.md` is the administrator handbook.
 
 ## Pick your path
 
@@ -26,27 +25,24 @@ gates live in plan files:
    supervisor.el, and I handle early boot in Emacs Lisp (`rc.boot.el` /
    `rc.shutdown.el`).
 
-## Current file map
+## Variant matrix
 
-Vanilla static variants (available now):
+| Variant | Type | PID1 | Supervisor | Size |
+|---------|------|------|------------|------|
+| `PKGBUILD-static-nox-minimal` | Arch | no | no | ~10MB |
+| `PKGBUILD-static-nox` | Arch | no | no | ~14MB |
+| `PKGBUILD-static-nox-nativecomp` | Arch | no | no | ~376MB |
+| `PKGBUILD-static-nox-supervisor-patched-for-pid1` | Arch | yes | yes | ~14MB |
+| `emacs-static-nox-minimal.nix` | Nix | no | no | ~10MB |
+| `emacs-static-nox.nix` | Nix | no | no | ~14MB |
+| `emacs-static-nox-nativecomp.nix` | Nix | no | no | ~376MB |
+| `emacs-static-nox-supervisor-patched-for-pid1.nix` | Nix | yes | yes | ~14MB |
 
-- `PKGBUILD-static-nox`
-- `PKGBUILD-static-nox-minimal`
-- `PKGBUILD-static-nox-nativecomp`
-- `emacs-static-nox.nix`
-- `emacs-static-nox-minimal.nix`
-- `emacs-static-nox-nativecomp.nix`
+PID1 patches: `patches/emacs-0001-*.patch` through `emacs-0003-*.patch`
+(see `patches/README.md` for details).
 
-Patched + baked variants (plan target names):
-
-- `PKGBUILD-static-nox-supervisor-patched-for-pid1`
-- `emacs-static-nox-supervisor-patched-for-pid1.nix`
-
-Status: planned names pending prerequisite completion in
-`static-builds/PLAN-pid1-emacs-patch-support.md`.
-
-See `static-builds/PLAN.md` for the phased implementation contract.
-See `static-builds/PLAN-pid1-emacs-patch-support.md` for the Emacs patch requirement spec.
+See `PLAN.md` for the implementation contract.
+See `PLAN-pid1-emacs-patch-support.md` for the Emacs patch spec.
 
 ## Path 1 -- vanilla portable static Emacs
 
@@ -70,6 +66,40 @@ makepkg -f
 
 Swap `PKGBUILD-static-nox` for `-minimal` or `-nativecomp` as needed.
 
+### Building the PID1-patched variant
+
+Nix:
+
+```bash
+nix-build static-builds/emacs-static-nox-supervisor-patched-for-pid1.nix
+```
+
+Arch PKGBUILD:
+
+```bash
+cd static-builds
+makepkg -p PKGBUILD-static-nox-supervisor-patched-for-pid1
+sudo pacman -U emacs-nox-static-supervisor-patched-for-pid1-*.pkg.tar.zst
+```
+
+The resulting binary includes:
+- All features of `PKGBUILD-static-nox` / `emacs-static-nox.nix`
+- `--pid1` flag for PID1 init process mode
+- Bundled supervisor.el with autostart (when `--pid1` is used)
+- Prebuilt C helpers (no compiler needed at runtime)
+
+### Disable gate
+
+The supervisor autostart can be suppressed even when `--pid1` is active:
+
+```bash
+# Environment variable
+EMACS_SUPERVISOR_DISABLE=1 emacs --pid1
+
+# Or in early-init.el
+(setq supervisor-pid1-autostart-disabled t)
+```
+
 ## Paths 2 and 3 -- common requirements
 
 These two paths share the same base mechanics:
@@ -84,8 +114,8 @@ These two paths share the same base mechanics:
 6. Keep helper binaries (`supervisor-logd`, `supervisor-runas`) installed and
    executable in `libexec` for runtime operation.
 
-Prerequisite gate: paths 2 and 3 require completed Emacs patch artifacts from
-`static-builds/PLAN-pid1-emacs-patch-support.md`.
+Build with `PKGBUILD-static-nox-supervisor-patched-for-pid1` (Arch) or
+`emacs-static-nox-supervisor-patched-for-pid1.nix` (Nix).
 
 ### C helper binary policy for admins
 
