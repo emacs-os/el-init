@@ -91,7 +91,7 @@ make check          # Run all CI checks (Elisp + C + shell)
 make lint           # Run byte-compile, checkdoc, package-lint only
 make test           # Run ERT tests only
 make test-one TEST=supervisor-test-parse-string-entry  # Run single test
-make libexec-check  # Build and test C helpers (supervisor-logd, supervisor-runas)
+make libexec-check  # Build and test C helpers (supervisor-logd, supervisor-runas, supervisor-rlimits)
 make sbin-check     # Run shellcheck + shell tests for sbin/ scripts
 
 # Subsystem checks in isolation
@@ -201,8 +201,8 @@ Shell scripts in `sbin/` have their own test suite under `sbin/tests/`.
 
 ### Testing (C -- libexec/)
 
-C helpers in `libexec/` (`supervisor-logd`, `supervisor-runas`) have a test suite
-under `libexec/tests/`.
+C helpers in `libexec/` (`supervisor-logd`, `supervisor-runas`, `supervisor-rlimits`)
+have a test suite under `libexec/tests/`.
 
 **Framework:** [acutest](https://github.com/mity/acutest) -- a single-header C
 test framework vendored at `libexec/tests/vendor/acutest.h`.  No external
@@ -211,6 +211,7 @@ dependencies.
 **Test files:**
 - `libexec/tests/test_supervisor_logd.c` -- tests for `supervisor-logd`
 - `libexec/tests/test_supervisor_runas.c` -- tests for `supervisor-runas`
+- `libexec/tests/test_supervisor_rlimits.c` -- tests for `supervisor-rlimits`
 
 **Shared helpers** (`test_helpers.h` / `test_helpers.c`):
 - `run_cmd(argv, stdin_data, stdin_len, result)` -- fork/exec the binary,
@@ -224,9 +225,9 @@ dependencies.
 - `read_u32be(p)` / `read_u16be(p)` / `read_i32be(p)` -- big-endian readers
   for binary log format verification.
 
-**Binary paths:** The Makefile injects `-DLOGD_PATH="..."` and
-`-DRUNAS_PATH="..."` at compile time so tests always exec the freshly-built
-binary from the same build tree.
+**Binary paths:** The Makefile injects `-DLOGD_PATH="..."`,
+`-DRUNAS_PATH="..."`, and `-DRLIMITS_PATH="..."` at compile time so tests
+always exec the freshly-built binary from the same build tree.
 
 **Writing new tests:**
 - Define a `void test_foo(void)` function, add it to the `TEST_LIST` array.

@@ -3091,7 +3091,7 @@ identity must be correct regardless of whether log-format is set."
                  (lambda (_id _cmd _logging _type _restart
                           &optional _is-restart _wd _env _envf _rsec
                           _ufd _user _group _sout _serr _sandbox
-                          log-format)
+                          log-format _limits-entry)
                    (setq captured-log-format log-format)
                    t)))
         (let ((result (supervisor--manual-start "svc1")))
@@ -3114,7 +3114,7 @@ identity must be correct regardless of whether log-format is set."
                  (lambda (_id _cmd _logging _type _restart
                           &optional _is-restart _wd _env _envf _rsec
                           _ufd _user _group _sout _serr _sandbox
-                          log-format)
+                          log-format _limits-entry)
                    (setq captured-log-format log-format)
                    t))
                 ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
@@ -3153,7 +3153,7 @@ identity must be correct regardless of whether log-format is set."
                      (lambda (_id _cmd _logging _type _restart
                               &optional _is-restart _wd _env _envf _rsec
                               _ufd _user _group _sout _serr _sandbox
-                              log-format)
+                              log-format _limits-entry)
                        (setq captured-log-format log-format)
                        t)))
             (let ((result (supervisor--reload-unit "svc1")))

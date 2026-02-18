@@ -364,6 +364,11 @@ Returns alist with all fields needed for status display."
                                 (supervisor--sandbox-profile-default-network
                                  profile))))
       (sandbox-enabled . ,(supervisor--sandbox-requesting-p entry))
+      (limit-nofile . ,(supervisor-entry-limit-nofile entry))
+      (limit-nproc . ,(supervisor-entry-limit-nproc entry))
+      (limit-core . ,(supervisor-entry-limit-core entry))
+      (limit-fsize . ,(supervisor-entry-limit-fsize entry))
+      (limit-as . ,(supervisor-entry-limit-as entry))
       (log-tail . ,(supervisor--telemetry-log-tail id 5)))))
 
 (defun supervisor--cli-all-entries-info (&optional snapshot)
@@ -520,6 +525,14 @@ Includes both plan-level and unit-file-level invalid entries."
        (format "Sandbox: %s (network %s)\n"
                (or (alist-get 'sandbox-profile info) "none")
                (alist-get 'sandbox-network info)))
+     (let ((limits nil))
+       (dolist (pair '((limit-nofile . "nofile") (limit-nproc . "nproc")
+                       (limit-core . "core") (limit-fsize . "fsize")
+                       (limit-as . "as")))
+         (when-let* ((v (alist-get (car pair) info)))
+           (push (format "%s=%s" (cdr pair) v) limits)))
+       (when limits
+         (format "Limits: %s\n" (mapconcat #'identity (nreverse limits) ", "))))
      (when pid (format "PID: %d\n" pid))
      (let ((tree (alist-get 'process-tree info)))
        (when tree
@@ -627,6 +640,11 @@ Includes both plan-level and unit-file-level invalid entries."
                           (if p (symbol-name p) "none")))
     (sandbox_network . ,(let ((n (alist-get 'sandbox-network info)))
                           (if n (symbol-name n) "shared")))
+    (limit_nofile . ,(alist-get 'limit-nofile info))
+    (limit_nproc . ,(alist-get 'limit-nproc info))
+    (limit_core . ,(alist-get 'limit-core info))
+    (limit_fsize . ,(alist-get 'limit-fsize info))
+    (limit_as . ,(alist-get 'limit-as info))
     (uptime . ,(alist-get 'uptime info))
     (restart_count . ,(or (alist-get 'restart-count info) 0))
     (last_exit . ,(let ((exit-info (alist-get 'last-exit info)))

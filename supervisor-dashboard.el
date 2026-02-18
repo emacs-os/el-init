@@ -1282,6 +1282,19 @@ With prefix argument, show status legend instead."
                     (supervisor--sandbox-profile-default-network profile))))
           (princ (format "  Sandbox: %s (network %s)\n"
                          profile effective-network))))
+      ;; Resource limits
+      (when (supervisor--limits-requesting-p entry)
+        (let ((parts nil))
+          (dolist (pair (list (cons #'supervisor-entry-limit-nofile "nofile")
+                              (cons #'supervisor-entry-limit-nproc "nproc")
+                              (cons #'supervisor-entry-limit-core "core")
+                              (cons #'supervisor-entry-limit-fsize "fsize")
+                              (cons #'supervisor-entry-limit-as "as")))
+            (when-let* ((v (funcall (car pair) entry)))
+              (push (format "%s=%s" (cdr pair) v) parts)))
+          (when parts
+            (princ (format "   Limits: %s\n"
+                           (mapconcat #'identity (nreverse parts) ", "))))))
       ;; Runtime telemetry
       (when (or last-exit (> restart-count 0) next-eta metrics)
         (princ "\n")

@@ -491,7 +491,7 @@
               ((symbol-function 'supervisor--identity-source-trusted-p)
                (lambda (_id) t))
               ((symbol-function 'supervisor--build-launch-command)
-               (lambda (cmd &optional user group _sandbox-entry)
+               (lambda (cmd &optional user group _sandbox-entry _limits-entry)
                  (setq captured-user user)
                  (setq captured-group group)
                  (split-string-and-unquote cmd))))
@@ -989,10 +989,12 @@
           (cl-letf (((symbol-function 'supervisor--reload-find-entry)
                      (lambda (_id)
                        (list "test-reload-id" "sleep 300" 0 t 'always t
-                             'simple nil nil 30 nil nil
+                             nil nil 'simple nil nil 30 nil nil
                              nil nil nil nil nil nil
                              nil nil nil nil nil nil nil nil
-                             "webuser" "webgrp")))
+                             "webuser" "webgrp"
+                             nil nil nil nil nil nil nil nil
+                             nil nil nil nil nil nil)))
                     ((symbol-function 'supervisor--manual-stop)
                      (lambda (_id)
                        (list :status 'stopped :reason nil)))
@@ -1000,7 +1002,7 @@
                      (lambda (_id _cmd _logging _type _restart
                               &optional _is-restart _wd _env _ef _rs _ufd
                               user group _stdout-log-file _stderr-log-file
-                              _sandbox-entry _log-format)
+                              _sandbox-entry _log-format _limits-entry)
                        (setq captured-user user)
                        (setq captured-group group)
                        t))

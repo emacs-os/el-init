@@ -18,7 +18,7 @@
   "Parse entry extracts sandbox-profile as symbol."
   (let ((entry (supervisor--parse-entry
                 '("sleep 300" :id "svc" :sandbox-profile strict))))
-    (should (= (length entry) 39))
+    (should (= (length entry) 44))
     (should (eq (supervisor-entry-sandbox-profile entry) 'strict))))
 
 (ert-deftest supervisor-test-sandbox-parse-profile-string ()
@@ -665,7 +665,7 @@ even when both identity wrapper and sandbox wrapper are active."
                :sandbox-tmpfs '("/tmp/work")
                :sandbox-raw-args '("--cap-add" "CAP_NET_RAW")))
          (entry (supervisor-service-to-entry svc)))
-    (should (= (length entry) 39))
+    (should (= (length entry) 44))
     (should (eq (supervisor-entry-sandbox-profile entry) 'strict))
     (should (eq (supervisor-entry-sandbox-network entry) 'isolated))
     (should (equal (supervisor-entry-sandbox-ro-bind entry) '("/opt")))

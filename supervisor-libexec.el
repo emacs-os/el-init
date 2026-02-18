@@ -24,7 +24,7 @@
 
 ;; Libexec build helpers for supervisor.el: build target enumeration,
 ;; stale detection, compiler selection, and build invocation for
-;; bundled C helpers (supervisor-logd, supervisor-runas).
+;; bundled C helpers (supervisor-logd, supervisor-runas, supervisor-rlimits).
 ;; Run M-x supervisor-handbook for full documentation.
 
 ;;; Code:
@@ -49,6 +49,13 @@
   "Path to the supervisor-runas privilege-drop helper.
 Used when `:user' or `:group' is set on a unit entry.")
 
+(defvar supervisor-rlimits-command
+  (expand-file-name "libexec/supervisor-rlimits"
+                    (file-name-directory (or load-file-name
+                                             buffer-file-name "")))
+  "Path to the supervisor-rlimits resource limit helper.
+Used when any `:limit-*' key is set on a unit entry.")
+
 (defun supervisor--libexec-build-targets ()
   "Return build target specs for bundled libexec helpers.
 Each spec is a plist with keys `:name', `:binary-file', and `:source-file'."
@@ -57,7 +64,10 @@ Each spec is a plist with keys `:name', `:binary-file', and `:source-file'."
               :source-file (concat supervisor-logd-command ".c"))
         (list :name "supervisor-runas"
               :binary-file supervisor-runas-command
-              :source-file (concat supervisor-runas-command ".c"))))
+              :source-file (concat supervisor-runas-command ".c"))
+        (list :name "supervisor-rlimits"
+              :binary-file supervisor-rlimits-command
+              :source-file (concat supervisor-rlimits-command ".c"))))
 
 (defun supervisor--libexec-target-needs-build-p (target)
   "Return non-nil when TARGET needs compilation.

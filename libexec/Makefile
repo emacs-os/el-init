@@ -2,12 +2,14 @@ CC ?= cc
 CFLAGS ?= -Wall -Wextra -Werror -pedantic -std=c99 -O2 -D_FORTIFY_SOURCE=2
 
 # Absolute paths to built binaries (passed to test sources via -D)
-LOGD_ABS  = $(abspath supervisor-logd)
-RUNAS_ABS = $(abspath supervisor-runas)
+LOGD_ABS     = $(abspath supervisor-logd)
+RUNAS_ABS    = $(abspath supervisor-runas)
+RLIMITS_ABS  = $(abspath supervisor-rlimits)
 
 # Test compiler flags -- pass all binary paths so any test can use them
 TEST_CFLAGS  = $(CFLAGS) -Itests/vendor \
-               -DLOGD_PATH=\"$(LOGD_ABS)\" -DRUNAS_PATH=\"$(RUNAS_ABS)\"
+               -DLOGD_PATH=\"$(LOGD_ABS)\" -DRUNAS_PATH=\"$(RUNAS_ABS)\" \
+               -DRLIMITS_PATH=\"$(RLIMITS_ABS)\"
 TEST_LDFLAGS =
 
 TEST_HELPERS = tests/test_helpers.c tests/test_helpers.h
@@ -17,12 +19,15 @@ TEST_BINS = $(TEST_SRCS:.c=)
 
 .PHONY: all tests test check clean
 
-all: supervisor-runas supervisor-logd
+all: supervisor-runas supervisor-logd supervisor-rlimits
 
 supervisor-runas: supervisor-runas.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 supervisor-logd: supervisor-logd.c
+	$(CC) $(CFLAGS) -o $@ $<
+
+supervisor-rlimits: supervisor-rlimits.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 tests: all $(TEST_BINS)
@@ -40,4 +45,4 @@ test: tests
 check: all test
 
 clean:
-	rm -f supervisor-runas supervisor-logd $(TEST_BINS)
+	rm -f supervisor-runas supervisor-logd supervisor-rlimits $(TEST_BINS)

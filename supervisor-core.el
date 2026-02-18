@@ -478,7 +478,8 @@ Scan PLIST and collect any key that appears more than once."
     :wanted-by :required-by
     :sandbox-profile :sandbox-network :sandbox-ro-bind :sandbox-rw-bind
     :sandbox-tmpfs :sandbox-raw-args
-    :log-format)
+    :log-format
+    :limit-nofile :limit-nproc :limit-core :limit-fsize :limit-as)
   "List of valid keywords for entry plists.")
 
 (defconst supervisor--valid-types '(simple oneshot target)
@@ -493,7 +494,8 @@ Scan PLIST and collect any key that appears more than once."
     :user :group :wanted-by :required-by
     :sandbox-profile :sandbox-network :sandbox-ro-bind :sandbox-rw-bind
     :sandbox-tmpfs :sandbox-raw-args
-    :log-format)
+    :log-format
+    :limit-nofile :limit-nproc :limit-core :limit-fsize :limit-as)
   "Keywords invalid for :type target entries.")
 
 (defconst supervisor--valid-restart-policies '(no on-success on-failure always)
@@ -528,6 +530,13 @@ runtime socket and bus paths.")
 
 (defconst supervisor--sandbox-forbidden-paths '("/proc" "/dev")
   "Paths forbidden in custom sandbox bind and tmpfs lists.")
+
+(defconst supervisor--limit-keywords
+  '(:limit-nofile :limit-nproc :limit-core :limit-fsize :limit-as)
+  "Keywords for ulimit-style resource limits.
+Each accepts an integer (applied as both soft and hard), a
+string \"SOFT:HARD\" with integer components, or the symbol
+`infinity' for unlimited.")
 
 (defconst supervisor--signal-number-alist
   '((SIGHUP . 1) (SIGINT . 2) (SIGQUIT . 3) (SIGILL . 4) (SIGTRAP . 5)
@@ -603,6 +612,35 @@ Cycles through `no' -> `on-success' -> `on-failure' -> `always' -> `no'."
     ('on-failure 'always)
     ('always 'no)
     (_ 'no)))
+
+(defun supervisor--validate-limit-value (key val)
+  "Validate resource limit VAL for keyword KEY.
+Return nil if valid, or an error string if invalid.
+Accepted forms: non-negative integer, symbol `infinity',
+string \"SOFT:HARD\" where SOFT and HARD are non-negative
+integers or the word \"infinity\"."
+  (cond
+   ((eq val 'infinity) nil)
+   ((integerp val)
+    (if (< val 0)
+        (format "%s must be non-negative integer, got: %d" key val)
+      nil))
+   ((stringp val)
+    (let ((parts (split-string val ":")))
+      (if (not (= (length parts) 2))
+          (format "%s string must be \"SOFT:HARD\", got: %S" key val)
+        (let ((soft (car parts))
+              (hard (cadr parts)))
+          (unless (and (or (string= soft "infinity")
+                           (and (string-match-p "\\`[0-9]+\\'" soft)
+                                (>= (string-to-number soft) 0)))
+                       (or (string= hard "infinity")
+                           (and (string-match-p "\\`[0-9]+\\'" hard)
+                                (>= (string-to-number hard) 0))))
+            (format "%s components must be non-negative integers or \"infinity\", got: %S"
+                    key val))))))
+   (t (format "%s must be integer, \"SOFT:HARD\" string, or symbol `infinity', got: %S"
+              key val))))
 
 (defun supervisor--validate-entry (entry)
   "Validate ENTRY configuration.
@@ -1132,6 +1170,12 @@ Return nil if valid, or a reason string if invalid."
                  (not supervisor-log-format-binary-enable))
             (push ":log-format binary requires supervisor-log-format-binary-enable to be enabled"
                   errors)))))
+      ;; Check resource limit values
+      (dolist (key supervisor--limit-keywords)
+        (when (plist-member plist key)
+          (let* ((val (plist-get plist key))
+                 (err (supervisor--validate-limit-value key val)))
+            (when err (push err errors)))))
       ;; Check sandbox-requesting units for OS and binary prerequisites.
       ;; Per plan contract: a unit is sandbox-requesting when
       ;; :sandbox-profile is set to anything other than none, OR any
@@ -1788,7 +1832,17 @@ Field documentation:
   sandbox-raw-args - List of raw bwrap argument strings (expert gate)
                    Default: nil
   log-format     - Log format symbol: text or binary
-                   Default: nil (effective text)"
+                   Default: nil (effective text)
+  limit-nofile   - NOFILE resource limit (integer, \"SOFT:HARD\", or infinity)
+                   Default: nil
+  limit-nproc    - NPROC resource limit
+                   Default: nil
+  limit-core     - CORE resource limit
+                   Default: nil
+  limit-fsize    - FSIZE resource limit
+                   Default: nil
+  limit-as       - AS (address space) resource limit
+                   Default: nil"
   (id nil :type string :documentation "Unique identifier (required)")
   (command nil :type string :documentation "Shell command to execute (required)")
   (type 'simple :type symbol :documentation "Process type: simple or oneshot")
@@ -1829,7 +1883,12 @@ Field documentation:
   (sandbox-rw-bind nil :type list :documentation "Read-write bind mount paths")
   (sandbox-tmpfs nil :type list :documentation "Tmpfs mount paths")
   (sandbox-raw-args nil :type list :documentation "Raw bwrap argument list")
-  (log-format nil :type (or null symbol) :documentation "Log format: text or binary"))
+  (log-format nil :type (or null symbol) :documentation "Log format: text or binary")
+  (limit-nofile nil :documentation "NOFILE resource limit")
+  (limit-nproc nil :documentation "NPROC resource limit")
+  (limit-core nil :documentation "CORE resource limit")
+  (limit-fsize nil :documentation "FSIZE resource limit")
+  (limit-as nil :documentation "AS (address space) resource limit"))
 
 (defconst supervisor-service-required-fields '(id command)
   "List of required fields in a service record.")
@@ -2055,6 +2114,34 @@ Value is one of `always', `no', `on-success', or `on-failure'."
 (defun supervisor-entry-log-format (entry)
   "Return the log format symbol of parsed ENTRY, or nil."
   (and (>= (length entry) 39) (nth 38 entry)))
+
+(defun supervisor-entry-limit-nofile (entry)
+  "Return the NOFILE resource limit of parsed ENTRY, or nil."
+  (and (>= (length entry) 44) (nth 39 entry)))
+
+(defun supervisor-entry-limit-nproc (entry)
+  "Return the NPROC resource limit of parsed ENTRY, or nil."
+  (and (>= (length entry) 44) (nth 40 entry)))
+
+(defun supervisor-entry-limit-core (entry)
+  "Return the CORE resource limit of parsed ENTRY, or nil."
+  (and (>= (length entry) 44) (nth 41 entry)))
+
+(defun supervisor-entry-limit-fsize (entry)
+  "Return the FSIZE resource limit of parsed ENTRY, or nil."
+  (and (>= (length entry) 44) (nth 42 entry)))
+
+(defun supervisor-entry-limit-as (entry)
+  "Return the AS (address space) resource limit of parsed ENTRY, or nil."
+  (and (>= (length entry) 44) (nth 43 entry)))
+
+(defun supervisor--limits-requesting-p (entry)
+  "Return non-nil if parsed ENTRY has any resource limit set."
+  (or (supervisor-entry-limit-nofile entry)
+      (supervisor-entry-limit-nproc entry)
+      (supervisor-entry-limit-core entry)
+      (supervisor-entry-limit-fsize entry)
+      (supervisor-entry-limit-as entry)))
 
 (defun supervisor--sandbox-requesting-p (entry)
   "Return non-nil if parsed ENTRY requests sandbox.
@@ -2993,14 +3080,15 @@ or nil if VAL is nil."
 
 (defun supervisor--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
-Return a 39-element list: (id cmd delay enabled-p restart-policy
+Return a 44-element list: (id cmd delay enabled-p restart-policy
 logging-p stdout-log-file stderr-log-file type after
 oneshot-blocking oneshot-timeout tags requires working-directory
 environment environment-file exec-stop exec-reload restart-sec
 description documentation before wants kill-signal kill-mode
 remain-after-exit success-exit-status user group wanted-by
 required-by sandbox-profile sandbox-network sandbox-ro-bind
-sandbox-rw-bind sandbox-tmpfs sandbox-raw-args log-format).
+sandbox-rw-bind sandbox-tmpfs sandbox-raw-args log-format
+limit-nofile limit-nproc limit-core limit-fsize limit-as).
 
 Indices (schema v1):
   0  id                  - unique identifier string
@@ -3042,6 +3130,11 @@ Indices (schema v1):
   36 sandbox-tmpfs       - list of tmpfs mount paths or nil
   37 sandbox-raw-args    - list of raw bwrap argument strings or nil
   38 log-format          - log format symbol (text or binary) or nil
+  39 limit-nofile        - NOFILE resource limit or nil
+  40 limit-nproc         - NPROC resource limit or nil
+  41 limit-core          - CORE resource limit or nil
+  42 limit-fsize         - FSIZE resource limit or nil
+  43 limit-as            - AS (address space) resource limit or nil
 
 ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
@@ -3056,7 +3149,8 @@ Use accessor functions instead of direct indexing for new code."
               nil nil nil nil nil nil nil nil
               nil nil nil nil
               nil nil nil nil nil nil
-              nil))
+              nil
+              nil nil nil nil nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
            (type-raw (plist-get plist :type))
@@ -3184,7 +3278,13 @@ Use accessor functions instead of direct indexing for new code."
            (log-format (when log-format-raw
                          (if (stringp log-format-raw)
                              (intern log-format-raw)
-                           log-format-raw))))
+                           log-format-raw)))
+           ;; Resource limit fields (indices 39-43)
+           (limit-nofile (plist-get plist :limit-nofile))
+           (limit-nproc (plist-get plist :limit-nproc))
+           (limit-core (plist-get plist :limit-core))
+           (limit-fsize (plist-get plist :limit-fsize))
+           (limit-as (plist-get plist :limit-as)))
       (list id cmd delay enabled restart logging
             stdout-log-file stderr-log-file
             type after
@@ -3196,7 +3296,8 @@ Use accessor functions instead of direct indexing for new code."
             user group wanted-by required-by
             sandbox-profile sandbox-network sandbox-ro-bind sandbox-rw-bind
             sandbox-tmpfs sandbox-raw-args
-            log-format))))
+            log-format
+            limit-nofile limit-nproc limit-core limit-fsize limit-as))))
 
 ;;; Entry/Service Conversion Functions
 
@@ -3241,7 +3342,12 @@ Use accessor functions instead of direct indexing for new code."
    :sandbox-rw-bind (supervisor-entry-sandbox-rw-bind entry)
    :sandbox-tmpfs (supervisor-entry-sandbox-tmpfs entry)
    :sandbox-raw-args (supervisor-entry-sandbox-raw-args entry)
-   :log-format (supervisor-entry-log-format entry)))
+   :log-format (supervisor-entry-log-format entry)
+   :limit-nofile (supervisor-entry-limit-nofile entry)
+   :limit-nproc (supervisor-entry-limit-nproc entry)
+   :limit-core (supervisor-entry-limit-core entry)
+   :limit-fsize (supervisor-entry-limit-fsize entry)
+   :limit-as (supervisor-entry-limit-as entry)))
 
 (defun supervisor-service-to-entry (service)
   "Convert SERVICE struct to a parsed entry tuple."
@@ -3283,7 +3389,12 @@ Use accessor functions instead of direct indexing for new code."
         (supervisor-service-sandbox-rw-bind service)
         (supervisor-service-sandbox-tmpfs service)
         (supervisor-service-sandbox-raw-args service)
-        (supervisor-service-log-format service)))
+        (supervisor-service-log-format service)
+        (supervisor-service-limit-nofile service)
+        (supervisor-service-limit-nproc service)
+        (supervisor-service-limit-core service)
+        (supervisor-service-limit-fsize service)
+        (supervisor-service-limit-as service)))
 
 (defun supervisor--check-crash-loop (id)
   "Check if ID is crash-looping.  Return t if should NOT restart."
@@ -3855,7 +3966,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
         (user (supervisor-entry-user entry))
         (group (supervisor-entry-group entry))
         (sandbox-entry (when (supervisor--sandbox-requesting-p entry) entry))
-        (log-format (supervisor-entry-log-format entry)))
+        (log-format (supervisor-entry-log-format entry))
+        (limits-entry (when (supervisor--limits-requesting-p entry) entry)))
     ;; Check effective enabled state (config + runtime override)
     (let ((effective-enabled (supervisor--get-effective-enabled id enabled-p)))
       (cond
@@ -3886,7 +3998,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
                                  environment-file restart-sec
                                  unit-file-directory
                                  user group
-                                 sandbox-entry log-format)))
+                                 sandbox-entry log-format
+                                 limits-entry)))
                  supervisor--dag-delay-timers))
        ;; Start immediately
        (t
@@ -3898,7 +4011,8 @@ Mark ready immediately for simple processes, on exit for oneshot."
          environment-file restart-sec
          unit-file-directory
          user group
-         sandbox-entry log-format))))))
+         sandbox-entry log-format
+         limits-entry))))))
 
 (defun supervisor--dag-finish-spawn-attempt ()
   "Finish a spawn attempt by decrementing count and processing queue."
@@ -3945,17 +4059,20 @@ Mark ready immediately for simple processes, on exit for oneshot."
                                     environment-file restart-sec
                                     unit-file-directory
                                     user group
-                                    sandbox-entry log-format)
+                                    sandbox-entry log-format
+                                    limits-entry)
   "Start process ID with CMD, LOGGING-P, TYPE, RESTART-POLICY, ONESHOT-TIMEOUT.
 STDOUT-LOG-FILE and STDERR-LOG-FILE are per-stream log file overrides.
 Optional WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE,
-RESTART-SEC, UNIT-FILE-DIRECTORY, USER, GROUP, SANDBOX-ENTRY, and
-LOG-FORMAT are passed through to `supervisor--start-process'."
+RESTART-SEC, UNIT-FILE-DIRECTORY, USER, GROUP, SANDBOX-ENTRY,
+LOG-FORMAT, and LIMITS-ENTRY are passed through to
+`supervisor--start-process'."
   (puthash id t supervisor--dag-started)
   (puthash id (float-time) supervisor--start-times)
   (cl-incf supervisor--dag-active-starts)
   (let ((args (supervisor--build-launch-command cmd user group
-                                                sandbox-entry)))
+                                                sandbox-entry
+                                                limits-entry)))
     (if (not (executable-find (car args)))
         (progn
           (supervisor--log 'warning "executable not found for %s: %s" id (car args))
@@ -3967,7 +4084,8 @@ LOG-FORMAT are passed through to `supervisor--start-process'."
                    unit-file-directory
                    user group
                    stdout-log-file stderr-log-file
-                   sandbox-entry log-format)))
+                   sandbox-entry log-format
+                   limits-entry)))
         (if (not proc)
             (supervisor--dag-handle-spawn-failure id)
           (supervisor--dag-handle-spawn-success id type oneshot-timeout))))))
@@ -4094,7 +4212,8 @@ ignored."
                                         unit-file-directory
                                         user group
                                         stdout-log-file stderr-log-file
-                                        sandbox-entry log-format)
+                                        sandbox-entry log-format
+                                        limits-entry)
   "Schedule restart of process ID after crash.
 CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are original process params.
 PROC-STATUS and EXIT-CODE describe the exit for logging.
@@ -4103,7 +4222,8 @@ and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts.
 USER and GROUP are identity parameters preserved for restart.
 STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets.
 SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox.
-LOG-FORMAT is the structured log format symbol (`text' or `binary')."
+LOG-FORMAT is the structured log format symbol (`text' or `binary').
+LIMITS-ENTRY, when non-nil, is the parsed entry tuple for resource limits."
   (supervisor--log 'info "%s %s, restarting..."
                    id (supervisor--format-exit-status proc-status exit-code))
   (let ((delay (or restart-sec supervisor-restart-delay)))
@@ -4116,7 +4236,8 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
                           unit-file-directory
                           user group
                           stdout-log-file stderr-log-file
-                          sandbox-entry log-format)
+                          sandbox-entry log-format
+                          limits-entry)
              supervisor--restart-timers)))
 
 (defun supervisor--make-process-sentinel (id cmd default-logging type config-restart
@@ -4125,7 +4246,8 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
                                              unit-file-directory
                                              user group
                                              stdout-log-file stderr-log-file
-                                             sandbox-entry log-format)
+                                             sandbox-entry log-format
+                                             limits-entry)
   "Create a process sentinel for ID with captured parameters.
 CMD, DEFAULT-LOGGING, TYPE, CONFIG-RESTART are stored for restart.
 WORKING-DIRECTORY, ENVIRONMENT, ENVIRONMENT-FILE, RESTART-SEC,
@@ -4133,7 +4255,8 @@ and UNIT-FILE-DIRECTORY are per-unit overrides preserved across restarts.
 USER and GROUP are identity parameters preserved for restart.
 STDOUT-LOG-FILE and STDERR-LOG-FILE preserve per-stream log targets.
 SANDBOX-ENTRY, when non-nil, is the parsed entry tuple for sandbox.
-LOG-FORMAT is the structured log format symbol (`text' or `binary')."
+LOG-FORMAT is the structured log format symbol (`text' or `binary').
+LIMITS-ENTRY, when non-nil, is the parsed entry tuple for resource limits."
   (lambda (p _event)
     (unless (process-live-p p)
       (let* ((name (process-name p))
@@ -4204,7 +4327,8 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
 	                                        unit-file-directory
 	                                        user group
 	                                        stdout-log-file stderr-log-file
-	                                        sandbox-entry log-format))))))
+	                                        sandbox-entry log-format
+	                                        limits-entry))))))
 
 ;;; Process Environment and Working Directory Helpers
 
@@ -4440,8 +4564,19 @@ shell operators like `&&', `||', pipes, or redirections."
 ;; extracted to supervisor-sandbox.el.
 (require 'supervisor-sandbox)
 
+(defun supervisor--format-limit-value (val)
+  "Format resource limit VAL as a \"SOFT:HARD\" string for the helper CLI.
+VAL is an integer (both soft and hard), symbol `infinity', or
+string \"SOFT:HARD\"."
+  (cond
+   ((eq val 'infinity) "infinity:infinity")
+   ((integerp val) (format "%d:%d" val val))
+   ((stringp val) val)
+   (t (error "Invalid limit value: %S" val))))
+
 (defun supervisor--build-launch-command (cmd &optional user group
-                                                       sandbox-entry)
+                                                       sandbox-entry
+                                                       limits-entry)
   "Build the command argument list for launching CMD.
 CMD is a shell command string.  USER and GROUP are optional
 identity parameters for privilege drop.  When either is non-nil,
@@ -4449,8 +4584,10 @@ identity parameters for privilege drop.  When either is non-nil,
 and the target program is resolved to an absolute path (the helper
 uses direct execv without PATH search).
 SANDBOX-ENTRY, when non-nil, is a parsed entry tuple from which
-sandbox wrapper arguments are extracted.  Launch ordering is:
-supervisor-runas -> bwrap -> service executable.
+sandbox wrapper arguments are extracted.
+LIMITS-ENTRY, when non-nil, is a parsed entry tuple from which
+resource limit arguments are extracted.  Launch ordering is:
+supervisor-rlimits -> supervisor-runas -> bwrap -> service executable.
 When CMD contains shell metacharacters (`&&', pipes, etc.), it is
 wrapped as `sh -c CMD' so the shell interprets operators correctly.
 Return a list suitable for the `make-process' :command keyword."
@@ -4459,35 +4596,59 @@ Return a list suitable for the `make-process' :command keyword."
                  (split-string-and-unquote cmd)))
          (sandbox-argv (when sandbox-entry
                          (supervisor--sandbox-build-argv sandbox-entry))))
-    ;; Build from inside out: args -> sandbox-argv+args -> runas+all
+    ;; Build from inside out: args -> sandbox-argv+args -> runas+all -> rlimits+all
     (when sandbox-argv
       ;; Resolve program to absolute path inside sandbox
       (let ((resolved (executable-find (car args))))
         (when resolved
           (setcar args resolved)))
       (setq args (append sandbox-argv args)))
-    (if (or user group)
-        (let ((helper-args (list supervisor-runas-command))
-              (resolved (unless sandbox-argv
-                          ;; Only resolve when not already resolved above
-                          (executable-find (car args)))))
-          ;; Resolve program to absolute path for execv
-          (when resolved
-            (setcar args resolved))
-          (when user
-            (setq helper-args
-                  (append helper-args
-                          (list "--user" (if (integerp user)
-                                            (number-to-string user)
-                                          user)))))
-          (when group
-            (setq helper-args
-                  (append helper-args
-                          (list "--group" (if (integerp group)
-                                             (number-to-string group)
-                                           group)))))
-          (append helper-args (list "--") args))
-      args)))
+    (when (or user group)
+      (let ((helper-args (list supervisor-runas-command))
+            (resolved (unless sandbox-argv
+                        ;; Only resolve when not already resolved above
+                        (executable-find (car args)))))
+        ;; Resolve program to absolute path for execv
+        (when resolved
+          (setcar args resolved))
+        (when user
+          (setq helper-args
+                (append helper-args
+                        (list "--user" (if (integerp user)
+                                          (number-to-string user)
+                                        user)))))
+        (when group
+          (setq helper-args
+                (append helper-args
+                        (list "--group" (if (integerp group)
+                                           (number-to-string group)
+                                         group)))))
+        (setq args (append helper-args (list "--") args))))
+    ;; Outermost wrapper: resource limits
+    (when (and limits-entry (supervisor--limits-requesting-p limits-entry))
+      (let ((rlimits-args (list supervisor-rlimits-command)))
+        (when-let* ((v (supervisor-entry-limit-nofile limits-entry)))
+          (setq rlimits-args
+                (append rlimits-args
+                        (list "--nofile" (supervisor--format-limit-value v)))))
+        (when-let* ((v (supervisor-entry-limit-nproc limits-entry)))
+          (setq rlimits-args
+                (append rlimits-args
+                        (list "--nproc" (supervisor--format-limit-value v)))))
+        (when-let* ((v (supervisor-entry-limit-core limits-entry)))
+          (setq rlimits-args
+                (append rlimits-args
+                        (list "--core" (supervisor--format-limit-value v)))))
+        (when-let* ((v (supervisor-entry-limit-fsize limits-entry)))
+          (setq rlimits-args
+                (append rlimits-args
+                        (list "--fsize" (supervisor--format-limit-value v)))))
+        (when-let* ((v (supervisor-entry-limit-as limits-entry)))
+          (setq rlimits-args
+                (append rlimits-args
+                        (list "--as" (supervisor--format-limit-value v)))))
+        (setq args (append rlimits-args (list "--") args))))
+    args))
 
 (defun supervisor--start-process (id cmd default-logging type config-restart
                                      &optional is-restart
@@ -4496,7 +4657,8 @@ Return a list suitable for the `make-process' :command keyword."
                                      unit-file-directory
                                      user group
                                      stdout-log-file stderr-log-file
-                                     sandbox-entry log-format)
+                                     sandbox-entry log-format
+                                     limits-entry)
   "Start CMD with identifier ID.
 DEFAULT-LOGGING is the config value; runtime override is checked at restart.
 TYPE is `simple' (long-running) or `oneshot' (run once).
@@ -4513,7 +4675,9 @@ STDOUT-LOG-FILE and STDERR-LOG-FILE are optional per-unit stream log
 targets.  By default stderr follows stdout into the same log file.
 SANDBOX-ENTRY, when non-nil, is a parsed entry tuple from which
 sandbox wrapper arguments are built via bubblewrap.
-LOG-FORMAT is the structured log format symbol (`text' or `binary')."
+LOG-FORMAT is the structured log format symbol (`text' or `binary').
+LIMITS-ENTRY, when non-nil, is the parsed entry tuple from which
+resource limit arguments are extracted."
   ;; Clear any pending restart timer for this ID first
   (when-let* ((timer (gethash id supervisor--restart-timers)))
     (when (timerp timer)
@@ -4578,7 +4742,8 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
               process-environment)))
       (when (and default-directory process-environment)
         (let* ((args (supervisor--build-launch-command cmd user group
-                                                        sandbox-entry))
+                                                        sandbox-entry
+                                                        limits-entry))
                (logging (supervisor--get-effective-logging id default-logging))
                (default-log-file (when logging
                                    (supervisor--log-file id)))
@@ -4648,7 +4813,8 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
                                      unit-file-directory
                                      user group
                                      stdout-log-file stderr-log-file
-                                     sandbox-entry log-format))
+                                     sandbox-entry log-format
+                                     limits-entry))
                        (error
                         (supervisor--stop-writer id)
                         (puthash id (error-message-string err)
@@ -4707,13 +4873,15 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
         (user (supervisor-entry-user entry))
         (group (supervisor-entry-group entry))
         (sandbox-entry (when (supervisor--sandbox-requesting-p entry) entry))
-        (log-format (supervisor-entry-log-format entry)))
+        (log-format (supervisor-entry-log-format entry))
+        (limits-entry (when (supervisor--limits-requesting-p entry) entry)))
     (if (not (supervisor--get-effective-enabled id enabled-p))
         (progn
           (supervisor--log 'info "%s disabled (config or override), skipping" id)
           (when callback (funcall callback t)))
       (let ((args (supervisor--build-launch-command cmd user group
-                                                    sandbox-entry)))
+                                                    sandbox-entry
+                                                    limits-entry)))
         (if (not (executable-find (car args)))
             (progn
               (supervisor--log 'warning "executable not found for %s: %s" id (car args))
@@ -4727,7 +4895,8 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
                        unit-file-directory
                        user group
                        stdout-log-file stderr-log-file
-                       sandbox-entry log-format)))
+                       sandbox-entry log-format
+                       limits-entry)))
             (if (not proc)
                 (progn
                   (supervisor--emit-event 'process-failed id nil)
@@ -4798,7 +4967,9 @@ are blocked.  Manually started disabled units are tracked in
               (group (supervisor-entry-group entry))
               (sandbox-entry (when (supervisor--sandbox-requesting-p entry)
                                entry))
-              (log-format (supervisor-entry-log-format entry)))
+              (log-format (supervisor-entry-log-format entry))
+              (limits-entry (when (supervisor--limits-requesting-p entry)
+                              entry)))
           (cond
            ;; Masked (highest precedence - only mask blocks manual start)
            ((eq (gethash id supervisor--mask-override) 'masked)
@@ -4817,7 +4988,8 @@ are blocked.  Manually started disabled units are tracked in
            ;; Executable not found
            ((not (executable-find
                   (car (supervisor--build-launch-command cmd user group
-                                                        sandbox-entry))))
+                                                        sandbox-entry
+                                                        limits-entry))))
             (list :status 'error :reason "executable not found"))
            ;; All checks passed - start
            (t
@@ -4836,7 +5008,8 @@ are blocked.  Manually started disabled units are tracked in
                          unit-file-directory
                          user group
                          stdout-log-file stderr-log-file
-                         sandbox-entry log-format)))
+                         sandbox-entry log-format
+                         limits-entry)))
               (if proc
                   (progn
                     ;; Track manual start only on success so reconcile
@@ -5556,10 +5729,13 @@ Returns a plist with :stopped and :started counts."
                    (group (supervisor-entry-group entry))
                    (sandbox-entry (when (supervisor--sandbox-requesting-p entry)
                                     entry))
-                   (log-format (supervisor-entry-log-format entry)))
+                   (log-format (supervisor-entry-log-format entry))
+                   (limits-entry (when (supervisor--limits-requesting-p entry)
+                                   entry)))
                (when (supervisor--get-effective-enabled id enabled-p)
                  (let ((args (supervisor--build-launch-command cmd user group
-                                                              sandbox-entry)))
+                                                              sandbox-entry
+                                                              limits-entry)))
                    (if (not (executable-find (car args)))
                        (progn
                          (supervisor--log 'warning "reconcile: executable not found for %s: %s"
@@ -5573,7 +5749,8 @@ Returns a plist with :stopped and :started counts."
                                   unit-file-directory
                                   user group
                                   stdout-log-file stderr-log-file
-                                  sandbox-entry log-format)))
+                                  sandbox-entry log-format
+                                  limits-entry)))
                        (if proc
                            (progn
                              (supervisor--emit-event 'process-started id (list :type type))
@@ -5745,8 +5922,11 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
                    (sandbox-entry (when (supervisor--sandbox-requesting-p entry)
                                     entry))
                    (log-format (supervisor-entry-log-format entry))
+                   (limits-entry (when (supervisor--limits-requesting-p entry)
+                                   entry))
                    (exe (car (supervisor--build-launch-command cmd user group
-                                                              sandbox-entry))))
+                                                              sandbox-entry
+                                                              limits-entry))))
               (if (not (executable-find exe))
                   (list :id id :action "error: executable not found")
                 (let ((new-proc (supervisor--start-process
@@ -5756,7 +5936,8 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
                                  unit-file-directory
                                  user group
                                  stdout-log-file stderr-log-file
-                                 sandbox-entry log-format)))
+                                 sandbox-entry log-format
+                                 limits-entry)))
                   (if new-proc
                       (list :id id :action "reloaded")
                     (list :id id

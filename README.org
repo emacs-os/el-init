@@ -271,6 +271,11 @@ Each unit file is a single plist expression with ~:id~ required.
 | ~:sandbox-tmpfs~ | list of absolute path strings | ~nil~ | Tmpfs mounts inside sandbox |
 | ~:sandbox-raw-args~ | list of strings | ~nil~ | Raw bwrap arguments (expert gate required) |
 | ~:log-format~ | symbol | ~nil~ | Structured log format: ~text~ or ~binary~ |
+| ~:limit-nofile~ | integer, string, or ~infinity~ | ~nil~ | Max open file descriptors (RLIMIT_NOFILE) |
+| ~:limit-nproc~ | integer, string, or ~infinity~ | ~nil~ | Max user processes (RLIMIT_NPROC) |
+| ~:limit-core~ | integer, string, or ~infinity~ | ~nil~ | Max core dump size in bytes (RLIMIT_CORE) |
+| ~:limit-fsize~ | integer, string, or ~infinity~ | ~nil~ | Max file size in bytes (RLIMIT_FSIZE) |
+| ~:limit-as~ | integer, string, or ~infinity~ | ~nil~ | Max address space in bytes (RLIMIT_AS) |
 
 ** Validation Rules
 
@@ -348,6 +353,11 @@ Validation is performed by unit-file validation
 - ~:log-format~ must be ~text~ or ~binary~.  ~binary~ is rejected unless
   ~supervisor-log-format-binary-enable~ is non-nil.  ~:log-format~ is rejected
   for ~:type target~.
+- ~:limit-nofile~, ~:limit-nproc~, ~:limit-core~, ~:limit-fsize~, ~:limit-as~
+  each accept a non-negative integer (sets both soft and hard), the symbol
+  ~infinity~ (sets both to unlimited), or a string ~"SOFT:HARD"~ where each
+  component is a non-negative integer or ~infinity~.  Floats, negative integers,
+  and malformed strings are rejected.  Limit keys are rejected for ~:type target~.
 
 Invalid entries are skipped at start and shown as ~invalid~ in dashboard
 and CLI status/validate output.
@@ -402,7 +412,9 @@ Valid entries are normalized to schema v1 tuple form:
     kill-signal kill-mode remain-after-exit success-exit-status
     user group wanted-by required-by
     sandbox-profile sandbox-network sandbox-ro-bind sandbox-rw-bind
-    sandbox-tmpfs sandbox-raw-args)
+    sandbox-tmpfs sandbox-raw-args
+    log-format
+    limit-nofile limit-nproc limit-core limit-fsize limit-as)
 #+end_src
 
 Accessor functions (~supervisor-entry-id~, ~supervisor-entry-command~, etc.) are
@@ -2578,15 +2590,17 @@ Sandbox status is surfaced in CLI and dashboard detail views:
 
 *** Launch Order
 
-When both identity drop (~:user~ / ~:group~) and sandbox are configured, the
-launch wrapper ordering is fixed:
+When identity drop (~:user~ / ~:group~), sandbox, and resource limits are
+configured, the launch wrapper ordering is fixed:
 
 #+begin_example
-supervisor-runas -> bwrap -> service executable
+supervisor-rlimits -> supervisor-runas -> bwrap -> service executable
 #+end_example
 
-The runas helper drops to the target identity, then bwrap creates the sandbox
-namespace, then the service runs inside.
+The rlimits helper applies resource limits first (outermost), then runas drops
+to the target identity, then bwrap creates the sandbox namespace, then the
+service runs inside.  If only some wrappers are needed, unused layers are
+omitted.
 
 *** Unit File Example
 
@@ -2608,6 +2622,73 @@ namespace, then the service runs inside.
   Install bubblewrap (e.g., =apt install bubblewrap=).
 - *":sandbox-raw-args requires supervisor-sandbox-allow-raw-bwrap"* -- Set
   the global gate variable before loading units.
+
+** Resource Limits
+:PROPERTIES:
+:CUSTOM_ID: resource-limits
+:END:
+
+*** Overview
+
+Per-service resource limits (ulimit-style) allow restricting how many file
+descriptors, processes, or how much memory a managed service may use.  Limits
+are applied via a small C helper (~supervisor-rlimits~) that calls
+~setrlimit(2)~ before exec-ing the service command.  Linux and other POSIX
+systems with ~setrlimit~ are supported.
+
+*** Supported Limits
+
+| Key | RLIMIT constant | Typical use |
+|-----+-----------------+-------------|
+| ~:limit-nofile~ | ~RLIMIT_NOFILE~ | Cap open file descriptors |
+| ~:limit-nproc~ | ~RLIMIT_NPROC~ | Cap child processes |
+| ~:limit-core~ | ~RLIMIT_CORE~ | Disable or cap core dumps |
+| ~:limit-fsize~ | ~RLIMIT_FSIZE~ | Cap file write size |
+| ~:limit-as~ | ~RLIMIT_AS~ | Cap virtual memory |
+
+*** Value Syntax
+
+Each limit key accepts one of three forms:
+
+- *Integer* -- sets both soft and hard limit to the same value.
+  Example: ~:limit-nofile 1024~
+- *Symbol ~infinity~* -- sets both soft and hard to unlimited.
+  Example: ~:limit-core infinity~
+- *String ~"SOFT:HARD"~* -- sets soft and hard independently.  Each component
+  is a non-negative integer or the word ~infinity~.
+  Example: ~:limit-nproc "256:512"~
+
+*** Status Surfaces
+
+- CLI ~supervisorctl describe ID~ includes a "Resource limits" section listing
+  each non-nil limit.
+- CLI JSON output (~--json~) includes ~limit_nofile~, ~limit_nproc~,
+  ~limit_core~, ~limit_fsize~, ~limit_as~ fields.
+- Dashboard inspect detail (~i i~) includes a "Resource limits" section when
+  any limit is set.
+
+*** Unit File Example
+
+#+begin_src emacs-lisp
+;; ~/.config/supervisor/units/mydb.el
+(:id "mydb"
+ :command "/usr/bin/mydb --datadir /var/lib/mydb"
+ :limit-nofile 65536
+ :limit-core 0
+ :limit-as "2147483648:4294967296"
+ :description "Database server with resource limits")
+#+end_src
+
+*** Portability
+
+- The ~supervisor-rlimits~ C helper is compiled as part of
+  ~make -C libexec check~.  If it fails to compile (e.g., missing RLIMIT
+  constants on an exotic platform), units with limit keys will fail validation.
+- Setting ~RLIMIT_NOFILE~ or ~RLIMIT_NPROC~ to ~infinity~ may require root
+  privileges.  Other limits such as ~RLIMIT_CORE~ accept ~infinity~ as an
+  unprivileged user because the kernel caps it at the current hard limit.
+- If ~setrlimit~ fails at runtime, the helper exits with code 112 and the
+  service is not started.
 
 * Service Management Systems Comparison
 :PROPERTIES:
@@ -2667,7 +2748,7 @@ Where behavior diverges across systems, parenthetical notes explain.
 | CPU/memory/IO limits | yes (CPUQuota, MemoryMax, etc.) | no | no | no |
 | Task limits | yes (TasksMax) | no | no | no |
 | Resource accounting | yes (CPUAccounting, etc.) | no | no | no |
-| Resource limits (ulimit-style) | yes (LimitNOFILE, etc.) | yes (chpst) | yes (s6-softlimit) | no |
+| Resource limits (ulimit-style) | yes (LimitNOFILE, etc.) | yes (chpst) | yes (s6-softlimit) | yes (:limit-nofile, etc.) |
 | *Sandboxing* | | | | |
 | Namespace isolation | yes (PrivateTmp, PrivateNetwork, etc.) | no | no | yes (bubblewrap profiles) |
 | Seccomp syscall filtering | yes (SystemCallFilter) | no | no | no |

@@ -17,7 +17,7 @@
 (ert-deftest supervisor-test-parse-entry-new-fields-defaults ()
   "Parsed entry has nil defaults for P2 and PT3 fields."
   (let ((entry (supervisor--parse-entry "echo hello")))
-    (should (= (length entry) 39))
+    (should (= (length entry) 44))
     (should-not (supervisor-entry-working-directory entry))
     (should-not (supervisor-entry-environment entry))
     (should-not (supervisor-entry-environment-file entry))
@@ -366,7 +366,7 @@
                :kill-signal 'SIGTERM
                :kill-mode 'mixed))
          (entry (supervisor-service-to-entry svc)))
-    (should (= (length entry) 39))
+    (should (= (length entry) 44))
     (should (equal (supervisor-entry-working-directory entry) "/opt"))
     (should (equal (supervisor-entry-environment entry) '(("K" . "V"))))
     (should (equal (supervisor-entry-environment-file entry) '("/etc/env")))
@@ -401,7 +401,7 @@
          (entries (supervisor-plan-entries plan)))
     ;; Both entries must be full parsed tuples.
     (dolist (entry entries)
-      (should (= (length entry) 39)))
+      (should (= (length entry) 44)))
     ;; svc-a new fields preserved
     (let ((a (cl-find "svc-a" entries :key #'car :test #'equal)))
       (should (equal (supervisor-entry-working-directory a) "/opt"))
@@ -1379,9 +1379,9 @@
     (should-not (supervisor-entry-success-exit-status entry))))
 
 (ert-deftest supervisor-test-parse-entry-33-elements ()
-  "Parse entry returns 39 elements."
+  "Parse entry returns 44 elements."
   (let ((entry (supervisor--parse-entry "sleep 300")))
-    (should (= (length entry) 39))))
+    (should (= (length entry) 44))))
 
 ;; Validation tests for PT3 keys
 

@@ -233,7 +233,8 @@ Return a plist with keys:
     :user :group :wanted-by :required-by
     :sandbox-profile :sandbox-network :sandbox-ro-bind :sandbox-rw-bind
     :sandbox-tmpfs :sandbox-raw-args
-    :log-format)
+    :log-format
+    :limit-nofile :limit-nproc :limit-core :limit-fsize :limit-as)
   "Valid keywords in a unit-file plist.
 Includes `:command' which is unit-file specific.")
 
