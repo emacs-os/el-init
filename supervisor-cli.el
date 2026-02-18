@@ -84,6 +84,17 @@ Uses sysexits.h EX_UNAVAILABLE to avoid collision with systemctl codes.")
 (defconst supervisor-cli-version "1.0.0"
   "CLI version string.")
 
+(defcustom supervisor-cli-follow-max-age 3600
+  "Maximum seconds before a follow session auto-expires."
+  :type 'integer
+  :group 'supervisor)
+
+(defvar supervisor--cli-follow-sessions (make-hash-table :test 'equal)
+  "Active follow sessions.  Keys are session-id strings.
+Values are plists with keys: `:unit', `:log-file', `:offset',
+`:since-ts', `:until-ts', `:priority', `:json-p', `:follow-file',
+`:timer', `:created'.")
+
 (cl-defstruct (supervisor-cli-result (:constructor supervisor-cli-result--create))
   "Result returned from CLI dispatcher.
 EXITCODE is an integer (0=success, 1=failure, 2=invalid args, etc).
@@ -1792,6 +1803,99 @@ filtered record list."
                            (supervisor--log-record-priority r)))))
          records))))))
 
+;;;; Follow session management
+
+(defun supervisor--cli-follow-start (unit log-file offset since-ts
+                                          until-ts priority json-p)
+  "Start a follow session for UNIT reading LOG-FILE from OFFSET.
+SINCE-TS, UNTIL-TS, PRIORITY, and JSON-P configure record filtering
+and formatting.  Return a plist (:session-id STRING :follow-file STRING)."
+  (let* ((session-id (format "follow-%s-%s" unit
+                             (format-time-string "%s" (current-time))))
+         (log-dir (file-name-directory log-file))
+         (follow-file (expand-file-name
+                       (concat ".follow-" session-id) log-dir))
+         (session (list :unit unit
+                        :log-file log-file
+                        :offset offset
+                        :since-ts since-ts
+                        :until-ts until-ts
+                        :priority priority
+                        :json-p json-p
+                        :follow-file follow-file
+                        :timer nil
+                        :created (float-time))))
+    ;; Create follow file
+    (with-temp-file follow-file
+      (insert ""))
+    (puthash session-id session supervisor--cli-follow-sessions)
+    (supervisor--cli-follow-schedule-poll session-id)
+    (list :session-id session-id :follow-file follow-file)))
+
+(defun supervisor--cli-follow-schedule-poll (session-id)
+  "Schedule next poll for SESSION-ID."
+  (let ((session (gethash session-id supervisor--cli-follow-sessions)))
+    (when session
+      (let ((timer (run-at-time supervisor-log-follow-interval nil
+                                #'supervisor--cli-follow-poll session-id)))
+        (plist-put session :timer timer)))))
+
+(defun supervisor--cli-follow-poll (session-id)
+  "Poll for new log records in follow SESSION-ID.
+Append formatted records to the follow file and reschedule."
+  (let ((session (gethash session-id supervisor--cli-follow-sessions)))
+    (when session
+      (let ((follow-file (plist-get session :follow-file))
+            (log-file (plist-get session :log-file))
+            (offset (plist-get session :offset))
+            (since-ts (plist-get session :since-ts))
+            (until-ts (plist-get session :until-ts))
+            (priority (plist-get session :priority))
+            (json-p (plist-get session :json-p))
+            (created (plist-get session :created)))
+        (cond
+         ;; Guard: follow file deleted externally
+         ((not (file-exists-p follow-file))
+          (supervisor--cli-follow-stop session-id))
+         ;; Guard: session too old
+         ((> (- (float-time) created) supervisor-cli-follow-max-age)
+          (supervisor--cli-follow-stop session-id))
+         (t
+          (let* ((decoded (supervisor--log-decode-file log-file nil offset))
+                 (new-records (plist-get decoded :records))
+                 (new-offset (plist-get decoded :offset)))
+            (when new-records
+              (let* ((filtered (supervisor--log-filter-records
+                                new-records since-ts until-ts priority))
+                     (text (mapconcat
+                            (if json-p
+                                #'supervisor--log-record-to-json
+                              #'supervisor--log-format-record-human)
+                            filtered "\n")))
+                (when (and filtered (> (length text) 0))
+                  (append-to-file (concat text "\n") nil follow-file))))
+            (plist-put session :offset new-offset)
+            (supervisor--cli-follow-schedule-poll session-id))))))))
+
+(defun supervisor--cli-follow-stop (session-id)
+  "Stop follow SESSION-ID.
+Cancel timer, delete follow file, remove from sessions table.
+Return t if session existed, nil otherwise."
+  (let ((session (gethash session-id supervisor--cli-follow-sessions)))
+    (when session
+      (let ((timer (plist-get session :timer))
+            (follow-file (plist-get session :follow-file)))
+        (when timer (cancel-timer timer))
+        (when (and follow-file (file-exists-p follow-file))
+          (delete-file follow-file)))
+      (remhash session-id supervisor--cli-follow-sessions)
+      t)))
+
+(defun supervisor--cli-journal-follow-stop (session-id)
+  "Stop follow session SESSION-ID from external wrapper cleanup.
+Return t if session existed."
+  (supervisor--cli-follow-stop session-id))
+
 (defun supervisor--cli-cmd-journal (args json-p)
   "Handle `journal' command with ARGS.  JSON-P for JSON output.
 Display structured log records for a unit.  Requires -u/--unit."
@@ -1855,39 +1959,29 @@ Display structured log records for a unit.  Requires -u/--unit."
                                       limited "\n")
                          (format "No records for %s" unit)))
                      (if json-p 'json 'human))
-                  ;; Follow mode: print initial records, then poll
-                  (princ (if json-p
-                             (concat
+                  ;; Follow mode: start session, return FOLLOW protocol
+                  (let* ((finfo (supervisor--cli-follow-start
+                                 unit log-file
+                                 (plist-get decoded :offset)
+                                 since-ts until-ts priority json-p))
+                         (initial-output
+                          (if limited
                               (mapconcat
-                               #'supervisor--log-record-to-json
+                               (if json-p
+                                   #'supervisor--log-record-to-json
+                                 #'supervisor--log-format-record-human)
                                limited "\n")
-                              (when limited "\n"))
-                           (concat
-                            (mapconcat
-                             #'supervisor--log-format-record-human
-                             limited "\n")
-                            (when limited "\n"))))
-                  (let ((offset (plist-get decoded :offset))
-                        (interval supervisor-log-follow-interval))
-                    (while t
-                      (let* ((new (supervisor--log-decode-file
-                                   log-file nil offset))
-                             (new-records (plist-get new :records)))
-                        (when new-records
-                          (let ((new-filtered
-                                 (supervisor--log-filter-records
-                                  new-records since-ts until-ts
-                                  priority)))
-                            (dolist (r new-filtered)
-                              (princ
-                               (concat
-                                (if json-p
-                                    (supervisor--log-record-to-json r)
-                                  (supervisor--log-format-record-human
-                                   r))
-                                "\n")))))
-                        (setq offset (plist-get new :offset)))
-                      (sleep-for interval))))))))))))))
+                            "")))
+                    (supervisor--cli-make-result
+                     supervisor-cli-exit-success 'follow
+                     (format "FOLLOW:%s:%s:%s"
+                             (base64-encode-string
+                              (encode-coding-string
+                               initial-output 'utf-8)
+                              t)
+                             (plist-get finfo :follow-file)
+                             (plist-get finfo
+                                        :session-id)))))))))))))))
 
 (defun supervisor--cli-cmd-ping (args json-p)
   "Handle `ping' command with ARGS.  JSON-P enables JSON output."
@@ -3064,11 +3158,14 @@ Returns a string in format \"EXITCODE:BASE64OUTPUT\" for the wrapper to parse.
 Exit code and base64-encoded output are separated by colon.
 Base64 encoding avoids escaping issues with newlines and special characters."
   (let ((result (supervisor--cli-dispatch argv-list)))
-    (format "%d:%s"
-            (supervisor-cli-result-exitcode result)
-            (base64-encode-string
-             (encode-coding-string (supervisor-cli-result-output result) 'utf-8)
-             t))))
+    (if (eq (supervisor-cli-result-format result) 'follow)
+        (supervisor-cli-result-output result)
+      (format "%d:%s"
+              (supervisor-cli-result-exitcode result)
+              (base64-encode-string
+               (encode-coding-string
+                (supervisor-cli-result-output result) 'utf-8)
+               t)))))
 
 
 (provide 'supervisor-cli)

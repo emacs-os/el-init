@@ -214,6 +214,44 @@ output="$("${@}" 2>&1)" || {
 stripped="${output#\"}"
 stripped="${stripped%\"}"
 
+# Handle FOLLOW protocol for journal -f streaming
+case "${stripped}" in
+    FOLLOW:*)
+        # Parse FOLLOW:base64_initial:follow_file:session_id
+        rest="${stripped#FOLLOW:}"
+        follow_b64="${rest%%:*}"
+        rest="${rest#*:}"
+        follow_file="${rest%%:*}"
+        follow_session="${rest#*:}"
+
+        # Decode and print initial output
+        initial="$(printf '%s' "${follow_b64}" | base64 -d 2>/dev/null)" || {
+            printf '%s\n' "Error: Failed to decode initial output" >&2
+            exit "${exit_failure}"
+        }
+        [ -n "${initial}" ] && printf '%s\n' "${initial}"
+
+        # Cleanup: stop Elisp session and kill tail
+        follow_cleanup() {
+            set -- emacsclient
+            [ -n "${socket_name}" ] && set -- "${@}" -s "${socket_name}"
+            [ -n "${server_file}" ] && set -- "${@}" -f "${server_file}"
+            set -- "${@}" --eval \
+                "(supervisor--cli-journal-follow-stop \"${follow_session}\")"
+            "${@}" >/dev/null 2>&1 || true
+            [ -n "${tail_pid-}" ] && kill "${tail_pid}" 2>/dev/null || true
+            exit 0
+        }
+        trap follow_cleanup INT TERM
+
+        # Stream follow file content
+        tail -f "${follow_file}" &
+        tail_pid="${!}"
+        wait "${tail_pid}" 2>/dev/null || true
+        follow_cleanup
+        ;;
+esac
+
 # Extract exit code (everything before first colon)
 exit_code="${stripped%%:*}"
 

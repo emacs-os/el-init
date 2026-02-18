@@ -24931,5 +24931,317 @@ identity must be correct regardless of whether log-format is set."
         (should (= 2 (length records)))
         (should (equal "hello" (plist-get (car records) :payload)))))))
 
+;;;; Follow session tests
+
+(ert-deftest supervisor-test-follow-session-start-creates-file ()
+  "Follow session start creates follow file and registers session."
+  (let ((tmpdir (make-temp-file "follow-test-" t))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let* ((log-file (expand-file-name "svc.log" tmpdir))
+               (finfo (supervisor--cli-follow-start
+                       "svc" log-file 0 nil nil nil nil))
+               (session-id (plist-get finfo :session-id))
+               (follow-file (plist-get finfo :follow-file)))
+          (should (string-prefix-p "follow-svc-" session-id))
+          (should (file-exists-p follow-file))
+          (should (gethash session-id supervisor--cli-follow-sessions))
+          ;; Cleanup
+          (supervisor--cli-follow-stop session-id))
+      (delete-directory tmpdir t))))
+
+(ert-deftest supervisor-test-follow-session-stop-cleans-up ()
+  "Follow session stop deletes file, cancels timer, clears hash."
+  (let ((tmpdir (make-temp-file "follow-test-" t))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let* ((log-file (expand-file-name "svc.log" tmpdir))
+               (finfo (supervisor--cli-follow-start
+                       "svc" log-file 0 nil nil nil nil))
+               (session-id (plist-get finfo :session-id))
+               (follow-file (plist-get finfo :follow-file)))
+          (should (file-exists-p follow-file))
+          (should (supervisor--cli-follow-stop session-id))
+          (should-not (file-exists-p follow-file))
+          (should-not (gethash session-id
+                               supervisor--cli-follow-sessions)))
+      (delete-directory tmpdir t))))
+
+(ert-deftest supervisor-test-follow-poll-appends-to-file ()
+  "Follow poll appends new records to follow file."
+  (let ((tmpdir (make-temp-file "follow-test-" t))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let* ((log-file (expand-file-name "svc.log" tmpdir)))
+          ;; Write initial log data
+          (with-temp-file log-file
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=initial\n"))
+          (let* ((decoded (supervisor--log-decode-file log-file))
+                 (offset (plist-get decoded :offset))
+                 (finfo (supervisor--cli-follow-start
+                         "svc" log-file offset nil nil nil nil))
+                 (session-id (plist-get finfo :session-id))
+                 (follow-file (plist-get finfo :follow-file)))
+            ;; Append new record to log
+            (with-temp-buffer
+              (insert "ts=2000 unit=svc pid=1 stream=stdout "
+                      "event=output status=- code=- payload=new-data\n")
+              (append-to-file (point-min) (point-max) log-file))
+            ;; Cancel the scheduled timer, call poll directly
+            (let ((session (gethash session-id
+                                    supervisor--cli-follow-sessions)))
+              (when (plist-get session :timer)
+                (cancel-timer (plist-get session :timer))))
+            (supervisor--cli-follow-poll session-id)
+            ;; Cancel rescheduled timer
+            (let ((session (gethash session-id
+                                    supervisor--cli-follow-sessions)))
+              (when (and session (plist-get session :timer))
+                (cancel-timer (plist-get session :timer))))
+            ;; Follow file should contain the new record
+            (let ((content (with-temp-buffer
+                             (insert-file-contents follow-file)
+                             (buffer-string))))
+              (should (string-match-p "new-data" content)))
+            (supervisor--cli-follow-stop session-id)))
+      (delete-directory tmpdir t))))
+
+(ert-deftest supervisor-test-follow-poll-orphan-detection ()
+  "Follow poll cleans up when follow file is deleted externally."
+  (let ((tmpdir (make-temp-file "follow-test-" t))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let* ((log-file (expand-file-name "svc.log" tmpdir)))
+          (with-temp-file log-file
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=data\n"))
+          (let* ((finfo (supervisor--cli-follow-start
+                         "svc" log-file 0 nil nil nil nil))
+                 (session-id (plist-get finfo :session-id))
+                 (follow-file (plist-get finfo :follow-file)))
+            ;; Cancel scheduled timer
+            (let ((session (gethash session-id
+                                    supervisor--cli-follow-sessions)))
+              (when (plist-get session :timer)
+                (cancel-timer (plist-get session :timer))))
+            ;; Delete follow file externally
+            (delete-file follow-file)
+            ;; Poll should detect orphan and clean up
+            (supervisor--cli-follow-poll session-id)
+            (should-not (gethash session-id
+                                 supervisor--cli-follow-sessions))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest supervisor-test-follow-poll-max-age-expiry ()
+  "Follow poll auto-expires sessions past max age."
+  (let ((tmpdir (make-temp-file "follow-test-" t))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal))
+        (supervisor-cli-follow-max-age 10))
+    (unwind-protect
+        (let* ((log-file (expand-file-name "svc.log" tmpdir)))
+          (with-temp-file log-file
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=data\n"))
+          (let* ((finfo (supervisor--cli-follow-start
+                         "svc" log-file 0 nil nil nil nil))
+                 (session-id (plist-get finfo :session-id)))
+            ;; Cancel scheduled timer
+            (let ((session (gethash session-id
+                                    supervisor--cli-follow-sessions)))
+              (when (plist-get session :timer)
+                (cancel-timer (plist-get session :timer)))
+              ;; Backdate the session creation time
+              (plist-put session :created (- (float-time) 100)))
+            ;; Poll should auto-expire
+            (supervisor--cli-follow-poll session-id)
+            (should-not (gethash session-id
+                                 supervisor--cli-follow-sessions))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest supervisor-test-follow-poll-no-new-data ()
+  "Follow poll with no new data leaves follow file empty."
+  (let ((tmpdir (make-temp-file "follow-test-" t))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let* ((log-file (expand-file-name "svc.log" tmpdir)))
+          (with-temp-file log-file
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=only\n"))
+          (let* ((decoded (supervisor--log-decode-file log-file))
+                 (offset (plist-get decoded :offset))
+                 (finfo (supervisor--cli-follow-start
+                         "svc" log-file offset nil nil nil nil))
+                 (session-id (plist-get finfo :session-id))
+                 (follow-file (plist-get finfo :follow-file)))
+            ;; Cancel scheduled timer, poll directly
+            (let ((session (gethash session-id
+                                    supervisor--cli-follow-sessions)))
+              (when (plist-get session :timer)
+                (cancel-timer (plist-get session :timer))))
+            (supervisor--cli-follow-poll session-id)
+            ;; Cancel rescheduled timer
+            (let ((session (gethash session-id
+                                    supervisor--cli-follow-sessions)))
+              (when (and session (plist-get session :timer))
+                (cancel-timer (plist-get session :timer))))
+            ;; Follow file should still be empty
+            (let ((content (with-temp-buffer
+                             (insert-file-contents follow-file)
+                             (buffer-string))))
+              (should (equal "" content)))
+            (supervisor--cli-follow-stop session-id)))
+      (delete-directory tmpdir t))))
+
+(ert-deftest supervisor-test-follow-poll-json-mode ()
+  "Follow poll in JSON mode writes NDJSON lines."
+  (let ((tmpdir (make-temp-file "follow-test-" t))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let* ((log-file (expand-file-name "svc.log" tmpdir)))
+          (with-temp-file log-file
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=initial\n"))
+          (let* ((decoded (supervisor--log-decode-file log-file))
+                 (offset (plist-get decoded :offset))
+                 (finfo (supervisor--cli-follow-start
+                         "svc" log-file offset nil nil nil t))
+                 (session-id (plist-get finfo :session-id))
+                 (follow-file (plist-get finfo :follow-file)))
+            ;; Append new record
+            (with-temp-buffer
+              (insert "ts=2000 unit=svc pid=1 stream=stdout "
+                      "event=output status=- code=- payload=json-test\n")
+              (append-to-file (point-min) (point-max) log-file))
+            ;; Cancel timer, poll directly
+            (let ((session (gethash session-id
+                                    supervisor--cli-follow-sessions)))
+              (when (plist-get session :timer)
+                (cancel-timer (plist-get session :timer))))
+            (supervisor--cli-follow-poll session-id)
+            (let ((session (gethash session-id
+                                    supervisor--cli-follow-sessions)))
+              (when (and session (plist-get session :timer))
+                (cancel-timer (plist-get session :timer))))
+            ;; Follow file should have JSON
+            (let ((content (with-temp-buffer
+                             (insert-file-contents follow-file)
+                             (buffer-string))))
+              (should (string-match-p "\"payload\"" content))
+              (should (string-match-p "json-test" content)))
+            (supervisor--cli-follow-stop session-id)))
+      (delete-directory tmpdir t))))
+
+(ert-deftest supervisor-test-follow-journal-returns-follow-result ()
+  "Journal with -f returns result with format follow."
+  (let ((tmpfile (make-temp-file "log-follow-"))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (supervisor--cli-cmd-journal
+                           '("-u" "svc" "-f") nil)))
+              (should (eq (supervisor-cli-result-format result) 'follow))
+              (should (string-prefix-p "FOLLOW:"
+                                       (supervisor-cli-result-output result)))
+              ;; Cleanup the session
+              (let ((output (supervisor-cli-result-output result)))
+                (when (string-match "FOLLOW:[^:]*:[^:]*:\\(.+\\)" output)
+                  (supervisor--cli-follow-stop (match-string 1 output)))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-follow-dispatch-wrapper-protocol ()
+  "Dispatch for wrapper returns raw FOLLOW string for follow results."
+  (let ((tmpfile (make-temp-file "log-follow-"))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((output (supervisor--cli-dispatch-for-wrapper
+                           '("journal" "-u" "svc" "-f"))))
+              (should (string-prefix-p "FOLLOW:" output))
+              ;; Cleanup the session
+              (when (string-match "FOLLOW:[^:]*:[^:]*:\\(.+\\)" output)
+                (supervisor--cli-follow-stop (match-string 1 output))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-follow-stop-nonexistent ()
+  "Stopping nonexistent session returns nil without error."
+  (let ((supervisor--cli-follow-sessions (make-hash-table :test 'equal)))
+    (should-not (supervisor--cli-follow-stop "no-such-session"))))
+
+(ert-deftest supervisor-test-follow-initial-output-encoding ()
+  "FOLLOW protocol base64 initial output decodes correctly."
+  (let ((tmpfile (make-temp-file "log-follow-"))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello-world\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (supervisor--cli-cmd-journal
+                            '("-u" "svc" "-f") nil))
+                   (output (supervisor-cli-result-output result)))
+              (should (string-match
+                       "FOLLOW:\\([^:]*\\):\\([^:]*\\):\\(.+\\)" output))
+              (let* ((b64 (match-string 1 output))
+                     (decoded (decode-coding-string
+                               (base64-decode-string b64) 'utf-8)))
+                (should (string-match-p "hello-world" decoded))
+                ;; Cleanup
+                (supervisor--cli-follow-stop (match-string 3 output))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-follow-with-priority-filter ()
+  "Follow poll with priority filter only includes matching records."
+  (let ((tmpdir (make-temp-file "follow-test-" t))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let* ((log-file (expand-file-name "svc.log" tmpdir)))
+          (with-temp-file log-file
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=initial\n"))
+          (let* ((decoded (supervisor--log-decode-file log-file))
+                 (offset (plist-get decoded :offset))
+                 (finfo (supervisor--cli-follow-start
+                         "svc" log-file offset nil nil 'err nil))
+                 (session-id (plist-get finfo :session-id))
+                 (follow-file (plist-get finfo :follow-file)))
+            ;; Append stdout (info) and stderr (err) records
+            (with-temp-buffer
+              (insert "ts=2000 unit=svc pid=1 stream=stdout "
+                      "event=output status=- code=- payload=stdout-line\n"
+                      "ts=3000 unit=svc pid=1 stream=stderr "
+                      "event=output status=- code=- payload=stderr-line\n")
+              (append-to-file (point-min) (point-max) log-file))
+            ;; Cancel timer, poll directly
+            (let ((session (gethash session-id
+                                    supervisor--cli-follow-sessions)))
+              (when (plist-get session :timer)
+                (cancel-timer (plist-get session :timer))))
+            (supervisor--cli-follow-poll session-id)
+            (let ((session (gethash session-id
+                                    supervisor--cli-follow-sessions)))
+              (when (and session (plist-get session :timer))
+                (cancel-timer (plist-get session :timer))))
+            ;; Only stderr record should appear
+            (let ((content (with-temp-buffer
+                             (insert-file-contents follow-file)
+                             (buffer-string))))
+              (should (string-match-p "stderr-line" content))
+              (should-not (string-match-p "stdout-line" content)))
+            (supervisor--cli-follow-stop session-id)))
+      (delete-directory tmpdir t))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
