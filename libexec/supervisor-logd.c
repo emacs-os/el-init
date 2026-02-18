@@ -322,34 +322,6 @@ static int rotate_log(int fd, const char *file_path,
 	return new_fd;
 }
 
-/* Write a text exit marker for framed mode without --format text
- * (Phase 2 basic framed behavior). */
-static ssize_t write_exit_marker(int fd, const struct frame *f)
-{
-	const char *status_str;
-	switch (f->exit_status) {
-	case STATUS_EXITED:
-		status_str = "exited";
-		break;
-	case STATUS_SIGNALED:
-		status_str = "signaled";
-		break;
-	case STATUS_SPAWN_FAILED:
-		status_str = "spawn-failed";
-		break;
-	default:
-		status_str = "unknown";
-		break;
-	}
-	char marker[256];
-	int mlen = snprintf(marker, sizeof(marker),
-			    "[EXIT code=%d status=%s]\n", f->exit_code,
-			    status_str);
-	if (mlen <= 0 || (size_t)mlen >= sizeof(marker))
-		return 0;
-	return write_full(fd, marker, (size_t)mlen);
-}
-
 /* Escape payload for text record format.
  * Rules: \ -> \\, \n -> \n literal, \r -> \r literal,
  * \t -> \t literal, bytes outside 0x20-0x7E -> \xNN.
@@ -913,7 +885,8 @@ int main(int argc, char **argv)
 			/* Parse and process complete frames */
 			size_t consumed = 0;
 			while (consumed < accum_len) {
-				struct frame f;
+				struct frame f = { 0, 0, 0, 0, 0, 0,
+						   NULL, NULL, 0 };
 				int rc = parse_frame(accum + consumed,
 						     accum_len - consumed, &f);
 				if (rc == 0)
@@ -937,18 +910,6 @@ int main(int argc, char **argv)
 				} else if (format == FMT_BINARY) {
 					written = write_binary_record(
 					    fd, &f, unit_id, uid_len);
-				} else {
-					/* Raw framed: write payload
-					 * directly */
-					if (f.event == EVT_OUTPUT &&
-					    f.payload_len > 0) {
-						written = write_full(
-						    fd, f.payload,
-						    f.payload_len);
-					} else if (f.event == EVT_EXIT) {
-						written =
-						    write_exit_marker(fd, &f);
-					}
 				}
 
 				if (written < 0) {

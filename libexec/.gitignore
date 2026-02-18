@@ -1,2 +1,7 @@
 supervisor-runas
 supervisor-logd
+tests/test_supervisor_logd
+tests/test_supervisor_runas
+*.gcda
+*.gcno
+*.gcov

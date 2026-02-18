@@ -13,5 +13,10 @@ dist/
 # Backup files
 *~
 
+# GCC coverage artifacts
+*.gcda
+*.gcno
+*.gcov
+
 # Undo-tree save-files
 *.~undo-tree

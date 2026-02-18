@@ -182,6 +182,78 @@ Shell scripts in `sbin/` have their own test suite under `sbin/tests/`.
 - All test files and testlib.sh are checked by `make -C sbin lint`.
 - Use `# shellcheck disable=SCXXXX` sparingly and only with justification.
 
+### Testing (C -- libexec/)
+
+C helpers in `libexec/` (`supervisor-logd`, `supervisor-runas`) have a test suite
+under `libexec/tests/`.
+
+**Framework:** [acutest](https://github.com/mity/acutest) -- a single-header C
+test framework vendored at `libexec/tests/vendor/acutest.h`.  No external
+dependencies.
+
+**Test files:**
+- `libexec/tests/test_supervisor_logd.c` -- tests for `supervisor-logd`
+- `libexec/tests/test_supervisor_runas.c` -- tests for `supervisor-runas`
+
+**Shared helpers** (`test_helpers.h` / `test_helpers.c`):
+- `run_cmd(argv, stdin_data, stdin_len, result)` -- fork/exec the binary,
+  pipe stdin, capture stdout/stderr/exit-status.  All tests use this for
+  black-box process testing.
+- `build_frame(buf, event, stream, pid, unit_id, exit_code, exit_status,
+  payload, payload_len)` -- construct a wire-protocol frame (u32be length
+  header + 13-byte fixed fields + unit + payload) for logd framed-mode tests.
+- `make_tmpdir()` / `remove_tmpdir(path)` -- per-test temp directory lifecycle.
+- `read_file(path, out_len)` -- read entire file into malloc'd buffer.
+- `read_u32be(p)` / `read_u16be(p)` / `read_i32be(p)` -- big-endian readers
+  for binary log format verification.
+
+**Binary paths:** The Makefile injects `-DLOGD_PATH="..."` and
+`-DRUNAS_PATH="..."` at compile time so tests always exec the freshly-built
+binary from the same build tree.
+
+**Writing new tests:**
+- Define a `void test_foo(void)` function, add it to the `TEST_LIST` array.
+- Use `TEST_CHECK(expr)` for assertions and `TEST_MSG("fmt", ...)` for
+  diagnostic output on failure.
+- Use `run_cmd()` for all black-box tests.  Check `result.status` for exit
+  code, `result.out` / `result.err` for stdout/stderr, `result.out_len` /
+  `result.err_len` for lengths.
+- Use `make_tmpdir()` for file-producing tests (rotation, binary logs).
+  Always `remove_tmpdir()` in cleanup.
+- For framed-mode tests, build frames with `build_frame()`, concatenate into
+  a buffer, and pass as stdin.
+
+**What to test for each binary:**
+- Argument validation: missing required flags, unknown options, invalid values,
+  negative numbers, mutually exclusive flags.
+- Protocol correctness: valid frames produce correct output, field values
+  round-trip through encode/decode.
+- Protocol errors: invalid event/stream codes, truncated frames, oversized
+  unit_len, incomplete frames at EOF.
+- Signal handling: SIGHUP (log reopen/rotation), SIGTERM (graceful shutdown).
+  Send signals with `kill()` after a brief `msleep()` delay.
+- Rotation: file exceeds max-size, new file created, old data preserved.
+  Test `.log` extension rename and non-`.log` fallback.
+- Binary format: SLG1 magic header, record structure, nanosecond timestamps,
+  append-to-existing behavior.
+- Write errors: use `/dev/full` as output path to exercise error branches.
+- Edge cases: empty input, large payloads, NUL bytes in payloads.
+
+**Root-gated tests:** Tests requiring privilege operations (setuid/setgid)
+check `getuid() == 0` at runtime and skip otherwise.  Set
+`SUPERVISOR_TEST_ROOT=1` to run root-only tests.
+
+**Pitfalls:**
+- Use `msleep(ms)` (via `nanosleep`) instead of `usleep()` -- `usleep` is
+  removed from POSIX.1-2008 and unavailable under `_POSIX_C_SOURCE 200809L`.
+- Background-process rotation tests need multiple writes with delays between
+  them; a single large write may arrive in one `read()` call before rotation
+  triggers.
+- `signal(SIGPIPE, SIG_IGN)` before writing to a pipe where the reader may
+  have exited; restore with `SIG_DFL` afterward.
+- Building with `--coverage -O0 -Werror` can trigger `maybe-uninitialized`
+  warnings that do not appear at `-O2`.  Zero-initialize structs to be safe.
+
 ## Documentation Files
 
 - **README.org**: The authoritative user handbook. Requirements:
