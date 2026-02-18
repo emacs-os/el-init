@@ -2921,17 +2921,10 @@ plist to stdout.
 sbin/supervisor-import /etc/systemd/system/foo.service
 #+end_example
 
-Write the result directly to a unit file:
+Redirect to save as a unit file:
 
 #+begin_example
 sbin/supervisor-import /etc/systemd/system/foo.service > ~/.config/supervisor/units/foo.el
-#+end_example
-
-Or use ~--output-dir~ to write automatically (the output filename is
-derived from the service name):
-
-#+begin_example
-sbin/supervisor-import --output-dir ~/.config/supervisor/units /etc/systemd/system/foo.service
 #+end_example
 
 *** Options
