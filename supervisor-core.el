@@ -4085,6 +4085,16 @@ Convert \\\\->\\, \\n->newline, \\r->CR, \\t->tab, \\xNN->byte."
         (setq rpos (1+ rpos) i (1+ i))))
     (substring result 0 rpos)))
 
+(defun supervisor--days-in-month (month year)
+  "Return the number of days in MONTH for YEAR."
+  (pcase month
+    ((or 1 3 5 7 8 10 12) 31)
+    ((or 4 6 9 11) 30)
+    (2 (if (and (= 0 (% year 4))
+                (or (/= 0 (% year 100))
+                    (= 0 (% year 400))))
+           29 28))))
+
 (defun supervisor--log-parse-timestamp (ts-string)
   "Parse timestamp TS-STRING to float seconds.
 Accept RFC3339 format or epoch integer."
@@ -4104,7 +4114,7 @@ Accept RFC3339 format or epoch integer."
                         (expt 10.0 (length frac-str)))
                    0.0)))
       (when (and (<= 1 month 12)
-                 (<= 1 day 31)
+                 (<= 1 day (supervisor--days-in-month month year))
                  (<= 0 hour 23)
                  (<= 0 min 59)
                  (<= 0 sec 60))

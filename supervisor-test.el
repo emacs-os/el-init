@@ -25564,5 +25564,30 @@ identity must be correct regardless of whether log-format is set."
                        (supervisor-cli-result-output result))))))
       (delete-file tmpfile))))
 
+(ert-deftest supervisor-test-timestamp-rejects-feb-31 ()
+  "Feb 31 is an impossible date and must return nil."
+  (should (null (supervisor--log-parse-timestamp
+                 "2026-02-31T00:00:00Z"))))
+
+(ert-deftest supervisor-test-timestamp-rejects-apr-31 ()
+  "Apr 31 is impossible and must return nil."
+  (should (null (supervisor--log-parse-timestamp
+                 "2026-04-31T00:00:00Z"))))
+
+(ert-deftest supervisor-test-timestamp-rejects-feb-29-non-leap ()
+  "Feb 29 in a non-leap year must return nil."
+  (should (null (supervisor--log-parse-timestamp
+                 "2026-02-29T00:00:00Z"))))
+
+(ert-deftest supervisor-test-timestamp-accepts-feb-29-leap ()
+  "Feb 29 in a leap year must parse."
+  (should (supervisor--log-parse-timestamp
+           "2024-02-29T00:00:00Z")))
+
+(ert-deftest supervisor-test-timestamp-accepts-jan-31 ()
+  "Jan 31 is valid."
+  (should (supervisor--log-parse-timestamp
+           "2026-01-31T00:00:00Z")))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
