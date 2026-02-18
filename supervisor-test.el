@@ -3151,7 +3151,6 @@ configured timers must be visible for analysis."
            (supervisor--timer-state (make-hash-table :test 'equal))
            (supervisor--invalid-timers (make-hash-table :test 'equal))
            (supervisor-dashboard-show-timers t)
-           (supervisor-timer-subsystem-mode t)
            (supervisor-mode nil)
            (supervisor--timer-list
             (list (supervisor-timer--create :id "t1" :target "svc"))))
@@ -3177,8 +3176,7 @@ configured timers must be visible for analysis."
           (supervisor--timer-list nil)
           (supervisor--timer-state (make-hash-table :test 'equal))
           (supervisor--invalid-timers (make-hash-table :test 'equal))
-          (supervisor-dashboard-show-timers t)
-          (supervisor-timer-subsystem-mode t))
+          (supervisor-dashboard-show-timers t))
       (let ((entries (supervisor--get-entries)))
         (let ((tmr-sep (cl-find '--timers-- entries :key #'car)))
           (should tmr-sep)
@@ -3195,7 +3193,6 @@ configured timers must be visible for analysis."
            (supervisor--timer-state (make-hash-table :test 'equal))
            (supervisor--invalid-timers (make-hash-table :test 'equal))
            (supervisor-dashboard-show-timers t)
-           (supervisor-timer-subsystem-mode t)
            (supervisor--timer-list
             (list (supervisor-timer--create :id "t1" :target "svc"))))
       (let ((entries (supervisor--get-entries)))
@@ -3218,7 +3215,6 @@ configured timers must be visible for analysis."
            (supervisor--timer-state (make-hash-table :test 'equal))
            (supervisor--invalid-timers (make-hash-table :test 'equal))
            (supervisor-dashboard-show-timers t)
-           (supervisor-timer-subsystem-mode t)
            (supervisor--timer-list nil))
       (puthash "bad-timer" "missing target" supervisor--invalid-timers)
       (let ((entries (supervisor--get-entries)))
@@ -3736,8 +3732,7 @@ configured timers must be visible for analysis."
            (list (supervisor-timer--create :id "t1" :target "svc")))
           (supervisor--timer-state (make-hash-table :test 'equal))
           (supervisor--invalid-timers (make-hash-table :test 'equal))
-          (supervisor-dashboard-show-timers t)
-          (supervisor-timer-subsystem-mode t))
+          (supervisor-dashboard-show-timers t))
       (let* ((entries (supervisor--get-entries))
              (ids (mapcar #'car entries))
              (services-pos (cl-position '--services-- ids))
@@ -3767,8 +3762,7 @@ configured timers must be visible for analysis."
           (supervisor--timer-list nil)
           (supervisor--timer-state (make-hash-table :test 'equal))
           (supervisor--invalid-timers (make-hash-table :test 'equal))
-          (supervisor-dashboard-show-timers t)
-          (supervisor-timer-subsystem-mode t))
+          (supervisor-dashboard-show-timers t))
       (let* ((entries (supervisor--get-entries))
              (ids (mapcar #'car entries)))
         (should-not
@@ -3789,7 +3783,6 @@ configured timers must be visible for analysis."
            (supervisor--timer-state (make-hash-table :test 'equal))
            (supervisor--invalid-timers (make-hash-table :test 'equal))
            (supervisor-dashboard-show-timers t)
-           (supervisor-timer-subsystem-mode t)
            (header-no-timers
             (substring-no-properties (supervisor--dashboard-header-line))))
       (setq supervisor--timer-list
@@ -4961,8 +4954,7 @@ conflicting ID, proving precedence derives from list position."
          (supervisor-unit-directory dir)
          (supervisor--authority-snapshot nil)
          (supervisor--programs-cache :not-yet-loaded)
-         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
-         (supervisor-timer-subsystem-mode t))
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
     (unwind-protect
         (let ((result (supervisor--cli-dispatch '("cat" "logrotate"))))
           (should (supervisor-cli-result-p result))
@@ -5122,7 +5114,6 @@ conflicting ID, proving precedence derives from list position."
          (supervisor--authority-snapshot nil)
          (supervisor--programs-cache :not-yet-loaded)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal))
-         (supervisor-timer-subsystem-mode t)
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--entry-state (make-hash-table :test 'equal))
          (result (supervisor--cli-dispatch '("status" "logrotate"))))
@@ -5145,7 +5136,6 @@ conflicting ID, proving precedence derives from list position."
          (supervisor--authority-snapshot nil)
          (supervisor--programs-cache :not-yet-loaded)
          (supervisor--unit-file-invalid (make-hash-table :test 'equal))
-         (supervisor-timer-subsystem-mode t)
          (supervisor--processes (make-hash-table :test 'equal))
          (supervisor--entry-state (make-hash-table :test 'equal))
          (result (supervisor--cli-dispatch '("status" "logrotate" "--json"))))
@@ -5219,8 +5209,7 @@ conflicting ID, proving precedence derives from list position."
          (supervisor-unit-directory dir)
          (supervisor--authority-snapshot nil)
          (supervisor--programs-cache :not-yet-loaded)
-         (supervisor--unit-file-invalid (make-hash-table :test 'equal))
-         (supervisor-timer-subsystem-mode t))
+         (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
     (unwind-protect
         (with-temp-buffer
           (supervisor-dashboard-mode)
@@ -6557,8 +6546,7 @@ timezone that `encode-time' and `decode-time' use is actually changed."
   "Timer trigger succeeds and emits timer-trigger event."
   (supervisor-test-with-unit-files
       '(("true" :id "s1" :type oneshot))
-    (let* ((supervisor-timer-subsystem-mode t)
-           (supervisor-mode t)
+    (let* ((supervisor-mode t)
            (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
            (supervisor--timer-state (make-hash-table :test 'equal))
            (supervisor--processes (make-hash-table :test 'equal))
@@ -6910,8 +6898,7 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-state-save-load-roundtrip ()
   "Timer state survives save/load cycle."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (temp-file (make-temp-file "supervisor-test-timer-state-" nil ".eld"))
          (supervisor-timer-state-file temp-file)
          (supervisor--timer-state (make-hash-table :test 'equal)))
@@ -6938,8 +6925,7 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-state-corrupt-file-handled ()
   "Corrupt timer state file is handled gracefully."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (temp-file (make-temp-file "supervisor-test-corrupt-" nil ".eld"))
          (supervisor-timer-state-file temp-file)
          (supervisor--timer-state (make-hash-table :test 'equal)))
@@ -6955,8 +6941,7 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-state-persistence-disabled ()
   "Nil timer state file path disables persistence."
-  (let ((supervisor-timer-subsystem-mode t)
-        (supervisor-timer-state-file nil)
+  (let ((supervisor-timer-state-file nil)
         (supervisor--timer-state (make-hash-table :test 'equal)))
     (puthash "t1" '(:last-run-at 1000.0) supervisor--timer-state)
     ;; Save returns nil when disabled
@@ -6974,8 +6959,7 @@ at minute boundaries."
 
 (ert-deftest supervisor-test-timer-state-newer-version-rejected ()
   "Newer schema version is rejected, not just warned."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (temp-file (make-temp-file "supervisor-test-version-" nil ".eld"))
          (supervisor-timer-state-file temp-file)
          (supervisor--timer-state (make-hash-table :test 'equal)))
@@ -6996,8 +6980,7 @@ at minute boundaries."
   "Stale timer IDs are pruned from state during scheduler startup."
   (supervisor-test-with-unit-files
       '(("true" :id "s1" :type oneshot))
-    (let* ((supervisor-timer-subsystem-mode t)
-           (supervisor-mode t)
+    (let* ((supervisor-mode t)
            (supervisor-timers '((:id "active" :target "s1" :on-startup-sec 60)))
            (supervisor--timer-state (make-hash-table :test 'equal))
            (supervisor--timer-list nil)
@@ -7023,8 +7006,7 @@ at minute boundaries."
   "Integration test: scheduler startup with persisted state triggers catch-up."
   (supervisor-test-with-unit-files
       '(("true" :id "s1" :type oneshot))
-    (let* ((supervisor-timer-subsystem-mode t)
-           (supervisor-mode t)
+    (let* ((supervisor-mode t)
            (temp-file (make-temp-file "supervisor-test-catchup-" nil ".eld"))
            (supervisor-timers '((:id "t1" :target "s1" :on-calendar (:minute 0)
                                  :persistent t)))
@@ -7064,8 +7046,7 @@ at minute boundaries."
 (ert-deftest supervisor-test-timer-catch-up-no-double-trigger ()
   "Catch-up followed by tick does not double-trigger the same timer.
 After catch-up, :next-run-at must not remain in the past."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "s1"
                                           :on-calendar '(:minute 0)
                                           :persistent t :enabled t))
@@ -7099,8 +7080,7 @@ After catch-up, :next-run-at must not remain in the past."
 
 (ert-deftest supervisor-test-timer-catch-up-simple-target ()
   "Catch-up fires for simple target type timer."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "s1"
                                           :on-calendar '(:minute 0)
                                           :persistent t :enabled t))
@@ -7132,8 +7112,7 @@ After catch-up, :next-run-at must not remain in the past."
 
 (ert-deftest supervisor-test-timer-catch-up-target-type ()
   "Catch-up fires for target-type timer."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "app.target"
                                           :on-calendar '(:minute 0)
                                           :persistent t :enabled t))
@@ -7167,8 +7146,7 @@ After catch-up, :next-run-at must not remain in the past."
 
 (ert-deftest supervisor-test-timer-scheduler-tick-handles-retry ()
   "Scheduler tick triggers retry when due."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
@@ -7188,8 +7166,7 @@ After catch-up, :next-run-at must not remain in the past."
 
 (ert-deftest supervisor-test-timer-retry-budget-reset-on-scheduled ()
   "Retry budget is reset on fresh scheduled trigger."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
@@ -7213,8 +7190,7 @@ After catch-up, :next-run-at must not remain in the past."
 
 (ert-deftest supervisor-test-timer-scheduler-tick-scheduled ()
   "Scheduler tick triggers scheduled run when due."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
@@ -7253,8 +7229,7 @@ After catch-up, :next-run-at must not remain in the past."
 
 (ert-deftest supervisor-test-timer-scheduler-tick-simultaneous-order ()
   "Scheduler tick processes simultaneous due timers in list order."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer1 (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (timer2 (supervisor-timer--create :id "t2" :target "s2" :enabled t))
          (timer3 (supervisor-timer--create :id "t3" :target "s3" :enabled t))
@@ -7317,8 +7292,7 @@ After catch-up, :next-run-at must not remain in the past."
 
 (ert-deftest supervisor-test-timer-state-load-merges-correctly ()
   "Load timer state merges with existing runtime state."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (temp-file (make-temp-file "supervisor-test-merge-" nil ".eld"))
          (supervisor-timer-state-file temp-file)
          (supervisor--timer-state (make-hash-table :test 'equal)))
@@ -7348,8 +7322,7 @@ After catch-up, :next-run-at must not remain in the past."
 
 (ert-deftest supervisor-test-timer-state-v1-load-saves-as-v2 ()
   "Loading v1 state and saving writes v2 schema metadata."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (temp-file (make-temp-file "supervisor-test-v1-upgrade-" nil ".eld"))
          (supervisor-timer-state-file temp-file)
          (supervisor--timer-state (make-hash-table :test 'equal))
@@ -7474,8 +7447,7 @@ After catch-up, :next-run-at must not remain in the past."
 
 (ert-deftest supervisor-test-timer-gate-enabled-works ()
   "Timer functions work normally when subsystem is enabled."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)  ; Parent mode must also be enabled
+  (let* ((supervisor-mode t)  ; Parent mode must also be enabled
          (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t
                                           :on-startup-sec 1))
          (supervisor--timer-list (list timer))
@@ -7499,8 +7471,7 @@ After catch-up, :next-run-at must not remain in the past."
 
 (ert-deftest supervisor-test-timer-gate-parent-mode-off ()
   "Timer subsystem is a no-op when parent supervisor-mode is off."
-  (let* ((supervisor-timer-subsystem-mode t)  ; Timer mode enabled
-         (supervisor-mode nil)                 ; But parent mode is OFF
+  (let* ((supervisor-mode nil)                 ; But parent mode is OFF
          (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t
                                           :on-startup-sec 1))
          (supervisor--timer-list (list timer))
@@ -7523,8 +7494,7 @@ After catch-up, :next-run-at must not remain in the past."
 
 (ert-deftest supervisor-test-timer-trigger-simple-success ()
   "Timer trigger for simple service records success on spawn."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--processes (make-hash-table :test 'equal))
@@ -7553,8 +7523,7 @@ After catch-up, :next-run-at must not remain in the past."
 (ert-deftest supervisor-test-timer-trigger-simple-already-active ()
   "Timer trigger for already-running simple service records success no-op.
 Stale retry state from a prior failure must be cleared."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--processes (make-hash-table :test 'equal))
@@ -7588,8 +7557,7 @@ Stale retry state from a prior failure must be cleared."
 
 (ert-deftest supervisor-test-timer-trigger-simple-spawn-failure-retries ()
   "Timer trigger for simple spawn failure schedules retry."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--processes (make-hash-table :test 'equal))
@@ -7623,8 +7591,7 @@ Stale retry state from a prior failure must be cleared."
   "Oneshot completion callback records success with exit 0.
 Exercises supervisor-timer--on-target-complete success branch end-to-end:
 sets last-success-at, last-exit, last-result, clears retry state."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--oneshot-completed (make-hash-table :test 'equal))
          (supervisor--timer-list nil))
@@ -7649,8 +7616,7 @@ sets last-success-at, last-exit, last-result, clears retry state."
 
 (ert-deftest supervisor-test-timer-oneshot-complete-failure-retries ()
   "Oneshot completion callback records failure with non-zero exit and schedules retry."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--oneshot-completed (make-hash-table :test 'equal))
          (supervisor--timer-list nil)
@@ -7673,8 +7639,7 @@ sets last-success-at, last-exit, last-result, clears retry state."
 
 (ert-deftest supervisor-test-timer-oneshot-complete-signal-no-retry ()
   "Oneshot killed by signal records failure but does not schedule retry."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--oneshot-completed (make-hash-table :test 'equal))
          (supervisor--timer-list nil)
@@ -7697,8 +7662,7 @@ sets last-success-at, last-exit, last-result, clears retry state."
 (ert-deftest supervisor-test-timer-trigger-target-reached ()
   "Timer trigger for target records success on reached convergence.
 Stale retry state from a prior failure must be cleared."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "app.target"
                                           :enabled t))
          (supervisor--timer-state (make-hash-table :test 'equal))
@@ -7733,8 +7697,7 @@ Stale retry state from a prior failure must be cleared."
 
 (ert-deftest supervisor-test-timer-trigger-target-converging-skips ()
   "Timer trigger for converging target records miss and skip result."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "app.target"
                                           :enabled t))
          (supervisor--timer-state (make-hash-table :test 'equal))
@@ -7770,8 +7733,7 @@ Stale retry state from a prior failure must be cleared."
 
 (ert-deftest supervisor-test-timer-target-degraded-retries ()
   "Timer target convergence to degraded schedules retry."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--target-convergence (make-hash-table :test 'equal))
          (supervisor-timer-retry-intervals '(30 120 600)))
@@ -7818,8 +7780,7 @@ Stale retry state from a prior failure must be cleared."
 
 (ert-deftest supervisor-test-timer-overlap-no-retry ()
   "Overlap skip clears stale retry state from prior failure."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--processes (make-hash-table :test 'equal))
@@ -7852,8 +7813,7 @@ Stale retry state from a prior failure must be cleared."
 
 (ert-deftest supervisor-test-timer-missing-target-records-failure ()
   "Missing target at runtime records failure with target-not-found."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "gone" :enabled t))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--mask-override (make-hash-table :test 'equal)))
@@ -7871,8 +7831,7 @@ Stale retry state from a prior failure must be cleared."
 
 (ert-deftest supervisor-test-timer-masked-target-skips ()
   "Masked target skips with masked-target miss and skip result."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc" :enabled t))
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--mask-override (make-hash-table :test 'equal))
@@ -7899,8 +7858,7 @@ Stale retry state from a prior failure must be cleared."
 
 (ert-deftest supervisor-test-timer-convergence-nil-is-failure ()
   "Nil convergence state is classified as failure, not success."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--target-convergence (make-hash-table :test 'equal)))
     (puthash "t1" nil supervisor--timer-state)
@@ -7917,8 +7875,7 @@ Stale retry state from a prior failure must be cleared."
 
 (ert-deftest supervisor-test-timer-convergence-converging-is-failure ()
   "Converging state at callback time is classified as failure."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (supervisor--timer-state (make-hash-table :test 'equal))
          (supervisor--target-convergence (make-hash-table :test 'equal))
          (supervisor-timer-retry-intervals '(30)))
@@ -7938,8 +7895,7 @@ Stale retry state from a prior failure must be cleared."
 
 (ert-deftest supervisor-test-timer-target-trigger-uses-closure ()
   "Target timer trigger only starts entries in the target's closure."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "app.target"
                                           :enabled t))
          (supervisor--timer-state (make-hash-table :test 'equal))
@@ -7981,8 +7937,7 @@ Stale retry state from a prior failure must be cleared."
 
 (ert-deftest supervisor-test-timer-target-trigger-convergence-success ()
   "Target timer trigger reaches success when DAG processes convergence."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "app.target"
                                           :enabled t))
          (supervisor--timer-state (make-hash-table :test 'equal))
@@ -8031,8 +7986,7 @@ Stale retry state from a prior failure must be cleared."
 
 (ert-deftest supervisor-test-timer-disabled-timer-records-skip-result ()
   "Disabled timer records skip and clears stale retry state."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc"
                                           :enabled nil))
          (supervisor--timer-state (make-hash-table :test 'equal)))
@@ -8054,8 +8008,7 @@ Stale retry state from a prior failure must be cleared."
 (ert-deftest supervisor-test-cli-list-timers-json-v2-fields ()
   "CLI list-timers JSON includes v2 fields: target_type, last_result.
 Target type is resolved from current config, not runtime state."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc"
                                           :enabled t :persistent t))
          (supervisor--timer-list (list timer))
@@ -8082,8 +8035,7 @@ Target type is resolved from current config, not runtime state."
 (ert-deftest supervisor-test-cli-list-timers-human-v2-columns ()
   "CLI list-timers human output includes TYPE and RESULT columns.
 TYPE is resolved from current config."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "svc"
                                           :enabled t))
          (supervisor--timer-list (list timer))
@@ -8990,8 +8942,7 @@ TYPE is resolved from config; shows dash when target not found."
 (ert-deftest supervisor-test-cli-list-timers-no-timers ()
   "The `list-timers' command with no timers configured."
   (supervisor-test-without-builtins
-    (let ((supervisor-timer-subsystem-mode t)
-          (supervisor-mode t)
+    (let ((supervisor-mode t)
           (supervisor-timers nil)
           (supervisor--timer-list nil)
           (supervisor--timer-state (make-hash-table :test 'equal))
@@ -9005,8 +8956,7 @@ TYPE is resolved from config; shows dash when target not found."
   "The `list-timers' command works when `supervisor-mode' is off."
   (supervisor-test-with-unit-files
       '(("true" :id "s1" :type oneshot))
-    (let ((supervisor-timer-subsystem-mode t)
-          (supervisor-mode nil)
+    (let ((supervisor-mode nil)
           (supervisor-timers '((:id "t1" :target "s1" :on-startup-sec 60)))
           (supervisor--timer-list nil)
           (supervisor--timer-state (make-hash-table :test 'equal))
@@ -9037,8 +8987,7 @@ TYPE is resolved from config; shows dash when target not found."
 
 (ert-deftest supervisor-test-cli-list-timers-shows-state ()
   "The `list-timers' command shows timer state."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
          (supervisor--timer-list (list timer))
          (supervisor--timer-state (make-hash-table :test 'equal))
@@ -9068,8 +9017,7 @@ TYPE is resolved from config; shows dash when target not found."
 (ert-deftest supervisor-test-cli-list-timers-invalid-human-format ()
   "The `list-timers' command shows invalid timers with correct id and reason."
   (supervisor-test-with-unit-files nil
-    (let ((supervisor-timer-subsystem-mode t)
-          (supervisor-mode t)
+    (let ((supervisor-mode t)
           (supervisor-timers '((:id "bad-timer"
                                :target "missing"
                                :on-startup-sec 60)))
@@ -9086,8 +9034,7 @@ TYPE is resolved from config; shows dash when target not found."
 (ert-deftest supervisor-test-cli-list-timers-invalid-json-format ()
   "The `list-timers --json' outputs invalid timers with correct structure."
   (supervisor-test-with-unit-files nil
-    (let ((supervisor-timer-subsystem-mode t)
-          (supervisor-mode t)
+    (let ((supervisor-mode t)
           (supervisor-timers '((:id "bad-timer"
                                :target "missing"
                                :on-startup-sec 60)))
@@ -9124,8 +9071,7 @@ TYPE is resolved from config; shows dash when target not found."
 (ert-deftest supervisor-test-cli-list-timers-full-field-mapping ()
   "The `list-timers' output includes all required fields.
 Target type is resolved from current config."
-  (let* ((supervisor-timer-subsystem-mode t)
-         (supervisor-mode t)
+  (let* ((supervisor-mode t)
          (timer (supervisor-timer--create :id "test-timer" :target "test-target"
                                           :enabled t :persistent t))
          (supervisor--timer-list (list timer))
@@ -17394,8 +17340,7 @@ An invalid entry ID that happens to end in .target must not pass."
   "Timer completion does not send reopen signals implicitly."
   (supervisor-test-with-unit-files
       '(("true" :id "s1" :type oneshot))
-    (let* ((supervisor-timer-subsystem-mode t)
-           (supervisor-mode t)
+    (let* ((supervisor-mode t)
            (timer (supervisor-timer--create :id "t1" :target "s1" :enabled t))
            (supervisor--timer-state (make-hash-table :test 'equal))
            (supervisor--processes (make-hash-table :test 'equal))
@@ -17825,8 +17770,7 @@ stderr through the stdout writer for correct stream=2 tagging."
   "Enabled logrotate-daily timer triggers target oneshot on schedule."
   (supervisor-test-with-unit-files
       '(("echo maintenance" :id "logrotate" :type oneshot))
-    (let* ((supervisor-timer-subsystem-mode t)
-           (supervisor-mode t)
+    (let* ((supervisor-mode t)
            (timer (supervisor-timer--create :id "logrotate-daily"
                                             :target "logrotate"
                                             :enabled t))
@@ -21309,8 +21253,7 @@ the invalid-hash must not contain the alias ID."
   "The `list-timers' human output carries init-transition reason text."
   (supervisor-test-with-unit-files
       '((nil :id "poweroff.target" :type target))
-    (let ((supervisor-timer-subsystem-mode t)
-          (supervisor-mode t)
+    (let ((supervisor-mode t)
           (supervisor-timers '((:id "timer-poweroff"
                                :target "poweroff.target"
                                :on-startup-sec 60)))
@@ -21330,8 +21273,7 @@ the invalid-hash must not contain the alias ID."
   "The `list-timers --json' output carries init-transition reason text."
   (supervisor-test-with-unit-files
       '((nil :id "poweroff.target" :type target))
-    (let ((supervisor-timer-subsystem-mode t)
-          (supervisor-mode t)
+    (let ((supervisor-mode t)
           (supervisor-timers '((:id "timer-poweroff"
                                :target "poweroff.target"
                                :on-startup-sec 60)))
@@ -21365,7 +21307,6 @@ the invalid-hash must not contain the alias ID."
            (supervisor--timer-state (make-hash-table :test 'equal))
            (supervisor--invalid-timers (make-hash-table :test 'equal))
            (supervisor-dashboard-show-timers t)
-           (supervisor-timer-subsystem-mode t)
            (supervisor--timer-list nil)
            (reason ":target 'poweroff.target' is an init-transition target and is not timer-eligible"))
       (puthash "timer-poweroff" reason supervisor--invalid-timers)
