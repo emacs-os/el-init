@@ -43,7 +43,8 @@ static int dev_full_rejects_write(void)
 	return (w < 0 && saved == ENOSPC);
 }
 
-/* Write helper that checks the return value (silences -Werror=unused-result). */
+/* Write helper that checks the return value.
+ * Silences -Werror=unused-result. */
 static void write_all(int fd, const void *buf, size_t len)
 {
 	ssize_t n = write(fd, buf, len);
@@ -2510,9 +2511,12 @@ TEST_LIST = {
 	/* Protocol error recovery */
 	{ "logd_text_invalid_event_skipped",  test_logd_text_invalid_event_skipped },
 	{ "logd_text_invalid_stream_skipped", test_logd_text_invalid_stream_skipped },
-	{ "logd_text_output_on_meta_rejected", test_logd_text_output_on_meta_rejected },
-	{ "logd_text_exit_on_stdout_rejected", test_logd_text_exit_on_stdout_rejected },
-	{ "logd_text_truncated_body_recovery", test_logd_text_truncated_body_recovery },
+	{ "logd_text_output_on_meta_rejected",
+	  test_logd_text_output_on_meta_rejected },
+	{ "logd_text_exit_on_stdout_rejected",
+	  test_logd_text_exit_on_stdout_rejected },
+	{ "logd_text_truncated_body_recovery",
+	  test_logd_text_truncated_body_recovery },
 
 	/* Raw mode: rotation */
 	{ "logd_raw_rotation",           test_logd_raw_rotation },
@@ -2564,7 +2568,8 @@ TEST_LIST = {
 	{ "logd_log_dir_accepted",       test_logd_log_dir_accepted },
 
 	/* Additional protocol validation */
-	{ "logd_text_invalid_exit_status_skipped", test_logd_text_invalid_exit_status_skipped },
+	{ "logd_text_invalid_exit_status_skipped",
+	  test_logd_text_invalid_exit_status_skipped },
 	{ "logd_text_negative_exit_code", test_logd_text_negative_exit_code },
 	{ "logd_binary_negative_exit_code", test_logd_binary_negative_exit_code },
 
