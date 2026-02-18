@@ -155,6 +155,9 @@ might look surprising.  Some targets show *reached*, others show *unreachable*,
 and you might wonder if something is broken.  It is not -- this is how the
 target system works.
 
+#+CAPTION: Default dashboard view after graphical boot
+[[file:dashboard-default.png]]
+
 *** Why some targets are "reached"
 
 At startup, supervisor picks a root target (by default ~graphical.target~) and
@@ -203,34 +206,6 @@ Runlevels 2 through 5 show *reached* because their canonical targets
 converged.  Runlevels 0, 1, and 6 show *unreachable* because their canonical
 targets (~poweroff.target~, ~rescue.target~, ~reboot.target~) were never pulled
 into the startup transaction.
-
-*** Reading a default dashboard
-
-Below is what ~M-x supervisor~ shows after a default graphical boot with the
-timer subsystem enabled.
-
-#+CAPTION: Default dashboard view after graphical boot
-[[file:dashboard-default.png]]
-
-What each group means:
-
-- *Your services* -- running, owned by their respective targets.  These are
-  the units you defined.
-- *logrotate and log-prune* -- built-in maintenance oneshots.  They show
-  *unreachable* because no target in the startup path pulls them in.  They are
-  not broken -- they activate only when their timers fire.  The ~pending~
-  reason means they have not run yet.
-- *Startup targets* (~basic.target~ through ~default.target~) -- all *reached*
-  because they are in ~graphical.target~'s dependency chain and all their
-  members started successfully.
-- *Transition targets* (~rescue.target~, ~shutdown.target~, ~poweroff.target~,
-  ~reboot.target~) -- all *unreachable* because they are not part of the
-  current startup transaction.  They activate only on ~init~ or ~isolate~.
-- *Runlevel aliases* (~runlevel0.target~ through ~runlevel6.target~) -- each
-  mirrors the status of its canonical target.  Runlevels 2 through 5 show
-  reached; 0, 1, 6 show unreachable.
-- *Timers* -- trigger their target oneshot on a schedule.  ~LAST-RUN~ is ~-~
-  until the first fire; ~NEXT-RUN~ shows the countdown to the next trigger.
 
 *** Quick reference for target statuses
 
