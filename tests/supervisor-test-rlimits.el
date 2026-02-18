@@ -272,6 +272,56 @@
   (should (supervisor--validate-limit-value :limit-nofile 1.5))
   (should (supervisor--validate-limit-value :limit-nofile '(1 2))))
 
+;;; Integration tests (plan-level invalid plumbing)
+
+(ert-deftest supervisor-test-rlimits-plan-invalid-negative ()
+  "Build-plan marks entry with negative limit as invalid."
+  (let* ((supervisor--authority-snapshot nil)
+         (programs '(("sleep 300" :id "bad-svc" :limit-nofile -1)
+                     ("true" :id "good-svc")))
+         (plan (supervisor--build-plan programs)))
+    (should (gethash "bad-svc" (supervisor-plan-invalid plan)))
+    (should (string-match "non-negative"
+                          (gethash "bad-svc" (supervisor-plan-invalid plan))))
+    (should-not (gethash "good-svc" (supervisor-plan-invalid plan)))))
+
+(ert-deftest supervisor-test-rlimits-plan-invalid-bad-string ()
+  "Build-plan marks entry with malformed limit string as invalid."
+  (let* ((supervisor--authority-snapshot nil)
+         (programs '(("sleep 300" :id "bad-svc" :limit-core "notvalid")))
+         (plan (supervisor--build-plan programs)))
+    (should (gethash "bad-svc" (supervisor-plan-invalid plan)))
+    (should (string-match "SOFT:HARD"
+                          (gethash "bad-svc" (supervisor-plan-invalid plan))))))
+
+(ert-deftest supervisor-test-rlimits-plan-valid-passes ()
+  "Build-plan does not mark entry with valid limits as invalid."
+  (let* ((supervisor--authority-snapshot nil)
+         (programs '(("sleep 300" :id "svc"
+                      :limit-nofile 1024 :limit-core infinity)))
+         (plan (supervisor--build-plan programs)))
+    (should-not (gethash "svc" (supervisor-plan-invalid plan)))
+    ;; Entry should appear in valid entries list
+    (should (cl-find "svc" (supervisor-plan-entries plan)
+                     :key #'supervisor-entry-id :test #'equal))))
+
+(ert-deftest supervisor-test-rlimits-plan-invalid-float ()
+  "Build-plan marks entry with float limit as invalid."
+  (let* ((supervisor--authority-snapshot nil)
+         (programs '(("sleep 300" :id "bad-svc" :limit-fsize 1.5)))
+         (plan (supervisor--build-plan programs)))
+    (should (gethash "bad-svc" (supervisor-plan-invalid plan)))))
+
+(ert-deftest supervisor-test-rlimits-plan-invalid-target-limit ()
+  "Build-plan marks target with limit keys as invalid."
+  (let* ((supervisor--authority-snapshot nil)
+         (programs '((nil :id "app.target" :type target :limit-nofile 1024)))
+         (plan (supervisor--build-plan programs)))
+    (should (gethash "app.target" (supervisor-plan-invalid plan)))
+    (should (string-match "invalid for :type target"
+                          (gethash "app.target"
+                                   (supervisor-plan-invalid plan))))))
+
 (provide 'supervisor-test-rlimits)
 
 ;;; supervisor-test-rlimits.el ends here

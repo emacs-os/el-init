@@ -1930,7 +1930,12 @@ Field documentation:
     (sandbox-rw-bind . nil)
     (sandbox-tmpfs . nil)
     (sandbox-raw-args . nil)
-    (log-format . nil))
+    (log-format . nil)
+    (limit-nofile . nil)
+    (limit-nproc . nil)
+    (limit-core . nil)
+    (limit-fsize . nil)
+    (limit-as . nil))
   "Alist of optional fields with their default values.
 A value of :defer means the default is resolved at runtime.")
 
@@ -1950,7 +1955,8 @@ A value of :defer means the default is resolved at runtime.")
 ;;    user group wanted-by required-by
 ;;    sandbox-profile sandbox-network sandbox-ro-bind sandbox-rw-bind
 ;;    sandbox-tmpfs sandbox-raw-args
-;;    log-format)
+;;    log-format
+;;    limit-nofile limit-nproc limit-core limit-fsize limit-as)
 
 (defun supervisor-entry-id (entry)
   "Return the ID of parsed ENTRY."
