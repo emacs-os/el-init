@@ -1937,8 +1937,7 @@ Display structured log records for a unit.  Requires -u/--unit."
                 (supervisor--cli-error supervisor-cli-exit-failure
                                        (format "No log file for '%s'" unit)
                                        (if json-p 'json 'human))
-              (let* ((tail-bytes (or (when n (* n 512))
-                                     supervisor-log-default-max-bytes))
+              (let* ((tail-bytes (when n (* n 512)))
                      (decoded (supervisor--log-decode-file
                                log-file nil nil tail-bytes))
                      (records (plist-get decoded :records))

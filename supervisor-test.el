@@ -25245,10 +25245,10 @@ identity must be correct regardless of whether log-format is set."
 
 ;;;; Bounded decode default cap tests
 
-(ert-deftest supervisor-test-journal-without-n-uses-default-cap ()
-  "Journal without -n uses `supervisor-log-default-max-bytes' as cap."
+(ert-deftest supervisor-test-journal-without-n-decodes-full-file ()
+  "Journal without -n decodes the entire file (full history)."
   (let ((tmpfile (make-temp-file "log-cap-"))
-        (captured-max-bytes nil))
+        (captured-max-bytes 'unset))
     (unwind-protect
         (progn
           (with-temp-file tmpfile
@@ -25266,9 +25266,8 @@ identity must be correct regardless of whether log-format is set."
                                          :payload "hello"))
                              :offset 100 :format 'text :warning nil))))
             (supervisor--cli-cmd-journal '("-u" "svc") nil)
-            ;; Should use the default cap, not nil
-            (should (equal captured-max-bytes
-                          supervisor-log-default-max-bytes))))
+            ;; Without -n, max-bytes must be nil (full file decode)
+            (should (null captured-max-bytes))))
       (delete-file tmpfile))))
 
 (ert-deftest supervisor-test-telemetry-tail-uses-max-bytes ()
