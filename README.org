@@ -2,6 +2,8 @@
 
 * supervisor.el
 
+<a href="supervisor_logo.png"><img align="right" width="300" src="supervisor_logo.png" alt="supervisor.el logo"></a>
+
 *A proper process supervisor with a systemd-inspired dependency model.*
 
 ~supervisor.el~ is an Emacs Lisp-based service supervisor.  It follows a
@@ -48,6 +50,8 @@ start, stop, inspect, and manage everything from inside Emacs.
   nanosecond timestamps) for machine-parseable records.
 - *Sandbox* -- optional bubblewrap integration with curated profiles for
   process isolation (Linux only).
+
+<br clear="right">
 
 ** Requirements
 
@@ -1301,6 +1305,24 @@ CLI:
 Dashboard buffer: ~*supervisor*~, major mode ~supervisor-dashboard-mode~
 (derived from ~tabulated-list-mode~).
 
+** Service-First Default View
+
+The dashboard defaults to a service-first view that hides target-type
+entries.  This reduces noise for operators who use supervisor as a
+service manager rather than a PID1 init system.
+
+Press ~v~ to toggle target visibility.  When targets are shown,
+init-transition targets (rescue, shutdown, poweroff, reboot, and
+runlevel aliases) remain hidden by default.  Press ~V~ to include
+init-transition targets.
+
+The header line shows a bracket indicator when visibility filters are
+active: =[targets]= when regular targets are shown, =[targets+init]=
+when init-transition targets are also included.
+
+When a target filter is active (via ~f~), the filtered target and its
+members are always shown regardless of the visibility toggle state.
+
 ** Service Columns
 
 - ~ID~
@@ -1380,6 +1402,8 @@ by a second key.  Timer actions use the ~y~ prefix.
 | Key | Function |
 | ~f~ | Cycle target filter (all -> targetA -> targetB -> ...) |
 | ~F~ | Cycle tag filter |
+| ~v~ | Toggle target visibility (service-first default) |
+| ~V~ | Toggle init-transition targets (rescue, shutdown, runlevel) |
 | ~g~ | Refresh dashboard |
 | ~G~ | Toggle auto-refresh (live monitoring) |
 | ~t~ | Open ~proced~ (system process list) |
