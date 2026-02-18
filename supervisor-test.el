@@ -25426,5 +25426,59 @@ identity must be correct regardless of whether log-format is set."
             (supervisor--cli-follow-stop session-id)))
       (delete-directory tmpdir t))))
 
+;;;; JSON null and argument validation tests
+
+(ert-deftest supervisor-test-journal-json-null-fields ()
+  "Journal JSON envelope uses JSON null for absent fields, not string."
+  (let ((tmpfile (make-temp-file "log-json-null-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (supervisor--cli-cmd-journal
+                            '("-u" "svc") t))
+                   (json-data (json-read-from-string
+                               (supervisor-cli-result-output result))))
+              ;; Absent fields must be JSON null (Elisp nil), not "null"
+              (should (null (cdr (assq 'since json-data))))
+              (should (null (cdr (assq 'until json-data))))
+              (should (null (cdr (assq 'priority json-data))))
+              (should (null (cdr (assq 'limit json-data))))
+              ;; They must NOT be the string "null"
+              (should-not (equal "null" (cdr (assq 'since json-data)))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-ndjson-null-status ()
+  "NDJSON record uses JSON null for absent status, not string."
+  (let ((record (list :ts 1000.0 :unit "svc" :pid 1
+                      :stream 'stdout :event 'output
+                      :status nil :code 0 :payload "hello")))
+    (let* ((json-str (supervisor--log-record-to-json record))
+           (parsed (json-read-from-string json-str)))
+      ;; status should be JSON null (Elisp nil), not the string "null"
+      (should (null (cdr (assq 'status parsed))))
+      (should-not (equal "null" (cdr (assq 'status parsed)))))))
+
+(ert-deftest supervisor-test-journal-rejects-extra-positional-args ()
+  "Journal rejects unexpected bare positional arguments."
+  (let ((result (supervisor--cli-cmd-journal
+                 '("-u" "svc" "extra-arg") nil)))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match-p "Unexpected argument"
+                            (supervisor-cli-result-output result)))))
+
+(ert-deftest supervisor-test-journal-rejects-multiple-extra-args ()
+  "Journal rejects multiple extra positional arguments."
+  (let ((result (supervisor--cli-cmd-journal
+                 '("-u" "svc" "one" "two") nil)))
+    (should (= supervisor-cli-exit-invalid-args
+               (supervisor-cli-result-exitcode result)))
+    (should (string-match-p "Unexpected argument: one"
+                            (supervisor-cli-result-output result)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

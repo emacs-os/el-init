@@ -4301,9 +4301,8 @@ Return a single-line JSON string suitable for NDJSON output."
      (pid . ,(plist-get record :pid))
      (stream . ,(symbol-name (plist-get record :stream)))
      (event . ,(symbol-name (plist-get record :event)))
-     (status . ,(if (plist-get record :status)
-                     (symbol-name (plist-get record :status))
-                   :null))
+     (status . ,(when (plist-get record :status)
+                   (symbol-name (plist-get record :status))))
      (code . ,(plist-get record :code))
      (payload . ,(plist-get record :payload))
      (priority . ,(symbol-name

@@ -1767,7 +1767,11 @@ Return plist with :unit, :lines, :priority, :since, :until,
           (setq follow t))
          ;; Unknown flags
          ((string-prefix-p "-" arg)
-          (setq unknown (or unknown (format "Unknown option: %s" arg)))))
+          (setq unknown (or unknown (format "Unknown option: %s" arg))))
+         ;; Bare positional args are not accepted
+         (t
+          (setq unknown (or unknown
+                             (format "Unexpected argument: %s" arg)))))
         (setq rest (cdr rest))))
     (list :unit unit :lines lines :priority priority
           :since since :until until :follow follow :unknown unknown)))
@@ -1783,10 +1787,10 @@ filtered record list."
   (json-encode
    `((unit . ,unit)
      (format . ,(symbol-name (plist-get decoded :format)))
-     (since . ,(or since-str :null))
-     (until . ,(or until-str :null))
-     (priority . ,(if priority (symbol-name priority) :null))
-     (limit . ,(or n :null))
+     (since . ,since-str)
+     (until . ,until-str)
+     (priority . ,(when priority (symbol-name priority)))
+     (limit . ,n)
      (follow . ,(if follow t :json-false))
      (records .
       ,(vconcat
