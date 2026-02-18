@@ -57,6 +57,7 @@
 #   logging (on|off) ID...      Set logging policy
 #   blame                       Show startup timing info
 #   logs [--tail N] [--] ID     View unit log file
+#   journal -u ID [-n N] [-p err] [-f] [--since TS] [--until TS]  Structured log records
 #   ping                        Check if supervisor is responsive
 #   version                     Show version info
 
