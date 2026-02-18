@@ -5,11 +5,15 @@ CFLAGS ?= -Wall -Wextra -Werror -pedantic -std=c99 -O2 -D_FORTIFY_SOURCE=2
 LOGD_ABS  = $(abspath supervisor-logd)
 RUNAS_ABS = $(abspath supervisor-runas)
 
-# Test compiler flags
-TEST_CFLAGS  = $(CFLAGS) -Itests/vendor
+# Test compiler flags -- pass all binary paths so any test can use them
+TEST_CFLAGS  = $(CFLAGS) -Itests/vendor \
+               -DLOGD_PATH=\"$(LOGD_ABS)\" -DRUNAS_PATH=\"$(RUNAS_ABS)\"
 TEST_LDFLAGS =
 
-TEST_BINS = tests/test_supervisor_logd tests/test_supervisor_runas
+TEST_HELPERS = tests/test_helpers.c tests/test_helpers.h
+TEST_SRCS = $(sort $(filter-out tests/test_helpers.c, \
+              $(wildcard tests/test_*.c)))
+TEST_BINS = $(TEST_SRCS:.c=)
 
 .PHONY: all tests test check clean
 
@@ -23,20 +27,15 @@ supervisor-logd: supervisor-logd.c
 
 tests: all $(TEST_BINS)
 
-tests/test_supervisor_logd: tests/test_supervisor_logd.c tests/test_helpers.c tests/test_helpers.h
-	$(CC) $(TEST_CFLAGS) -DLOGD_PATH=\"$(LOGD_ABS)\" \
-		-o $@ tests/test_supervisor_logd.c tests/test_helpers.c $(TEST_LDFLAGS)
-
-tests/test_supervisor_runas: tests/test_supervisor_runas.c tests/test_helpers.c tests/test_helpers.h
-	$(CC) $(TEST_CFLAGS) -DRUNAS_PATH=\"$(RUNAS_ABS)\" \
-		-o $@ tests/test_supervisor_runas.c tests/test_helpers.c $(TEST_LDFLAGS)
+tests/test_%: tests/test_%.c $(TEST_HELPERS)
+	$(CC) $(TEST_CFLAGS) -o $@ $< tests/test_helpers.c $(TEST_LDFLAGS)
 
 test: tests
-	@echo "=== supervisor-logd tests ==="
-	@./tests/test_supervisor_logd
-	@echo ""
-	@echo "=== supervisor-runas tests ==="
-	@./tests/test_supervisor_runas
+	@for t in $(TEST_BINS); do \
+		echo "=== $$(basename $$t) ==="; \
+		./$$t || exit 1; \
+		echo ""; \
+	done
 
 check: all test
 

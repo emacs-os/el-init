@@ -6,23 +6,8 @@ EL_MODULES = supervisor-core.el supervisor-log.el supervisor-overrides.el superv
 EL_ALL = $(EL_MODULES) $(EL_MAIN)
 TEST_DIR = tests
 TEST_HELPERS = $(TEST_DIR)/supervisor-test-helpers.el
-TEST_ELS = $(TEST_HELPERS) \
-           $(TEST_DIR)/supervisor-test-core.el \
-           $(TEST_DIR)/supervisor-test-restart.el \
-           $(TEST_DIR)/supervisor-test-validation.el \
-           $(TEST_DIR)/supervisor-test-dag.el \
-           $(TEST_DIR)/supervisor-test-plan.el \
-           $(TEST_DIR)/supervisor-test-dashboard.el \
-           $(TEST_DIR)/supervisor-test-units.el \
-           $(TEST_DIR)/supervisor-test-timer.el \
-           $(TEST_DIR)/supervisor-test-cli.el \
-           $(TEST_DIR)/supervisor-test-keywords.el \
-           $(TEST_DIR)/supervisor-test-policy.el \
-           $(TEST_DIR)/supervisor-test-identity.el \
-           $(TEST_DIR)/supervisor-test-logging.el \
-           $(TEST_DIR)/supervisor-test-targets.el \
-           $(TEST_DIR)/supervisor-test-sandbox.el \
-           $(TEST_DIR)/supervisor-test-logformat.el
+TEST_ELS = $(TEST_HELPERS) $(sort $(filter-out $(TEST_HELPERS), \
+             $(wildcard $(TEST_DIR)/supervisor-test-*.el)))
 
 .PHONY: all check lint test byte-compile checkdoc package-lint \
        libexec-check sbin-check clean
