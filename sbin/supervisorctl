@@ -239,7 +239,9 @@ case "${stripped}" in
             set -- "${@}" --eval \
                 "(supervisor--cli-journal-follow-stop \"${follow_session}\")"
             "${@}" >/dev/null 2>&1 || true
-            [ -n "${tail_pid-}" ] && kill "${tail_pid}" 2>/dev/null || true
+            if [ -n "${tail_pid-}" ]; then
+                kill "${tail_pid}" 2>/dev/null || true
+            fi
             exit 0
         }
         trap follow_cleanup INT TERM
