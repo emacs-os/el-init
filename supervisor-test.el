@@ -25480,5 +25480,34 @@ identity must be correct regardless of whether log-format is set."
     (should (string-match-p "Unexpected argument: one"
                             (supervisor-cli-result-output result)))))
 
+(ert-deftest supervisor-test-journal-json-envelope-null-status ()
+  "JSON envelope records use JSON null for absent status."
+  (let ((tmpfile (make-temp-file "log-env-null-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (supervisor--cli-cmd-journal
+                            '("-u" "svc") t))
+                   (json-data (json-read-from-string
+                               (supervisor-cli-result-output result)))
+                   (records (cdr (assq 'records json-data)))
+                   (first-rec (aref records 0)))
+              ;; status must be JSON null (Elisp nil), not string "null"
+              (should (null (cdr (assq 'status first-rec))))
+              (should-not (equal "null"
+                                 (cdr (assq 'status first-rec)))))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-journal-fu-rejects-fux ()
+  "Parser rejects -fux as unknown option, only -fu is valid."
+  (let ((parsed (supervisor--cli-parse-journal-args '("-fux" "svc"))))
+    (should (plist-get parsed :unknown))
+    (should (string-match-p "Unknown option: -fux"
+                            (plist-get parsed :unknown)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

@@ -1717,9 +1717,8 @@ Return plist with :unit, :lines, :priority, :since, :until,
     (while rest
       (let ((arg (car rest)))
         (cond
-         ;; -fu ID (combined short form)
-         ((and (string-prefix-p "-f" arg) (> (length arg) 2)
-               (string-match-p "u" (substring arg 2)))
+         ;; -fu ID (combined short form, exact match only)
+         ((equal arg "-fu")
           (setq follow t)
           (let ((next (cadr rest)))
             (if (or (null next) (string-prefix-p "-" next))
@@ -1801,9 +1800,8 @@ filtered record list."
              (pid . ,(plist-get r :pid))
              (stream . ,(symbol-name (plist-get r :stream)))
              (event . ,(symbol-name (plist-get r :event)))
-             (status . ,(if (plist-get r :status)
-                            (symbol-name (plist-get r :status))
-                          :null))
+             (status . ,(when (plist-get r :status)
+                          (symbol-name (plist-get r :status))))
              (code . ,(plist-get r :code))
              (payload . ,(plist-get r :payload))
              (priority . ,(symbol-name
