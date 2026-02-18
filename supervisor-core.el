@@ -5255,15 +5255,25 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
                             ('exit 'exited)
                             (_ 'unknown))))
         (remhash name supervisor--processes)
-        ;; Send exit frames to writers before stopping them
+        ;; Send exit frames to writers, then EOF so logd can drain
+        ;; before teardown.  EOF causes logd's read() to return 0,
+        ;; letting it process any buffered frames and exit cleanly.
         (let ((exit-status-wire (supervisor--exit-status-code exit-status)))
           (dolist (table (list supervisor--writers supervisor--stderr-writers))
             (when-let* ((w (gethash name table)))
               (when (process-live-p w)
                 (supervisor--log-send-frame w 2 3 (or pid 0) name nil
-                                            exit-code exit-status-wire)))))
-        ;; Stop the log writer for this service
-        (supervisor--stop-writer name)
+                                            exit-code exit-status-wire)
+                (condition-case nil
+                    (process-send-eof w)
+                  (error nil))))))
+        ;; Defer writer teardown to allow logd to drain buffered
+        ;; frames after EOF.  The timer fires after 0.2s; if logd
+        ;; has already exited by then, stop-writer is a no-op.
+        (let ((deferred-name name))
+          (run-at-time 0.2 nil
+                       (lambda ()
+                         (supervisor--stop-writer deferred-name))))
         ;; Record last exit info for telemetry
         (puthash name (list :status exit-status :code exit-code
                             :timestamp (float-time))
@@ -5936,20 +5946,30 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
                (stderr-writer (when split-stderr
                                 (supervisor--start-stderr-writer
                                  id stderr-log-target log-format)))
-               (stderr-pipe (when stderr-writer
-                              (supervisor--start-stderr-pipe id stderr-writer)))
+               ;; In framed mode with merged streams, stderr still needs a
+               ;; dedicated pipe so its output is tagged stream=2 (stderr).
+               ;; The pipe sends frames to the stdout writer.
+               (merged-stderr-pipe (when (and log-format writer
+                                              (not split-stderr)
+                                              stderr-log-target)
+                                     (supervisor--start-stderr-pipe
+                                      id writer)))
+               (stderr-pipe (or (when stderr-writer
+                                  (supervisor--start-stderr-pipe id stderr-writer))
+                                merged-stderr-pipe))
                (_ (when (and stderr-writer (not stderr-pipe))
                     (supervisor--stop-stream-writer
                      id 'stderr supervisor--stderr-writers)))
-               (effective-split (and stderr-writer stderr-pipe))
+               (effective-split (or (and stderr-writer stderr-pipe)
+                                    merged-stderr-pipe))
                (proc (condition-case err
                          (make-process
                           :name id
                           :command args
                           :connection-type 'pipe
                           :coding 'no-conversion
-                          ;; Default is merged streams (stderr=nil).  In split mode
-                          ;; stderr is routed through a dedicated pipe/writer pair.
+                          ;; In split mode or framed merged mode, stderr is
+                          ;; routed through a dedicated pipe.
                           :stderr (when effective-split stderr-pipe)
                           :filter (when writer
                                     (lambda (proc output)
