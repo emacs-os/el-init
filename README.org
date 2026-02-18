@@ -1577,7 +1577,7 @@ Supervisor-specific commands:
 - ~logging (on|off) [--] ID...~
 - ~blame~
 - ~logs [--tail N] [--] ID~
-- ~journal [-u ID] [-n N] [-p PRIORITY] [--since TS] [--until TS] [--json]~
+- ~journal (-u ID | --unit ID | -fu ID) [-n N] [-p (err|info)] [-f|--follow] [--since TS] [--until TS] [--json]~
 - ~ping~
 - ~version~
 
@@ -2066,7 +2066,7 @@ Fields:
 | ~pid~ | integer | Process PID |
 | ~stream~ | ~stdout~, ~stderr~, ~meta~ | Output stream origin |
 | ~event~ | ~output~, ~exit~ | Record type |
-| ~status~ | ~-~, ~exited~, ~signaled~ | Exit status (output events use ~-~) |
+| ~status~ | ~-~, ~exited~, ~signaled~, ~spawn-failed~ | Exit status (output events use ~-~) |
 | ~code~ | integer or ~-~ | Exit code (output events use ~-~) |
 | ~payload~ | escaped string or ~-~ | Output data with escaping |
 
@@ -2088,7 +2088,7 @@ u64be timestamp_ns     (nanoseconds since epoch)
 u32be pid
 u16be unit_len
 i32be exit_code
-u8    exit_status      (0=none, 1=exited, 2=signaled)
+u8    exit_status      (0=none, 1=exited, 2=signaled, 3=spawn-failed)
 u8[3] reserved         (0)
 u32be payload_len
 <unit_len bytes>       unit_id (UTF-8)
@@ -2117,15 +2117,20 @@ Flags:
 | Flag | Description |
 |------+-------------|
 | ~-u ID~ / ~--unit ID~ | Unit ID (required) |
-| ~-n N~ | Limit to last N records (default: 50) |
+| ~-n N~ | Limit to last N records (without ~-n~, full decoded history is returned) |
 | ~-p err~ / ~-p info~ | Filter by priority |
-| ~--since TS~ | Show records from timestamp (epoch integer or RFC3339) |
-| ~--until TS~ | Show records up to timestamp |
-| ~-fu ID~ | Combined follow + unit (short form) |
-| ~--json~ | Output as JSON |
+| ~--since TS~ | Show records from timestamp (epoch integer or RFC3339 UTC with trailing ~Z~) |
+| ~--until TS~ | Show records up to timestamp (epoch integer or RFC3339 UTC with trailing ~Z~) |
+| ~-f~ / ~--follow~ | Stream new records as they arrive (requires ~-u/--unit~) |
+| ~-fu ID~ | Combined follow + unit short form |
+| ~--json~ | JSON object output in non-follow mode; NDJSON stream in follow mode |
 
 Priority classification: stderr output and non-clean exits (non-zero
 exit code or signal death) are ~err~; all other records are ~info~.
+
+Filter semantics for records missing timestamp metadata (for example
+legacy fallback records): they are included even when ~--since~ or
+~--until~ is set, and ~-p~ still applies.
 
 Auto-detection: the decoder reads the first bytes of the log file to
 determine the format (~SLG1~ magic for binary, ~ts=~ prefix for text,
@@ -2135,6 +2140,11 @@ output records.
 The dashboard (~supervisor-dashboard-view-log~) also auto-detects binary
 format and decodes records for display instead of showing raw binary
 data.
+
+With ~--json~:
+
+- non-follow mode returns one JSON object with metadata and a ~records~ array
+- follow mode emits NDJSON (one JSON object per line) suitable for stream consumers
 
 **** Compression and Vacuum
 
@@ -2153,6 +2163,18 @@ journalctl vocabulary:
 | ~--format-hint VALUE~ | Accepted for forward compatibility |
 
 Both scripts handle ~.log.tar.gz~ files in their rotated-file patterns.
+
+Example vacuum-style invocation:
+
+#+begin_example
+sbin/supervisor-log-prune --log-dir /path/to/logs --vacuum --vacuum-max-total-bytes 1073741824
+#+end_example
+
+Equivalent canonical invocation:
+
+#+begin_example
+sbin/supervisor-log-prune --log-dir /path/to/logs --max-total-bytes 1073741824
+#+end_example
 
 ** Logging Semantics
 
