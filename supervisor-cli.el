@@ -1810,8 +1810,7 @@ filtered record list."
   "Start a follow session for UNIT reading LOG-FILE from OFFSET.
 SINCE-TS, UNTIL-TS, PRIORITY, and JSON-P configure record filtering
 and formatting.  Return a plist (:session-id STRING :follow-file STRING)."
-  (let* ((session-id (format "follow-%s-%s" unit
-                             (format-time-string "%s" (current-time))))
+  (let* ((session-id (format "follow-%s-%.6f" unit (float-time)))
          (log-dir (file-name-directory log-file))
          (follow-file (expand-file-name
                        (concat ".follow-" session-id) log-dir))
@@ -1938,7 +1937,8 @@ Display structured log records for a unit.  Requires -u/--unit."
                 (supervisor--cli-error supervisor-cli-exit-failure
                                        (format "No log file for '%s'" unit)
                                        (if json-p 'json 'human))
-              (let* ((tail-bytes (when n (* n 512)))
+              (let* ((tail-bytes (or (when n (* n 512))
+                                     supervisor-log-default-max-bytes))
                      (decoded (supervisor--log-decode-file
                                log-file nil nil tail-bytes))
                      (records (plist-get decoded :records))

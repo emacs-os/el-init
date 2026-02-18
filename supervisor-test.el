@@ -25243,5 +25243,99 @@ identity must be correct regardless of whether log-format is set."
             (supervisor--cli-follow-stop session-id)))
       (delete-directory tmpdir t))))
 
+;;;; Bounded decode default cap tests
+
+(ert-deftest supervisor-test-journal-without-n-uses-default-cap ()
+  "Journal without -n uses `supervisor-log-default-max-bytes' as cap."
+  (let ((tmpfile (make-temp-file "log-cap-"))
+        (captured-max-bytes nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'supervisor--log-decode-file)
+                     (lambda (_file &optional _limit _offset max-bytes)
+                       (setq captured-max-bytes max-bytes)
+                       (list :records
+                             (list (list :ts 1000.0 :unit "svc" :pid 1
+                                         :stream 'stdout :event 'output
+                                         :status nil :code 0
+                                         :payload "hello"))
+                             :offset 100 :format 'text :warning nil))))
+            (supervisor--cli-cmd-journal '("-u" "svc") nil)
+            ;; Should use the default cap, not nil
+            (should (equal captured-max-bytes
+                          supervisor-log-default-max-bytes))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-telemetry-tail-uses-max-bytes ()
+  "Telemetry log-tail passes max-bytes to decode."
+  (let ((tmpfile (make-temp-file "log-telem-"))
+        (captured-max-bytes nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'supervisor--log-decode-file)
+                     (lambda (_file &optional _limit _offset max-bytes)
+                       (setq captured-max-bytes max-bytes)
+                       (list :records
+                             (list (list :ts 1000.0 :unit "svc" :pid 1
+                                         :stream 'stdout :event 'output
+                                         :status nil :code 0
+                                         :payload "hello"))
+                             :offset 100 :format 'text :warning nil))))
+            (supervisor--telemetry-log-tail "svc")
+            ;; Default 5 lines: 5 * 512 = 2560
+            (should (= 2560 captured-max-bytes))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-telemetry-tail-nil-lines-uses-default-cap ()
+  "Telemetry log-tail without explicit lines uses default cap."
+  (let ((tmpfile (make-temp-file "log-telem2-"))
+        (captured-max-bytes nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          ;; Call with nil lines -- n defaults to 5, so 5*512=2560
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'supervisor--log-decode-file)
+                     (lambda (_file &optional _limit _offset max-bytes)
+                       (setq captured-max-bytes max-bytes)
+                       (list :records
+                             (list (list :ts 1000.0 :unit "svc" :pid 1
+                                         :stream 'stdout :event 'output
+                                         :status nil :code 0
+                                         :payload "hello"))
+                             :offset 100 :format 'text :warning nil))))
+            (supervisor--telemetry-log-tail "svc" nil)
+            (should (= 2560 captured-max-bytes))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-follow-session-id-subsecond ()
+  "Follow session IDs include subsecond precision."
+  (let ((tmpdir (make-temp-file "follow-id-" t))
+        (supervisor--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let* ((log-file (expand-file-name "svc.log" tmpdir))
+               (finfo (supervisor--cli-follow-start
+                       "svc" log-file 0 nil nil nil nil))
+               (session-id (plist-get finfo :session-id)))
+          ;; Session ID should contain a dot (fractional seconds)
+          (should (string-match-p "\\." session-id))
+          ;; Session ID should match the subsecond pattern
+          (should (string-match-p "^follow-svc-[0-9]+\\.[0-9]+" session-id))
+          (supervisor--cli-follow-stop session-id))
+      (delete-directory tmpdir t))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here

@@ -192,6 +192,15 @@ Throttles prune calls from the log writer to avoid excessive I/O."
   :type 'number
   :group 'supervisor)
 
+(defcustom supervisor-log-default-max-bytes (* 5 1024 1024)
+  "Default maximum bytes to read from log files in tail mode.
+When journal or telemetry tail reads a log file without an explicit
+record count, at most this many bytes from the end of the file are
+decoded.  Set to nil to disable the cap (decode entire file)."
+  :type '(choice (integer :tag "Bytes")
+                 (const :tag "No limit" nil))
+  :group 'supervisor)
+
 (defcustom supervisor-logd-pid-directory nil
   "Directory for log writer PID files.
 Used by the rotation script to discover writer processes for
@@ -3585,7 +3594,10 @@ All formats are decoded through the structured decoder."
         (n (or lines 5)))
     (when (file-exists-p log-file)
       (condition-case nil
-          (let* ((decoded (supervisor--log-decode-file log-file n))
+          (let* ((decoded (supervisor--log-decode-file
+                           log-file n nil
+                           (or (when n (* n 512))
+                               supervisor-log-default-max-bytes)))
                  (records (plist-get decoded :records)))
             (when records
               (concat (mapconcat #'supervisor--log-format-record-human
