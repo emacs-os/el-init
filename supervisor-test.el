@@ -23420,6 +23420,68 @@ TS-NS are the record fields."
             (should (null (plist-get result :records)))))
       (delete-directory dir t))))
 
+(ert-deftest supervisor-test-logd-binary-preserves-existing-valid-file ()
+  "Binary logd appends to an existing valid SLG1 file without truncating."
+  (let* ((logd (supervisor-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-append-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (progn
+          ;; First run: write one record
+          (let ((proc (make-process
+                       :name "test-logd-append-1"
+                       :command (list logd
+                                     "--file" log-file
+                                     "--framed"
+                                     "--unit" "test-svc"
+                                     "--format" "binary"
+                                     "--max-file-size-bytes" "1048576")
+                       :connection-type 'pipe
+                       :coding 'no-conversion)))
+            (unwind-protect
+                (progn
+                  (process-send-string
+                   proc (supervisor--log-frame-encode 1 1 10 "test-svc"
+                                                      "first"))
+                  (sleep-for 0.3)
+                  (process-send-eof proc)
+                  (sleep-for 0.3))
+              (when (process-live-p proc) (delete-process proc))))
+          ;; Second run: append another record to the same file
+          (let ((proc (make-process
+                       :name "test-logd-append-2"
+                       :command (list logd
+                                     "--file" log-file
+                                     "--framed"
+                                     "--unit" "test-svc"
+                                     "--format" "binary"
+                                     "--max-file-size-bytes" "1048576")
+                       :connection-type 'pipe
+                       :coding 'no-conversion)))
+            (unwind-protect
+                (progn
+                  (process-send-string
+                   proc (supervisor--log-frame-encode 1 1 20 "test-svc"
+                                                      "second"))
+                  (sleep-for 0.3)
+                  (process-send-eof proc)
+                  (sleep-for 0.3))
+              (when (process-live-p proc) (delete-process proc))))
+          ;; Verify both records survived
+          (should (file-exists-p log-file))
+          (let* ((content (with-temp-buffer
+                            (set-buffer-multibyte nil)
+                            (insert-file-contents-literally log-file)
+                            (buffer-string)))
+                 (result (supervisor--log-decode-binary-records content))
+                 (records (plist-get result :records)))
+            (should (equal (substring content 0 4) "SLG1"))
+            (should (null (plist-get result :warning)))
+            (should (= 2 (length records)))
+            (should (equal (plist-get (nth 0 records) :payload) "first"))
+            (should (equal (plist-get (nth 1 records) :payload) "second"))))
+      (delete-directory dir t))))
+
 ;;;; Phase 5: Decoder and user surfaces tests
 
 (ert-deftest supervisor-test-text-decode-records ()

@@ -234,10 +234,11 @@ static off_t file_size(int fd)
 	return st.st_size;
 }
 
-/* Open the log file for appending.  Returns fd or -1. */
+/* Open the log file for read-write appending.  O_RDWR is needed so
+ * ensure_binary_header() can read the magic bytes from existing files. */
 static int open_log(const char *path)
 {
-	return open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+	return open(path, O_RDWR | O_CREAT | O_APPEND, 0644);
 }
 
 /* Full write with retry on EINTR. */
