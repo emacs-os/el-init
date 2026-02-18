@@ -126,7 +126,9 @@ static int read_i32be(const unsigned char *p)
 
 /* Parse one frame from buffer.
  * Returns bytes consumed (header + body) on success,
- * 0 if buffer is incomplete, -1 on protocol error. */
+ * 0 if buffer is incomplete, -1 on structural error (unknown frame
+ * length -- caller should skip 1 byte), or negative total frame
+ * length on semantic error (caller should skip abs(rc) bytes). */
 static int parse_frame(const unsigned char *buf, size_t len,
 		       struct frame *out)
 {
@@ -149,17 +151,25 @@ static int parse_frame(const unsigned char *buf, size_t len,
 	out->exit_code = read_i32be(body + 8);
 	out->exit_status = body[12];
 
-	/* Validate enum ranges */
+	/* Validate enum ranges.
+	 * Return negative total to skip whole frame on semantic error. */
 	if (out->event != EVT_OUTPUT && out->event != EVT_EXIT)
-		return -1;
+		return -(int)total;
 	if (out->stream < STREAM_STDOUT || out->stream > STREAM_META)
-		return -1;
+		return -(int)total;
 	if (out->exit_status > STATUS_SPAWN_FAILED)
-		return -1;
+		return -(int)total;
+
+	/* Validate event/stream pairing:
+	 * output events use stdout or stderr, exit events use meta. */
+	if (out->event == EVT_OUTPUT && out->stream == STREAM_META)
+		return -(int)total;
+	if (out->event == EVT_EXIT && out->stream != STREAM_META)
+		return -(int)total;
 
 	/* Validate unit_len fits within body */
 	if (13 + (unsigned int)out->unit_len > body_len)
-		return -1;
+		return -(int)total;
 
 	out->unit_id = body + 13;
 	out->payload = body + 13 + out->unit_len;
@@ -865,8 +875,11 @@ int main(int argc, char **argv)
 					fprintf(stderr,
 						"supervisor-logd: protocol "
 						"error\n");
-					/* Skip 1 byte and try to recover */
-					consumed++;
+					/* -1: structural error, skip 1 byte.
+					 * Other negative: semantic error,
+					 * skip abs(rc) to stay aligned. */
+					consumed += (rc == -1)
+					    ? 1 : (size_t)(-rc);
 					continue;
 				}
 

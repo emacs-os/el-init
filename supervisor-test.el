@@ -17767,6 +17767,60 @@ stderr through the stdout writer for correct stream=2 tagging."
             (when (process-live-p proc) (delete-process proc))))
       (delete-directory dir t))))
 
+(ert-deftest supervisor-test-logd-text-rejects-invalid-event-stream ()
+  "Logd rejects frames with invalid event/stream pairings."
+  (let* ((logd (supervisor-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-reject-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-reject"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "test-svc"
+                                   "--format" "text"
+                                   "--max-file-size-bytes" "1048576")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                ;; Valid frame first (anchor for record count)
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 1 42 "test-svc"
+                                                    "valid"))
+                ;; Invalid: output on meta stream
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 3 42 "test-svc"
+                                                    "bad-meta"))
+                ;; Invalid: exit on stdout stream
+                (process-send-string
+                 proc (supervisor--log-frame-encode 2 1 42 "test-svc"
+                                                    nil 0 1))
+                ;; Invalid: exit on stderr stream
+                (process-send-string
+                 proc (supervisor--log-frame-encode 2 2 42 "test-svc"
+                                                    nil 1 2))
+                ;; Valid exit to confirm logd is still processing
+                (process-send-string
+                 proc (supervisor--log-frame-encode 2 3 42 "test-svc"
+                                                    nil 0 1))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                (should (file-exists-p log-file))
+                (let* ((content (with-temp-buffer
+                                  (insert-file-contents log-file)
+                                  (buffer-string)))
+                       (records (supervisor--log-decode-text-records
+                                 content)))
+                  ;; Only the 2 valid frames should produce records
+                  (should (= 2 (length records)))
+                  (should (eq (plist-get (nth 0 records) :event) 'output))
+                  (should (eq (plist-get (nth 1 records) :event) 'exit))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
 (ert-deftest supervisor-test-timer-enabled-triggers-maintenance ()
   "Enabled logrotate-daily timer triggers target oneshot on schedule."
   (supervisor-test-with-unit-files
