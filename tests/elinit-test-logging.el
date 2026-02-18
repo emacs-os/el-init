@@ -1,4 +1,4 @@
-;;; supervisor-test-logging.el --- Log lifecycle and rotation tests for supervisor.el -*- lexical-binding: t -*-
+;;; elinit-test-logging.el --- Log lifecycle and rotation tests for elinit.el -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
 
@@ -6,55 +6,55 @@
 
 ;;; Commentary:
 
-;; Log lifecycle and rotation ERT tests for supervisor.el.
+;; Log lifecycle and rotation ERT tests for elinit.el.
 
 ;;; Code:
 
-(require 'supervisor-test-helpers)
+(require 'elinit-test-helpers)
 
 ;;; Logging config contract (PLAN-logging.md Phase 1)
 
-(ert-deftest supervisor-test-logd-command-path ()
+(ert-deftest elinit-test-logd-command-path ()
   "Log writer command path points to libexec/supervisor-logd."
-  (should (stringp supervisor-logd-command))
-  (should (string-match "libexec/supervisor-logd\\'" supervisor-logd-command)))
+  (should (stringp elinit-logd-command))
+  (should (string-match "libexec/supervisor-logd\\'" elinit-logd-command)))
 
-(ert-deftest supervisor-test-libexec-build-on-startup-default ()
+(ert-deftest elinit-test-libexec-build-on-startup-default ()
   "Libexec helper build policy defaults to prompt."
   (should (eq 'prompt
-              (default-value 'supervisor-libexec-build-on-startup))))
+              (default-value 'elinit-libexec-build-on-startup))))
 
-(ert-deftest supervisor-test-logrotate-command-path ()
+(ert-deftest elinit-test-logrotate-command-path ()
   "Logrotate script path points to sbin/supervisor-logrotate."
-  (should (stringp supervisor-logrotate-command))
-  (should (string-match "sbin/supervisor-logrotate\\'" supervisor-logrotate-command)))
+  (should (stringp elinit-logrotate-command))
+  (should (string-match "sbin/supervisor-logrotate\\'" elinit-logrotate-command)))
 
-(ert-deftest supervisor-test-log-prune-command-path ()
+(ert-deftest elinit-test-log-prune-command-path ()
   "Log prune script path points to sbin/supervisor-log-prune."
-  (should (stringp supervisor-log-prune-command))
-  (should (string-match "sbin/supervisor-log-prune\\'" supervisor-log-prune-command)))
+  (should (stringp elinit-log-prune-command))
+  (should (string-match "sbin/supervisor-log-prune\\'" elinit-log-prune-command)))
 
-(ert-deftest supervisor-test-logrotate-keep-days-default ()
+(ert-deftest elinit-test-logrotate-keep-days-default ()
   "Logrotate keep-days defaults to 14."
-  (should (= 14 (default-value 'supervisor-logrotate-keep-days))))
+  (should (= 14 (default-value 'elinit-logrotate-keep-days))))
 
-(ert-deftest supervisor-test-logd-max-file-size-default ()
+(ert-deftest elinit-test-logd-max-file-size-default ()
   "Log writer max file size defaults to 50 MiB."
-  (should (= 52428800 (default-value 'supervisor-logd-max-file-size))))
+  (should (= 52428800 (default-value 'elinit-logd-max-file-size))))
 
-(ert-deftest supervisor-test-log-prune-max-total-default ()
+(ert-deftest elinit-test-log-prune-max-total-default ()
   "Log prune max total bytes defaults to 1 GiB."
-  (should (= 1073741824 (default-value 'supervisor-log-prune-max-total-bytes))))
+  (should (= 1073741824 (default-value 'elinit-log-prune-max-total-bytes))))
 
-(ert-deftest supervisor-test-logd-prune-min-interval-default ()
+(ert-deftest elinit-test-logd-prune-min-interval-default ()
   "Log writer prune throttle defaults to 60 seconds."
-  (should (= 60 (default-value 'supervisor-logd-prune-min-interval))))
+  (should (= 60 (default-value 'elinit-logd-prune-min-interval))))
 
-(ert-deftest supervisor-test-logd-pid-directory-default-nil ()
+(ert-deftest elinit-test-logd-pid-directory-default-nil ()
   "Log writer PID directory defaults to nil (falls back to log-directory)."
-  (should-not (default-value 'supervisor-logd-pid-directory)))
+  (should-not (default-value 'elinit-logd-pid-directory)))
 
-(ert-deftest supervisor-test-libexec-pending-build-targets-missing-binary ()
+(ert-deftest elinit-test-libexec-pending-build-targets-missing-binary ()
   "Pending helper detection includes targets missing compiled binaries."
   (let* ((tmp (make-temp-file "sv-libexec-" t))
          (logd-bin (expand-file-name "supervisor-logd" tmp))
@@ -79,26 +79,26 @@
           (set-file-times rlimits-src
                           (time-subtract (current-time) (seconds-to-time 60)))
           (set-file-times rlimits-bin (current-time))
-          (let ((supervisor-logd-command logd-bin)
-                (supervisor-runas-command runas-bin)
-                (supervisor-rlimits-command rlimits-bin))
-            (let ((pending (supervisor--libexec-pending-build-targets)))
+          (let ((elinit-logd-command logd-bin)
+                (elinit-runas-command runas-bin)
+                (elinit-rlimits-command rlimits-bin))
+            (let ((pending (elinit--libexec-pending-build-targets)))
               (should (= 1 (length pending)))
               (should (equal "supervisor-logd"
                              (plist-get (car pending) :name))))))
       (delete-directory tmp t))))
 
-(ert-deftest supervisor-test-libexec-pending-build-targets-missing-source ()
+(ert-deftest elinit-test-libexec-pending-build-targets-missing-source ()
   "Pending helper detection includes missing binaries without sources."
   (let* ((tmp (make-temp-file "sv-libexec-" t))
          (logd-bin (expand-file-name "supervisor-logd" tmp))
          (runas-bin (expand-file-name "supervisor-runas" tmp))
          (rlimits-bin (expand-file-name "supervisor-rlimits" tmp)))
     (unwind-protect
-        (let ((supervisor-logd-command logd-bin)
-              (supervisor-runas-command runas-bin)
-              (supervisor-rlimits-command rlimits-bin))
-          (let ((pending (supervisor--libexec-pending-build-targets)))
+        (let ((elinit-logd-command logd-bin)
+              (elinit-runas-command runas-bin)
+              (elinit-rlimits-command rlimits-bin))
+          (let ((pending (elinit--libexec-pending-build-targets)))
             (should (= 3 (length pending)))
             (should (equal '("supervisor-logd" "supervisor-runas"
                              "supervisor-rlimits")
@@ -107,7 +107,7 @@
                                    pending)))))
       (delete-directory tmp t))))
 
-(ert-deftest supervisor-test-build-libexec-helpers-invokes-compiler ()
+(ert-deftest elinit-test-build-libexec-helpers-invokes-compiler ()
   "Helper build path invokes the compiler for each pending source."
   (let* ((tmp (make-temp-file "sv-libexec-" t))
          (logd-bin (expand-file-name "supervisor-logd" tmp))
@@ -122,10 +122,10 @@
           (with-temp-file logd-src (insert "int main(void){return 0;}\n"))
           (with-temp-file runas-src (insert "int main(void){return 0;}\n"))
           (with-temp-file rlimits-src (insert "int main(void){return 0;}\n"))
-          (let ((supervisor-logd-command logd-bin)
-                (supervisor-runas-command runas-bin)
-                (supervisor-rlimits-command rlimits-bin))
-            (cl-letf (((symbol-function 'supervisor--find-libexec-compiler)
+          (let ((elinit-logd-command logd-bin)
+                (elinit-runas-command runas-bin)
+                (elinit-rlimits-command rlimits-bin))
+            (cl-letf (((symbol-function 'elinit--find-libexec-compiler)
                        (lambda () "cc-test"))
                       ((symbol-function 'call-process)
                        (lambda (program _infile destination _display &rest args)
@@ -134,7 +134,7 @@
                                      :args args)
                                calls)
                          0)))
-              (let ((result (supervisor-build-libexec-helpers)))
+              (let ((result (elinit-build-libexec-helpers)))
                 (should (= 3 (plist-get result :attempted)))
                 (should (= 3 (plist-get result :built)))
                 (should-not (plist-get result :failed))
@@ -144,7 +144,7 @@
                   (should (eq t (plist-get call :destination))))))))
       (delete-directory tmp t))))
 
-(ert-deftest supervisor-test-build-libexec-helpers-fails-without-compiler ()
+(ert-deftest elinit-test-build-libexec-helpers-fails-without-compiler ()
   "Helper build returns failure when no compiler is available."
   (let* ((tmp (make-temp-file "sv-libexec-" t))
          (logd-bin (expand-file-name "supervisor-logd" tmp))
@@ -158,12 +158,12 @@
           (with-temp-file logd-src (insert "int main(void){return 0;}\n"))
           (with-temp-file runas-src (insert "int main(void){return 0;}\n"))
           (with-temp-file rlimits-src (insert "int main(void){return 0;}\n"))
-          (let ((supervisor-logd-command logd-bin)
-                (supervisor-runas-command runas-bin)
-                (supervisor-rlimits-command rlimits-bin))
-            (cl-letf (((symbol-function 'supervisor--find-libexec-compiler)
+          (let ((elinit-logd-command logd-bin)
+                (elinit-runas-command runas-bin)
+                (elinit-rlimits-command rlimits-bin))
+            (cl-letf (((symbol-function 'elinit--find-libexec-compiler)
                        (lambda () nil)))
-              (let ((result (supervisor-build-libexec-helpers)))
+              (let ((result (elinit-build-libexec-helpers)))
                 (should (= 3 (plist-get result :attempted)))
                 (should (= 0 (plist-get result :built)))
                 (should (= 1 (length (plist-get result :failed))))
@@ -171,51 +171,51 @@
                                         (car (plist-get result :failed))))))))
       (delete-directory tmp t))))
 
-(ert-deftest supervisor-test-maybe-build-libexec-helpers-prompt ()
+(ert-deftest elinit-test-maybe-build-libexec-helpers-prompt ()
   "Prompt policy builds helpers in graphical Emacs when confirmed."
-  (let ((supervisor-libexec-build-on-startup 'prompt)
+  (let ((elinit-libexec-build-on-startup 'prompt)
         (noninteractive nil)
         (asked nil)
         (built nil))
-    (cl-letf (((symbol-function 'supervisor--libexec-pending-build-targets)
+    (cl-letf (((symbol-function 'elinit--libexec-pending-build-targets)
                (lambda ()
                  (list (list :name "supervisor-logd"))))
               ((symbol-function 'y-or-n-p)
                (lambda (_prompt)
                  (setq asked t)
                  t))
-              ((symbol-function 'supervisor-build-libexec-helpers)
+              ((symbol-function 'elinit-build-libexec-helpers)
                (lambda ()
                  (setq built t)
                  (list :built 1 :attempted 1 :failed nil :missing-source nil)))
-              ((symbol-function 'supervisor--log-libexec-build-result) #'ignore))
-      (supervisor--maybe-build-libexec-helpers)
+              ((symbol-function 'elinit--log-libexec-build-result) #'ignore))
+      (elinit--maybe-build-libexec-helpers)
       (should asked)
       (should built))))
 
-(ert-deftest supervisor-test-maybe-build-libexec-helpers-automatic ()
+(ert-deftest elinit-test-maybe-build-libexec-helpers-automatic ()
   "Automatic policy builds helpers without prompting."
-  (let ((supervisor-libexec-build-on-startup 'automatic)
+  (let ((elinit-libexec-build-on-startup 'automatic)
         (built nil))
-    (cl-letf (((symbol-function 'supervisor--libexec-pending-build-targets)
+    (cl-letf (((symbol-function 'elinit--libexec-pending-build-targets)
                (lambda ()
                  (list (list :name "supervisor-logd"))))
-              ((symbol-function 'supervisor-build-libexec-helpers)
+              ((symbol-function 'elinit-build-libexec-helpers)
                (lambda ()
                  (setq built t)
                  (list :built 1 :attempted 1 :failed nil :missing-source nil)))
-              ((symbol-function 'supervisor--log-libexec-build-result) #'ignore))
-      (supervisor--maybe-build-libexec-helpers)
+              ((symbol-function 'elinit--log-libexec-build-result) #'ignore))
+      (elinit--maybe-build-libexec-helpers)
       (should built))))
 
 ;;;; Log writer lifecycle tests
 
-(ert-deftest supervisor-test-writer-spawns-when-logging-enabled ()
+(ert-deftest elinit-test-writer-spawns-when-logging-enabled ()
   "Start-writer spawns logd with correct arguments."
-  (let ((supervisor--writers (make-hash-table :test 'equal))
-        (supervisor-logd-command "/usr/bin/logd-stub")
-        (supervisor-logd-max-file-size 1000)
-        (supervisor-log-directory "/tmp/logs")
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit-logd-command "/usr/bin/logd-stub")
+        (elinit-logd-max-file-size 1000)
+        (elinit-log-directory "/tmp/logs")
         (spawned-args nil)
         ;; Create fake process before mocking make-process
         (fake-proc (start-process "fake" nil "sleep" "300")))
@@ -224,10 +224,10 @@
                    (lambda (&rest args)
                      (setq spawned-args args)
                      fake-proc)))
-          (let ((proc (supervisor--start-writer "svc1" "/tmp/logs/log-svc1.log")))
+          (let ((proc (elinit--start-writer "svc1" "/tmp/logs/log-svc1.log")))
             (should (eq proc fake-proc))
             ;; Verify logd in writers hash
-            (should (eq proc (gethash "svc1" supervisor--writers)))
+            (should (eq proc (gethash "svc1" elinit--writers)))
             ;; Verify command arguments
             (let ((cmd (plist-get spawned-args :command)))
               (should (equal (nth 0 cmd) "/usr/bin/logd-stub"))
@@ -242,67 +242,67 @@
       (when (process-live-p fake-proc)
         (delete-process fake-proc)))))
 
-(ert-deftest supervisor-test-writer-not-spawned-when-logging-disabled ()
+(ert-deftest elinit-test-writer-not-spawned-when-logging-disabled ()
   "No writer spawned when logging is disabled in start-process."
-  (let ((supervisor--writers (make-hash-table :test 'equal))
-        (supervisor--processes (make-hash-table :test 'equal))
-        (supervisor--shutting-down nil)
-        (supervisor--restart-timers (make-hash-table :test 'equal))
-        (supervisor--manually-stopped (make-hash-table :test 'equal))
-        (supervisor--enabled-override (make-hash-table :test 'equal))
-        (supervisor--failed (make-hash-table :test 'equal))
-        (supervisor--logging (make-hash-table :test 'equal))
-        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit--processes (make-hash-table :test 'equal))
+        (elinit--shutting-down nil)
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--enabled-override (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--logging (make-hash-table :test 'equal))
+        (elinit--spawn-failure-reason (make-hash-table :test 'equal))
         (writer-started nil)
         (fake-proc (start-process "fake-svc" nil "sleep" "300")))
     (unwind-protect
-        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+        (cl-letf (((symbol-function 'elinit--get-effective-logging)
                    (lambda (_id _default) nil))
-                  ((symbol-function 'supervisor--start-writer)
+                  ((symbol-function 'elinit--start-writer)
                    (lambda (_id _file &optional _log-format)
                      (setq writer-started t)
                      nil))
                   ((symbol-function 'make-process)
                    (lambda (&rest _args) fake-proc))
-                  ((symbol-function 'supervisor--make-process-sentinel)
+                  ((symbol-function 'elinit--make-process-sentinel)
                    (lambda (&rest _args) #'ignore))
-                  ((symbol-function 'supervisor--build-launch-command)
+                  ((symbol-function 'elinit--build-launch-command)
                    (lambda (_cmd &rest _args) (list "sleep" "300"))))
-          (let ((proc (supervisor--start-process
+          (let ((proc (elinit--start-process
                        "svc2" "sleep 300" nil 'simple 'always)))
             (should proc)
             (should-not writer-started)
-            (should (zerop (hash-table-count supervisor--writers)))))
+            (should (zerop (hash-table-count elinit--writers)))))
       (when (process-live-p fake-proc)
         (delete-process fake-proc)))))
 
-(ert-deftest supervisor-test-writer-stopped-on-service-exit ()
+(ert-deftest elinit-test-writer-stopped-on-service-exit ()
   "Sentinel stops the writer when the service process exits."
-  (let ((supervisor--writers (make-hash-table :test 'equal))
-        (supervisor--processes (make-hash-table :test 'equal))
-        (supervisor--last-exit-info (make-hash-table :test 'equal))
-        (supervisor--shutting-down nil)
-        (supervisor--oneshot-completed (make-hash-table :test 'equal))
-        (supervisor--manually-stopped (make-hash-table :test 'equal))
-        (supervisor--enabled-override (make-hash-table :test 'equal))
-        (supervisor--failed (make-hash-table :test 'equal))
-        (supervisor--restart-times (make-hash-table :test 'equal))
-        (supervisor--restart-timers (make-hash-table :test 'equal))
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit--processes (make-hash-table :test 'equal))
+        (elinit--last-exit-info (make-hash-table :test 'equal))
+        (elinit--shutting-down nil)
+        (elinit--oneshot-completed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--enabled-override (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--restart-times (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
         (writer-stopped nil))
-    (cl-letf (((symbol-function 'supervisor--stop-writer-if-same)
+    (cl-letf (((symbol-function 'elinit--stop-writer-if-same)
                (lambda (id &rest _args)
                  (when (string= id "svc3")
                    (setq writer-stopped t))))
-              ((symbol-function 'supervisor--emit-event) #'ignore)
-              ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
-              ((symbol-function 'supervisor--should-restart-p)
+              ((symbol-function 'elinit--emit-event) #'ignore)
+              ((symbol-function 'elinit--maybe-refresh-dashboard) #'ignore)
+              ((symbol-function 'elinit--should-restart-p)
                (lambda (&rest _) nil)))
       ;; Create a real process we can kill
       (let ((proc (start-process "svc3" nil "sleep" "300")))
-        (puthash "svc3" proc supervisor--processes)
+        (puthash "svc3" proc elinit--processes)
         (set-process-sentinel
          proc
-         (supervisor--make-process-sentinel
+         (elinit--make-process-sentinel
           "svc3" "sleep 300" nil 'simple 'no))
         (delete-process proc)
         ;; Give sentinel + deferred writer teardown a chance to run.
@@ -311,9 +311,9 @@
         (sit-for 0.4)
         (should writer-stopped)))))
 
-(ert-deftest supervisor-test-stop-all-writers-clears-hash ()
+(ert-deftest elinit-test-stop-all-writers-clears-hash ()
   "Stop-all-writers sends SIGTERM to live writers and clears the hash."
-  (let ((supervisor--writers (make-hash-table :test 'equal))
+  (let ((elinit--writers (make-hash-table :test 'equal))
         (signaled nil))
     (cl-letf (((symbol-function 'signal-process)
                (lambda (proc sig)
@@ -323,54 +323,54 @@
       ;; Add a fake live writer
       (let ((w1 (start-process "logd-a" nil "sleep" "300"))
             (w2 (start-process "logd-b" nil "sleep" "300")))
-        (puthash "a" w1 supervisor--writers)
-        (puthash "b" w2 supervisor--writers)
+        (puthash "a" w1 elinit--writers)
+        (puthash "b" w2 elinit--writers)
         (unwind-protect
             (progn
-              (supervisor--stop-all-writers)
-              (should (zerop (hash-table-count supervisor--writers)))
+              (elinit--stop-all-writers)
+              (should (zerop (hash-table-count elinit--writers)))
               (should (member "logd-a" signaled))
               (should (member "logd-b" signaled)))
           (when (process-live-p w1) (delete-process w1))
           (when (process-live-p w2) (delete-process w2)))))))
 
-(ert-deftest supervisor-test-filter-routes-to-writer ()
+(ert-deftest elinit-test-filter-routes-to-writer ()
   "Process filter routes output to writer via process-send-string."
-  (let ((supervisor--writers (make-hash-table :test 'equal))
-        (supervisor--processes (make-hash-table :test 'equal))
-        (supervisor--shutting-down nil)
-        (supervisor--restart-timers (make-hash-table :test 'equal))
-        (supervisor--manually-stopped (make-hash-table :test 'equal))
-        (supervisor--enabled-override (make-hash-table :test 'equal))
-        (supervisor--failed (make-hash-table :test 'equal))
-        (supervisor--logging (make-hash-table :test 'equal))
-        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit--processes (make-hash-table :test 'equal))
+        (elinit--shutting-down nil)
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--enabled-override (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--logging (make-hash-table :test 'equal))
+        (elinit--spawn-failure-reason (make-hash-table :test 'equal))
         (sent-data nil)
         (captured-filter nil)
         (fake-writer (start-process "fake-writer" nil "sleep" "300"))
         (fake-svc (start-process "fake-svc" nil "sleep" "300")))
     (unwind-protect
-        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+        (cl-letf (((symbol-function 'elinit--get-effective-logging)
                    (lambda (_id _default) t))
-                  ((symbol-function 'supervisor--ensure-log-directory) #'ignore)
-                  ((symbol-function 'supervisor--log-file)
+                  ((symbol-function 'elinit--ensure-log-directory) #'ignore)
+                  ((symbol-function 'elinit--log-file)
                    (lambda (_id) "/tmp/test.log"))
-                  ((symbol-function 'supervisor--start-writer)
+                  ((symbol-function 'elinit--start-writer)
                    (lambda (id _file &optional _log-format)
-                     (puthash id fake-writer supervisor--writers)
+                     (puthash id fake-writer elinit--writers)
                      fake-writer))
                   ((symbol-function 'make-process)
                    (lambda (&rest args)
                      (setq captured-filter (plist-get args :filter))
                      fake-svc))
-                  ((symbol-function 'supervisor--make-process-sentinel)
+                  ((symbol-function 'elinit--make-process-sentinel)
                    (lambda (&rest _args) #'ignore))
-                  ((symbol-function 'supervisor--build-launch-command)
+                  ((symbol-function 'elinit--build-launch-command)
                    (lambda (_cmd &rest _args) (list "sleep" "300")))
                   ((symbol-function 'process-send-string)
                    (lambda (_proc data)
                      (push data sent-data))))
-          (let ((proc (supervisor--start-process
+          (let ((proc (elinit--start-process
                        "svc4" "sleep 300" t 'simple 'always)))
             (should proc)
             (should captured-filter)
@@ -392,49 +392,49 @@
       (when (process-live-p fake-svc)
         (delete-process fake-svc)))))
 
-(ert-deftest supervisor-test-writers-cleared-on-start ()
-  "Supervisor-start clears the writers hash table."
-  (let ((supervisor--writers (make-hash-table :test 'equal)))
-    (puthash "stale" t supervisor--writers)
-    ;; We cannot easily call supervisor-start fully, but we can verify
+(ert-deftest elinit-test-writers-cleared-on-start ()
+  "Elinit-start clears the writers hash table."
+  (let ((elinit--writers (make-hash-table :test 'equal)))
+    (puthash "stale" t elinit--writers)
+    ;; We cannot easily call elinit-start fully, but we can verify
     ;; the hash is among those cleared.  Check the variable is mentioned
     ;; in the clrhash calls by verifying the state after a controlled call.
-    (clrhash supervisor--writers)
-    (should (zerop (hash-table-count supervisor--writers)))))
+    (clrhash elinit--writers)
+    (should (zerop (hash-table-count elinit--writers)))))
 
-(ert-deftest supervisor-test-stop-writer-removes-from-hash ()
+(ert-deftest elinit-test-stop-writer-removes-from-hash ()
   "Stop-writer removes the entry from the writers hash."
-  (let ((supervisor--writers (make-hash-table :test 'equal)))
+  (let ((elinit--writers (make-hash-table :test 'equal)))
     (let ((w (start-process "logd-x" nil "sleep" "300")))
-      (puthash "x" w supervisor--writers)
+      (puthash "x" w elinit--writers)
       (unwind-protect
           (progn
-            (supervisor--stop-writer "x")
-            (should (zerop (hash-table-count supervisor--writers))))
+            (elinit--stop-writer "x")
+            (should (zerop (hash-table-count elinit--writers))))
         (when (process-live-p w) (delete-process w))))))
 
-(ert-deftest supervisor-test-stop-writer-noop-for-unknown-id ()
+(ert-deftest elinit-test-stop-writer-noop-for-unknown-id ()
   "Stop-writer is a no-op for an ID not in the writers hash."
-  (let ((supervisor--writers (make-hash-table :test 'equal)))
-    (supervisor--stop-writer "nonexistent")
-    (should (zerop (hash-table-count supervisor--writers)))))
+  (let ((elinit--writers (make-hash-table :test 'equal)))
+    (elinit--stop-writer "nonexistent")
+    (should (zerop (hash-table-count elinit--writers)))))
 
-(ert-deftest supervisor-test-writer-pid-file-written ()
+(ert-deftest elinit-test-writer-pid-file-written ()
   "Start-writer writes a PID file for the logd process."
   (let* ((pid-dir (make-temp-file "sv-pid-" t))
-         (supervisor--writers (make-hash-table :test 'equal))
-         (supervisor-logd-pid-directory pid-dir)
-         (supervisor-logd-command "sleep")
-         (supervisor-logd-max-file-size 1000)
-         (supervisor-log-directory pid-dir)
-         (supervisor-logd-prune-min-interval 60)
-         (supervisor-log-prune-command "/bin/true")
-         (supervisor-log-prune-max-total-bytes 1000000)
+         (elinit--writers (make-hash-table :test 'equal))
+         (elinit-logd-pid-directory pid-dir)
+         (elinit-logd-command "sleep")
+         (elinit-logd-max-file-size 1000)
+         (elinit-log-directory pid-dir)
+         (elinit-logd-prune-min-interval 60)
+         (elinit-log-prune-command "/bin/true")
+         (elinit-log-prune-max-total-bytes 1000000)
          (fake-proc (start-process "fake-logd" nil "sleep" "300")))
     (unwind-protect
         (cl-letf (((symbol-function 'make-process)
                    (lambda (&rest _args) fake-proc)))
-          (supervisor--start-writer "svc1" "/tmp/log-svc1.log")
+          (elinit--start-writer "svc1" "/tmp/log-svc1.log")
           (let ((pid-file (expand-file-name "logd-svc1.pid" pid-dir)))
             (should (file-exists-p pid-file))
             (should (equal (string-trim
@@ -445,94 +445,94 @@
       (when (process-live-p fake-proc) (delete-process fake-proc))
       (delete-directory pid-dir t))))
 
-(ert-deftest supervisor-test-stop-writer-removes-pid-file ()
+(ert-deftest elinit-test-stop-writer-removes-pid-file ()
   "Stop-writer removes the PID file."
   (let* ((pid-dir (make-temp-file "sv-pid-" t))
-         (supervisor--writers (make-hash-table :test 'equal))
-         (supervisor-logd-pid-directory pid-dir))
+         (elinit--writers (make-hash-table :test 'equal))
+         (elinit-logd-pid-directory pid-dir))
     (let ((w (start-process "logd-y" nil "sleep" "300")))
-      (puthash "y" w supervisor--writers)
+      (puthash "y" w elinit--writers)
       (let ((pid-file (expand-file-name "logd-y.pid" pid-dir)))
         (write-region "12345" nil pid-file nil 'silent)
         (unwind-protect
             (progn
-              (supervisor--stop-writer "y")
+              (elinit--stop-writer "y")
               (should-not (file-exists-p pid-file))
-              (should (zerop (hash-table-count supervisor--writers))))
+              (should (zerop (hash-table-count elinit--writers))))
           (when (process-live-p w) (delete-process w))
           (delete-directory pid-dir t))))))
 
-(ert-deftest supervisor-test-stop-all-writers-removes-pid-files ()
+(ert-deftest elinit-test-stop-all-writers-removes-pid-files ()
   "Stop-all-writers removes PID files for all writers."
   (let* ((pid-dir (make-temp-file "sv-pid-" t))
-         (supervisor--writers (make-hash-table :test 'equal))
-         (supervisor-logd-pid-directory pid-dir)
+         (elinit--writers (make-hash-table :test 'equal))
+         (elinit-logd-pid-directory pid-dir)
          (w1 (start-process "logd-a" nil "sleep" "300"))
          (w2 (start-process "logd-b" nil "sleep" "300")))
-    (puthash "a" w1 supervisor--writers)
-    (puthash "b" w2 supervisor--writers)
+    (puthash "a" w1 elinit--writers)
+    (puthash "b" w2 elinit--writers)
     (write-region "111" nil (expand-file-name "logd-a.pid" pid-dir) nil 'silent)
     (write-region "222" nil (expand-file-name "logd-b.pid" pid-dir) nil 'silent)
     (unwind-protect
         (progn
-          (supervisor--stop-all-writers)
+          (elinit--stop-all-writers)
           (should-not (file-exists-p (expand-file-name "logd-a.pid" pid-dir)))
           (should-not (file-exists-p (expand-file-name "logd-b.pid" pid-dir)))
-          (should (zerop (hash-table-count supervisor--writers))))
+          (should (zerop (hash-table-count elinit--writers))))
       (when (process-live-p w1) (delete-process w1))
       (when (process-live-p w2) (delete-process w2))
       (delete-directory pid-dir t))))
 
-(ert-deftest supervisor-test-writer-failure-degrades-gracefully ()
+(ert-deftest elinit-test-writer-failure-degrades-gracefully ()
   "Start-writer returns nil and logs warning when make-process signals."
-  (let ((supervisor--writers (make-hash-table :test 'equal))
-        (supervisor-logd-command "/usr/bin/logd-stub")
-        (supervisor-logd-max-file-size 1000)
-        (supervisor-log-directory "/tmp/logs")
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit-logd-command "/usr/bin/logd-stub")
+        (elinit-logd-max-file-size 1000)
+        (elinit-log-directory "/tmp/logs")
         (logged nil))
     (cl-letf (((symbol-function 'make-process)
                (lambda (&rest _args)
                  (error "Doing vfork: No such file or directory")))
-              ((symbol-function 'supervisor--log)
+              ((symbol-function 'elinit--log)
                (lambda (level fmt &rest args)
                  (when (eq level 'warning)
                    (push (apply #'format fmt args) logged)))))
-      (let ((result (supervisor--start-writer "svc-fail" "/tmp/logs/log-svc-fail.log")))
+      (let ((result (elinit--start-writer "svc-fail" "/tmp/logs/log-svc-fail.log")))
         (should-not result)
-        (should (zerop (hash-table-count supervisor--writers)))
+        (should (zerop (hash-table-count elinit--writers)))
         (should logged)
         (should (string-match-p "log writer failed to start" (car logged)))))))
 
-(ert-deftest supervisor-test-start-process-succeeds-despite-writer-failure ()
+(ert-deftest elinit-test-start-process-succeeds-despite-writer-failure ()
   "Service starts without logging when writer spawn fails."
-  (let ((supervisor--writers (make-hash-table :test 'equal))
-        (supervisor--processes (make-hash-table :test 'equal))
-        (supervisor--shutting-down nil)
-        (supervisor--restart-timers (make-hash-table :test 'equal))
-        (supervisor--manually-stopped (make-hash-table :test 'equal))
-        (supervisor--enabled-override (make-hash-table :test 'equal))
-        (supervisor--failed (make-hash-table :test 'equal))
-        (supervisor--logging (make-hash-table :test 'equal))
-        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit--processes (make-hash-table :test 'equal))
+        (elinit--shutting-down nil)
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--enabled-override (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--logging (make-hash-table :test 'equal))
+        (elinit--spawn-failure-reason (make-hash-table :test 'equal))
         (captured-filter nil)
         (fake-proc (start-process "fake-svc" nil "sleep" "300")))
     (unwind-protect
-        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+        (cl-letf (((symbol-function 'elinit--get-effective-logging)
                    (lambda (_id _default) t))
-                  ((symbol-function 'supervisor--ensure-log-directory) #'ignore)
-                  ((symbol-function 'supervisor--log-file)
+                  ((symbol-function 'elinit--ensure-log-directory) #'ignore)
+                  ((symbol-function 'elinit--log-file)
                    (lambda (_id) "/tmp/test.log"))
-                  ((symbol-function 'supervisor--start-writer)
+                  ((symbol-function 'elinit--start-writer)
                    (lambda (_id _file &optional _log-format) nil))
                   ((symbol-function 'make-process)
                    (lambda (&rest args)
                      (setq captured-filter (plist-get args :filter))
                      fake-proc))
-                  ((symbol-function 'supervisor--make-process-sentinel)
+                  ((symbol-function 'elinit--make-process-sentinel)
                    (lambda (&rest _args) #'ignore))
-                  ((symbol-function 'supervisor--build-launch-command)
+                  ((symbol-function 'elinit--build-launch-command)
                    (lambda (_cmd &rest _args) (list "sleep" "300"))))
-          (let ((proc (supervisor--start-process
+          (let ((proc (elinit--start-process
                        "svc-nolog" "sleep 300" t 'simple 'always)))
             ;; Service should still start
             (should proc)
@@ -541,41 +541,41 @@
       (when (process-live-p fake-proc)
         (delete-process fake-proc)))))
 
-(ert-deftest supervisor-test-graceful-stop-writers-after-services ()
+(ert-deftest elinit-test-graceful-stop-writers-after-services ()
   "Graceful stop keeps writers alive until services actually exit."
-  (let ((supervisor--writers (make-hash-table :test 'equal))
-        (supervisor--processes (make-hash-table :test 'equal))
-        (supervisor--shutting-down nil)
-        (supervisor--shutdown-complete-flag nil)
-        (supervisor--shutdown-remaining 0)
-        (supervisor--shutdown-callback nil)
-        (supervisor--shutdown-timer nil)
-        (supervisor--timers nil)
-        (supervisor--restart-timers (make-hash-table :test 'equal))
-        (supervisor--last-exit-info (make-hash-table :test 'equal))
-        (supervisor--oneshot-completed (make-hash-table :test 'equal))
-        (supervisor--manually-stopped (make-hash-table :test 'equal))
-        (supervisor--enabled-override (make-hash-table :test 'equal))
-        (supervisor--failed (make-hash-table :test 'equal))
-        (supervisor--restart-times (make-hash-table :test 'equal))
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit--processes (make-hash-table :test 'equal))
+        (elinit--shutting-down nil)
+        (elinit--shutdown-complete-flag nil)
+        (elinit--shutdown-remaining 0)
+        (elinit--shutdown-callback nil)
+        (elinit--shutdown-timer nil)
+        (elinit--timers nil)
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--last-exit-info (make-hash-table :test 'equal))
+        (elinit--oneshot-completed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--enabled-override (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--restart-times (make-hash-table :test 'equal))
         (writers-stopped-at nil))
     ;; Create real processes for service and writer
     (let ((svc (start-process "svc-gs" nil "sleep" "300"))
           (writer (start-process "logd-gs" nil "sleep" "300")))
-      (puthash "svc-gs" svc supervisor--processes)
-      (puthash "svc-gs" writer supervisor--writers)
+      (puthash "svc-gs" svc elinit--processes)
+      (puthash "svc-gs" writer elinit--writers)
       (unwind-protect
-          (cl-letf (((symbol-function 'supervisor--kill-signal-for-id)
+          (cl-letf (((symbol-function 'elinit--kill-signal-for-id)
                      (lambda (_id) 'SIGTERM))
-                    ((symbol-function 'supervisor--run-exec-stop-for-id) #'ignore)
-                    ((symbol-function 'supervisor--dag-cleanup) #'ignore)
-                    ((symbol-function 'supervisor--emit-event) #'ignore)
-                    ((symbol-function 'supervisor-timer-scheduler-stop) #'ignore)
-                    ((symbol-function 'supervisor--stop-all-writers)
+                    ((symbol-function 'elinit--run-exec-stop-for-id) #'ignore)
+                    ((symbol-function 'elinit--dag-cleanup) #'ignore)
+                    ((symbol-function 'elinit--emit-event) #'ignore)
+                    ((symbol-function 'elinit-timer-scheduler-stop) #'ignore)
+                    ((symbol-function 'elinit--stop-all-writers)
                      (lambda ()
                        (setq writers-stopped-at
-                             (hash-table-count supervisor--processes))
-                       (clrhash supervisor--writers)))
+                             (hash-table-count elinit--processes))
+                       (clrhash elinit--writers)))
                     ((symbol-function 'run-at-time)
                      (let ((real-run-at-time
                             (symbol-function 'run-at-time)))
@@ -583,88 +583,88 @@
                          (if (symbolp fn)
                              (apply real-run-at-time secs repeat fn args)
                            nil)))))
-            ;; Call supervisor-stop — writers should NOT be stopped eagerly
-            (supervisor-stop)
+            ;; Call elinit-stop — writers should NOT be stopped eagerly
+            (elinit-stop)
             ;; Writers should not have been stopped yet (services still live)
             ;; They will be stopped when handle-shutdown-exit completes
             (should-not writers-stopped-at))
         (when (process-live-p svc) (delete-process svc))
         (when (process-live-p writer) (delete-process writer))))))
 
-(ert-deftest supervisor-test-writer-cleaned-up-on-service-spawn-failure ()
+(ert-deftest elinit-test-writer-cleaned-up-on-service-spawn-failure ()
   "Writer is stopped and removed when service make-process fails."
-  (let ((supervisor--writers (make-hash-table :test 'equal))
-        (supervisor--processes (make-hash-table :test 'equal))
-        (supervisor--shutting-down nil)
-        (supervisor--restart-timers (make-hash-table :test 'equal))
-        (supervisor--manually-stopped (make-hash-table :test 'equal))
-        (supervisor--enabled-override (make-hash-table :test 'equal))
-        (supervisor--failed (make-hash-table :test 'equal))
-        (supervisor--logging (make-hash-table :test 'equal))
-        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit--processes (make-hash-table :test 'equal))
+        (elinit--shutting-down nil)
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--enabled-override (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--logging (make-hash-table :test 'equal))
+        (elinit--spawn-failure-reason (make-hash-table :test 'equal))
         (writer-stopped nil)
         (fake-writer (start-process "fake-writer" nil "sleep" "300"))
         (call-count 0))
     (unwind-protect
-        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+        (cl-letf (((symbol-function 'elinit--get-effective-logging)
                    (lambda (_id _default) t))
-                  ((symbol-function 'supervisor--ensure-log-directory) #'ignore)
-                  ((symbol-function 'supervisor--log-file)
+                  ((symbol-function 'elinit--ensure-log-directory) #'ignore)
+                  ((symbol-function 'elinit--log-file)
                    (lambda (_id) "/tmp/test.log"))
-                  ((symbol-function 'supervisor--start-writer)
+                  ((symbol-function 'elinit--start-writer)
                    (lambda (id _file &optional _log-format)
-                     (puthash id fake-writer supervisor--writers)
+                     (puthash id fake-writer elinit--writers)
                      fake-writer))
-                  ((symbol-function 'supervisor--stop-writer)
+                  ((symbol-function 'elinit--stop-writer)
                    (lambda (id)
                      (setq writer-stopped id)
-                     (remhash id supervisor--writers)))
+                     (remhash id elinit--writers)))
                   ((symbol-function 'make-process)
                    (lambda (&rest _args)
                      (cl-incf call-count)
                      ;; First call is from start-writer (mocked above),
                      ;; second call is the service spawn which fails
                      (error "Doing vfork: No such file or directory")))
-                  ((symbol-function 'supervisor--make-process-sentinel)
+                  ((symbol-function 'elinit--make-process-sentinel)
                    (lambda (&rest _args) #'ignore))
-                  ((symbol-function 'supervisor--build-launch-command)
+                  ((symbol-function 'elinit--build-launch-command)
                    (lambda (_cmd &rest _args) (list "/nonexistent/cmd")))
-                  ((symbol-function 'supervisor--log) #'ignore))
-          (let ((proc (supervisor--start-process
+                  ((symbol-function 'elinit--log) #'ignore))
+          (let ((proc (elinit--start-process
                        "svc-fail" "/nonexistent/cmd" t 'simple 'always)))
             ;; Service should return nil (spawn failed)
             (should-not proc)
             ;; Writer should have been cleaned up
             (should (equal writer-stopped "svc-fail"))
-            (should (zerop (hash-table-count supervisor--writers)))
+            (should (zerop (hash-table-count elinit--writers)))
             ;; Spawn failure reason should be recorded
-            (should (gethash "svc-fail" supervisor--spawn-failure-reason))))
+            (should (gethash "svc-fail" elinit--spawn-failure-reason))))
       (when (process-live-p fake-writer)
         (delete-process fake-writer)))))
 
-;;;; supervisor-logrotate script tests
+;;;; elinit-logrotate script tests
 
-(ert-deftest supervisor-test-logrotate-help-exits-zero ()
+(ert-deftest elinit-test-logrotate-help-exits-zero ()
   "The --help flag exits 0 and prints usage."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-logrotate" root)))
     (with-temp-buffer
       (let ((exit-code (call-process script nil t nil "--help")))
         (should (= exit-code 0))
         (should (string-match-p "Usage:" (buffer-string)))))))
 
-(ert-deftest supervisor-test-logrotate-missing-log-dir-exits-nonzero ()
+(ert-deftest elinit-test-logrotate-missing-log-dir-exits-nonzero ()
   "Missing --log-dir exits non-zero with an error message."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-logrotate" root)))
     (with-temp-buffer
       (let ((exit-code (call-process script nil t nil)))
         (should-not (= exit-code 0))
         (should (string-match-p "--log-dir" (buffer-string)))))))
 
-(ert-deftest supervisor-test-logrotate-dry-run-no-modification ()
+(ert-deftest elinit-test-logrotate-dry-run-no-modification ()
   "Dry-run mode prints actions without modifying files."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-logrotate" root))
          (dir (make-temp-file "logrotate-" t)))
     (unwind-protect
@@ -683,9 +683,9 @@
           (should (file-exists-p (expand-file-name "log-svc1.log" dir))))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-logrotate-rotation-renames-active-files ()
+(ert-deftest elinit-test-logrotate-rotation-renames-active-files ()
   "Rotation renames active files with a timestamp suffix."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-logrotate" root))
          (dir (make-temp-file "logrotate-" t)))
     (unwind-protect
@@ -720,9 +720,9 @@
             (should (= (length files) 2))))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-logrotate-dotted-id-not-misclassified ()
+(ert-deftest elinit-test-logrotate-dotted-id-not-misclassified ()
   "Active log for a dotted ID is rotated, not skipped or pruned."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-logrotate" root))
          (dir (make-temp-file "logrotate-" t)))
     (unwind-protect
@@ -748,9 +748,9 @@
             (should (= (length files) 1))))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-logrotate-prune-spares-dotted-id-active ()
+(ert-deftest elinit-test-logrotate-prune-spares-dotted-id-active ()
   "Prune does not delete active log files for dotted IDs."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-logrotate" root))
          (dir (make-temp-file "logrotate-" t)))
     (unwind-protect
@@ -781,9 +781,9 @@
             (should (= (length files) 1))))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-logrotate-prune-removes-old-keeps-recent ()
+(ert-deftest elinit-test-logrotate-prune-removes-old-keeps-recent ()
   "Prune removes old rotated files but keeps active and recent rotated."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-logrotate" root))
          (dir (make-temp-file "logrotate-" t)))
     (unwind-protect
@@ -822,9 +822,9 @@
           )
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-logrotate-signal-reopen-sends-hup ()
+(ert-deftest elinit-test-logrotate-signal-reopen-sends-hup ()
   "Signal-reopen sends SIGHUP to PIDs found in pid files."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-logrotate" root))
          (dir (make-temp-file "logrotate-" t))
          (pid-dir (make-temp-file "logrotate-pid-" t))
@@ -860,27 +860,27 @@
 
 ;;;; Log-prune script tests
 
-(ert-deftest supervisor-test-log-prune-help-exits-zero ()
+(ert-deftest elinit-test-log-prune-help-exits-zero ()
   "The --help flag exits 0 and prints usage."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root)))
     (with-temp-buffer
       (let ((exit-code (call-process script nil t nil "--help")))
         (should (= exit-code 0))
         (should (string-match-p "Usage:" (buffer-string)))))))
 
-(ert-deftest supervisor-test-log-prune-missing-log-dir-exits-nonzero ()
+(ert-deftest elinit-test-log-prune-missing-log-dir-exits-nonzero ()
   "Missing --log-dir exits non-zero with an error message."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root)))
     (with-temp-buffer
       (let ((exit-code (call-process script nil t nil)))
         (should-not (= exit-code 0))
         (should (string-match-p "--log-dir" (buffer-string)))))))
 
-(ert-deftest supervisor-test-log-prune-under-cap-no-delete ()
+(ert-deftest elinit-test-log-prune-under-cap-no-delete ()
   "When total size is under cap, no files are deleted."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t)))
     (unwind-protect
@@ -899,9 +899,9 @@
                     "log-svc1.20250101-120000.log" dir))))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-over-cap-deletes-oldest-rotated ()
+(ert-deftest elinit-test-log-prune-over-cap-deletes-oldest-rotated ()
   "Over cap deletes oldest rotated files first, keeping newest."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (oldest (expand-file-name "log-svc1.20250101-120000.log" dir))
@@ -936,9 +936,9 @@
           (should (file-exists-p newest)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-active-files-never-deleted ()
+(ert-deftest elinit-test-log-prune-active-files-never-deleted ()
   "Active files are preserved even when over cap."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (active1 (expand-file-name "log-svc1.log" dir))
@@ -957,9 +957,9 @@
           (should (file-exists-p active2)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-dry-run-no-modification ()
+(ert-deftest elinit-test-log-prune-dry-run-no-modification ()
   "Dry-run prints actions without deleting files."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (rotated (expand-file-name "log-svc1.20250101-120000.log" dir)))
@@ -982,9 +982,9 @@
           (should (file-exists-p rotated)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-lock-prevents-concurrent ()
+(ert-deftest elinit-test-log-prune-lock-prevents-concurrent ()
   "A held lock causes prune to exit 0 without deleting."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (lock-file (expand-file-name ".prune.lock" dir))
@@ -1014,9 +1014,9 @@
         (delete-process holder))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-timestamp-id-not-deleted ()
+(ert-deftest elinit-test-log-prune-timestamp-id-not-deleted ()
   "Active log for a timestamp-like ID is protected when it has rotated children."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          ;; Active log for service ID "svc.20250101-120000"
@@ -1040,9 +1040,9 @@
           (should-not (file-exists-p child)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-timestamp-id-coexists-with-rotated ()
+(ert-deftest elinit-test-log-prune-timestamp-id-coexists-with-rotated ()
   "Rotated files are pruned while timestamp-like active logs are kept."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          ;; Active log for service ID "svc.20250101-120000"
@@ -1079,11 +1079,11 @@
           (should-not (file-exists-p ts-child)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-lone-orphan-preserved ()
+(ert-deftest elinit-test-log-prune-lone-orphan-preserved ()
   "A single orphaned rotated file with no parent and no siblings is preserved.
 Without parent or sibling confirmation, the file could be an active log
 for a service whose ID contains a timestamp pattern."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (orphan (expand-file-name "log-oldsvc.20240101-010101.log" dir)))
@@ -1099,11 +1099,11 @@ for a service whose ID contains a timestamp pattern."
           (should (file-exists-p orphan)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-orphan-siblings-deleted ()
+(ert-deftest elinit-test-log-prune-orphan-siblings-deleted ()
   "Orphaned rotated siblings are deleted even when parent is absent.
 Multiple rotated files sharing the same parent name confirm each other
 as rotated children of a now-removed service."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (orphan1 (expand-file-name "log-oldsvc.20240101-010101.log" dir))
@@ -1125,9 +1125,9 @@ as rotated children of a now-removed service."
           (should-not (file-exists-p orphan2)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-protect-id-preserves-file ()
+(ert-deftest elinit-test-log-prune-protect-id-preserves-file ()
   "The --protect-id flag prevents deletion of a specific service log."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (protected (expand-file-name "log-svc.20250101-120000.log" dir))
@@ -1152,9 +1152,9 @@ as rotated children of a now-removed service."
           (should-not (file-exists-p deletable)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-parent-confirms-rotated ()
+(ert-deftest elinit-test-log-prune-parent-confirms-rotated ()
   "A rotated file whose parent active log exists is confirmed and deleted."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (parent (expand-file-name "log-svc1.log" dir))
@@ -1173,11 +1173,11 @@ as rotated children of a now-removed service."
           (should-not (file-exists-p rotated)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-no-fuser-timestamp-id-safe ()
+(ert-deftest elinit-test-log-prune-no-fuser-timestamp-id-safe ()
   "Active log for timestamp-like ID is safe even without fuser.
 Verifies the unconditional parent-exists guard by running with
 PATH set to exclude fuser."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          ;; Active log for service svc.20250101-120000 — no parent
@@ -1197,11 +1197,11 @@ PATH set to exclude fuser."
           (should (file-exists-p active)))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-fuser-protects-open-file ()
+(ert-deftest elinit-test-log-prune-fuser-protects-open-file ()
   "Files currently open by a process are not deleted (fuser guard)."
   (skip-unless (= 0 (call-process "sh" nil nil nil
                                    "-c" "command -v fuser")))
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          ;; A timestamp-like active log with no rotated children --
@@ -1230,11 +1230,11 @@ PATH set to exclude fuser."
         (delete-process holder))
       (delete-directory dir t))))
 
-(ert-deftest supervisor-test-log-prune-fuser-allows-closed-file ()
+(ert-deftest elinit-test-log-prune-fuser-allows-closed-file ()
   "Closed files are deleted normally even when fuser is available."
   (skip-unless (= 0 (call-process "sh" nil nil nil
                                    "-c" "command -v fuser")))
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (script (expand-file-name "sbin/supervisor-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (closed-file (expand-file-name
@@ -1255,15 +1255,15 @@ PATH set to exclude fuser."
 
 ;;;; Phase 7 — rotate/prune integration
 
-(ert-deftest supervisor-test-start-writer-passes-prune-flags ()
+(ert-deftest elinit-test-start-writer-passes-prune-flags ()
   "Start-writer includes --prune-cmd and --prune-min-interval-sec."
-  (let ((supervisor--writers (make-hash-table :test 'equal))
-        (supervisor-logd-command "/usr/bin/logd-stub")
-        (supervisor-logd-max-file-size 1000)
-        (supervisor-log-directory "/tmp/logs")
-        (supervisor-log-prune-command "/usr/bin/prune-stub")
-        (supervisor-log-prune-max-total-bytes 5000)
-        (supervisor-logd-prune-min-interval 30)
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit-logd-command "/usr/bin/logd-stub")
+        (elinit-logd-max-file-size 1000)
+        (elinit-log-directory "/tmp/logs")
+        (elinit-log-prune-command "/usr/bin/prune-stub")
+        (elinit-log-prune-max-total-bytes 5000)
+        (elinit-logd-prune-min-interval 30)
         (spawned-args nil)
         (fake-proc (start-process "fake" nil "sleep" "300")))
     (unwind-protect
@@ -1271,7 +1271,7 @@ PATH set to exclude fuser."
                    (lambda (&rest args)
                      (setq spawned-args args)
                      fake-proc)))
-          (supervisor--start-writer "svc1" "/tmp/logs/log-svc1.log")
+          (elinit--start-writer "svc1" "/tmp/logs/log-svc1.log")
           (let ((cmd (plist-get spawned-args :command)))
             (should (member "--prune-cmd" cmd))
             (should (member "--prune-min-interval-sec" cmd))
@@ -1285,14 +1285,14 @@ PATH set to exclude fuser."
       (when (process-live-p fake-proc)
         (delete-process fake-proc)))))
 
-(ert-deftest supervisor-test-build-prune-command-format ()
+(ert-deftest elinit-test-build-prune-command-format ()
   "Build-prune-command returns a properly formatted command string."
   (let ((log-directory (make-temp-file "logs-" t)))
     (unwind-protect
-        (let ((supervisor-log-prune-command "/opt/prune")
-              (supervisor-log-directory log-directory)
-              (supervisor-log-prune-max-total-bytes 2048))
-          (let ((cmd (supervisor--build-prune-command)))
+        (let ((elinit-log-prune-command "/opt/prune")
+              (elinit-log-directory log-directory)
+              (elinit-log-prune-max-total-bytes 2048))
+          (let ((cmd (elinit--build-prune-command)))
             (should (stringp cmd))
             (should (string-match-p (regexp-quote "/opt/prune") cmd))
             (should (string-match-p "--log-dir" cmd))
@@ -1301,45 +1301,45 @@ PATH set to exclude fuser."
             (should (string-match-p "2048" cmd))))
       (delete-directory log-directory t))))
 
-(ert-deftest supervisor-test-effective-log-directory-falls-back ()
+(ert-deftest elinit-test-effective-log-directory-falls-back ()
   "Unwritable configured log directory falls back to user-local default."
-  (let ((supervisor-log-directory "/root/locked-supervisor")
+  (let ((elinit-log-directory "/root/locked-elinit")
         (user-emacs-directory "/tmp/emacs-user/")
         (warnings nil))
-    (cl-letf (((symbol-function 'supervisor--ensure-directory-writable)
+    (cl-letf (((symbol-function 'elinit--ensure-directory-writable)
                (lambda (directory)
                  (cond
-                  ((equal directory "/root/locked-supervisor") nil)
-                  ((equal directory "/tmp/emacs-user/supervisor")
+                  ((equal directory "/root/locked-elinit") nil)
+                  ((equal directory "/tmp/emacs-user/elinit")
                    directory)
                   (t nil))))
               ((symbol-function 'message)
                (lambda (format-string &rest args)
                  (push (apply #'format format-string args) warnings))))
-      (should (equal "/tmp/emacs-user/supervisor"
-                     (supervisor--effective-log-directory)))
+      (should (equal "/tmp/emacs-user/elinit"
+                     (elinit--effective-log-directory)))
       (should (car warnings))
-      (should (string-match-p "using /tmp/emacs-user/supervisor"
+      (should (string-match-p "using /tmp/emacs-user/elinit"
                               (car warnings))))))
 
-(ert-deftest supervisor-test-effective-log-directory-unavailable ()
+(ert-deftest elinit-test-effective-log-directory-unavailable ()
   "No writable log directory returns nil and emits a warning."
-  (let ((supervisor-log-directory "/root/locked-supervisor")
+  (let ((elinit-log-directory "/root/locked-elinit")
         (user-emacs-directory "/tmp/emacs-user/")
         (warnings nil))
-    (cl-letf (((symbol-function 'supervisor--ensure-directory-writable)
+    (cl-letf (((symbol-function 'elinit--ensure-directory-writable)
                (lambda (_directory) nil))
               ((symbol-function 'message)
                (lambda (format-string &rest args)
                  (push (apply #'format format-string args) warnings))))
-      (should-not (supervisor--effective-log-directory))
+      (should-not (elinit--effective-log-directory))
       (should (car warnings))
       (should (string-match-p "file logging disabled" (car warnings))))))
 
-(ert-deftest supervisor-test-signal-writers-reopen ()
+(ert-deftest elinit-test-signal-writers-reopen ()
   "Signal-writers-reopen sends SIGHUP to live writers."
-  (let ((supervisor--writers (make-hash-table :test 'equal))
-        (supervisor--stderr-writers (make-hash-table :test 'equal))
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit--stderr-writers (make-hash-table :test 'equal))
         (signals-sent nil)
         (fake-proc (start-process "fake-writer" nil "sleep" "300")))
     (unwind-protect
@@ -1347,24 +1347,24 @@ PATH set to exclude fuser."
                    (lambda (proc sig)
                      (push (cons proc sig) signals-sent)
                      0)))
-          (puthash "svc1" fake-proc supervisor--writers)
+          (puthash "svc1" fake-proc elinit--writers)
           (should (process-live-p fake-proc))
-          (supervisor--signal-writers-reopen)
+          (elinit--signal-writers-reopen)
           (should (= 1 (length signals-sent)))
           (should (eq (caar signals-sent) fake-proc))
           (should (eq (cdar signals-sent) 'SIGHUP)))
       (when (process-live-p fake-proc)
         (delete-process fake-proc)))))
 
-(ert-deftest supervisor-test-run-log-maintenance-chains ()
+(ert-deftest elinit-test-run-log-maintenance-chains ()
   "Log maintenance chains rotate, writer reopen, then prune."
-  (let ((supervisor--writers (make-hash-table :test 'equal))
-        (supervisor-log-directory "/tmp/test-logs")
-        (supervisor-logrotate-command "/usr/bin/rotate-stub")
-        (supervisor-logrotate-keep-days 7)
-        (supervisor-log-prune-command "/usr/bin/prune-stub")
-        (supervisor-log-prune-max-total-bytes 4096)
-        (supervisor-verbose nil)
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit-log-directory "/tmp/test-logs")
+        (elinit-logrotate-command "/usr/bin/rotate-stub")
+        (elinit-logrotate-keep-days 7)
+        (elinit-log-prune-command "/usr/bin/prune-stub")
+        (elinit-log-prune-max-total-bytes 4096)
+        (elinit-verbose nil)
         (calls nil)
         (captured-sentinel nil))
     (cl-letf (((symbol-function 'start-process)
@@ -1378,16 +1378,16 @@ PATH set to exclude fuser."
               ((symbol-function 'set-process-sentinel)
                (lambda (_proc sentinel)
                  (setq captured-sentinel sentinel)))
-              ((symbol-function 'supervisor--signal-writers-reopen)
+              ((symbol-function 'elinit--signal-writers-reopen)
                (lambda ()
                  (push (cons "reopen" nil) calls)))
-              ((symbol-function 'supervisor--log)
+              ((symbol-function 'elinit--log)
                #'ignore))
-      (supervisor-run-log-maintenance)
+      (elinit-run-log-maintenance)
       ;; First call should be logrotate
       (should (= 1 (length calls)))
       (let ((first (car calls)))
-        (should (equal (car first) "supervisor-logrotate"))
+        (should (equal (car first) "elinit-logrotate"))
         (should (equal (cadr first) "/usr/bin/rotate-stub"))
         (should (member "--log-dir" (cdr first)))
         (should (member "--keep-days" (cdr first))))
@@ -1398,7 +1398,7 @@ PATH set to exclude fuser."
       (should (= 3 (length calls)))
       ;; Most recent is prune (pushed last)
       (let ((prune-call (car calls)))
-        (should (equal (car prune-call) "supervisor-log-prune"))
+        (should (equal (car prune-call) "elinit-log-prune"))
         (should (equal (cadr prune-call) "/usr/bin/prune-stub"))
         (should (member "--log-dir" (cdr prune-call)))
         (should (member "--max-total-bytes" (cdr prune-call))))
@@ -1408,9 +1408,9 @@ PATH set to exclude fuser."
 
 ;;;; Phase 8: Default Daily Unit + Timer Wiring
 
-(ert-deftest supervisor-test-builtin-programs-log-maintenance-pair ()
+(ert-deftest elinit-test-builtin-programs-log-maintenance-pair ()
   "Built-in programs include logrotate, log-prune, and built-in targets."
-  (let ((builtins (supervisor--builtin-programs)))
+  (let ((builtins (elinit--builtin-programs)))
     (should (= 17 (length builtins)))
     (let* ((ids (mapcar (lambda (e) (plist-get (cdr e) :id)) builtins))
            (rotate (cl-find "logrotate" builtins
@@ -1428,38 +1428,38 @@ PATH set to exclude fuser."
       (should (equal '("logrotate") (plist-get (cdr prune) :requires)))
       (should-not (plist-member (cdr prune) :wanted-by)))))
 
-(ert-deftest supervisor-test-default-target-defcustom ()
+(ert-deftest elinit-test-default-target-defcustom ()
   "Default target defcustom has expected default value."
-  (should (equal supervisor-default-target "default.target")))
+  (should (equal elinit-default-target "default.target")))
 
-(ert-deftest supervisor-test-default-target-link-defcustom ()
+(ert-deftest elinit-test-default-target-link-defcustom ()
   "Default target link defcustom has expected default value."
-  (should (equal supervisor-default-target-link "graphical.target")))
+  (should (equal elinit-default-target-link "graphical.target")))
 
-(ert-deftest supervisor-test-builtin-targets-present ()
+(ert-deftest elinit-test-builtin-targets-present ()
   "Built-in programs include the four standard targets."
-  (let* ((builtins (supervisor--builtin-programs))
+  (let* ((builtins (elinit--builtin-programs))
          (ids (mapcar (lambda (e) (plist-get (cdr e) :id)) builtins)))
     (should (member "basic.target" ids))
     (should (member "multi-user.target" ids))
     (should (member "graphical.target" ids))
     (should (member "default.target" ids))))
 
-(ert-deftest supervisor-test-builtin-targets-valid ()
+(ert-deftest elinit-test-builtin-targets-valid ()
   "Built-in targets parse without validation errors."
-  (let* ((builtins (supervisor--builtin-programs))
+  (let* ((builtins (elinit--builtin-programs))
          (targets (cl-remove-if-not
                    (lambda (e) (eq 'target (plist-get (cdr e) :type)))
                    builtins)))
     (should (= 15 (length targets)))
     (dolist (entry targets)
-      (let ((parsed (supervisor--parse-entry entry)))
-        (should (eq 'target (supervisor-entry-type parsed)))
-        (should (string-suffix-p ".target" (supervisor-entry-id parsed)))))))
+      (let ((parsed (elinit--parse-entry entry)))
+        (should (eq 'target (elinit-entry-type parsed)))
+        (should (string-suffix-p ".target" (elinit-entry-id parsed)))))))
 
-(ert-deftest supervisor-test-builtin-target-topology ()
+(ert-deftest elinit-test-builtin-target-topology ()
   "Built-in targets have correct dependency chain."
-  (let* ((builtins (supervisor--builtin-programs))
+  (let* ((builtins (elinit--builtin-programs))
          (multi (cl-find "multi-user.target" builtins
                          :key (lambda (e) (plist-get (cdr e) :id))
                          :test #'equal))
@@ -1485,118 +1485,118 @@ PATH set to exclude fuser."
     (should-not (plist-get (cdr default-tgt) :requires))
     (should-not (plist-get (cdr default-tgt) :after))))
 
-(ert-deftest supervisor-test-resolve-default-chain ()
+(ert-deftest elinit-test-resolve-default-chain ()
   "Default resolution chain: default.target -> graphical.target."
-  (let ((supervisor-default-target "default.target")
-        (supervisor-default-target-link "graphical.target")
-        (supervisor--default-target-link-override nil)
+  (let ((elinit-default-target "default.target")
+        (elinit-default-target-link "graphical.target")
+        (elinit--default-target-link-override nil)
         (valid-id-set (make-hash-table :test 'equal)))
     (puthash "graphical.target" t valid-id-set)
     (should (equal "graphical.target"
-                   (supervisor--resolve-startup-root valid-id-set)))))
+                   (elinit--resolve-startup-root valid-id-set)))))
 
-(ert-deftest supervisor-test-resolve-custom-link ()
+(ert-deftest elinit-test-resolve-custom-link ()
   "Override link resolves correctly."
-  (let ((supervisor-default-target "default.target")
-        (supervisor-default-target-link "graphical.target")
-        (supervisor--default-target-link-override "multi-user.target")
+  (let ((elinit-default-target "default.target")
+        (elinit-default-target-link "graphical.target")
+        (elinit--default-target-link-override "multi-user.target")
         (valid-id-set (make-hash-table :test 'equal)))
     (puthash "multi-user.target" t valid-id-set)
     (should (equal "multi-user.target"
-                   (supervisor--resolve-startup-root valid-id-set)))))
+                   (elinit--resolve-startup-root valid-id-set)))))
 
-(ert-deftest supervisor-test-resolve-direct-target ()
+(ert-deftest elinit-test-resolve-direct-target ()
   "Non-default.target resolves directly without alias."
-  (let ((supervisor-default-target "custom.target")
-        (supervisor-default-target-link "graphical.target")
-        (supervisor--default-target-link-override nil)
+  (let ((elinit-default-target "custom.target")
+        (elinit-default-target-link "graphical.target")
+        (elinit--default-target-link-override nil)
         (valid-id-set (make-hash-table :test 'equal)))
     (puthash "custom.target" t valid-id-set)
     (should (equal "custom.target"
-                   (supervisor--resolve-startup-root valid-id-set)))))
+                   (elinit--resolve-startup-root valid-id-set)))))
 
-(ert-deftest supervisor-test-resolve-missing-target-errors ()
+(ert-deftest elinit-test-resolve-missing-target-errors ()
   "Missing resolved target signals user-error."
-  (let ((supervisor-default-target "default.target")
-        (supervisor-default-target-link "graphical.target")
-        (supervisor--default-target-link-override nil)
+  (let ((elinit-default-target "default.target")
+        (elinit-default-target-link "graphical.target")
+        (elinit--default-target-link-override nil)
         (valid-id-set (make-hash-table :test 'equal)))
     ;; graphical.target not in valid-id-set
-    (should-error (supervisor--resolve-startup-root valid-id-set)
+    (should-error (elinit--resolve-startup-root valid-id-set)
                   :type 'user-error)))
 
-(ert-deftest supervisor-test-resolve-non-target-errors ()
+(ert-deftest elinit-test-resolve-non-target-errors ()
   "Resolved root that is not a .target signals user-error."
-  (let ((supervisor-default-target "my-service")
-        (supervisor--default-target-link-override nil)
+  (let ((elinit-default-target "my-service")
+        (elinit--default-target-link-override nil)
         (valid-id-set (make-hash-table :test 'equal)))
     (puthash "my-service" 0 valid-id-set)
-    (should-error (supervisor--resolve-startup-root valid-id-set)
+    (should-error (elinit--resolve-startup-root valid-id-set)
                   :type 'user-error)))
 
-(ert-deftest supervisor-test-resolve-non-target-link-errors ()
+(ert-deftest elinit-test-resolve-non-target-link-errors ()
   "Link that resolves to non-.target signals user-error."
-  (let ((supervisor-default-target "default.target")
-        (supervisor-default-target-link "my-service")
-        (supervisor--default-target-link-override nil)
+  (let ((elinit-default-target "default.target")
+        (elinit-default-target-link "my-service")
+        (elinit--default-target-link-override nil)
         (valid-id-set (make-hash-table :test 'equal)))
     (puthash "my-service" 0 valid-id-set)
-    (should-error (supervisor--resolve-startup-root valid-id-set)
+    (should-error (elinit--resolve-startup-root valid-id-set)
                   :type 'user-error)))
 
-(ert-deftest supervisor-test-resolve-circular-alias-errors ()
+(ert-deftest elinit-test-resolve-circular-alias-errors ()
   "Setting default-target-link to default.target signals user-error."
-  (let ((supervisor-default-target "default.target")
-        (supervisor-default-target-link "default.target")
-        (supervisor--default-target-link-override nil)
+  (let ((elinit-default-target "default.target")
+        (elinit-default-target-link "default.target")
+        (elinit--default-target-link-override nil)
         (valid-id-set (make-hash-table :test 'equal)))
     (puthash "default.target" t valid-id-set)
-    (should-error (supervisor--resolve-startup-root valid-id-set)
+    (should-error (elinit--resolve-startup-root valid-id-set)
                   :type 'user-error)))
 
-(ert-deftest supervisor-test-resolve-circular-alias-override-errors ()
+(ert-deftest elinit-test-resolve-circular-alias-override-errors ()
   "Override link to default.target signals user-error."
-  (let ((supervisor-default-target "default.target")
-        (supervisor-default-target-link "graphical.target")
-        (supervisor--default-target-link-override "default.target")
+  (let ((elinit-default-target "default.target")
+        (elinit-default-target-link "graphical.target")
+        (elinit--default-target-link-override "default.target")
         (valid-id-set (make-hash-table :test 'equal)))
     (puthash "default.target" t valid-id-set)
-    (should-error (supervisor--resolve-startup-root valid-id-set)
+    (should-error (elinit--resolve-startup-root valid-id-set)
                   :type 'user-error)))
 
-(ert-deftest supervisor-test-maintenance-unit-content-no-stage ()
+(ert-deftest elinit-test-maintenance-unit-content-no-stage ()
   "Seeded maintenance unit content does not contain :stage."
-  (let ((content (supervisor--maintenance-unit-content
+  (let ((content (elinit--maintenance-unit-content
                   '(:id "logrotate"
                     :command "/usr/bin/logrotate"
                     :description "Rotate logs"))))
     (should-not (string-match-p ":stage" content))))
 
-(ert-deftest supervisor-test-resolve-rejects-invalid-entry-id ()
+(ert-deftest elinit-test-resolve-rejects-invalid-entry-id ()
   "Startup root resolution uses valid entries only, not raw order-index.
 An invalid entry ID that happens to end in .target must not pass."
   (let* ((programs '(("invalid-entry" :id "bad.target" :type target
                       :unknown-keyword t)
                      ("true" :id "svc")))
-         (plan (supervisor--build-plan programs)))
+         (plan (elinit--build-plan programs)))
     ;; bad.target is in order-index (raw) but not in valid entries
-    (should (gethash "bad.target" (supervisor-plan-order-index plan)))
-    (should-not (cl-find "bad.target" (supervisor-plan-entries plan)
-                         :key #'supervisor-entry-id :test #'equal))
+    (should (gethash "bad.target" (elinit-plan-order-index plan)))
+    (should-not (cl-find "bad.target" (elinit-plan-entries plan)
+                         :key #'elinit-entry-id :test #'equal))
     ;; Validation with valid-only set should reject it
     (let ((valid-ids (make-hash-table :test 'equal)))
-      (dolist (entry (supervisor-plan-entries plan))
-        (puthash (supervisor-entry-id entry) t valid-ids))
-      (let ((supervisor-default-target "bad.target")
-            (supervisor--default-target-link-override nil))
-        (should-error (supervisor--resolve-startup-root valid-ids)
+      (dolist (entry (elinit-plan-entries plan))
+        (puthash (elinit-entry-id entry) t valid-ids))
+      (let ((elinit-default-target "bad.target")
+            (elinit--default-target-link-override nil))
+        (should-error (elinit--resolve-startup-root valid-ids)
                       :type 'user-error)))))
 
-(ert-deftest supervisor-test-scaffold-no-stage ()
+(ert-deftest elinit-test-scaffold-no-stage ()
   "Unit-file scaffold does not contain :stage."
-  (let ((content (supervisor--unit-file-scaffold "my-svc")))
+  (let ((content (elinit--unit-file-scaffold "my-svc")))
     (should-not (string-match-p ":stage" content))))
 
 
-(provide 'supervisor-test-logging)
-;;; supervisor-test-logging.el ends here
+(provide 'elinit-test-logging)
+;;; elinit-test-logging.el ends here

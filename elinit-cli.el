@@ -1,11 +1,11 @@
-;;; supervisor-cli.el --- Supervisor CLI interface -*- lexical-binding: t -*-
+;;; elinit-cli.el --- Elinit CLI interface -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
 
 ;; Author: telecommuter <telecommuter@riseup.net>
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
-;; This file is part of supervisor.el.
+;; This file is part of elinit.el.
 
 ;; This program is free software: you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -22,94 +22,94 @@
 
 ;;; Commentary:
 
-;; CLI interface for supervisor.el.
-;; Run M-x supervisor-handbook for full documentation.
+;; CLI interface for elinit.el.
+;; Run M-x elinit-handbook for full documentation.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'json)
-(require 'supervisor-core)
+(require 'elinit-core)
 
-;; Forward declarations for timer subsystem (defined in supervisor-timer.el)
-(declare-function supervisor-timer-build-list "supervisor-timer" (plan))
-(declare-function supervisor-timer-id "supervisor-timer" (timer))
-(declare-function supervisor-timer-target "supervisor-timer" (timer))
-(declare-function supervisor-timer-enabled "supervisor-timer" (timer))
-(declare-function supervisor-timer-persistent "supervisor-timer" (timer))
+;; Forward declarations for timer subsystem (defined in elinit-timer.el)
+(declare-function elinit-timer-build-list "elinit-timer" (plan))
+(declare-function elinit-timer-id "elinit-timer" (timer))
+(declare-function elinit-timer-target "elinit-timer" (timer))
+(declare-function elinit-timer-enabled "elinit-timer" (timer))
+(declare-function elinit-timer-persistent "elinit-timer" (timer))
 
 ;; Forward declarations for unit-file module (optional)
-(declare-function supervisor--unit-file-path "supervisor-units" (id))
-(declare-function supervisor--unit-file-existing-path "supervisor-units" (id))
-(declare-function supervisor--unit-file-scaffold "supervisor-units" (id))
-(declare-function supervisor--authority-root-for-id "supervisor-units" (id))
-(declare-function supervisor--authority-tier-for-id "supervisor-units" (id))
+(declare-function elinit--unit-file-path "elinit-units" (id))
+(declare-function elinit--unit-file-existing-path "elinit-units" (id))
+(declare-function elinit--unit-file-scaffold "elinit-units" (id))
+(declare-function elinit--authority-root-for-id "elinit-units" (id))
+(declare-function elinit--authority-tier-for-id "elinit-units" (id))
 
-;; Forward declarations for logging module (defined in supervisor-log.el)
-(declare-function supervisor--log-file "supervisor-log" (prog))
-(declare-function supervisor--log-parse-timestamp "supervisor-log" (ts-string))
-(declare-function supervisor--log-decode-file "supervisor-log"
+;; Forward declarations for logging module (defined in elinit-log.el)
+(declare-function elinit--log-file "elinit-log" (prog))
+(declare-function elinit--log-parse-timestamp "elinit-log" (ts-string))
+(declare-function elinit--log-decode-file "elinit-log"
                   (file &optional limit offset max-bytes))
-(declare-function supervisor--log-filter-records "supervisor-log"
+(declare-function elinit--log-filter-records "elinit-log"
                   (records &optional since until priority))
-(declare-function supervisor--log-format-record-human "supervisor-log" (record))
-(declare-function supervisor--log-record-to-json "supervisor-log" (record))
-(declare-function supervisor--log-record-priority "supervisor-log" (record))
+(declare-function elinit--log-format-record-human "elinit-log" (record))
+(declare-function elinit--log-record-to-json "elinit-log" (record))
+(declare-function elinit--log-record-priority "elinit-log" (record))
 
-;; Forward declarations for timer state variables (defined in supervisor-timer.el)
-(defvar supervisor--invalid-timers)
-(defvar supervisor--timer-list)
-(defvar supervisor--timer-state)
+;; Forward declarations for timer state variables (defined in elinit-timer.el)
+(defvar elinit--invalid-timers)
+(defvar elinit--timer-list)
+(defvar elinit--timer-state)
 
 
 ;;; CLI Control Plane
 ;;
-;; Non-interactive command-line interface for controlling supervisor
+;; Non-interactive command-line interface for controlling elinit
 ;; via emacsclient. All business logic remains in Elisp; the external
-;; wrapper (sbin/supervisorctl) is transport-only.
+;; wrapper (sbin/elinitctl) is transport-only.
 
-(defconst supervisor-cli-exit-success 0
+(defconst elinit-cli-exit-success 0
   "Exit code for successful operation.")
 
-(defconst supervisor-cli-exit-failure 1
+(defconst elinit-cli-exit-failure 1
   "Exit code for runtime failure.")
 
-(defconst supervisor-cli-exit-invalid-args 2
+(defconst elinit-cli-exit-invalid-args 2
   "Exit code for invalid arguments.")
 
-(defconst supervisor-cli-exit-not-active 3
+(defconst elinit-cli-exit-not-active 3
   "Exit code for `is-active' when unit exists but is not active.
 Matches systemctl LSB convention.")
 
-(defconst supervisor-cli-exit-no-such-unit 4
+(defconst elinit-cli-exit-no-such-unit 4
   "Exit code for `is-*' predicates when the unit does not exist.
 Matches systemctl convention.")
 
-(defconst supervisor-cli-exit-validation-failed 4
+(defconst elinit-cli-exit-validation-failed 4
   "Exit code when config validation fails.")
 
-(defconst supervisor-cli-exit-server-unavailable 69
+(defconst elinit-cli-exit-server-unavailable 69
   "Exit code when Emacs server is unavailable.
 Uses sysexits.h EX_UNAVAILABLE to avoid collision with systemctl codes.")
 
-(defconst supervisor-cli-version "1.0.0"
+(defconst elinit-cli-version "1.0.0"
   "CLI version string.")
 
-(defcustom supervisor-cli-follow-max-age 3600
+(defcustom elinit-cli-follow-max-age 3600
   "Seconds before an orphaned follow session is cleaned up.
 The activity timestamp resets on every poll cycle, so a session
 with an active poll timer will never expire.  This guard only
 catches leaked sessions whose timer was canceled or lost."
   :type 'integer
-  :group 'supervisor)
+  :group 'elinit)
 
-(defvar supervisor--cli-follow-sessions (make-hash-table :test 'equal)
+(defvar elinit--cli-follow-sessions (make-hash-table :test 'equal)
   "Active follow sessions.  Keys are session-id strings.
 Values are plists with keys: `:unit', `:log-file', `:offset',
 `:since-ts', `:until-ts', `:priority', `:json-p', `:follow-file',
 `:timer', `:last-activity'.")
 
-(cl-defstruct (supervisor-cli-result (:constructor supervisor-cli-result--create))
+(cl-defstruct (elinit-cli-result (:constructor elinit-cli-result--create))
   "Result returned from CLI dispatcher.
 EXITCODE is an integer (0=success, 1=failure, 2=invalid args, etc).
 FORMAT is `human' or `json'.
@@ -118,26 +118,26 @@ OUTPUT is the string to print."
   (format 'human :type symbol)
   (output "" :type string))
 
-(defun supervisor--cli-make-result (exitcode format output)
+(defun elinit--cli-make-result (exitcode format output)
   "Create CLI result with EXITCODE, FORMAT, and OUTPUT."
-  (supervisor-cli-result--create :exitcode exitcode :format format :output output))
+  (elinit-cli-result--create :exitcode exitcode :format format :output output))
 
-(defun supervisor--cli-success (output &optional format)
+(defun elinit--cli-success (output &optional format)
   "Create success result with OUTPUT and optional FORMAT (default human)."
-  (supervisor--cli-make-result supervisor-cli-exit-success
+  (elinit--cli-make-result elinit-cli-exit-success
                                (or format 'human) output))
 
-(defun supervisor--cli-error (exitcode message &optional format)
+(defun elinit--cli-error (exitcode message &optional format)
   "Create error result with EXITCODE, MESSAGE, and optional FORMAT.
 When FORMAT is `json', the error is returned as a JSON object."
   (let ((fmt (or format 'human)))
-    (supervisor--cli-make-result
+    (elinit--cli-make-result
      exitcode fmt
      (if (eq fmt 'json)
          (json-encode `((error . t) (message . ,message) (exitcode . ,exitcode)))
        (format "Error: %s\n" message)))))
 
-(defun supervisor--cli-policy-batch (ids mutator-fn verb json-p)
+(defun elinit--cli-policy-batch (ids mutator-fn verb json-p)
   "Apply MUTATOR-FN to each ID in IDS and return a CLI result.
 MUTATOR-FN is a core policy function that accepts an ID and returns
 a plist with `:status' and `:message'.  VERB is the past-tense action
@@ -153,7 +153,7 @@ Saves overrides once after all IDs are processed."
           ('error
            (push (cons id (plist-get result :message)) errors)))))
     (when applied
-      (supervisor--save-overrides))
+      (elinit--save-overrides))
     (setq applied (nreverse applied)
           skipped (nreverse skipped)
           errors (nreverse errors))
@@ -173,8 +173,8 @@ Saves overrides once after all IDs are processed."
                      (format "Error: %s (%s)\n" (car pair) (cdr pair)))
                    errors "")))))
       (if errors
-          (supervisor--cli-make-result
-           supervisor-cli-exit-failure fmt
+          (elinit--cli-make-result
+           elinit-cli-exit-failure fmt
            (if json-p
                (json-encode
                 `((applied . ,(or applied []))
@@ -187,7 +187,7 @@ Saves overrides once after all IDs are processed."
                                 `((id . ,(car p)) (reason . ,(cdr p))))
                               errors))))
              msg))
-        (supervisor--cli-success
+        (elinit--cli-success
          (if json-p
              (json-encode
               `((applied . ,(or applied []))
@@ -198,7 +198,7 @@ Saves overrides once after all IDs are processed."
            msg)
          fmt)))))
 
-(defun supervisor--cli-split-at-separator (args)
+(defun elinit--cli-split-at-separator (args)
   "Split ARGS at \"--\" separator into (before-list . after-list).
 The \"--\" itself is not included in either list.
 If no \"--\" is present, returns (ARGS . nil)."
@@ -208,7 +208,7 @@ If no \"--\" is present, returns (ARGS . nil)."
               (cl-subseq args (1+ pos)))
       (cons args nil))))
 
-(defun supervisor--cli-parse-option (args option)
+(defun elinit--cli-parse-option (args option)
   "Parse OPTION and its value from ARGS by position.
 OPTION is a string like \"--tail\".
 Returns a plist with :value, :missing, :duplicate, :positional.
@@ -243,78 +243,78 @@ Returns a plist with :value, :missing, :duplicate, :positional.
     (list :value value :missing missing :duplicate duplicate
           :positional (nreverse positional))))
 
-(defun supervisor--cli-has-unknown-flags (args &optional known-flags)
+(defun elinit--cli-has-unknown-flags (args &optional known-flags)
   "Check if ARGS contain unknown flags (starting with - or --).
 KNOWN-FLAGS is a list of exact allowed flags like \"--tail\" \"--signal\".
 Returns the first unknown flag or nil.  Checks both -- and single - flags.
 Stops checking at \"--\" separator (POSIX end-of-options convention)."
   (let* ((known (or known-flags '()))
-         (split (supervisor--cli-split-at-separator args))
+         (split (elinit--cli-split-at-separator args))
          (check-args (car split)))
     (cl-find-if (lambda (arg)
                   (and (string-prefix-p "-" arg)
                        (not (member arg known))))
                 check-args)))
 
-(defun supervisor--cli-strip-separator (args)
+(defun elinit--cli-strip-separator (args)
   "Remove \"--\" separator from ARGS, concatenating before and after parts."
-  (let ((split (supervisor--cli-split-at-separator args)))
+  (let ((split (elinit--cli-split-at-separator args)))
     (append (car split) (cdr split))))
 
-(defun supervisor--cli-reject-extra-args (args json-p)
+(defun elinit--cli-reject-extra-args (args json-p)
   "Return error result if ARGS is non-nil.  JSON-P controls format.
 Returns nil if args is empty, otherwise returns an error result."
   (when args
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            (format "Unexpected arguments: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human))))
 
-(defun supervisor--cli-ensure-array (list)
+(defun elinit--cli-ensure-array (list)
   "Ensure LIST is encoded as JSON array, not null for empty list."
   (or list (vector)))
 
 ;;; CLI Status/List helpers
 
-(defun supervisor--cli-entry-info (entry &optional snapshot)
+(defun elinit--cli-entry-info (entry &optional snapshot)
   "Build info alist for parsed ENTRY, using optional SNAPSHOT for state.
 Returns alist with all fields needed for status display."
-  (let* ((id (supervisor-entry-id entry))
-         (type (supervisor-entry-type entry))
-         (enabled-cfg (supervisor-entry-enabled-p entry))
-         (restart-cfg (supervisor-entry-restart-policy entry))
-         (logging-cfg (supervisor-entry-logging-p entry))
-         (delay (supervisor-entry-delay entry))
-         (after (supervisor-entry-after entry))
-         (requires (supervisor-entry-requires entry))
-         (status-result (supervisor--compute-entry-status id type snapshot))
+  (let* ((id (elinit-entry-id entry))
+         (type (elinit-entry-type entry))
+         (enabled-cfg (elinit-entry-enabled-p entry))
+         (restart-cfg (elinit-entry-restart-policy entry))
+         (logging-cfg (elinit-entry-logging-p entry))
+         (delay (elinit-entry-delay entry))
+         (after (elinit-entry-after entry))
+         (requires (elinit-entry-requires entry))
+         (status-result (elinit--compute-entry-status id type snapshot))
          (status (car status-result))
-         (reason (supervisor--compute-entry-reason id type snapshot))
+         (reason (elinit--compute-entry-reason id type snapshot))
          ;; Get effective values with overrides
-         (enabled-eff (supervisor--get-effective-enabled id enabled-cfg))
+         (enabled-eff (elinit--get-effective-enabled id enabled-cfg))
          (restart-eff (if (eq type 'oneshot) nil
-                        (supervisor--get-effective-restart id restart-cfg)))
-         (logging-eff (supervisor--get-effective-logging id logging-cfg))
+                        (elinit--get-effective-restart id restart-cfg)))
+         (logging-eff (elinit--get-effective-logging id logging-cfg))
          ;; Get PID if running
          (pid (when snapshot
-                (gethash id (supervisor-snapshot-process-pids snapshot))))
+                (gethash id (elinit-snapshot-process-pids snapshot))))
          (pid-global (unless snapshot
-                       (let ((proc (gethash id supervisor--processes)))
+                       (let ((proc (gethash id elinit--processes)))
                          (when (and proc (process-live-p proc))
                            (process-id proc)))))
          ;; Get timing info
-         (start-time (gethash id supervisor--start-times))
-         (ready-time (gethash id supervisor--ready-times))
+         (start-time (gethash id elinit--start-times))
+         (ready-time (gethash id elinit--ready-times))
          ;; Telemetry
          (actual-pid (or pid pid-global))
-         (uptime (supervisor--telemetry-uptime id))
-         (restart-count (supervisor--telemetry-restart-count id))
-         (last-exit (supervisor--telemetry-last-exit-info id snapshot))
-         (next-eta (supervisor--telemetry-next-restart-eta id))
+         (uptime (elinit--telemetry-uptime id))
+         (restart-count (elinit--telemetry-restart-count id))
+         (last-exit (elinit--telemetry-last-exit-info id snapshot))
+         (next-eta (elinit--telemetry-next-restart-eta id))
          (metrics (when actual-pid
-                    (supervisor--telemetry-process-metrics actual-pid)))
+                    (elinit--telemetry-process-metrics actual-pid)))
          (process-tree (when actual-pid
-                         (supervisor--telemetry-process-tree actual-pid))))
+                         (elinit--telemetry-process-tree actual-pid))))
     `((id . ,id)
       (type . ,type)
       (enabled . ,enabled-eff)
@@ -340,53 +340,53 @@ Returns alist with all fields needed for status display."
       (metrics . ,metrics)
       (process-tree . ,process-tree)
       (unit-file . ,(cond
-                     ((fboundp 'supervisor--unit-file-existing-path)
-                      (supervisor--unit-file-existing-path id))
-                     ((fboundp 'supervisor--unit-file-path)
-                      (when-let* ((path (supervisor--unit-file-path id)))
+                     ((fboundp 'elinit--unit-file-existing-path)
+                      (elinit--unit-file-existing-path id))
+                     ((fboundp 'elinit--unit-file-path)
+                      (when-let* ((path (elinit--unit-file-path id)))
                         (when (file-exists-p path)
                           path)))))
-      (authority-tier . ,(when (fboundp 'supervisor--authority-tier-for-id)
-                           (supervisor--authority-tier-for-id id)))
-      (working-directory . ,(supervisor-entry-working-directory entry))
-      (environment . ,(supervisor-entry-environment entry))
-      (environment-file . ,(supervisor-entry-environment-file entry))
-      (exec-stop . ,(supervisor-entry-exec-stop entry))
-      (exec-reload . ,(supervisor-entry-exec-reload entry))
-      (restart-sec . ,(supervisor-entry-restart-sec entry))
-      (user . ,(supervisor-entry-user entry))
-      (group . ,(supervisor-entry-group entry))
-      (description . ,(supervisor-entry-description entry))
-      (documentation . ,(supervisor-entry-documentation entry))
-      (sandbox-profile . ,(supervisor-entry-sandbox-profile entry))
-      (sandbox-network . ,(let ((profile (or (supervisor-entry-sandbox-profile entry) 'none)))
-                            (or (supervisor-entry-sandbox-network entry)
-                                (supervisor--sandbox-profile-default-network
+      (authority-tier . ,(when (fboundp 'elinit--authority-tier-for-id)
+                           (elinit--authority-tier-for-id id)))
+      (working-directory . ,(elinit-entry-working-directory entry))
+      (environment . ,(elinit-entry-environment entry))
+      (environment-file . ,(elinit-entry-environment-file entry))
+      (exec-stop . ,(elinit-entry-exec-stop entry))
+      (exec-reload . ,(elinit-entry-exec-reload entry))
+      (restart-sec . ,(elinit-entry-restart-sec entry))
+      (user . ,(elinit-entry-user entry))
+      (group . ,(elinit-entry-group entry))
+      (description . ,(elinit-entry-description entry))
+      (documentation . ,(elinit-entry-documentation entry))
+      (sandbox-profile . ,(elinit-entry-sandbox-profile entry))
+      (sandbox-network . ,(let ((profile (or (elinit-entry-sandbox-profile entry) 'none)))
+                            (or (elinit-entry-sandbox-network entry)
+                                (elinit--sandbox-profile-default-network
                                  profile))))
-      (sandbox-enabled . ,(supervisor--sandbox-requesting-p entry))
-      (limit-nofile . ,(supervisor-entry-limit-nofile entry))
-      (limit-nproc . ,(supervisor-entry-limit-nproc entry))
-      (limit-core . ,(supervisor-entry-limit-core entry))
-      (limit-fsize . ,(supervisor-entry-limit-fsize entry))
-      (limit-as . ,(supervisor-entry-limit-as entry))
-      (log-tail . ,(supervisor--telemetry-log-tail id 5)))))
+      (sandbox-enabled . ,(elinit--sandbox-requesting-p entry))
+      (limit-nofile . ,(elinit-entry-limit-nofile entry))
+      (limit-nproc . ,(elinit-entry-limit-nproc entry))
+      (limit-core . ,(elinit-entry-limit-core entry))
+      (limit-fsize . ,(elinit-entry-limit-fsize entry))
+      (limit-as . ,(elinit-entry-limit-as entry))
+      (log-tail . ,(elinit--telemetry-log-tail id 5)))))
 
-(defun supervisor--cli-all-entries-info (&optional snapshot)
+(defun elinit--cli-all-entries-info (&optional snapshot)
   "Build info alists for all valid entries, using optional SNAPSHOT.
 Returns (entries invalid) where entries is list of alists and
 invalid is list of (id . reason) pairs, sorted by ID for determinism.
 Includes both plan-level and unit-file-level invalid entries."
-  (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
-         (entries (supervisor-plan-entries plan))
+  (let* ((plan (elinit--build-plan (elinit--effective-programs)))
+         (entries (elinit-plan-entries plan))
          (combined-invalid (make-hash-table :test 'equal))
          (invalid-list nil)
          (entry-infos nil))
     ;; Merge plan invalids and unit-file invalids into combined hash
     (maphash (lambda (k v) (puthash k v combined-invalid))
-             (supervisor-plan-invalid plan))
-    (when (boundp 'supervisor--unit-file-invalid)
+             (elinit-plan-invalid plan))
+    (when (boundp 'elinit--unit-file-invalid)
       (maphash (lambda (k v) (puthash k v combined-invalid))
-               (symbol-value 'supervisor--unit-file-invalid)))
+               (symbol-value 'elinit--unit-file-invalid)))
     ;; Collect invalid entries
     (maphash (lambda (id reason)
                (push `((id . ,id) (reason . ,reason)) invalid-list))
@@ -397,16 +397,16 @@ Includes both plan-level and unit-file-level invalid entries."
                                (string< (alist-get 'id a) (alist-get 'id b)))))
     ;; Collect valid entries info
     (dolist (entry entries)
-      (push (supervisor--cli-entry-info entry snapshot) entry-infos))
+      (push (elinit--cli-entry-info entry snapshot) entry-infos))
     (list (nreverse entry-infos) invalid-list)))
 
 ;;; CLI Human Formatters
 
-(defun supervisor--cli-format-bool (val)
+(defun elinit--cli-format-bool (val)
   "Format boolean VAL as yes/no string."
   (if val "yes" "no"))
 
-(defun supervisor--cli-format-duration (seconds)
+(defun elinit--cli-format-duration (seconds)
   "Format SECONDS as a human-readable duration string."
   (let ((s (round seconds)))
     (cond
@@ -415,7 +415,7 @@ Includes both plan-level and unit-file-level invalid entries."
      ((< s 86400) (format "%dh%dm" (/ s 3600) (% (/ s 60) 60)))
      (t (format "%dd%dh" (/ s 86400) (% (/ s 3600) 24))))))
 
-(defun supervisor--cli-format-status-line (info)
+(defun elinit--cli-format-status-line (info)
   "Format single entry INFO alist as status table row."
   (let ((id (alist-get 'id info))
         (type (alist-get 'type info))
@@ -428,15 +428,15 @@ Includes both plan-level and unit-file-level invalid entries."
     (format "%-16s %-8s %-8s %-10s %-11s %-5s %-7s %s\n"
             (truncate-string-to-width (or id "-") 16)
             (or (symbol-name type) "-")
-            (supervisor--cli-format-bool enabled)
+            (elinit--cli-format-bool enabled)
             (or status "-")
             (if (eq type 'oneshot) "n/a"
               (if restart (symbol-name restart) "-"))
-            (supervisor--cli-format-bool logging)
+            (elinit--cli-format-bool logging)
             (if pid (number-to-string pid) "-")
             (or reason "-"))))
 
-(defun supervisor--cli-format-invalid-line (info)
+(defun elinit--cli-format-invalid-line (info)
   "Format invalid entry INFO as status table row."
   (let ((id (alist-get 'id info))
         (reason (alist-get 'reason info)))
@@ -445,17 +445,17 @@ Includes both plan-level and unit-file-level invalid entries."
             "-" "-" "invalid" "-" "-" "-"
             (or reason "-"))))
 
-(defun supervisor--cli-status-human (entries invalid)
+(defun elinit--cli-status-human (entries invalid)
   "Format ENTRIES and INVALID as human-readable status table."
   (let ((header (format "%-16s %-8s %-8s %-10s %-11s %-5s %-7s %s\n"
                         "ID" "TYPE" "ENABLED" "STATUS" "RESTART" "LOG" "PID" "REASON"))
         (sep (make-string 94 ?-)))
     (concat header sep "\n"
-            (mapconcat #'supervisor--cli-format-status-line entries "")
+            (mapconcat #'elinit--cli-format-status-line entries "")
             (when invalid
-              (mapconcat #'supervisor--cli-format-invalid-line invalid "")))))
+              (mapconcat #'elinit--cli-format-invalid-line invalid "")))))
 
-(defun supervisor--cli-describe-human (info)
+(defun elinit--cli-describe-human (info)
   "Format single entry INFO as human-readable detail view."
   (let ((id (alist-get 'id info))
         (type (alist-get 'type info))
@@ -481,14 +481,14 @@ Includes both plan-level and unit-file-level invalid entries."
      (format "Type: %s\n" type)
      (format "Status: %s%s\n" status (if reason (format " (%s)" reason) ""))
      (format "Enabled: %s%s\n"
-             (supervisor--cli-format-bool enabled)
+             (elinit--cli-format-bool enabled)
              (if (not (eq enabled enabled-cfg)) " (override)" ""))
      (when (not (eq type 'oneshot))
        (format "Restart: %s%s\n"
                (if restart (symbol-name restart) "-")
                (if (not (eq restart restart-cfg)) " (override)" "")))
      (format "Logging: %s%s\n"
-             (supervisor--cli-format-bool logging)
+             (elinit--cli-format-bool logging)
              (if (not (eq logging logging-cfg)) " (override)" ""))
      (format "Delay: %s\n" delay)
      (format "After: %s\n" (if after (mapconcat #'identity after ", ") "none"))
@@ -547,7 +547,7 @@ Includes both plan-level and unit-file-level invalid entries."
      (when duration (format "Duration: %.3fs\n" duration))
      (let ((uptime (alist-get 'uptime info)))
        (when uptime (format "Uptime: %s\n"
-                            (supervisor--cli-format-duration uptime))))
+                            (elinit--cli-format-duration uptime))))
      (let ((rc (alist-get 'restart-count info)))
        (when (and rc (> rc 0))
          (format "Restarts: %d (in window)\n" rc)))
@@ -591,7 +591,7 @@ Includes both plan-level and unit-file-level invalid entries."
        (when log-tail
          (format "\nRecent log:\n%s" log-tail))))))
 
-(defun supervisor--cli-describe-invalid-human (info)
+(defun elinit--cli-describe-invalid-human (info)
   "Format invalid entry INFO as human-readable detail view."
   (let ((id (alist-get 'id info))
         (reason (alist-get 'reason info)))
@@ -602,7 +602,7 @@ Includes both plan-level and unit-file-level invalid entries."
 
 ;;; CLI JSON Formatters
 
-(defun supervisor--cli-entry-to-json-obj (info)
+(defun elinit--cli-entry-to-json-obj (info)
   "Convert entry INFO alist to JSON-compatible alist."
   `((id . ,(alist-get 'id info))
     (type . ,(symbol-name (alist-get 'type info)))
@@ -670,37 +670,37 @@ Includes both plan-level and unit-file-level invalid entries."
     (documentation . ,(or (alist-get 'documentation info) []))
     (log_tail . ,(alist-get 'log-tail info))))
 
-(defun supervisor--cli-invalid-to-json-obj (info)
+(defun elinit--cli-invalid-to-json-obj (info)
   "Convert invalid entry INFO to JSON-compatible alist."
   `((id . ,(alist-get 'id info))
     (reason . ,(alist-get 'reason info))))
 
-(defun supervisor--cli-status-json (entries invalid)
+(defun elinit--cli-status-json (entries invalid)
   "Format ENTRIES and INVALID as JSON status object.
 Empty lists are encoded as arrays, not null."
-  (let ((obj `((entries . ,(supervisor--cli-ensure-array
-                            (mapcar #'supervisor--cli-entry-to-json-obj entries)))
-               (invalid . ,(supervisor--cli-ensure-array
-                            (mapcar #'supervisor--cli-invalid-to-json-obj invalid))))))
+  (let ((obj `((entries . ,(elinit--cli-ensure-array
+                            (mapcar #'elinit--cli-entry-to-json-obj entries)))
+               (invalid . ,(elinit--cli-ensure-array
+                            (mapcar #'elinit--cli-invalid-to-json-obj invalid))))))
     (json-encode obj)))
 
 ;;; CLI Subcommand Handlers
 
-(defun supervisor--cli-cmd-status (args json-p)
+(defun elinit--cli-cmd-status (args json-p)
   "Handle `status [ID...]' command with ARGS.  JSON-P enables JSON output.
 With IDs, show detailed status for each unit (valid or invalid).
 Print output for found units, invalid detail for invalid units,
 and append warnings for truly missing IDs (exit non-zero if any missing).
 Without IDs, show overview table (same as `list-units')."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
+        (elinit--cli-error elinit-cli-exit-invalid-args
                                (format "Unknown option: %s" unknown)
                                (if json-p 'json 'human))
       (if args
           ;; Detailed status for specific IDs
-          (let* ((snapshot (supervisor--build-snapshot))
-                 (result (supervisor--cli-all-entries-info snapshot))
+          (let* ((snapshot (elinit--build-snapshot))
+                 (result (elinit--cli-all-entries-info snapshot))
                  (entries (car result))
                  (invalid (cadr result))
                  (valid-out nil)
@@ -725,23 +725,23 @@ Without IDs, show overview table (same as `list-units')."
                     (if json-p
                         (json-encode
                          `((entries
-                            . ,(supervisor--cli-ensure-array
-                                (mapcar #'supervisor--cli-entry-to-json-obj
+                            . ,(elinit--cli-ensure-array
+                                (mapcar #'elinit--cli-entry-to-json-obj
                                         valid-out)))
                            (invalid
-                            . ,(supervisor--cli-ensure-array
-                                (mapcar #'supervisor--cli-invalid-to-json-obj
+                            . ,(elinit--cli-ensure-array
+                                (mapcar #'elinit--cli-invalid-to-json-obj
                                         invalid-out)))
                            (not_found
-                            . ,(supervisor--cli-ensure-array missing))))
+                            . ,(elinit--cli-ensure-array missing))))
                       (concat
                        (when valid-out
-                         (mapconcat #'supervisor--cli-describe-human
+                         (mapconcat #'elinit--cli-describe-human
                                     valid-out "\n"))
                        (when invalid-out
                          (concat
                           (when valid-out "\n")
-                          (mapconcat #'supervisor--cli-describe-invalid-human
+                          (mapconcat #'elinit--cli-describe-invalid-human
                                      invalid-out "\n")))
                        (when missing
                          (concat
@@ -751,24 +751,24 @@ Without IDs, show overview table (same as `list-units')."
                              (format "Unit %s could not be found.\n" id))
                            missing ""))))))
                    (exitcode (if missing
-                                 supervisor-cli-exit-failure
-                               supervisor-cli-exit-success)))
-              (supervisor--cli-make-result
+                                 elinit-cli-exit-failure
+                               elinit-cli-exit-success)))
+              (elinit--cli-make-result
                exitcode (if json-p 'json 'human) detail)))
         ;; No IDs: overview table (same as list-units)
-        (supervisor--cli-cmd-list-units nil json-p)))))
+        (elinit--cli-cmd-list-units nil json-p)))))
 
-(defun supervisor--cli-cmd-list-units (args json-p)
+(defun elinit--cli-cmd-list-units (args json-p)
   "Handle `list-units [ID...]' command with ARGS.  JSON-P enables JSON output.
 Show overview status table for all or filtered entries.
 When IDs are specified, both valid and invalid rows are filtered."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
+        (elinit--cli-error elinit-cli-exit-invalid-args
                                (format "Unknown option: %s" unknown)
                                (if json-p 'json 'human))
-      (let* ((snapshot (supervisor--build-snapshot))
-             (result (supervisor--cli-all-entries-info snapshot))
+      (let* ((snapshot (elinit--build-snapshot))
+             (result (elinit--cli-all-entries-info snapshot))
              (entries (car result))
              (invalid (cadr result))
              (entries (if args
@@ -781,29 +781,29 @@ When IDs are specified, both valid and invalid rows are filtered."
                            (lambda (e) (member (alist-get 'id e) args))
                            invalid)
                         invalid)))
-        (supervisor--cli-success
+        (elinit--cli-success
          (if json-p
-             (supervisor--cli-status-json entries invalid)
-           (supervisor--cli-status-human entries invalid))
+             (elinit--cli-status-json entries invalid)
+           (elinit--cli-status-human entries invalid))
          (if json-p 'json 'human))))))
 
-(defun supervisor--cli-cmd-show (args json-p)
+(defun elinit--cli-cmd-show (args json-p)
   "Handle `show ID' command with ARGS.  JSON-P enables JSON output.
 Show all properties of a single unit."
   (cond
    ((null args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            "show requires an ID argument"
                            (if json-p 'json 'human)))
    ((cdr args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            (format "show takes exactly one ID, got: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    (t
     (let* ((id (car args))
-           (snapshot (supervisor--build-snapshot))
-           (result (supervisor--cli-all-entries-info snapshot))
+           (snapshot (elinit--build-snapshot))
+           (result (elinit--cli-all-entries-info snapshot))
            (entries (car result))
            (invalid (cadr result))
            (info (cl-find id entries
@@ -815,37 +815,37 @@ Show all properties of a single unit."
                            :test #'equal))))
       (cond
        (info
-        (supervisor--cli-success
+        (elinit--cli-success
          (if json-p
-             (json-encode (supervisor--cli-entry-to-json-obj info))
-           (supervisor--cli-describe-human info))
+             (json-encode (elinit--cli-entry-to-json-obj info))
+           (elinit--cli-describe-human info))
          (if json-p 'json 'human)))
        (inv
-        (supervisor--cli-success
+        (elinit--cli-success
          (if json-p
-             (json-encode (supervisor--cli-invalid-to-json-obj inv))
-           (supervisor--cli-describe-invalid-human inv))
+             (json-encode (elinit--cli-invalid-to-json-obj inv))
+           (elinit--cli-describe-invalid-human inv))
          (if json-p 'json 'human)))
        (t
-        (supervisor--cli-error supervisor-cli-exit-failure
+        (elinit--cli-error elinit-cli-exit-failure
                                (format "No entry with ID '%s'" id)
                                (if json-p 'json 'human))))))))
 
-(defun supervisor--cli-cmd-verify (args json-p)
+(defun elinit--cli-cmd-verify (args json-p)
   "Handle `verify' command with ARGS.  JSON-P enables JSON output."
 
-  (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
+  (let ((extra-err (elinit--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
-      (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
-             (service-valid (length (supervisor-plan-entries plan)))
+      (let* ((plan (elinit--build-plan (elinit--effective-programs)))
+             (service-valid (length (elinit-plan-entries plan)))
              (combined-invalid (make-hash-table :test 'equal))
              (service-invalid-list nil))
         ;; Merge plan invalids and unit-file invalids
         (maphash (lambda (k v) (puthash k v combined-invalid))
-                 (supervisor-plan-invalid plan))
-        (when (boundp 'supervisor--unit-file-invalid)
+                 (elinit-plan-invalid plan))
+        (when (boundp 'elinit--unit-file-invalid)
           (maphash (lambda (k v) (puthash k v combined-invalid))
-                   (symbol-value 'supervisor--unit-file-invalid)))
+                   (symbol-value 'elinit--unit-file-invalid)))
         (maphash (lambda (id reason)
                    (push `((id . ,id) (reason . ,reason)) service-invalid-list))
                  combined-invalid)
@@ -855,12 +855,12 @@ Show all properties of a single unit."
                     (lambda (a b)
                       (string< (alist-get 'id a) (alist-get 'id b)))))
         ;; Validate timers
-        (let* ((timers (supervisor-timer-build-list plan))
+        (let* ((timers (elinit-timer-build-list plan))
                (timer-valid (length timers))
                (timer-invalid-list nil))
           (maphash (lambda (id reason)
                      (push `((id . ,id) (reason . ,reason)) timer-invalid-list))
-                   supervisor--invalid-timers)
+                   elinit--invalid-timers)
           (setq timer-invalid-list
                 (sort timer-invalid-list
                       (lambda (a b)
@@ -870,24 +870,24 @@ Show all properties of a single unit."
                 (has-errors (or (> (length service-invalid-list) 0)
                                 (> (length timer-invalid-list) 0))))
             (if json-p
-                (supervisor--cli-make-result
-                 (if has-errors supervisor-cli-exit-validation-failed
-                   supervisor-cli-exit-success)
+                (elinit--cli-make-result
+                 (if has-errors elinit-cli-exit-validation-failed
+                   elinit-cli-exit-success)
                  'json
                  (json-encode
                   `((services . ((valid . ,service-valid)
                                  (invalid . ,service-invalid)
-                                 (errors . ,(supervisor--cli-ensure-array
-                                             (mapcar #'supervisor--cli-invalid-to-json-obj
+                                 (errors . ,(elinit--cli-ensure-array
+                                             (mapcar #'elinit--cli-invalid-to-json-obj
                                                      service-invalid-list)))))
                     (timers . ((valid . ,timer-valid)
                                (invalid . ,timer-invalid)
-                               (errors . ,(supervisor--cli-ensure-array
-                                           (mapcar #'supervisor--cli-invalid-to-json-obj
+                               (errors . ,(elinit--cli-ensure-array
+                                           (mapcar #'elinit--cli-invalid-to-json-obj
                                                    timer-invalid-list))))))))
-              (supervisor--cli-make-result
-               (if has-errors supervisor-cli-exit-validation-failed
-                 supervisor-cli-exit-success)
+              (elinit--cli-make-result
+               (if has-errors elinit-cli-exit-validation-failed
+                 elinit-cli-exit-success)
                'human
                (concat
                 (format "Services: %d valid, %d invalid\n" service-valid service-invalid)
@@ -896,7 +896,7 @@ Show all properties of a single unit."
                                      (alist-get 'id e)
                                      (alist-get 'reason e)))
                            service-invalid-list "")
-                (when supervisor-timers
+                (when elinit-timers
                   (concat
                    (format "Timers: %d valid, %d invalid\n" timer-valid timer-invalid)
                    (mapconcat (lambda (e)
@@ -905,41 +905,41 @@ Show all properties of a single unit."
                                         (alist-get 'reason e)))
                               timer-invalid-list ""))))))))))))
 
-(defun supervisor--cli-cmd-start (args json-p)
+(defun elinit--cli-cmd-start (args json-p)
   "Handle `start [--target T] [-- ID...]' command with ARGS.
 JSON-P enables JSON output.  Use -- before IDs that start with a hyphen.
 When --target is specified with no IDs, override the startup root for
 that invocation only."
-  (let* ((split (supervisor--cli-split-at-separator args))
+  (let* ((split (elinit--cli-split-at-separator args))
          (before (car split))
          (after (cdr split))
-         (parsed (supervisor--cli-parse-option before "--target"))
+         (parsed (elinit--cli-parse-option before "--target"))
          (target-val (plist-get parsed :value))
          (target-missing (plist-get parsed :missing))
          (target-dup (plist-get parsed :duplicate))
          (before-positional (plist-get parsed :positional))
-         (unknown (supervisor--cli-has-unknown-flags
+         (unknown (elinit--cli-has-unknown-flags
                    before-positional '("--target")))
          (ids (append before-positional after)))
     (cond
      (unknown
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "Unknown option: %s" unknown)
                              (if json-p 'json 'human)))
      (target-dup
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "--target specified multiple times"
                              (if json-p 'json 'human)))
      (target-missing
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "--target requires a value"
                              (if json-p 'json 'human)))
      ((and target-val ids)
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "--target cannot be combined with specific IDs"
                              (if json-p 'json 'human)))
      ((and target-val (not (string-suffix-p ".target" target-val)))
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "'%s' is not a target (must end in .target)"
                                      target-val)
                              (if json-p 'json 'human)))
@@ -949,7 +949,7 @@ that invocation only."
             (skipped nil)
             (errors nil))
         (dolist (id ids)
-          (let ((result (supervisor--manual-start id)))
+          (let ((result (elinit--manual-start id)))
             (pcase (plist-get result :status)
               ('started (push id started))
               ('skipped (push (cons id (plist-get result :reason)) skipped))
@@ -971,7 +971,7 @@ that invocation only."
                                    (format "Error: %s (%s)\n" (car pair) (cdr pair)))
                                  errors "")))))
           (if errors
-              (supervisor--cli-make-result supervisor-cli-exit-failure
+              (elinit--cli-make-result elinit-cli-exit-failure
                                            (if json-p 'json 'human)
                                            (if json-p
                                                (json-encode
@@ -985,7 +985,7 @@ that invocation only."
                                                                          (reason . ,(cdr p))))
                                                                      errors))))
                                              msg))
-            (supervisor--cli-success
+            (elinit--cli-success
              (if json-p
                  (json-encode
                   `((started . ,started)
@@ -996,70 +996,70 @@ that invocation only."
                msg)
              (if json-p 'json 'human))))))
      (t
-      ;; Start all via supervisor-start, optionally with --target override
+      ;; Start all via elinit-start, optionally with --target override
       (if target-val
-          ;; Pre-validate target exists before calling supervisor-start
-          (let* ((plan (supervisor--build-plan
-                        (supervisor--effective-programs)))
-                 (entries (supervisor-plan-entries plan))
+          ;; Pre-validate target exists before calling elinit-start
+          (let* ((plan (elinit--build-plan
+                        (elinit--effective-programs)))
+                 (entries (elinit-plan-entries plan))
                  (found (cl-find target-val entries
-                                 :key #'supervisor-entry-id
+                                 :key #'elinit-entry-id
                                  :test #'equal)))
             (cond
              ((not found)
-              (supervisor--cli-error
-               supervisor-cli-exit-no-such-unit
+              (elinit--cli-error
+               elinit-cli-exit-no-such-unit
                (format "Target '%s' does not exist" target-val)
                (if json-p 'json 'human)))
-             ((not (eq (supervisor-entry-type found) 'target))
-              (supervisor--cli-error
-               supervisor-cli-exit-invalid-args
+             ((not (eq (elinit-entry-type found) 'target))
+              (elinit--cli-error
+               elinit-cli-exit-invalid-args
                (format "'%s' exists but is not a target unit" target-val)
                (if json-p 'json 'human)))
              (t
-              (let ((supervisor-default-target target-val))
-                (supervisor-start))
-              (supervisor--cli-success
+              (let ((elinit-default-target target-val))
+                (elinit-start))
+              (elinit--cli-success
                (if json-p
-                   (json-encode `((message . "Supervisor started")
+                   (json-encode `((message . "Elinit started")
                                   (target . ,target-val)))
-                 (format "Supervisor started (target: %s)\n" target-val))
+                 (format "Elinit started (target: %s)\n" target-val))
                (if json-p 'json 'human)))))
-        (supervisor-start)
-        (supervisor--cli-success
+        (elinit-start)
+        (elinit--cli-success
          (if json-p
-             (json-encode '((message . "Supervisor started")))
-           "Supervisor started\n")
+             (json-encode '((message . "Elinit started")))
+           "Elinit started\n")
          (if json-p 'json 'human)))))))
 
-(defun supervisor--cli-stop-all-gracefully ()
+(defun elinit--cli-stop-all-gracefully ()
   "Stop all supervised processes and wait for completion.
 Returns non-nil when graceful shutdown completed before timeout.
 This is used by CLI `stop' and `restart' for systemctl-like stop behavior."
-  (let ((deadline (+ (float-time) supervisor-shutdown-timeout 1.0)))
-    (setq supervisor--shutdown-complete-flag nil)
-    (supervisor-stop)
-    (while (and (not supervisor--shutdown-complete-flag)
+  (let ((deadline (+ (float-time) elinit-shutdown-timeout 1.0)))
+    (setq elinit--shutdown-complete-flag nil)
+    (elinit-stop)
+    (while (and (not elinit--shutdown-complete-flag)
                 (< (float-time) deadline))
       (accept-process-output nil 0.05))
-    supervisor--shutdown-complete-flag))
+    elinit--shutdown-complete-flag))
 
-(defun supervisor--cli-cmd-stop (args json-p)
+(defun elinit--cli-cmd-stop (args json-p)
   "Handle `stop [-- ID...]' command with ARGS.  JSON-P enables JSON output.
 Use -- before IDs that start with a hyphen."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
+        (elinit--cli-error elinit-cli-exit-invalid-args
                                (format "Unknown option: %s" unknown)
                                (if json-p 'json 'human))
-      (let ((args (supervisor--cli-strip-separator args)))
+      (let ((args (elinit--cli-strip-separator args)))
         (cond
          (args
           ;; Stop specific entries
           (let ((stopped nil)
                 (skipped nil))
             (dolist (id args)
-              (let ((result (supervisor--manual-stop id)))
+              (let ((result (elinit--manual-stop id)))
                 (pcase (plist-get result :status)
                   ('stopped (push id stopped))
                   ('skipped (push (cons id (plist-get result :reason)) skipped)))))
@@ -1074,7 +1074,7 @@ Use -- before IDs that start with a hyphen."
                           (mapconcat (lambda (pair)
                                        (format "Skipped: %s (%s)\n" (car pair) (cdr pair)))
                                      skipped "")))))
-              (supervisor--cli-success
+              (elinit--cli-success
                (if json-p
                    (json-encode
                     `((stopped . ,stopped)
@@ -1086,23 +1086,23 @@ Use -- before IDs that start with a hyphen."
                (if json-p 'json 'human)))))
          (t
           ;; Stop all via graceful shutdown, with forced fallback on timeout.
-          (unless (supervisor--cli-stop-all-gracefully)
-            (supervisor-stop-now))
-          (supervisor--cli-success
+          (unless (elinit--cli-stop-all-gracefully)
+            (elinit-stop-now))
+          (elinit--cli-success
            (if json-p
-               (json-encode '((message . "Supervisor stopped")))
-             "Supervisor stopped\n")
+               (json-encode '((message . "Elinit stopped")))
+             "Elinit stopped\n")
            (if json-p 'json 'human))))))))
 
-(defun supervisor--cli-cmd-restart (args json-p)
+(defun elinit--cli-cmd-restart (args json-p)
   "Handle `restart [-- ID...]' command with ARGS.  JSON-P enables JSON output.
 Use -- before IDs that start with a hyphen."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
+        (elinit--cli-error elinit-cli-exit-invalid-args
                                (format "Unknown option: %s" unknown)
                                (if json-p 'json 'human))
-      (let ((args (supervisor--cli-strip-separator args)))
+      (let ((args (elinit--cli-strip-separator args)))
         (cond
          (args
           ;; Restart specific entries
@@ -1111,9 +1111,9 @@ Use -- before IDs that start with a hyphen."
                 (errors nil))
             (dolist (id args)
               ;; Stop first if running (ignore result, we just want it stopped)
-              (supervisor--manual-stop id)
+              (elinit--manual-stop id)
               ;; Then start
-              (let ((result (supervisor--manual-start id)))
+              (let ((result (elinit--manual-start id)))
                 (pcase (plist-get result :status)
                   ('started (push id restarted))
                   ('skipped (push (cons id (plist-get result :reason)) skipped))
@@ -1135,7 +1135,7 @@ Use -- before IDs that start with a hyphen."
                                        (format "Error: %s (%s)\n" (car pair) (cdr pair)))
                                      errors "")))))
               (if errors
-                  (supervisor--cli-make-result supervisor-cli-exit-failure
+                  (elinit--cli-make-result elinit-cli-exit-failure
                                                (if json-p 'json 'human)
                                                (if json-p
                                                    (json-encode
@@ -1149,7 +1149,7 @@ Use -- before IDs that start with a hyphen."
                                                                              (reason . ,(cdr p))))
                                                                          errors))))
                                                  msg))
-                (supervisor--cli-success
+                (elinit--cli-success
                  (if json-p
                      (json-encode
                       `((restarted . ,restarted)
@@ -1161,22 +1161,22 @@ Use -- before IDs that start with a hyphen."
                  (if json-p 'json 'human))))))
          (t
           ;; Restart all: graceful stop then start, with forced fallback.
-          (unless (supervisor--cli-stop-all-gracefully)
-            (supervisor-stop-now))
-          (supervisor-start)
-          (supervisor--cli-success
+          (unless (elinit--cli-stop-all-gracefully)
+            (elinit-stop-now))
+          (elinit-start)
+          (elinit--cli-success
            (if json-p
-               (json-encode '((message . "Supervisor restarted")))
-             "Supervisor restarted\n")
+               (json-encode '((message . "Elinit restarted")))
+             "Elinit restarted\n")
            (if json-p 'json 'human))))))))
 
-(defun supervisor--cli-cmd-daemon-reload (args json-p)
+(defun elinit--cli-cmd-daemon-reload (args json-p)
   "Handle `daemon-reload' command with ARGS.  JSON-P enables JSON output.
 Reload unit definitions without affecting runtime state."
-  (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
+  (let ((extra-err (elinit--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
-      (let ((result (supervisor-daemon-reload)))
-        (supervisor--cli-success
+      (let ((result (elinit-daemon-reload)))
+        (elinit--cli-success
          (if json-p
              (json-encode `((reloaded . t)
                             (entries . ,(plist-get result :entries))
@@ -1186,39 +1186,39 @@ Reload unit definitions without affecting runtime state."
                    (plist-get result :invalid)))
          (if json-p 'json 'human))))))
 
-(defun supervisor--cli-cmd-reload (args json-p)
+(defun elinit--cli-cmd-reload (args json-p)
   "Handle `reload [--] ID...' command with ARGS.  JSON-P enables JSON output.
 Hot-reload specific units: re-reads config and restarts running units.
 Use -- before IDs that start with a hyphen."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
+        (elinit--cli-error elinit-cli-exit-invalid-args
                                (format "Unknown option: %s" unknown)
                                (if json-p 'json 'human))
-      (let ((args (supervisor--cli-strip-separator args)))
+      (let ((args (elinit--cli-strip-separator args)))
         (cond
          ((null args)
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
+          (elinit--cli-error elinit-cli-exit-invalid-args
                                  "reload requires at least one ID"
                                  (if json-p 'json 'human)))
          (t
           (let ((results nil)
                 (has-error nil))
             (dolist (id args)
-              (let ((r (supervisor--reload-unit id)))
+              (let ((r (elinit--reload-unit id)))
                 (push r results)
                 (when (string-prefix-p "error:" (plist-get r :action))
                   (setq has-error t))))
             (setq results (nreverse results))
-            (supervisor--maybe-refresh-dashboard)
+            (elinit--maybe-refresh-dashboard)
             (let ((msg (mapconcat
                         (lambda (r)
                           (format "%s: %s\n"
                                   (plist-get r :id) (plist-get r :action)))
                         results "")))
               (if has-error
-                  (supervisor--cli-make-result
-                   supervisor-cli-exit-failure
+                  (elinit--cli-make-result
+                   elinit-cli-exit-failure
                    (if json-p 'json 'human)
                    (if json-p
                        (json-encode
@@ -1228,7 +1228,7 @@ Use -- before IDs that start with a hyphen."
                                           (action . ,(plist-get r :action))))
                                       results))))
                      msg))
-                (supervisor--cli-success
+                (elinit--cli-success
                  (if json-p
                      (json-encode
                       `((results
@@ -1239,103 +1239,103 @@ Use -- before IDs that start with a hyphen."
                    msg)
                  (if json-p 'json 'human)))))))))))
 
-(defun supervisor--cli-cmd-enable (args json-p)
+(defun elinit--cli-cmd-enable (args json-p)
   "Handle `enable [--] ID...' command with ARGS.  JSON-P enables JSON output.
 Use -- before IDs that start with a hyphen."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
+        (elinit--cli-error elinit-cli-exit-invalid-args
                                (format "Unknown option: %s" unknown)
                                (if json-p 'json 'human))
-      (let ((args (supervisor--cli-strip-separator args)))
+      (let ((args (elinit--cli-strip-separator args)))
         (cond
          ((null args)
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
+          (elinit--cli-error elinit-cli-exit-invalid-args
                                  "enable requires at least one ID"
                                  (if json-p 'json 'human)))
          (t
-          (supervisor--cli-policy-batch
-           args #'supervisor--policy-enable "Enabled" json-p)))))))
+          (elinit--cli-policy-batch
+           args #'elinit--policy-enable "Enabled" json-p)))))))
 
-(defun supervisor--cli-cmd-disable (args json-p)
+(defun elinit--cli-cmd-disable (args json-p)
   "Handle `disable [--] ID...' command with ARGS.  JSON-P enables JSON output.
 Use -- before IDs that start with a hyphen."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
+        (elinit--cli-error elinit-cli-exit-invalid-args
                                (format "Unknown option: %s" unknown)
                                (if json-p 'json 'human))
-      (let ((args (supervisor--cli-strip-separator args)))
+      (let ((args (elinit--cli-strip-separator args)))
         (cond
          ((null args)
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
+          (elinit--cli-error elinit-cli-exit-invalid-args
                                  "disable requires at least one ID"
                                  (if json-p 'json 'human)))
          (t
-          (supervisor--cli-policy-batch
-           args #'supervisor--policy-disable "Disabled" json-p)))))))
+          (elinit--cli-policy-batch
+           args #'elinit--policy-disable "Disabled" json-p)))))))
 
-(defun supervisor--cli-cmd-mask (args json-p)
+(defun elinit--cli-cmd-mask (args json-p)
   "Handle `mask [--] ID...' command with ARGS.  JSON-P enables JSON output.
 Use -- before IDs that start with a hyphen."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
+        (elinit--cli-error elinit-cli-exit-invalid-args
                                (format "Unknown option: %s" unknown)
                                (if json-p 'json 'human))
-      (let ((args (supervisor--cli-strip-separator args)))
+      (let ((args (elinit--cli-strip-separator args)))
         (cond
          ((null args)
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
+          (elinit--cli-error elinit-cli-exit-invalid-args
                                  "mask requires at least one ID"
                                  (if json-p 'json 'human)))
          (t
-          (supervisor--cli-policy-batch
-           args #'supervisor--policy-mask "Masked" json-p)))))))
+          (elinit--cli-policy-batch
+           args #'elinit--policy-mask "Masked" json-p)))))))
 
-(defun supervisor--cli-cmd-unmask (args json-p)
+(defun elinit--cli-cmd-unmask (args json-p)
   "Handle `unmask [--] ID...' command with ARGS.  JSON-P enables JSON output.
 Use -- before IDs that start with a hyphen."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
+        (elinit--cli-error elinit-cli-exit-invalid-args
                                (format "Unknown option: %s" unknown)
                                (if json-p 'json 'human))
-      (let ((args (supervisor--cli-strip-separator args)))
+      (let ((args (elinit--cli-strip-separator args)))
         (cond
          ((null args)
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
+          (elinit--cli-error elinit-cli-exit-invalid-args
                                  "unmask requires at least one ID"
                                  (if json-p 'json 'human)))
          (t
-          (supervisor--cli-policy-batch
-           args #'supervisor--policy-unmask "Unmasked" json-p)))))))
+          (elinit--cli-policy-batch
+           args #'elinit--policy-unmask "Unmasked" json-p)))))))
 
-(defun supervisor--cli-cmd-is-active (args json-p)
+(defun elinit--cli-cmd-is-active (args json-p)
   "Handle `is-active ID' command with ARGS.  JSON-P enables JSON output.
 Exit 0 if the unit is active (running or latched), exit 3 if not active,
 exit 4 if no such unit.  Uses systemctl-compatible exit code semantics."
   (cond
    ((null args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            "is-active requires an ID argument"
                            (if json-p 'json 'human)))
    ((cdr args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            (format "is-active takes exactly one ID, got: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    (t
     (let* ((id (car args))
-           (snapshot (supervisor--build-snapshot))
-           (result (supervisor--cli-all-entries-info snapshot))
+           (snapshot (elinit--build-snapshot))
+           (result (elinit--cli-all-entries-info snapshot))
            (entries (car result))
            (info (cl-find id entries
                           :key (lambda (e) (alist-get 'id e))
                           :test #'equal)))
       (if (not info)
-          (supervisor--cli-make-result
-           supervisor-cli-exit-no-such-unit
+          (elinit--cli-make-result
+           elinit-cli-exit-no-such-unit
            (if json-p 'json 'human)
            (if json-p
                (json-encode `((id . ,id) (active . :json-false)
@@ -1345,9 +1345,9 @@ exit 4 if no such unit.  Uses systemctl-compatible exit code semantics."
                (active (or (equal status "running")
                            (equal status "active")))
                (exitcode (if active
-                             supervisor-cli-exit-success
-                           supervisor-cli-exit-not-active)))
-          (supervisor--cli-make-result
+                             elinit-cli-exit-success
+                           elinit-cli-exit-not-active)))
+          (elinit--cli-make-result
            exitcode
            (if json-p 'json 'human)
            (if json-p
@@ -1356,45 +1356,45 @@ exit 4 if no such unit.  Uses systemctl-compatible exit code semantics."
                               (status . ,status)))
              (format "%s\n" status)))))))))
 
-(defun supervisor--cli-cmd-is-enabled (args json-p)
+(defun elinit--cli-cmd-is-enabled (args json-p)
   "Handle `is-enabled ID' command with ARGS.  JSON-P enables JSON output.
 Exit 0 if the unit is enabled, exit 1 if disabled or masked,
 exit 4 if no such unit.  Uses systemctl-compatible exit codes."
   (cond
    ((null args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            "is-enabled requires an ID argument"
                            (if json-p 'json 'human)))
    ((cdr args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            (format "is-enabled takes exactly one ID, got: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    (t
     (let* ((id (car args))
-           (snapshot (supervisor--build-snapshot))
-           (result (supervisor--cli-all-entries-info snapshot))
+           (snapshot (elinit--build-snapshot))
+           (result (elinit--cli-all-entries-info snapshot))
            (entries (car result))
            (info (cl-find id entries
                           :key (lambda (e) (alist-get 'id e))
                           :test #'equal)))
       (if (not info)
-          (supervisor--cli-make-result
-           supervisor-cli-exit-no-such-unit
+          (elinit--cli-make-result
+           elinit-cli-exit-no-such-unit
            (if json-p 'json 'human)
            (if json-p
                (json-encode `((id . ,id) (enabled . :json-false)
                               (state . "not-found")))
              (format "not-found\n")))
-        (let* ((is-masked (eq (gethash id supervisor--mask-override) 'masked))
+        (let* ((is-masked (eq (gethash id elinit--mask-override) 'masked))
                (enabled (alist-get 'enabled info))
                (state (cond (is-masked "masked")
                             (enabled "enabled")
                             (t "disabled")))
                (exitcode (if enabled
-                             supervisor-cli-exit-success
-                           supervisor-cli-exit-failure)))
-          (supervisor--cli-make-result
+                             elinit-cli-exit-success
+                           elinit-cli-exit-failure)))
+          (elinit--cli-make-result
            exitcode
            (if json-p 'json 'human)
            (if json-p
@@ -1403,31 +1403,31 @@ exit 4 if no such unit.  Uses systemctl-compatible exit codes."
                               (state . ,state)))
              (format "%s\n" state)))))))))
 
-(defun supervisor--cli-cmd-is-failed (args json-p)
+(defun elinit--cli-cmd-is-failed (args json-p)
   "Handle `is-failed ID' command with ARGS.  JSON-P enables JSON output.
 Exit 0 if the unit is in a failed state, exit 1 if not failed,
 exit 4 if no such unit.  Uses systemctl-compatible exit codes."
   (cond
    ((null args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            "is-failed requires an ID argument"
                            (if json-p 'json 'human)))
    ((cdr args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            (format "is-failed takes exactly one ID, got: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    (t
     (let* ((id (car args))
-           (snapshot (supervisor--build-snapshot))
-           (result (supervisor--cli-all-entries-info snapshot))
+           (snapshot (elinit--build-snapshot))
+           (result (elinit--cli-all-entries-info snapshot))
            (entries (car result))
            (info (cl-find id entries
                           :key (lambda (e) (alist-get 'id e))
                           :test #'equal)))
       (if (not info)
-          (supervisor--cli-make-result
-           supervisor-cli-exit-no-such-unit
+          (elinit--cli-make-result
+           elinit-cli-exit-no-such-unit
            (if json-p 'json 'human)
            (if json-p
                (json-encode `((id . ,id) (failed . :json-false)
@@ -1436,9 +1436,9 @@ exit 4 if no such unit.  Uses systemctl-compatible exit codes."
         (let* ((status (alist-get 'status info))
                (is-failed (member status '("dead" "failed")))
                (exitcode (if is-failed
-                             supervisor-cli-exit-success
-                           supervisor-cli-exit-failure)))
-          (supervisor--cli-make-result
+                             elinit-cli-exit-success
+                           elinit-cli-exit-failure)))
+          (elinit--cli-make-result
            exitcode
            (if json-p 'json 'human)
            (if json-p
@@ -1447,26 +1447,26 @@ exit 4 if no such unit.  Uses systemctl-compatible exit codes."
                               (status . ,status)))
              (format "%s\n" status)))))))))
 
-(defun supervisor--cli-cmd-reset-failed (args json-p)
+(defun elinit--cli-cmd-reset-failed (args json-p)
   "Handle `reset-failed [--] [ID...]' with ARGS.  JSON-P enables JSON output.
 With IDs: reset failed state for those entries.
 Without IDs: reset all failed entries.
 Use -- before IDs that start with a hyphen."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
+        (elinit--cli-error elinit-cli-exit-invalid-args
                                (format "Unknown option: %s" unknown)
                                (if json-p 'json 'human))
-      (let* ((ids (supervisor--cli-strip-separator args))
+      (let* ((ids (elinit--cli-strip-separator args))
              (targets (if ids
                          ids
                        ;; No IDs: collect all failed entries
                        (let ((all nil))
                          (maphash (lambda (k _v) (push k all))
-                                  supervisor--failed)
+                                  elinit--failed)
                          (sort all #'string<)))))
         (if (null targets)
-            (supervisor--cli-success
+            (elinit--cli-success
              (if json-p
                  (json-encode '((reset . []) (skipped . [])))
                "No failed units\n")
@@ -1474,14 +1474,14 @@ Use -- before IDs that start with a hyphen."
           (let ((reset-ids nil)
                 (skipped nil))
             (dolist (id targets)
-              (let ((result (supervisor--reset-failed id)))
+              (let ((result (elinit--reset-failed id)))
                 (pcase (plist-get result :status)
                   ('reset (push id reset-ids))
                   ('skipped (push (cons id (plist-get result :reason)) skipped)))))
             (setq reset-ids (nreverse reset-ids)
                   skipped (nreverse skipped))
-            (supervisor--maybe-refresh-dashboard)
-            (supervisor--cli-success
+            (elinit--maybe-refresh-dashboard)
+            (elinit--cli-success
              (if json-p
                  (json-encode
                   `((reset . ,reset-ids)
@@ -1499,49 +1499,49 @@ Use -- before IDs that start with a hyphen."
                              skipped ""))))
              (if json-p 'json 'human))))))))
 
-(defun supervisor--cli-cmd-restart-policy (args json-p)
+(defun elinit--cli-cmd-restart-policy (args json-p)
   "Handle `restart-policy POLICY [--] ID...' with ARGS.  JSON-P for JSON.
 POLICY is one of: no, on-success, on-failure, always.
 Use -- before IDs that start with a hyphen."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
+        (elinit--cli-error elinit-cli-exit-invalid-args
                                (format "Unknown option: %s" unknown)
                                (if json-p 'json 'human))
-      (let ((args (supervisor--cli-strip-separator args)))
+      (let ((args (elinit--cli-strip-separator args)))
         (cond
          ((< (length args) 2)
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
+          (elinit--cli-error elinit-cli-exit-invalid-args
                                  "restart-policy requires (no|on-success|on-failure|always) and at least one ID"
                                  (if json-p 'json 'human)))
          (t
           (let* ((policy-str (car args))
                  (ids (cdr args))
                  (policy (intern policy-str)))
-            (if (not (memq policy supervisor--valid-restart-policies))
-                (supervisor--cli-error
-                 supervisor-cli-exit-invalid-args
+            (if (not (memq policy elinit--valid-restart-policies))
+                (elinit--cli-error
+                 elinit-cli-exit-invalid-args
                  (format "Invalid restart policy: %s (must be no, on-success, on-failure, or always)"
                          policy-str)
                  (if json-p 'json 'human))
-              (supervisor--cli-policy-batch
+              (elinit--cli-policy-batch
                ids
-               (lambda (id) (supervisor--policy-set-restart id policy))
+               (lambda (id) (elinit--policy-set-restart id policy))
                (format "Restart policy %s" policy-str)
                json-p)))))))))
 
-(defun supervisor--cli-cmd-logging (args json-p)
+(defun elinit--cli-cmd-logging (args json-p)
   "Handle `logging (on|off) [--] ID...' with ARGS.  JSON-P for JSON.
 Use -- before IDs that start with a hyphen."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (if unknown
-        (supervisor--cli-error supervisor-cli-exit-invalid-args
+        (elinit--cli-error elinit-cli-exit-invalid-args
                                (format "Unknown option: %s" unknown)
                                (if json-p 'json 'human))
-      (let ((args (supervisor--cli-strip-separator args)))
+      (let ((args (elinit--cli-strip-separator args)))
         (cond
          ((< (length args) 2)
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
+          (elinit--cli-error elinit-cli-exit-invalid-args
                                  "logging requires (on|off) and at least one ID"
                                  (if json-p 'json 'human)))
          (t
@@ -1551,37 +1551,37 @@ Use -- before IDs that start with a hyphen."
                                   ((equal policy "off") 'off)
                                   (t nil))))
             (if (null enabled-p)
-                (supervisor--cli-error supervisor-cli-exit-invalid-args
+                (elinit--cli-error elinit-cli-exit-invalid-args
                                        "logging requires 'on' or 'off'"
                                        (if json-p 'json 'human))
-              (supervisor--cli-policy-batch
+              (elinit--cli-policy-batch
                ids
                (lambda (id)
-                 (supervisor--policy-set-logging id (eq enabled-p 'on)))
+                 (elinit--policy-set-logging id (eq enabled-p 'on)))
                (format "Logging %s" policy)
                json-p)))))))))
 
-(defun supervisor--cli-cmd-blame (args json-p)
+(defun elinit--cli-cmd-blame (args json-p)
   "Handle `blame' command with ARGS.  JSON-P enables JSON output."
-  (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
+  (let ((extra-err (elinit--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
       (let ((blame-data nil))
         (maphash (lambda (id start-time)
-                   (let ((ready-time (gethash id supervisor--ready-times)))
+                   (let ((ready-time (gethash id elinit--ready-times)))
                      (push `((id . ,id)
                              (start_time . ,start-time)
                              (ready_time . ,ready-time)
                              (duration . ,(when ready-time (- ready-time start-time))))
                            blame-data)))
-                 supervisor--start-times)
+                 elinit--start-times)
         ;; Sort by start time for deterministic output
         (setq blame-data (sort blame-data
                                (lambda (a b)
                                  (< (alist-get 'start_time a)
                                     (alist-get 'start_time b)))))
-        (supervisor--cli-success
+        (elinit--cli-success
          (if json-p
-             (json-encode `((blame . ,(supervisor--cli-ensure-array blame-data))))
+             (json-encode `((blame . ,(elinit--cli-ensure-array blame-data))))
            (concat
             (format "%-20s %-18s %-18s %s\n" "ID" "START" "READY" "DURATION")
             (make-string 70 ?-)
@@ -1597,35 +1597,35 @@ Use -- before IDs that start with a hyphen."
                        blame-data "")))
          (if json-p 'json 'human))))))
 
-(defun supervisor--cli-cmd-list-dependencies (args json-p)
+(defun elinit--cli-cmd-list-dependencies (args json-p)
   "Handle `list-dependencies [ID]' command with ARGS.  JSON-P for JSON."
   (cond
    ((> (length args) 1)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            (format "list-dependencies takes at most one ID, got: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    ((and args (string-prefix-p "-" (car args)))
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            (format "Unknown option: %s" (car args))
                            (if json-p 'json 'human)))
    (t
-    (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
-           (deps (supervisor-plan-deps plan))
-           (requires (supervisor-plan-requires-deps plan))
-           (dependents (supervisor-plan-dependents plan))
+    (let* ((plan (elinit--build-plan (elinit--effective-programs)))
+           (deps (elinit-plan-deps plan))
+           (requires (elinit-plan-requires-deps plan))
+           (dependents (elinit-plan-dependents plan))
            (id (car args)))
       (if id
           ;; Graph for single ID
           (let ((after-deps (gethash id deps))
                 (req-deps (gethash id requires))
                 (blocks (gethash id dependents)))
-            (supervisor--cli-success
+            (elinit--cli-success
              (if json-p
                  (json-encode `((id . ,id)
-                                (after . ,(supervisor--cli-ensure-array after-deps))
-                                (requires . ,(supervisor--cli-ensure-array req-deps))
-                                (blocks . ,(supervisor--cli-ensure-array blocks))))
+                                (after . ,(elinit--cli-ensure-array after-deps))
+                                (requires . ,(elinit--cli-ensure-array req-deps))
+                                (blocks . ,(elinit--cli-ensure-array blocks))))
                (concat
                 (format "ID: %s\n" id)
                 (format "After: %s\n" (if after-deps (mapconcat #'identity after-deps ", ") "none"))
@@ -1644,26 +1644,26 @@ Use -- before IDs that start with a hyphen."
                               (or (string< (car a) (car b))
                                   (and (string= (car a) (car b))
                                        (string< (cadr a) (cadr b)))))))
-          (supervisor--cli-success
+          (elinit--cli-success
            (if json-p
-               (json-encode `((edges . ,(supervisor--cli-ensure-array edges))))
+               (json-encode `((edges . ,(elinit--cli-ensure-array edges))))
              (concat "Dependency Graph (dep -> dependent):\n"
                      (mapconcat (lambda (e)
                                   (format "  %s -> %s\n" (car e) (cadr e)))
                                 edges "")))
            (if json-p 'json 'human))))))))
 
-(defun supervisor--cli-cmd-logs (args json-p)
+(defun elinit--cli-cmd-logs (args json-p)
   "Handle `logs [--tail N] [--] ID' command with ARGS.  JSON-P for JSON.
 Options must come before --.  Use -- before IDs that start with hyphen."
   ;; Split at -- separator: options before, ID after
-  (let* ((split (supervisor--cli-split-at-separator args))
+  (let* ((split (elinit--cli-split-at-separator args))
          (before (car split))
          (after (cdr split))
          ;; Check for unknown flags in before-part only
-         (unknown (supervisor--cli-has-unknown-flags before '("--tail")))
+         (unknown (elinit--cli-has-unknown-flags before '("--tail")))
          ;; Parse --tail by position (not value) to avoid collision bugs
-         (parsed (supervisor--cli-parse-option before "--tail"))
+         (parsed (elinit--cli-parse-option before "--tail"))
          (tail-val (plist-get parsed :value))
          (tail-missing (plist-get parsed :missing))
          (tail-duplicate (plist-get parsed :duplicate))
@@ -1680,44 +1680,44 @@ Options must come before --.  Use -- before IDs that start with hyphen."
          (extra-ids (append (cdr before-positional) (cdr after))))
     (cond
      (unknown
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "Unknown option: %s" unknown)
                              (if json-p 'json 'human)))
      (tail-duplicate
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "--tail specified multiple times"
                              (if json-p 'json 'human)))
      (tail-missing
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "--tail requires a numeric value"
                              (if json-p 'json 'human)))
      (tail-invalid
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "--tail value must be a number, got: %s" tail-val)
                              (if json-p 'json 'human)))
      ((null id)
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "logs requires an ID argument"
                              (if json-p 'json 'human)))
      ;; Reject if first positional in before-part looks like an option
      ((and (null after) before-positional (string-prefix-p "-" (car before-positional)))
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "logs requires ID as first argument (use -- for IDs starting with -)"
                              (if json-p 'json 'human)))
      ;; Reject extra IDs
      (extra-ids
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "logs takes exactly one ID, got extra: %s"
                                      (mapconcat #'identity extra-ids " "))
                              (if json-p 'json 'human)))
      ;; Target units have no logs
-     ((let ((entry (supervisor--get-entry-for-id id)))
-        (and entry (eq (supervisor-entry-type entry) 'target)))
-      (supervisor--cli-error supervisor-cli-exit-failure
+     ((let ((entry (elinit--get-entry-for-id id)))
+        (and entry (eq (elinit-entry-type entry) 'target)))
+      (elinit--cli-error elinit-cli-exit-failure
                              (format "Cannot show logs for target unit: %s" id)
                              (if json-p 'json 'human)))
      (t
-      (let ((log-file (supervisor--log-file id)))
+      (let ((log-file (elinit--log-file id)))
         (if (file-exists-p log-file)
             (let ((content (with-temp-buffer
                              (insert-file-contents log-file)
@@ -1725,17 +1725,17 @@ Options must come before --.  Use -- before IDs that start with hyphen."
                                (if (> (length lines) tail-n)
                                    (mapconcat #'identity (last lines tail-n) "\n")
                                  (buffer-string))))))
-              (supervisor--cli-success
+              (elinit--cli-success
                (if json-p
                    (json-encode `((id . ,id) (log_file . ,log-file) (content . ,content)))
                  (concat (format "=== Log for %s (%s) ===\n" id log-file)
                          content "\n"))
                (if json-p 'json 'human)))
-          (supervisor--cli-error supervisor-cli-exit-failure
+          (elinit--cli-error elinit-cli-exit-failure
                                  (format "No log file for '%s'" id)
                                  (if json-p 'json 'human))))))))
 
-(defun supervisor--cli-parse-journal-args (args)
+(defun elinit--cli-parse-journal-args (args)
   "Parse journal command ARGS into a plist.
 Recognized flags: -u/--unit ID, -n N, -p PRIORITY, --since TS,
 --until TS, -f/--follow.  Combined -fu ID is supported.
@@ -1804,7 +1804,7 @@ Return plist with :unit, :lines, :priority, :since, :until,
     (list :unit unit :lines lines :priority priority
           :since since :until until :follow follow :unknown unknown)))
 
-(defun supervisor--cli-journal-json-envelope
+(defun elinit--cli-journal-json-envelope
     (unit decoded since-str until-str priority n follow records)
   "Build JSON envelope for journal response.
 UNIT is the service ID.  DECODED is the decode-file result plist.
@@ -1834,12 +1834,12 @@ filtered record list."
              (code . ,(plist-get r :code))
              (payload . ,(plist-get r :payload))
              (priority . ,(symbol-name
-                           (supervisor--log-record-priority r)))))
+                           (elinit--log-record-priority r)))))
          records))))))
 
 ;;;; Follow session management
 
-(defun supervisor--cli-follow-start (unit log-file offset since-ts
+(defun elinit--cli-follow-start (unit log-file offset since-ts
                                           until-ts priority json-p)
   "Start a follow session for UNIT reading LOG-FILE from OFFSET.
 SINCE-TS, UNTIL-TS, PRIORITY, and JSON-P configure record filtering
@@ -1861,22 +1861,22 @@ and formatting.  Return a plist (:session-id STRING :follow-file STRING)."
     ;; Create follow file
     (with-temp-file follow-file
       (insert ""))
-    (puthash session-id session supervisor--cli-follow-sessions)
-    (supervisor--cli-follow-schedule-poll session-id)
+    (puthash session-id session elinit--cli-follow-sessions)
+    (elinit--cli-follow-schedule-poll session-id)
     (list :session-id session-id :follow-file follow-file)))
 
-(defun supervisor--cli-follow-schedule-poll (session-id)
+(defun elinit--cli-follow-schedule-poll (session-id)
   "Schedule next poll for SESSION-ID."
-  (let ((session (gethash session-id supervisor--cli-follow-sessions)))
+  (let ((session (gethash session-id elinit--cli-follow-sessions)))
     (when session
-      (let ((timer (run-at-time supervisor-log-follow-interval nil
-                                #'supervisor--cli-follow-poll session-id)))
+      (let ((timer (run-at-time elinit-log-follow-interval nil
+                                #'elinit--cli-follow-poll session-id)))
         (plist-put session :timer timer)))))
 
-(defun supervisor--cli-follow-poll (session-id)
+(defun elinit--cli-follow-poll (session-id)
   "Poll for new log records in follow SESSION-ID.
 Append formatted records to the follow file and reschedule."
-  (let ((session (gethash session-id supervisor--cli-follow-sessions)))
+  (let ((session (gethash session-id elinit--cli-follow-sessions)))
     (when session
       (let ((follow-file (plist-get session :follow-file))
             (log-file (plist-get session :log-file))
@@ -1889,53 +1889,53 @@ Append formatted records to the follow file and reschedule."
         (cond
          ;; Guard: follow file deleted externally
          ((not (file-exists-p follow-file))
-          (supervisor--cli-follow-stop session-id))
+          (elinit--cli-follow-stop session-id))
          ;; Guard: session inactive too long
          ((> (- (float-time) last-activity)
-             supervisor-cli-follow-max-age)
-          (supervisor--cli-follow-stop session-id))
+             elinit-cli-follow-max-age)
+          (elinit--cli-follow-stop session-id))
          (t
-          (let* ((decoded (supervisor--log-decode-file log-file nil offset))
+          (let* ((decoded (elinit--log-decode-file log-file nil offset))
                  (new-records (plist-get decoded :records))
                  (new-offset (plist-get decoded :offset)))
             (when new-records
-              (let* ((filtered (supervisor--log-filter-records
+              (let* ((filtered (elinit--log-filter-records
                                 new-records since-ts until-ts priority))
                      (text (mapconcat
                             (if json-p
-                                #'supervisor--log-record-to-json
-                              #'supervisor--log-format-record-human)
+                                #'elinit--log-record-to-json
+                              #'elinit--log-format-record-human)
                             filtered "\n")))
                 (when (and filtered (> (length text) 0))
                   (append-to-file (concat text "\n") nil follow-file))))
             (plist-put session :offset new-offset)
             ;; Reset activity timer so active sessions never expire
             (plist-put session :last-activity (float-time))
-            (supervisor--cli-follow-schedule-poll session-id))))))))
+            (elinit--cli-follow-schedule-poll session-id))))))))
 
-(defun supervisor--cli-follow-stop (session-id)
+(defun elinit--cli-follow-stop (session-id)
   "Stop follow SESSION-ID.
 Cancel timer, delete follow file, remove from sessions table.
 Return t if session existed, nil otherwise."
-  (let ((session (gethash session-id supervisor--cli-follow-sessions)))
+  (let ((session (gethash session-id elinit--cli-follow-sessions)))
     (when session
       (let ((timer (plist-get session :timer))
             (follow-file (plist-get session :follow-file)))
         (when timer (cancel-timer timer))
         (when (and follow-file (file-exists-p follow-file))
           (delete-file follow-file)))
-      (remhash session-id supervisor--cli-follow-sessions)
+      (remhash session-id elinit--cli-follow-sessions)
       t)))
 
-(defun supervisor--cli-journal-follow-stop (session-id)
+(defun elinit--cli-journal-follow-stop (session-id)
   "Stop follow session SESSION-ID from external wrapper cleanup.
 Return t if session existed."
-  (supervisor--cli-follow-stop session-id))
+  (elinit--cli-follow-stop session-id))
 
-(defun supervisor--cli-cmd-journal (args json-p)
+(defun elinit--cli-cmd-journal (args json-p)
   "Handle `journal' command with ARGS.  JSON-P for JSON output.
 Display structured log records for a unit.  Requires -u/--unit."
-  (let* ((parsed (supervisor--cli-parse-journal-args args))
+  (let* ((parsed (elinit--cli-parse-journal-args args))
          (unit (plist-get parsed :unit))
          (n (plist-get parsed :lines))
          (priority (plist-get parsed :priority))
@@ -1945,37 +1945,37 @@ Display structured log records for a unit.  Requires -u/--unit."
          (unknown (plist-get parsed :unknown)))
     (cond
      (unknown
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              unknown
                              (if json-p 'json 'human)))
      ((null unit)
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "journal requires -u/--unit ID"
                              (if json-p 'json 'human)))
      (t
       (let* ((since-ts (when since-str
-                          (supervisor--log-parse-timestamp since-str)))
+                          (elinit--log-parse-timestamp since-str)))
              (until-ts (when until-str
-                          (supervisor--log-parse-timestamp until-str))))
+                          (elinit--log-parse-timestamp until-str))))
         (cond
          ((and since-str (null since-ts))
-          (supervisor--cli-error
-           supervisor-cli-exit-invalid-args
+          (elinit--cli-error
+           elinit-cli-exit-invalid-args
            (format "Invalid --since timestamp: %s" since-str)
            (if json-p 'json 'human)))
          ((and until-str (null until-ts))
-          (supervisor--cli-error
-           supervisor-cli-exit-invalid-args
+          (elinit--cli-error
+           elinit-cli-exit-invalid-args
            (format "Invalid --until timestamp: %s" until-str)
            (if json-p 'json 'human)))
          (t
-          (let ((log-file (supervisor--log-file unit)))
+          (let ((log-file (elinit--log-file unit)))
             (if (not (file-exists-p log-file))
-                (supervisor--cli-error supervisor-cli-exit-failure
+                (elinit--cli-error elinit-cli-exit-failure
                                        (format "No log file for '%s'" unit)
                                        (if json-p 'json 'human))
               (let* ((tail-bytes (when n (* n 512)))
-                     (tail-decoded (supervisor--log-decode-file
+                     (tail-decoded (elinit--log-decode-file
                                     log-file nil nil tail-bytes))
                      (tail-records (plist-get tail-decoded :records))
                      ;; If tail heuristic returned fewer records than
@@ -1983,29 +1983,29 @@ Display structured log records for a unit.  Requires -u/--unit."
                      ;; correctness for large payloads.
                      (decoded (if (and tail-bytes
                                        (< (length tail-records) n))
-                                  (supervisor--log-decode-file
+                                  (elinit--log-decode-file
                                    log-file nil nil nil)
                                 tail-decoded))
                      (records (plist-get decoded :records))
-                     (filtered (supervisor--log-filter-records
+                     (filtered (elinit--log-filter-records
                                 records since-ts until-ts priority))
                      (limited (if (and n (> (length filtered) n))
                                   (last filtered n)
                                 filtered)))
                 (if (not follow)
                     ;; Non-follow: return result
-                    (supervisor--cli-success
+                    (elinit--cli-success
                      (if json-p
-                         (supervisor--cli-journal-json-envelope
+                         (elinit--cli-journal-json-envelope
                           unit decoded since-str until-str
                           priority n follow limited)
                        (if limited
-                           (mapconcat #'supervisor--log-format-record-human
+                           (mapconcat #'elinit--log-format-record-human
                                       limited "\n")
                          (format "No records for %s" unit)))
                      (if json-p 'json 'human))
                   ;; Follow mode: start session, return FOLLOW protocol
-                  (let* ((finfo (supervisor--cli-follow-start
+                  (let* ((finfo (elinit--cli-follow-start
                                  unit log-file
                                  (plist-get decoded :offset)
                                  since-ts until-ts priority json-p))
@@ -2013,12 +2013,12 @@ Display structured log records for a unit.  Requires -u/--unit."
                           (if limited
                               (mapconcat
                                (if json-p
-                                   #'supervisor--log-record-to-json
-                                 #'supervisor--log-format-record-human)
+                                   #'elinit--log-record-to-json
+                                 #'elinit--log-format-record-human)
                                limited "\n")
                             "")))
-                    (supervisor--cli-make-result
-                     supervisor-cli-exit-success 'follow
+                    (elinit--cli-make-result
+                     elinit-cli-exit-success 'follow
                      (format "FOLLOW:%s:%s:%s"
                              (base64-encode-string
                               (encode-coding-string
@@ -2028,45 +2028,45 @@ Display structured log records for a unit.  Requires -u/--unit."
                              (plist-get finfo
                                         :session-id)))))))))))))))
 
-(defun supervisor--cli-cmd-ping (args json-p)
+(defun elinit--cli-cmd-ping (args json-p)
   "Handle `ping' command with ARGS.  JSON-P enables JSON output."
-  (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
+  (let ((extra-err (elinit--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
-      (supervisor--cli-success
+      (elinit--cli-success
        (if json-p
-           (json-encode `((status . "ok") (server . "supervisor")))
+           (json-encode `((status . "ok") (server . "elinit")))
          "pong\n")
        (if json-p 'json 'human)))))
 
-(defun supervisor--cli-cmd-version (args json-p)
+(defun elinit--cli-cmd-version (args json-p)
   "Handle `version' command with ARGS.  JSON-P enables JSON output."
-  (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
+  (let ((extra-err (elinit--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
-      (supervisor--cli-success
+      (elinit--cli-success
        (if json-p
-           (json-encode `((version . ,supervisor-cli-version)
+           (json-encode `((version . ,elinit-cli-version)
                           (emacs . ,emacs-version)))
-         (format "supervisorctl %s (Emacs %s)\n" supervisor-cli-version emacs-version))
+         (format "elinitctl %s (Emacs %s)\n" elinit-cli-version emacs-version))
        (if json-p 'json 'human)))))
 
-(defconst supervisor--valid-signals
+(defconst elinit--valid-signals
   '(SIGHUP SIGINT SIGQUIT SIGILL SIGTRAP SIGABRT SIGBUS SIGFPE
     SIGKILL SIGUSR1 SIGSEGV SIGUSR2 SIGPIPE SIGALRM SIGTERM
     SIGCHLD SIGCONT SIGSTOP SIGTSTP SIGTTIN SIGTTOU SIGURG
     SIGXCPU SIGXFSZ SIGVTALRM SIGPROF SIGWINCH SIGIO SIGSYS)
   "List of valid POSIX signal names for CLI kill command.")
 
-(defun supervisor--cli-cmd-kill (args json-p)
+(defun elinit--cli-cmd-kill (args json-p)
   "Handle `kill [--signal SIG] [--] ID' command with ARGS.  JSON-P for JSON.
 Options must come before --.  Use -- before IDs that start with hyphen."
   ;; Split at -- separator: options before, ID after
-  (let* ((split (supervisor--cli-split-at-separator args))
+  (let* ((split (elinit--cli-split-at-separator args))
          (before (car split))
          (after (cdr split))
          ;; Check for unknown flags in before-part only
-         (unknown (supervisor--cli-has-unknown-flags before '("--signal")))
+         (unknown (elinit--cli-has-unknown-flags before '("--signal")))
          ;; Parse --signal by position (not value) to avoid collision bugs
-         (parsed (supervisor--cli-parse-option before "--signal"))
+         (parsed (elinit--cli-parse-option before "--signal"))
          (sig-val (plist-get parsed :value))
          (sig-missing (plist-get parsed :missing))
          (sig-duplicate (plist-get parsed :duplicate))
@@ -2076,7 +2076,7 @@ Options must come before --.  Use -- before IDs that start with hyphen."
                      (let ((upper (upcase sig-val)))
                        (if (string-prefix-p "SIG" upper) upper (concat "SIG" upper)))))
          (sig-sym (when sig-name (intern sig-name)))
-         (sig-invalid (and sig-val (not (memq sig-sym supervisor--valid-signals))))
+         (sig-invalid (and sig-val (not (memq sig-sym elinit--valid-signals))))
          (sig (if sig-sym sig-sym 'SIGTERM))
          ;; ID is first positional from before or first from after
          (id (or (car after) (car before-positional)))
@@ -2084,63 +2084,63 @@ Options must come before --.  Use -- before IDs that start with hyphen."
          (extra-ids (append (cdr before-positional) (cdr after))))
     (cond
      (unknown
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "Unknown option: %s" unknown)
                              (if json-p 'json 'human)))
      (sig-duplicate
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "--signal specified multiple times"
                              (if json-p 'json 'human)))
      (sig-missing
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "--signal requires a signal name"
                              (if json-p 'json 'human)))
      (sig-invalid
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "Invalid signal name: %s" sig-val)
                              (if json-p 'json 'human)))
      ((null id)
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "kill requires an ID argument"
                              (if json-p 'json 'human)))
      ;; Reject if first positional in before-part looks like an option
      ((and (null after) before-positional (string-prefix-p "-" (car before-positional)))
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "kill requires ID as first argument (use -- for IDs starting with -)"
                              (if json-p 'json 'human)))
      ;; Reject extra IDs
      (extra-ids
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "kill takes exactly one ID, got extra: %s"
                                      (mapconcat #'identity extra-ids " "))
                              (if json-p 'json 'human)))
      (t
-      (let ((result (supervisor--manual-kill id sig)))
+      (let ((result (elinit--manual-kill id sig)))
         (pcase (plist-get result :status)
           ('signaled
-           (supervisor--cli-success
+           (elinit--cli-success
             (if json-p
                 (json-encode `((id . ,id) (signal . ,(symbol-name sig))))
               (format "Sent %s to %s\n" sig id))
             (if json-p 'json 'human)))
           (_
-           (supervisor--cli-error supervisor-cli-exit-failure
+           (elinit--cli-error elinit-cli-exit-failure
                                   (format "Process '%s' not running" id)
                                   (if json-p 'json 'human)))))))))
 
 ;;; Timer Status Output
 
-(defun supervisor--cli-gather-timer-info (&optional timers)
-  "Gather timer info from supervisor state.
-TIMERS defaults to `supervisor--timer-list' when nil.
+(defun elinit--cli-gather-timer-info (&optional timers)
+  "Gather timer info from elinit state.
+TIMERS defaults to `elinit--timer-list' when nil.
 Return a list of alists, one per timer."
   (let ((result nil))
-    (dolist (timer (or timers supervisor--timer-list))
-      (let* ((id (supervisor-timer-id timer))
-             (target (supervisor-timer-target timer))
-             (enabled (supervisor-timer-enabled timer))
-             (persistent (supervisor-timer-persistent timer))
-             (state (gethash id supervisor--timer-state))
+    (dolist (timer (or timers elinit--timer-list))
+      (let* ((id (elinit-timer-id timer))
+             (target (elinit-timer-target timer))
+             (enabled (elinit-timer-enabled timer))
+             (persistent (elinit-timer-persistent timer))
+             (state (gethash id elinit--timer-state))
              (last-run (plist-get state :last-run-at))
              (last-success (plist-get state :last-success-at))
              (last-failure (plist-get state :last-failure-at))
@@ -2153,9 +2153,9 @@ Return a list of alists, one per timer."
              (last-result-reason (plist-get state :last-result-reason))
              ;; Resolve target type from current config, not runtime
              ;; state, so it is always current even for fresh timers.
-             (target-entry (supervisor--get-entry-for-id target))
+             (target-entry (elinit--get-entry-for-id target))
              (target-type (when target-entry
-                            (supervisor-entry-type target-entry))))
+                            (elinit-entry-type target-entry))))
         (push `((id . ,id)
                 (target . ,target)
                 (enabled . ,enabled)
@@ -2174,15 +2174,15 @@ Return a list of alists, one per timer."
               result)))
     (nreverse result)))
 
-(defun supervisor--cli-build-timer-list ()
+(defun elinit--cli-build-timer-list ()
   "Build timer list from current effective config."
-  (if (fboundp 'supervisor-timer-build-list)
-      (let* ((programs (supervisor--effective-programs))
-             (plan (supervisor--build-plan programs)))
-        (supervisor-timer-build-list plan))
+  (if (fboundp 'elinit-timer-build-list)
+      (let* ((programs (elinit--effective-programs))
+             (plan (elinit--build-plan programs)))
+        (elinit-timer-build-list plan))
     nil))
 
-(defun supervisor--cli-format-relative-time (timestamp)
+(defun elinit--cli-format-relative-time (timestamp)
   "Format TIMESTAMP as relative time string like \"5m ago\" or \"in 5m\"."
   (if (null timestamp)
       "-"
@@ -2197,7 +2197,7 @@ Return a list of alists, one per timer."
        ((< abs-diff 86400) (format "%s%dh%s" prefix (round (/ abs-diff 3600)) suffix))
        (t (format "%s%dd%s" prefix (round (/ abs-diff 86400)) suffix))))))
 
-(defun supervisor--cli-format-timer-line (info)
+(defun elinit--cli-format-timer-line (info)
   "Format single timer INFO alist as status line."
   (let ((id (alist-get 'id info))
         (target (alist-get 'target info))
@@ -2213,13 +2213,13 @@ Return a list of alists, one per timer."
             (or target "-")
             (if enabled "yes" "no")
             (if target-type (symbol-name target-type) "-")
-            (supervisor--cli-format-relative-time last-run)
-            (supervisor--cli-format-relative-time next-run)
+            (elinit--cli-format-relative-time last-run)
+            (elinit--cli-format-relative-time next-run)
             (if (null last-exit) "-" (number-to-string last-exit))
             (if last-result (symbol-name last-result) "-")
             (if result-reason (symbol-name result-reason) "-"))))
 
-(defun supervisor--cli-timers-human (timers invalid)
+(defun elinit--cli-timers-human (timers invalid)
   "Format TIMERS and INVALID as human-readable timer status table."
   (if (and (null timers) (null invalid))
       "No timers configured.\n"
@@ -2228,7 +2228,7 @@ Return a list of alists, one per timer."
                           "LAST-RUN" "NEXT-RUN" "EXIT" "RESULT" "REASON"))
           (sep (make-string 106 ?-)))
       (concat header sep "\n"
-              (mapconcat #'supervisor--cli-format-timer-line timers "")
+              (mapconcat #'elinit--cli-format-timer-line timers "")
               (when invalid
                 (concat "\nInvalid timers:\n"
                         (mapconcat (lambda (inv)
@@ -2237,7 +2237,7 @@ Return a list of alists, one per timer."
                                              (plist-get inv :reason)))
                                    invalid "")))))))
 
-(defun supervisor--cli-timer-to-json-obj (info)
+(defun elinit--cli-timer-to-json-obj (info)
   "Convert timer INFO alist to JSON-compatible alist."
   `((id . ,(alist-get 'id info))
     (target . ,(alist-get 'target info))
@@ -2263,65 +2263,65 @@ Return a list of alists, one per timer."
                         (symbol-name (alist-get 'target-type info))
                       :json-null))))
 
-(defun supervisor--cli-invalid-timer-to-json-obj (info)
+(defun elinit--cli-invalid-timer-to-json-obj (info)
   "Convert invalid timer INFO plist to JSON-compatible alist."
   `((id . ,(plist-get info :id))
     (reason . ,(plist-get info :reason))))
 
-(defun supervisor--cli-timers-json (timers invalid)
+(defun elinit--cli-timers-json (timers invalid)
   "Format TIMERS and INVALID as JSON timer status object."
-  (let ((obj `((timers . ,(supervisor--cli-ensure-array
-                           (mapcar #'supervisor--cli-timer-to-json-obj timers)))
-               (invalid . ,(supervisor--cli-ensure-array
-                            (mapcar #'supervisor--cli-invalid-timer-to-json-obj invalid))))))
+  (let ((obj `((timers . ,(elinit--cli-ensure-array
+                           (mapcar #'elinit--cli-timer-to-json-obj timers)))
+               (invalid . ,(elinit--cli-ensure-array
+                            (mapcar #'elinit--cli-invalid-timer-to-json-obj invalid))))))
     (json-encode obj)))
 
-(defun supervisor--cli-cmd-list-timers (args json-p)
+(defun elinit--cli-cmd-list-timers (args json-p)
   "Handle `list-timers' command with ARGS.  JSON-P enables JSON output."
-  (let ((unknown (supervisor--cli-has-unknown-flags args)))
+  (let ((unknown (elinit--cli-has-unknown-flags args)))
     (cond
      (unknown
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "Unknown option: %s" unknown)
                              (if json-p 'json 'human)))
      (args
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "list-timers command does not accept arguments"
                              (if json-p 'json 'human)))
      ;; Check if timer subsystem gate is enabled.
-     ;; Listing timers does not require `supervisor-mode' to be active.
-     ((not (bound-and-true-p supervisor-timer-subsystem-mode))
-      (let ((msg "Timer subsystem is disabled.\nEnable with: (supervisor-timer-subsystem-mode 1)"))
-        (supervisor--cli-success
+     ;; Listing timers does not require `elinit-mode' to be active.
+     ((not (bound-and-true-p elinit-timer-subsystem-mode))
+      (let ((msg "Timer subsystem is disabled.\nEnable with: (elinit-timer-subsystem-mode 1)"))
+        (elinit--cli-success
          (if json-p
              (json-encode `((status . "disabled")
                             (message . "Timer subsystem is disabled")))
            (concat msg "\n"))
          (if json-p 'json 'human))))
      (t
-      (let* ((built-timers (supervisor--cli-build-timer-list))
+      (let* ((built-timers (elinit--cli-build-timer-list))
              ;; Prefer scheduler runtime list when present; otherwise build
              ;; from current config so listing works even when mode is off.
-             (timer-list (or supervisor--timer-list built-timers))
-             (timers (supervisor--cli-gather-timer-info timer-list))
+             (timer-list (or elinit--timer-list built-timers))
+             (timers (elinit--cli-gather-timer-info timer-list))
              ;; Convert hash table entries (id -> reason) to plists,
              ;; sorted by ID for deterministic output ordering.
              (invalid (let (result)
                           (maphash (lambda (id reason)
                                      (push (list :id id :reason reason) result))
-                                   supervisor--invalid-timers)
+                                   elinit--invalid-timers)
                           (sort result
                                 (lambda (a b)
                                   (string< (plist-get a :id)
                                            (plist-get b :id))))))
                (output (if json-p
-                           (supervisor--cli-timers-json timers invalid)
-                         (supervisor--cli-timers-human timers invalid))))
-          (supervisor--cli-success output (if json-p 'json 'human)))))))
+                           (elinit--cli-timers-json timers invalid)
+                         (elinit--cli-timers-human timers invalid))))
+          (elinit--cli-success output (if json-p 'json 'human)))))))
 
 ;;; CLI Dispatcher
 
-(defun supervisor--cli-parse-args (argv)
+(defun elinit--cli-parse-args (argv)
   "Parse ARGV into (command args json-p).
 ARGV is either a string or a list of strings.
 Returns a list (COMMAND ARGS JSON-P)."
@@ -2334,50 +2334,50 @@ Returns a list (COMMAND ARGS JSON-P)."
          (args (cdr argv)))
     (list command args (if json-p t nil))))
 
-(defun supervisor--cli-cmd-cat (args json-p)
+(defun elinit--cli-cmd-cat (args json-p)
   "Handle `cat ID' command with ARGS.  JSON-P enables JSON output.
 Output literal raw content of a unit file."
   (cond
    ((null args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            "cat requires an ID argument"
                            (if json-p 'json 'human)))
    ((cdr args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            (format "cat takes exactly one ID, got: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    (t
     (let* ((id (car args))
-           (entry (supervisor--get-entry-for-id id)))
-      (if (and entry (eq (supervisor-entry-type entry) 'target))
-          (supervisor--cli-error
-           supervisor-cli-exit-failure
+           (entry (elinit--get-entry-for-id id)))
+      (if (and entry (eq (elinit-entry-type entry) 'target))
+          (elinit--cli-error
+           elinit-cli-exit-failure
            (format "Cannot cat a target unit: %s" id)
            (if json-p 'json 'human))
-        (let ((path (supervisor--unit-file-path id)))
+        (let ((path (elinit--unit-file-path id)))
           (if (and path (file-exists-p path))
               (let ((content (with-temp-buffer
                                (insert-file-contents path)
                                (buffer-string))))
                 (if json-p
-                    (supervisor--cli-success
+                    (elinit--cli-success
                      (json-encode `((path . ,path)
                                     (content . ,content)))
                      'json)
-                  (supervisor--cli-success content 'human)))
+                  (elinit--cli-success content 'human)))
             (if (and path entry)
-                (supervisor--cli-error
-                 supervisor-cli-exit-failure
+                (elinit--cli-error
+                 elinit-cli-exit-failure
                  (format "No unit file on disk for '%s' (use 'edit %s' to create an override)"
                          id id)
                  (if json-p 'json 'human))
-              (supervisor--cli-error
-               supervisor-cli-exit-failure
+              (elinit--cli-error
+               elinit-cli-exit-failure
                (format "Unit file not found: %s" (or path id))
                (if json-p 'json 'human))))))))))
 
-(defun supervisor--cli-edit-launch-editor (editor path)
+(defun elinit--cli-edit-launch-editor (editor path)
   "Launch EDITOR on PATH synchronously.
 Returns the exit status of the editor process."
   (let* ((parts (split-string editor))
@@ -2386,46 +2386,46 @@ Returns the exit status of the editor process."
     (apply #'call-process program nil nil nil
            (append extra-args (list path)))))
 
-(defun supervisor--cli-cmd-edit (args json-p)
+(defun elinit--cli-cmd-edit (args json-p)
   "Handle `edit ID' command with ARGS.  JSON-P enables JSON output.
 Open unit file for editing.  Create scaffold if file does not exist.
 In non-interactive context, launch $VISUAL or $EDITOR."
   (cond
    ((null args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            "edit requires an ID argument"
                            (if json-p 'json 'human)))
    ((cdr args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            (format "edit takes exactly one ID, got: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    (t
     (let* ((id (car args))
-           (entry (supervisor--get-entry-for-id id)))
-      (if (and entry (eq (supervisor-entry-type entry) 'target))
-          (supervisor--cli-error
-           supervisor-cli-exit-failure
+           (entry (elinit--get-entry-for-id id)))
+      (if (and entry (eq (elinit-entry-type entry) 'target))
+          (elinit--cli-error
+           elinit-cli-exit-failure
            (format "Cannot edit a target unit: %s" id)
            (if json-p 'json 'human))
-    (let* ((path (supervisor--unit-file-path id))
-           (root (or (when (fboundp 'supervisor--authority-root-for-id)
-                       (supervisor--authority-root-for-id id))
+    (let* ((path (elinit--unit-file-path id))
+           (root (or (when (fboundp 'elinit--authority-root-for-id)
+                       (elinit--authority-root-for-id id))
                      (when path (file-name-directory path))))
-           (tier (when (fboundp 'supervisor--authority-tier-for-id)
-                   (supervisor--authority-tier-for-id id))))
+           (tier (when (fboundp 'elinit--authority-tier-for-id)
+                   (elinit--authority-tier-for-id id))))
       (if (not path)
-          (supervisor--cli-error
-           supervisor-cli-exit-failure
+          (elinit--cli-error
+           elinit-cli-exit-failure
            "No active authority roots configured"
            (if json-p 'json 'human))
         (let ((created (not (file-exists-p path))))
           ;; Ensure directory exists
           (when created
             (make-directory (file-name-directory path) t)
-            (write-region (supervisor--unit-file-scaffold id) nil path))
+            (write-region (elinit--unit-file-scaffold id) nil path))
           (if json-p
-              (supervisor--cli-success
+              (elinit--cli-success
                (json-encode `((path . ,path)
                               (root . ,root)
                               (tier . ,tier)
@@ -2449,64 +2449,64 @@ In non-interactive context, launch $VISUAL or $EDITOR."
               (message "%s" (string-trim-right preamble))
               (if editor
                   (let ((exit-status
-                         (supervisor--cli-edit-launch-editor
+                         (elinit--cli-edit-launch-editor
                           editor path)))
                     (if (= 0 exit-status)
-                        (supervisor--cli-success
+                        (elinit--cli-success
                          (concat preamble
                                  "\nNext steps after editing:\n"
-                                 "  supervisorctl daemon-reload"
+                                 "  elinitctl daemon-reload"
                                  "    Reload unit definitions")
                          'human)
-                      (supervisor--cli-error
-                       supervisor-cli-exit-failure
+                      (elinit--cli-error
+                       elinit-cli-exit-failure
                        (format "%sEditor exited with status %d"
                                preamble exit-status)
                        'human)))
-                (supervisor--cli-error
-                 supervisor-cli-exit-failure
-                 (format "%sNo $VISUAL or $EDITOR set.  Edit the file manually:\n  %s\n\nNext steps after editing:\n  supervisorctl daemon-reload    Reload unit definitions"
+                (elinit--cli-error
+                 elinit-cli-exit-failure
+                 (format "%sNo $VISUAL or $EDITOR set.  Edit the file manually:\n  %s\n\nNext steps after editing:\n  elinitctl daemon-reload    Reload unit definitions"
                          preamble path)
                  'human))))))))))))
 
 ;;; CLI Target Commands
 
-(defun supervisor--cli-require-running (json-p)
-  "Return an error result if the supervisor has no runtime context.
-Return nil when the supervisor is running (current plan is available).
+(defun elinit--cli-require-running (json-p)
+  "Return an error result if the elinit has no runtime context.
+Return nil when the elinit is running (current plan is available).
 JSON-P controls the output format."
-  (unless supervisor--current-plan
-    (supervisor--cli-error
-     supervisor-cli-exit-failure
-     "Supervisor is not running (no current plan)"
+  (unless elinit--current-plan
+    (elinit--cli-error
+     elinit-cli-exit-failure
+     "Elinit is not running (no current plan)"
      (if json-p 'json 'human))))
 
-(defun supervisor--cli-target-status-string (target-id)
+(defun elinit--cli-target-status-string (target-id)
   "Return runtime target status string for TARGET-ID."
-  (car (supervisor--compute-entry-status target-id 'target)))
+  (car (elinit--compute-entry-status target-id 'target)))
 
-(defun supervisor--cli-cmd-get-default (args json-p)
+(defun elinit--cli-cmd-get-default (args json-p)
   "Handle `get-default' command with ARGS.  JSON-P enables JSON output.
 Print the effective default-target-link (what default.target resolves to)."
-  (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
+  (let ((extra-err (elinit--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
-      (let ((resolved (supervisor--resolve-default-target-link)))
-        (supervisor--cli-success
+      (let ((resolved (elinit--resolve-default-target-link)))
+        (elinit--cli-success
          (if json-p
              (json-encode `((default-target . ,resolved)))
            (format "%s\n" resolved))
          (if json-p 'json 'human))))))
 
-(defun supervisor--cli-cmd-set-default (args json-p)
+(defun elinit--cli-cmd-set-default (args json-p)
   "Handle `set-default TARGET' command with ARGS.  JSON-P enables JSON output.
 Persist default-target-link override.  Reject \"default.target\"."
   (cond
    ((null args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            "set-default requires a TARGET argument"
                            (if json-p 'json 'human)))
    ((cdr args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            (format "set-default takes exactly one argument, got: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
@@ -2514,39 +2514,39 @@ Persist default-target-link override.  Reject \"default.target\"."
     (let ((target (car args)))
       (cond
        ((equal target "default.target")
-        (supervisor--cli-error
-         supervisor-cli-exit-invalid-args
+        (elinit--cli-error
+         elinit-cli-exit-invalid-args
          "Cannot set default to \"default.target\" (circular alias); use a concrete target"
          (if json-p 'json 'human)))
        ((not (string-suffix-p ".target" target))
-        (supervisor--cli-error
-         supervisor-cli-exit-invalid-args
+        (elinit--cli-error
+         elinit-cli-exit-invalid-args
          (format "'%s' is not a target (must end in .target)" target)
          (if json-p 'json 'human)))
        (t
         ;; Validate target exists in current plan
-        (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
-               (entries (supervisor-plan-entries plan))
+        (let* ((plan (elinit--build-plan (elinit--effective-programs)))
+               (entries (elinit-plan-entries plan))
                (found (cl-find target entries
-                               :key #'supervisor-entry-id
+                               :key #'elinit-entry-id
                                :test #'equal)))
           (cond
            ((not found)
-            (supervisor--cli-error
-             supervisor-cli-exit-no-such-unit
+            (elinit--cli-error
+             elinit-cli-exit-no-such-unit
              (format "Target '%s' does not exist" target)
              (if json-p 'json 'human)))
-           ((not (eq (supervisor-entry-type found) 'target))
-            (supervisor--cli-error
-             supervisor-cli-exit-invalid-args
+           ((not (eq (elinit-entry-type found) 'target))
+            (elinit--cli-error
+             elinit-cli-exit-invalid-args
              (format "'%s' exists but is not a target unit" target)
              (if json-p 'json 'human)))
            (t
             ;; Resolve alias to canonical before persisting
-            (let ((canonical (supervisor--resolve-target-alias target)))
-              (setq supervisor--default-target-link-override canonical)
-              (supervisor--save-overrides)
-              (supervisor--cli-success
+            (let ((canonical (elinit--resolve-target-alias target)))
+              (setq elinit--default-target-link-override canonical)
+              (elinit--save-overrides)
+              (elinit--cli-success
                (if json-p
                    (json-encode `((status . "applied")
                                   (target . ,canonical)))
@@ -2556,41 +2556,41 @@ Persist default-target-link override.  Reject \"default.target\"."
                            canonical target)))
                (if json-p 'json 'human))))))))))))
 
-(defun supervisor--cli-cmd-list-targets (args json-p)
+(defun elinit--cli-cmd-list-targets (args json-p)
   "Handle `list-targets' command with ARGS.  JSON-P enables JSON output.
 List all target units with convergence state and member counts."
-  (let ((extra-err (supervisor--cli-reject-extra-args args json-p)))
+  (let ((extra-err (elinit--cli-reject-extra-args args json-p)))
     (if extra-err extra-err
-      (let ((running-err (supervisor--cli-require-running json-p)))
+      (let ((running-err (elinit--cli-require-running json-p)))
         (if running-err running-err
-      (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
-             (entries (supervisor-plan-entries plan))
+      (let* ((plan (elinit--build-plan (elinit--effective-programs)))
+             (entries (elinit-plan-entries plan))
              (target-entries
               (cl-remove-if-not
-               (lambda (e) (eq (supervisor-entry-type e) 'target))
+               (lambda (e) (eq (elinit-entry-type e) 'target))
                entries))
-             (members (supervisor--materialize-target-members entries))
+             (members (elinit--materialize-target-members entries))
              (rows nil))
         ;; Sort by ID for deterministic output
         (setq target-entries
               (sort (copy-sequence target-entries)
                     (lambda (a b)
-                      (string< (supervisor-entry-id a)
-                               (supervisor-entry-id b)))))
+                      (string< (elinit-entry-id a)
+                               (elinit-entry-id b)))))
         (dolist (entry target-entries)
-          (let* ((id (supervisor-entry-id entry))
-                 (canonical (supervisor--resolve-target-alias id))
+          (let* ((id (elinit-entry-id entry))
+                 (canonical (elinit--resolve-target-alias id))
                  (mem (gethash canonical members))
                  (req-count (length (plist-get mem :requires)))
                  (wants-count (length (plist-get mem :wants)))
-                 (status (supervisor--cli-target-status-string id))
-                 (alias-target (supervisor--target-alias-p id))
+                 (status (elinit--cli-target-status-string id))
+                 (alias-target (elinit--target-alias-p id))
                  (kind (if alias-target "alias" "canonical"))
                  (resolved-link
                   (cond (alias-target
-                         (supervisor--resolve-target-alias id))
+                         (elinit--resolve-target-alias id))
                         ((equal id "default.target")
-                         (supervisor--resolve-default-target-link)))))
+                         (elinit--resolve-default-target-link)))))
             (push `((id . ,id)
                     (status . ,status)
                     (kind . ,kind)
@@ -2599,9 +2599,9 @@ List all target units with convergence state and member counts."
                     (resolved-link . ,resolved-link))
                   rows)))
         (setq rows (nreverse rows))
-        (supervisor--cli-success
+        (elinit--cli-success
          (if json-p
-             (json-encode (supervisor--cli-ensure-array rows))
+             (json-encode (elinit--cli-ensure-array rows))
            (concat
             (format "%-25s %-12s %-10s %s\n" "ID" "STATUS" "KIND" "MEMBERS")
             (make-string 70 ?-)
@@ -2620,72 +2620,72 @@ List all target units with convergence state and member counts."
              rows "")))
          (if json-p 'json 'human))))))))
 
-(defun supervisor--cli-cmd-target-status (args json-p)
+(defun elinit--cli-cmd-target-status (args json-p)
   "Handle `target-status TARGET' command with ARGS.  JSON-P for JSON.
 Show convergence state, reasons, and member lists for a target."
   (cond
    ((null args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            "target-status requires a TARGET argument"
                            (if json-p 'json 'human)))
    ((cdr args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            (format "target-status takes exactly one argument, got: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    (t
-    (let ((running-err (supervisor--cli-require-running json-p)))
+    (let ((running-err (elinit--cli-require-running json-p)))
       (or running-err
     (let* ((target (car args))
-           (plan (supervisor--build-plan (supervisor--effective-programs)))
-           (entries (supervisor-plan-entries plan))
+           (plan (elinit--build-plan (elinit--effective-programs)))
+           (entries (elinit-plan-entries plan))
            (found (cl-find target entries
-                           :key #'supervisor-entry-id
+                           :key #'elinit-entry-id
                            :test #'equal)))
       (cond
        ((not found)
-        (supervisor--cli-error
-         supervisor-cli-exit-no-such-unit
+        (elinit--cli-error
+         elinit-cli-exit-no-such-unit
          (format "Target '%s' does not exist" target)
          (if json-p 'json 'human)))
-       ((not (eq (supervisor-entry-type found) 'target))
-        (supervisor--cli-error
-         supervisor-cli-exit-invalid-args
+       ((not (eq (elinit-entry-type found) 'target))
+        (elinit--cli-error
+         elinit-cli-exit-invalid-args
          (format "'%s' exists but is not a target unit" target)
          (if json-p 'json 'human)))
        (t
-        (let* ((members (supervisor--materialize-target-members entries))
-               (canonical (supervisor--resolve-target-alias target))
+        (let* ((members (elinit--materialize-target-members entries))
+               (canonical (elinit--resolve-target-alias target))
                (mem (gethash canonical members))
                (req-ids (plist-get mem :requires))
                (want-ids (plist-get mem :wants))
-               (status (supervisor--cli-target-status-string target))
+               (status (elinit--cli-target-status-string target))
                (reasons (when (hash-table-p
-                               supervisor--target-convergence-reasons)
+                               elinit--target-convergence-reasons)
                           (gethash canonical
-                                   supervisor--target-convergence-reasons)))
-               (alias-target (supervisor--target-alias-p target))
+                                   elinit--target-convergence-reasons)))
+               (alias-target (elinit--target-alias-p target))
                (kind (if alias-target "alias" "canonical"))
                (resolved-link
                 (cond (alias-target
-                       (supervisor--resolve-target-alias target))
+                       (elinit--resolve-target-alias target))
                       ((equal target "default.target")
-                       (supervisor--resolve-default-target-link))))
-               (desc (supervisor-entry-description found))
+                       (elinit--resolve-default-target-link))))
+               (desc (elinit-entry-description found))
                ;; Build member status lists
                (req-info
                 (mapcar (lambda (mid)
-                          (let ((st (car (supervisor--compute-entry-status
-                                         mid (supervisor--cli-type-for-id mid entries)))))
+                          (let ((st (car (elinit--compute-entry-status
+                                         mid (elinit--cli-type-for-id mid entries)))))
                             (cons mid st)))
                         req-ids))
                (want-info
                 (mapcar (lambda (mid)
-                          (let ((st (car (supervisor--compute-entry-status
-                                         mid (supervisor--cli-type-for-id mid entries)))))
+                          (let ((st (car (elinit--compute-entry-status
+                                         mid (elinit--cli-type-for-id mid entries)))))
                             (cons mid st)))
                         want-ids)))
-          (supervisor--cli-success
+          (elinit--cli-success
            (if json-p
                (json-encode
                 `((id . ,target)
@@ -2695,13 +2695,13 @@ Show convergence state, reasons, and member lists for a target."
                   (reasons . ,(or reasons []))
                   (resolved-link . ,resolved-link)
                   (requires
-                   . ,(supervisor--cli-ensure-array
+                   . ,(elinit--cli-ensure-array
                        (mapcar (lambda (p)
                                  `((id . ,(car p))
                                    (status . ,(cdr p))))
                                req-info)))
                   (wants
-                   . ,(supervisor--cli-ensure-array
+                   . ,(elinit--cli-ensure-array
                        (mapcar (lambda (p)
                                  `((id . ,(car p))
                                    (status . ,(cdr p))))
@@ -2733,94 +2733,94 @@ Show convergence state, reasons, and member lists for a target."
                         "none"))))
            (if json-p 'json 'human)))))))))))
 
-(defun supervisor--cli-type-for-id (id entries)
+(defun elinit--cli-type-for-id (id entries)
   "Return the entry type symbol for ID in ENTRIES list, or nil."
   (let ((found (cl-find id entries
-                        :key #'supervisor-entry-id
+                        :key #'elinit-entry-id
                         :test #'equal)))
-    (when found (supervisor-entry-type found))))
+    (when found (elinit-entry-type found))))
 
-(defun supervisor--cli-cmd-explain-target (args json-p)
+(defun elinit--cli-cmd-explain-target (args json-p)
   "Handle `explain-target TARGET' command with ARGS.  JSON-P for JSON.
 Show root-cause chain: why is this target in its current state?"
   (cond
    ((null args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            "explain-target requires a TARGET argument"
                            (if json-p 'json 'human)))
    ((cdr args)
-    (supervisor--cli-error supervisor-cli-exit-invalid-args
+    (elinit--cli-error elinit-cli-exit-invalid-args
                            (format "explain-target takes exactly one argument, got: %s"
                                    (mapconcat #'identity args " "))
                            (if json-p 'json 'human)))
    (t
-    (let ((running-err (supervisor--cli-require-running json-p)))
+    (let ((running-err (elinit--cli-require-running json-p)))
       (or running-err
     (let* ((target (car args))
-           (plan (supervisor--build-plan (supervisor--effective-programs)))
-           (entries (supervisor-plan-entries plan))
+           (plan (elinit--build-plan (elinit--effective-programs)))
+           (entries (elinit-plan-entries plan))
            (found (cl-find target entries
-                           :key #'supervisor-entry-id
+                           :key #'elinit-entry-id
                            :test #'equal)))
       (cond
        ((not found)
-        (supervisor--cli-error
-         supervisor-cli-exit-no-such-unit
+        (elinit--cli-error
+         elinit-cli-exit-no-such-unit
          (format "Target '%s' does not exist" target)
          (if json-p 'json 'human)))
-       ((not (eq (supervisor-entry-type found) 'target))
-        (supervisor--cli-error
-         supervisor-cli-exit-invalid-args
+       ((not (eq (elinit-entry-type found) 'target))
+        (elinit--cli-error
+         elinit-cli-exit-invalid-args
          (format "'%s' exists but is not a target unit" target)
          (if json-p 'json 'human)))
        (t
-        (let* ((members (supervisor--materialize-target-members entries))
-               (canonical (supervisor--resolve-target-alias target))
+        (let* ((members (elinit--materialize-target-members entries))
+               (canonical (elinit--resolve-target-alias target))
                (mem (gethash canonical members))
                (req-ids (plist-get mem :requires))
                (want-ids (plist-get mem :wants))
-               (status (supervisor--cli-target-status-string target))
+               (status (elinit--cli-target-status-string target))
                (reasons (when (hash-table-p
-                               supervisor--target-convergence-reasons)
+                               elinit--target-convergence-reasons)
                           (gethash canonical
-                                   supervisor--target-convergence-reasons)))
+                                   elinit--target-convergence-reasons)))
                (all-ids (append req-ids want-ids))
                (member-details nil))
           ;; Build member detail list based on convergence state
           (pcase status
             ("degraded"
              (dolist (mid all-ids)
-               (let* ((st (car (supervisor--compute-entry-status
-                                mid (supervisor--cli-type-for-id mid entries))))
+               (let* ((st (car (elinit--compute-entry-status
+                                mid (elinit--cli-type-for-id mid entries))))
                       (failed (member st '("dead" "failed"))))
                  (when failed
                    (push `((id . ,mid) (status . ,st)) member-details))))
              (setq member-details (nreverse member-details)))
             ("converging"
              (dolist (mid all-ids)
-               (let ((st (car (supervisor--compute-entry-status
-                               mid (supervisor--cli-type-for-id mid entries)))))
+               (let ((st (car (elinit--compute-entry-status
+                               mid (elinit--cli-type-for-id mid entries)))))
                  (unless (member st '("running" "done" "active" "reached"))
                    (push `((id . ,mid) (status . ,st)) member-details))))
              (setq member-details (nreverse member-details)))
             (_ nil))
-          (supervisor--cli-success
+          (elinit--cli-success
            (if json-p
-               (let ((alias-info (supervisor--target-alias-p target)))
+               (let ((alias-info (elinit--target-alias-p target)))
                  (json-encode
                   `((id . ,target)
                     (kind . ,(if alias-info "alias" "canonical"))
                     ,@(when alias-info
-                        `((resolved-link . ,(supervisor--resolve-target-alias target))))
+                        `((resolved-link . ,(elinit--resolve-target-alias target))))
                     (status . ,status)
                     (reasons . ,(or reasons []))
-                    (members . ,(supervisor--cli-ensure-array
+                    (members . ,(elinit--cli-ensure-array
                                  member-details)))))
              (concat
               (format "%s: %s%s\n" target status
-                      (if (supervisor--target-alias-p target)
+                      (if (elinit--target-alias-p target)
                           (format " (alias -> %s)"
-                                  (supervisor--resolve-target-alias target))
+                                  (elinit--resolve-target-alias target))
                         ""))
               (pcase status
                 ("degraded"
@@ -2853,108 +2853,108 @@ Show root-cause chain: why is this target in its current state?"
                  "  Target convergence has not started yet\n"))))
            (if json-p 'json 'human)))))))))))
 
-(defun supervisor--cli-cmd-isolate (args json-p)
+(defun elinit--cli-cmd-isolate (args json-p)
   "Handle `isolate [--yes] TARGET' command with ARGS.  JSON-P for JSON.
 Switch to TARGET: stop entries not in closure, start entries in closure.
 Requires --yes flag.  Transaction-scoped (does not persist default change)."
-  (let* ((split (supervisor--cli-split-at-separator args))
+  (let* ((split (elinit--cli-split-at-separator args))
          (before (car split))
          (after (cdr split))
-         (unknown (supervisor--cli-has-unknown-flags before '("--yes")))
+         (unknown (elinit--cli-has-unknown-flags before '("--yes")))
          (yes-flag (member "--yes" before))
          (positional (cl-remove "--yes" (append before after) :test #'equal)))
     (cond
      (unknown
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "Unknown option: %s" unknown)
                              (if json-p 'json 'human)))
      ((null positional)
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "isolate requires a TARGET argument"
                              (if json-p 'json 'human)))
      ((cdr positional)
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "isolate takes exactly one TARGET, got: %s"
                                      (mapconcat #'identity positional " "))
                              (if json-p 'json 'human)))
      ((not yes-flag)
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "isolate requires --yes to confirm"
                              (if json-p 'json 'human)))
      (t
-      (let ((running-err (supervisor--cli-require-running json-p)))
+      (let ((running-err (elinit--cli-require-running json-p)))
         (or running-err
       (let* ((raw-target (car positional))
              ;; Resolve alias before lookup (e.g., runlevelN.target -> canonical)
-             (target (supervisor--resolve-target-alias raw-target)))
+             (target (elinit--resolve-target-alias raw-target)))
         (cond
          ((not (string-suffix-p ".target" raw-target))
-          (supervisor--cli-error
-           supervisor-cli-exit-invalid-args
+          (elinit--cli-error
+           elinit-cli-exit-invalid-args
            (format "'%s' is not a target (must end in .target)" raw-target)
            (if json-p 'json 'human)))
          (t
-          (let* ((plan (supervisor--build-plan (supervisor--effective-programs)))
-                 (entries (supervisor-plan-entries plan))
+          (let* ((plan (elinit--build-plan (elinit--effective-programs)))
+                 (entries (elinit-plan-entries plan))
                  (found (cl-find target entries
-                                 :key #'supervisor-entry-id
+                                 :key #'elinit-entry-id
                                  :test #'equal)))
             (cond
              ((not found)
-              (supervisor--cli-error
-               supervisor-cli-exit-no-such-unit
+              (elinit--cli-error
+               elinit-cli-exit-no-such-unit
                (format "Target '%s' does not exist" target)
                (if json-p 'json 'human)))
-             ((not (eq (supervisor-entry-type found) 'target))
-              (supervisor--cli-error
-               supervisor-cli-exit-invalid-args
+             ((not (eq (elinit-entry-type found) 'target))
+              (elinit--cli-error
+               elinit-cli-exit-invalid-args
                (format "'%s' exists but is not a target unit" target)
                (if json-p 'json 'human)))
              (t
               ;; Compute new closure
               (let* ((entries-by-id (make-hash-table :test 'equal))
                      (_ (dolist (e entries)
-                          (puthash (supervisor-entry-id e) e entries-by-id)))
-                     (members (supervisor--materialize-target-members entries))
-                     (closure (supervisor--expand-transaction
+                          (puthash (elinit-entry-id e) e entries-by-id)))
+                     (members (elinit--materialize-target-members entries))
+                     (closure (elinit--expand-transaction
                                target entries-by-id members
-                               (supervisor-plan-order-index plan)))
+                               (elinit-plan-order-index plan)))
                      ;; Determine current running IDs
                      (running-ids nil)
                      (_ (maphash
                          (lambda (id proc)
                            (when (and proc (process-live-p proc))
                              (push id running-ids)))
-                         supervisor--processes))
+                         elinit--processes))
                      ;; Stop entries running but not in new closure
                      (stop-count 0)
                      (start-count 0))
                 (dolist (id running-ids)
                   (unless (gethash id closure)
-                    (supervisor--manual-stop id)
+                    (elinit--manual-stop id)
                     (cl-incf stop-count)))
                 ;; Collect entries that need DAG-ordered starting
                 (let ((to-start
                        (cl-remove-if
                         (lambda (e)
-                          (let* ((id (supervisor-entry-id e))
-                                 (proc (gethash id supervisor--processes)))
+                          (let* ((id (elinit-entry-id e))
+                                 (proc (gethash id elinit--processes)))
                             (or (not (gethash id closure))
-                                (eq (supervisor-entry-type e) 'target)
+                                (eq (elinit-entry-type e) 'target)
                                 (and proc (process-live-p proc)))))
-                        (supervisor-plan-by-target plan))))
+                        (elinit-plan-by-target plan))))
                   (setq start-count (length to-start))
                   ;; Start via DAG scheduler (respects oneshot-blocking)
-                  (supervisor--dag-start-with-deps
+                  (elinit--dag-start-with-deps
                    to-start
                    (lambda ()
-                     (supervisor--log 'info "isolate startup complete"))))
+                     (elinit--log 'info "isolate startup complete"))))
                 ;; Update convergence state for new target membership
-                (when (hash-table-p supervisor--target-members)
-                  (maphash (lambda (k v) (puthash k v supervisor--target-members))
+                (when (hash-table-p elinit--target-members)
+                  (maphash (lambda (k v) (puthash k v elinit--target-members))
                            members))
-                (supervisor--maybe-refresh-dashboard)
-                (supervisor--cli-success
+                (elinit--maybe-refresh-dashboard)
+                (elinit--cli-success
                  (if json-p
                      (json-encode `((status . "applied")
                                     (target . ,target)
@@ -2964,7 +2964,7 @@ Requires --yes flag.  Transaction-scoped (does not persist default change)."
                            target stop-count start-count))
                  (if json-p 'json 'human)))))))))))))))
 
-(defconst supervisor--runlevel-map
+(defconst elinit--runlevel-map
   '((0 . "poweroff.target")
     (1 . "rescue.target")
     (2 . "multi-user.target")
@@ -2974,7 +2974,7 @@ Requires --yes flag.  Transaction-scoped (does not persist default change)."
     (6 . "reboot.target"))
   "Fixed runlevel-to-target mapping using systemd semantics.")
 
-(defun supervisor--cli-cmd-init (args json-p)
+(defun elinit--cli-cmd-init (args json-p)
   "Handle `init N' command with ARGS.  JSON-P for JSON output.
 Map numeric runlevel N (0-6) to a target and isolate to it.
 Runlevels 0 and 6 are destructive transitions: in interactive
@@ -2982,24 +2982,24 @@ Emacs sessions they prompt for confirmation via `y-or-n-p'; in
 batch mode (or JSON mode) the --yes flag is required.
 Does not persist default-target changes.
 Result summary includes both numeric runlevel and resolved target."
-  (let* ((split (supervisor--cli-split-at-separator args))
+  (let* ((split (elinit--cli-split-at-separator args))
          (before (car split))
          (after (cdr split))
-         (unknown (supervisor--cli-has-unknown-flags before '("--yes")))
+         (unknown (elinit--cli-has-unknown-flags before '("--yes")))
          (yes-flag (member "--yes" before))
          (positional (cl-remove "--yes" (append before after)
                                 :test #'equal)))
     (cond
      (unknown
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "Unknown option: %s" unknown)
                              (if json-p 'json 'human)))
      ((null positional)
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              "init requires a runlevel argument (0-6)"
                              (if json-p 'json 'human)))
      ((cdr positional)
-      (supervisor--cli-error supervisor-cli-exit-invalid-args
+      (elinit--cli-error elinit-cli-exit-invalid-args
                              (format "init takes exactly one argument, got: %s"
                                      (mapconcat #'identity positional " "))
                              (if json-p 'json 'human)))
@@ -3007,16 +3007,16 @@ Result summary includes both numeric runlevel and resolved target."
       (let* ((arg (car positional))
              (n (and (string-match-p "\\`[0-9]+\\'" arg)
                      (string-to-number arg)))
-             (mapping (when n (assq n supervisor--runlevel-map))))
+             (mapping (when n (assq n elinit--runlevel-map))))
         (cond
          ((null n)
-          (supervisor--cli-error
-           supervisor-cli-exit-invalid-args
+          (elinit--cli-error
+           elinit-cli-exit-invalid-args
            (format "'%s' is not a valid runlevel (must be 0-6)" arg)
            (if json-p 'json 'human)))
          ((null mapping)
-          (supervisor--cli-error
-           supervisor-cli-exit-invalid-args
+          (elinit--cli-error
+           elinit-cli-exit-invalid-args
            (format "Runlevel %d is out of range (must be 0-6)" n)
            (if json-p 'json 'human)))
          ;; Destructive transitions (0=poweroff, 6=reboot) need confirmation.
@@ -3027,28 +3027,28 @@ Result summary includes both numeric runlevel and resolved target."
                    (y-or-n-p
                     (format "Init %d (%s) is destructive.  Proceed? "
                             n (cdr mapping))))
-              (supervisor--cli-init-execute n mapping json-p)
-            (supervisor--cli-error
-             supervisor-cli-exit-invalid-args
+              (elinit--cli-init-execute n mapping json-p)
+            (elinit--cli-error
+             elinit-cli-exit-invalid-args
              (format "init %d (%s) is destructive; use --yes to confirm"
                      n (cdr mapping))
              (if json-p 'json 'human))))
          (t
-          (supervisor--cli-init-execute n mapping json-p))))))))
+          (elinit--cli-init-execute n mapping json-p))))))))
 
-(defun supervisor--cli-init-execute (runlevel mapping json-p)
+(defun elinit--cli-init-execute (runlevel mapping json-p)
   "Execute init transition for RUNLEVEL using MAPPING.
-MAPPING is a cons cell from `supervisor--runlevel-map'.
+MAPPING is a cons cell from `elinit--runlevel-map'.
 JSON-P selects output format.
 Route through isolate and wrap the result to include both numeric
 runlevel and resolved target identity per plan requirement."
   (let* ((target (cdr mapping))
-         (result (supervisor--cli-cmd-isolate
+         (result (elinit--cli-cmd-isolate
                   (list "--yes" target) json-p)))
-    (if (= supervisor-cli-exit-success
-           (supervisor-cli-result-exitcode result))
-        (let ((inner (supervisor-cli-result-output result)))
-          (supervisor--cli-success
+    (if (= elinit-cli-exit-success
+           (elinit-cli-result-exitcode result))
+        (let ((inner (elinit-cli-result-output result)))
+          (elinit--cli-success
            (if json-p
                (let ((obj (json-read-from-string inner)))
                  (json-encode
@@ -3058,19 +3058,19 @@ runlevel and resolved target identity per plan requirement."
            (if json-p 'json 'human)))
       result)))
 
-(defun supervisor--cli-dispatch (argv)
+(defun elinit--cli-dispatch (argv)
   "Dispatch CLI command from ARGV.
 ARGV is a list of strings (command and arguments).
-Returns a `supervisor-cli-result' struct."
-  (let* ((parsed (supervisor--cli-parse-args argv))
+Returns a `elinit-cli-result' struct."
+  (let* ((parsed (elinit--cli-parse-args argv))
          (command (nth 0 parsed))
          (args (nth 1 parsed))
          (json-p (nth 2 parsed)))
     (condition-case err
         (cond
          ((null command)
-          (supervisor--cli-success
-           (concat "Usage: supervisorctl COMMAND [ARGS...]\n\n"
+          (elinit--cli-success
+           (concat "Usage: elinitctl COMMAND [ARGS...]\n\n"
                    "Systemctl-compatible commands:\n"
                    "  status [ID...]             Show unit status (detail with IDs, overview without)\n"
                    "  list-units [ID...]         List units (overview table)\n"
@@ -3092,7 +3092,7 @@ Returns a `supervisor-cli-result' struct."
                    "  reload [--] ID...          Hot-reload specific units\n"
                    "  list-dependencies [ID]     Show dependency graph\n"
                    "  list-timers                Show timer units\n\n"
-                   "Supervisor-specific commands:\n"
+                   "Elinit-specific commands:\n"
                    "  verify                     Verify config\n"
                    "  reset-failed [--] [ID...]  Reset failed state\n"
                    "  restart-policy POLICY ID...    Set restart policy (no|on-success|on-failure|always)\n"
@@ -3100,7 +3100,7 @@ Returns a `supervisor-cli-result' struct."
                    "  blame                      Show startup timing\n"
                    "  logs [--tail N] [--] ID    View unit log file\n"
                    "  journal -u ID [-n N] [-p err] [-f] [--since TS] [--until TS]  Structured log records\n"
-                   "  ping                       Check supervisor liveness\n"
+                   "  ping                       Check elinit liveness\n"
                    "  version                    Show version\n\n"
                    "Target commands:\n"
                    "  list-targets               List all target units\n"
@@ -3114,105 +3114,105 @@ Returns a `supervisor-cli-result' struct."
                    "Options: --json (output as JSON)\n")
            (if json-p 'json 'human)))
          ((equal command "status")
-          (supervisor--cli-cmd-status args json-p))
+          (elinit--cli-cmd-status args json-p))
          ((equal command "list-units")
-          (supervisor--cli-cmd-list-units args json-p))
+          (elinit--cli-cmd-list-units args json-p))
          ((equal command "show")
-          (supervisor--cli-cmd-show args json-p))
+          (elinit--cli-cmd-show args json-p))
          ((equal command "verify")
-          (supervisor--cli-cmd-verify args json-p))
+          (elinit--cli-cmd-verify args json-p))
          ((equal command "start")
-          (supervisor--cli-cmd-start args json-p))
+          (elinit--cli-cmd-start args json-p))
          ((equal command "stop")
-          (supervisor--cli-cmd-stop args json-p))
+          (elinit--cli-cmd-stop args json-p))
          ((equal command "restart")
-          (supervisor--cli-cmd-restart args json-p))
+          (elinit--cli-cmd-restart args json-p))
          ((equal command "daemon-reload")
-          (supervisor--cli-cmd-daemon-reload args json-p))
+          (elinit--cli-cmd-daemon-reload args json-p))
          ((equal command "reload")
-          (supervisor--cli-cmd-reload args json-p))
+          (elinit--cli-cmd-reload args json-p))
          ((equal command "enable")
-          (supervisor--cli-cmd-enable args json-p))
+          (elinit--cli-cmd-enable args json-p))
          ((equal command "disable")
-          (supervisor--cli-cmd-disable args json-p))
+          (elinit--cli-cmd-disable args json-p))
          ((equal command "mask")
-          (supervisor--cli-cmd-mask args json-p))
+          (elinit--cli-cmd-mask args json-p))
          ((equal command "unmask")
-          (supervisor--cli-cmd-unmask args json-p))
+          (elinit--cli-cmd-unmask args json-p))
          ((equal command "restart-policy")
-          (supervisor--cli-cmd-restart-policy args json-p))
+          (elinit--cli-cmd-restart-policy args json-p))
          ((equal command "logging")
-          (supervisor--cli-cmd-logging args json-p))
+          (elinit--cli-cmd-logging args json-p))
          ((equal command "blame")
-          (supervisor--cli-cmd-blame args json-p))
+          (elinit--cli-cmd-blame args json-p))
          ((equal command "list-dependencies")
-          (supervisor--cli-cmd-list-dependencies args json-p))
+          (elinit--cli-cmd-list-dependencies args json-p))
          ((equal command "logs")
-          (supervisor--cli-cmd-logs args json-p))
+          (elinit--cli-cmd-logs args json-p))
          ((equal command "journal")
-          (supervisor--cli-cmd-journal args json-p))
+          (elinit--cli-cmd-journal args json-p))
          ((equal command "kill")
-          (supervisor--cli-cmd-kill args json-p))
+          (elinit--cli-cmd-kill args json-p))
          ((equal command "ping")
-          (supervisor--cli-cmd-ping args json-p))
+          (elinit--cli-cmd-ping args json-p))
          ((equal command "version")
-          (supervisor--cli-cmd-version args json-p))
+          (elinit--cli-cmd-version args json-p))
          ((equal command "list-timers")
-          (supervisor--cli-cmd-list-timers args json-p))
+          (elinit--cli-cmd-list-timers args json-p))
          ((equal command "cat")
-          (supervisor--cli-cmd-cat args json-p))
+          (elinit--cli-cmd-cat args json-p))
          ((equal command "edit")
-          (supervisor--cli-cmd-edit args json-p))
+          (elinit--cli-cmd-edit args json-p))
          ((equal command "is-active")
-          (supervisor--cli-cmd-is-active args json-p))
+          (elinit--cli-cmd-is-active args json-p))
          ((equal command "is-enabled")
-          (supervisor--cli-cmd-is-enabled args json-p))
+          (elinit--cli-cmd-is-enabled args json-p))
          ((equal command "is-failed")
-          (supervisor--cli-cmd-is-failed args json-p))
+          (elinit--cli-cmd-is-failed args json-p))
          ((equal command "reset-failed")
-          (supervisor--cli-cmd-reset-failed args json-p))
+          (elinit--cli-cmd-reset-failed args json-p))
          ((equal command "list-targets")
-          (supervisor--cli-cmd-list-targets args json-p))
+          (elinit--cli-cmd-list-targets args json-p))
          ((equal command "target-status")
-          (supervisor--cli-cmd-target-status args json-p))
+          (elinit--cli-cmd-target-status args json-p))
          ((equal command "explain-target")
-          (supervisor--cli-cmd-explain-target args json-p))
+          (elinit--cli-cmd-explain-target args json-p))
          ((equal command "isolate")
-          (supervisor--cli-cmd-isolate args json-p))
+          (elinit--cli-cmd-isolate args json-p))
          ((equal command "get-default")
-          (supervisor--cli-cmd-get-default args json-p))
+          (elinit--cli-cmd-get-default args json-p))
          ((equal command "set-default")
-          (supervisor--cli-cmd-set-default args json-p))
+          (elinit--cli-cmd-set-default args json-p))
          ((equal command "init")
-          (supervisor--cli-cmd-init args json-p))
+          (elinit--cli-cmd-init args json-p))
          ((equal command "telinit")
-          (supervisor--cli-cmd-init args json-p))
+          (elinit--cli-cmd-init args json-p))
          (t
-          (supervisor--cli-error supervisor-cli-exit-invalid-args
+          (elinit--cli-error elinit-cli-exit-invalid-args
                                  (format "Unknown command: %s" command)
                                  (if json-p 'json 'human))))
       (error
-       (supervisor--cli-error supervisor-cli-exit-failure
+       (elinit--cli-error elinit-cli-exit-failure
                               (format "Internal error: %s" (error-message-string err))
                               (if json-p 'json 'human))))))
 
-(defun supervisor--cli-dispatch-for-wrapper (argv-list)
+(defun elinit--cli-dispatch-for-wrapper (argv-list)
   "Dispatch CLI command for external wrapper.
 ARGV-LIST is a list of strings passed from the shell wrapper.
 Returns a string in format \"EXITCODE:BASE64OUTPUT\" for the wrapper to parse.
 Exit code and base64-encoded output are separated by colon.
 Base64 encoding avoids escaping issues with newlines and special characters."
-  (let ((result (supervisor--cli-dispatch argv-list)))
-    (if (eq (supervisor-cli-result-format result) 'follow)
-        (supervisor-cli-result-output result)
+  (let ((result (elinit--cli-dispatch argv-list)))
+    (if (eq (elinit-cli-result-format result) 'follow)
+        (elinit-cli-result-output result)
       (format "%d:%s"
-              (supervisor-cli-result-exitcode result)
+              (elinit-cli-result-exitcode result)
               (base64-encode-string
                (encode-coding-string
-                (supervisor-cli-result-output result) 'utf-8)
+                (elinit-cli-result-output result) 'utf-8)
                t)))))
 
 
-(provide 'supervisor-cli)
+(provide 'elinit-cli)
 
-;;; supervisor-cli.el ends here
+;;; elinit-cli.el ends here

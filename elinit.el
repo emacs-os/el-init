@@ -1,4 +1,4 @@
-;;; supervisor.el --- Emacs Lisp process supervisor -*- lexical-binding: t -*-
+;;; elinit.el --- Emacs Lisp process supervisor -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
 ;;
@@ -6,7 +6,7 @@
 ;; Version: 1.0.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: processes, unix
-;; URL: https://github.com/cypherpunk2001/supervisor.el
+;; URL: https://github.com/cypherpunk2001/el-init
 
 ;; This file is not part of GNU Emacs.
 
@@ -26,20 +26,20 @@
 ;;; Commentary:
 
 ;; Emacs Lisp process supervisor.
-;; Run M-x supervisor-handbook for full documentation.
+;; Run M-x elinit-handbook for full documentation.
 
 ;;; Code:
 
-(require 'supervisor-core)
-(require 'supervisor-log)
-(require 'supervisor-overrides)
-(require 'supervisor-sandbox)
-(require 'supervisor-libexec)
-(require 'supervisor-units)
-(require 'supervisor-timer)
-(require 'supervisor-dashboard)
-(require 'supervisor-cli)
+(require 'elinit-core)
+(require 'elinit-log)
+(require 'elinit-overrides)
+(require 'elinit-sandbox)
+(require 'elinit-libexec)
+(require 'elinit-units)
+(require 'elinit-timer)
+(require 'elinit-dashboard)
+(require 'elinit-cli)
 
-(provide 'supervisor)
+(provide 'elinit)
 
-;;; supervisor.el ends here
+;;; elinit.el ends here

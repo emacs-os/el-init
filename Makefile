@@ -1,13 +1,13 @@
 EMACS ?= emacs
 BATCH = $(EMACS) -Q --batch -L . -L $(TEST_DIR)
 
-EL_MAIN = supervisor.el
-EL_MODULES = supervisor-core.el supervisor-log.el supervisor-overrides.el supervisor-libexec.el supervisor-sandbox.el supervisor-units.el supervisor-timer.el supervisor-dashboard.el supervisor-cli.el
+EL_MAIN = elinit.el
+EL_MODULES = elinit-core.el elinit-log.el elinit-overrides.el elinit-libexec.el elinit-sandbox.el elinit-units.el elinit-timer.el elinit-dashboard.el elinit-cli.el
 EL_ALL = $(EL_MODULES) $(EL_MAIN)
 TEST_DIR = tests
-TEST_HELPERS = $(TEST_DIR)/supervisor-test-helpers.el
+TEST_HELPERS = $(TEST_DIR)/elinit-test-helpers.el
 TEST_ELS = $(TEST_HELPERS) $(sort $(filter-out $(TEST_HELPERS), \
-             $(wildcard $(TEST_DIR)/supervisor-test-*.el)))
+             $(wildcard $(TEST_DIR)/elinit-test-*.el)))
 
 .PHONY: all check lint test byte-compile checkdoc package-lint \
        libexec-check sbin-check clean

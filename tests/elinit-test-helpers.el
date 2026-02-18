@@ -1,4 +1,4 @@
-;;; supervisor-test-helpers.el --- Shared test helpers for supervisor.el -*- lexical-binding: t -*-
+;;; elinit-test-helpers.el --- Shared test helpers for elinit.el -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
 
@@ -6,23 +6,23 @@
 
 ;;; Commentary:
 
-;; Shared macros, functions, and variables used by supervisor test files.
+;; Shared macros, functions, and variables used by elinit test files.
 
 ;;; Code:
 
 (require 'ert)
-(require 'supervisor)
+(require 'elinit)
 
-(defmacro supervisor-test-without-builtins (&rest body)
+(defmacro elinit-test-without-builtins (&rest body)
   "Execute BODY with built-in programs and timers suppressed."
   (declare (indent 0) (debug (body)))
-  `(let ((supervisor--builtin-timers nil)
-         (supervisor-seed-default-maintenance-units nil))
-     (cl-letf (((symbol-function 'supervisor--builtin-programs)
+  `(let ((elinit--builtin-timers nil)
+         (elinit-seed-default-maintenance-units nil))
+     (cl-letf (((symbol-function 'elinit--builtin-programs)
                 (lambda () nil)))
        ,@body)))
 
-(defun supervisor-test--write-unit-files (dir programs)
+(defun elinit-test--write-unit-files (dir programs)
   "Write PROGRAMS list as unit files in DIR.
 Each entry in PROGRAMS is either a string (bare command) or
 \(COMMAND . PLIST).  Generates one `.el' unit file per entry."
@@ -46,51 +46,51 @@ Each entry in PROGRAMS is either a string (bare command) or
           (insert ")\n"))
         (cl-incf idx)))))
 
-(defmacro supervisor-test-with-unit-files (programs &rest body)
+(defmacro elinit-test-with-unit-files (programs &rest body)
   "Execute BODY with PROGRAMS written as unit files in a temp directory.
-Binds `supervisor-unit-authority-path' and `supervisor-unit-directory'
-to the temp dir, clears `supervisor--unit-file-invalid' and
-`supervisor--programs-cache', suppresses built-in programs and timers,
+Binds `elinit-unit-authority-path' and `elinit-unit-directory'
+to the temp dir, clears `elinit--unit-file-invalid' and
+`elinit--programs-cache', suppresses built-in programs and timers,
 and cleans up afterward."
   (declare (indent 1) (debug (form body)))
-  `(supervisor-test-without-builtins
+  `(elinit-test-without-builtins
      (let* ((dir--temp (make-temp-file "units-" t))
-            (supervisor-unit-authority-path (list dir--temp))
-            (supervisor-unit-directory dir--temp)
-            (supervisor--programs-cache :not-yet-loaded)
-            (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
-       (supervisor-test--write-unit-files dir--temp ,programs)
+            (elinit-unit-authority-path (list dir--temp))
+            (elinit-unit-directory dir--temp)
+            (elinit--programs-cache :not-yet-loaded)
+            (elinit--unit-file-invalid (make-hash-table :test 'equal)))
+       (elinit-test--write-unit-files dir--temp ,programs)
        (unwind-protect
            (progn ,@body)
          (delete-directory dir--temp t)))))
 
-(defmacro supervisor-test-with-authority-tiers (n &rest body)
+(defmacro elinit-test-with-authority-tiers (n &rest body)
   "Execute BODY with N authority tier directories.
 Bind `dir1' through `dirN' to temp directories, set
-`supervisor-unit-authority-path' to (dir1 ... dirN) (low to high
+`elinit-unit-authority-path' to (dir1 ... dirN) (low to high
 precedence), clear caches, suppress built-in programs and timers,
 and clean up afterward."
   (declare (indent 1) (debug (form body)))
   (let ((dir-syms (cl-loop for i from 1 to n
                             collect (intern (format "dir%d" i)))))
-    `(supervisor-test-without-builtins
+    `(elinit-test-without-builtins
        (let* (,@(mapcar (lambda (sym)
                           `(,sym (make-temp-file "tier-" t)))
                         dir-syms)
-              (supervisor-unit-authority-path (list ,@dir-syms))
-              (supervisor-unit-directory ,(car (last dir-syms)))
-              (supervisor--programs-cache :not-yet-loaded)
-              (supervisor--unit-file-invalid (make-hash-table :test 'equal)))
+              (elinit-unit-authority-path (list ,@dir-syms))
+              (elinit-unit-directory ,(car (last dir-syms)))
+              (elinit--programs-cache :not-yet-loaded)
+              (elinit--unit-file-invalid (make-hash-table :test 'equal)))
          (unwind-protect
              (progn ,@body)
            ,@(mapcar (lambda (sym)
                        `(delete-directory ,sym t))
                      dir-syms))))))
 
-(defun supervisor-test--ensure-logd-binary ()
-  "Build supervisor-logd if missing or stale, return path.
+(defun elinit-test--ensure-logd-binary ()
+  "Build elinit-logd if missing or stale, return path.
 Compares source mtime against binary mtime to detect staleness."
-  (let* ((root (file-name-directory (locate-library "supervisor")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
          (logd (expand-file-name "libexec/supervisor-logd" root))
          (src (expand-file-name "libexec/supervisor-logd.c" root))
          (stale (and (file-exists-p logd)
@@ -99,23 +99,23 @@ Compares source mtime against binary mtime to detect staleness."
                       (nth 5 (file-attributes logd))
                       (nth 5 (file-attributes src))))))
     (when (or (not (file-executable-p logd)) stale)
-      (let ((result (supervisor-build-libexec-helpers t)))
+      (let ((result (elinit-build-libexec-helpers t)))
         (unless (file-executable-p logd)
-          (error "Cannot build supervisor-logd: %S"
+          (error "Cannot build elinit-logd: %S"
                  (or (plist-get result :failed)
                      (plist-get result :missing-source))))))
     logd))
 
-(defvar supervisor-test-runas-binary
+(defvar elinit-test-runas-binary
   (expand-file-name "libexec/supervisor-runas"
                     (file-name-directory
                      (directory-file-name
                       (file-name-directory (or load-file-name
                                                buffer-file-name
                                                default-directory)))))
-  "Path to compiled supervisor-runas binary for testing.")
+  "Path to compiled elinit-runas binary for testing.")
 
-(defun supervisor-test--make-binary-record (event stream pid unit-id
+(defun elinit-test--make-binary-record (event stream pid unit-id
                                                   payload exit-code
                                                   exit-status ts-ns)
   "Build a binary log record for testing.
@@ -170,7 +170,7 @@ TS-NS are the record fields."
     (aset hdr 33 (logand payload-len #xff))
     (string-to-unibyte (concat hdr unit-bytes payload-bytes))))
 
-(defun supervisor-test--make-prune-fixture ()
+(defun elinit-test--make-prune-fixture ()
   "Create a temp log dir with active + rotated files for prune tests.
 Return the directory path.  Caller must `delete-directory' when done.
 The fixture contains an active log and three rotated files with
@@ -191,7 +191,7 @@ staggered mtimes so prune ordering is deterministic (oldest first)."
           (call-process "touch" nil nil nil "-t" (cdr entry) path))))
     dir))
 
-(defun supervisor-test--grep-lines (regexp str)
+(defun elinit-test--grep-lines (regexp str)
   "Return all lines in STR matching REGEXP, preserving order."
   (let ((lines nil))
     (with-temp-buffer
@@ -201,5 +201,5 @@ staggered mtimes so prune ordering is deterministic (oldest first)."
         (push (match-string 0) lines)))
     (nreverse lines)))
 
-(provide 'supervisor-test-helpers)
-;;; supervisor-test-helpers.el ends here
+(provide 'elinit-test-helpers)
+;;; elinit-test-helpers.el ends here

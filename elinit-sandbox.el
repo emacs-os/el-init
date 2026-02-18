@@ -1,11 +1,11 @@
-;;; supervisor-sandbox.el --- Sandbox profile subsystem for supervisor.el -*- lexical-binding: t -*-
+;;; elinit-sandbox.el --- Sandbox profile subsystem for elinit.el -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
 
 ;; Author: telecommuter <telecommuter@riseup.net>
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
-;; This file is part of supervisor.el.
+;; This file is part of elinit.el.
 
 ;; This program is free software: you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -22,26 +22,26 @@
 
 ;;; Commentary:
 
-;; Sandbox profile subsystem for supervisor.el: bwrap profile
+;; Sandbox profile subsystem for elinit.el: bwrap profile
 ;; argument construction and launch argv wrapping.
-;; Run M-x supervisor-handbook for full documentation.
+;; Run M-x elinit-handbook for full documentation.
 
 ;;; Code:
 
 (require 'cl-lib)
 
-;; Forward declarations for entry accessor functions in supervisor-core.el
-(declare-function supervisor-entry-sandbox-profile "supervisor-core" (entry))
-(declare-function supervisor-entry-sandbox-network "supervisor-core" (entry))
-(declare-function supervisor-entry-sandbox-ro-bind "supervisor-core" (entry))
-(declare-function supervisor-entry-sandbox-rw-bind "supervisor-core" (entry))
-(declare-function supervisor-entry-sandbox-tmpfs "supervisor-core" (entry))
-(declare-function supervisor-entry-sandbox-raw-args "supervisor-core" (entry))
+;; Forward declarations for entry accessor functions in elinit-core.el
+(declare-function elinit-entry-sandbox-profile "elinit-core" (entry))
+(declare-function elinit-entry-sandbox-network "elinit-core" (entry))
+(declare-function elinit-entry-sandbox-ro-bind "elinit-core" (entry))
+(declare-function elinit-entry-sandbox-rw-bind "elinit-core" (entry))
+(declare-function elinit-entry-sandbox-tmpfs "elinit-core" (entry))
+(declare-function elinit-entry-sandbox-raw-args "elinit-core" (entry))
 
 
 ;;; Sandbox Profile Registry
 
-(defun supervisor--sandbox-profile-args (profile)
+(defun elinit--sandbox-profile-args (profile)
   "Return the bwrap argument list for sandbox PROFILE.
 PROFILE is a symbol: `none', `strict', `service', or `desktop'.
 Returns nil for `none' (no sandbox).  The returned list does not
@@ -84,33 +84,33 @@ include the `bwrap' executable itself -- callers prepend that."
            "--ro-bind" "/tmp/.X11-unix" "/tmp/.X11-unix"))
     (_ nil)))
 
-(defun supervisor--sandbox-profile-default-network (profile)
+(defun elinit--sandbox-profile-default-network (profile)
   "Return the default network mode symbol for PROFILE.
 `strict' defaults to `isolated'; others default to `shared'."
   (if (eq profile 'strict) 'isolated 'shared))
 
-(defun supervisor--sandbox-build-argv (entry)
+(defun elinit--sandbox-build-argv (entry)
   "Build the bwrap wrapper argv for a sandbox-requesting ENTRY.
 Return a list of strings starting with the bwrap executable path,
 or nil if the entry does not request sandbox.  The returned argv
 does not include the service command itself -- callers append that."
-  (let ((profile (or (supervisor-entry-sandbox-profile entry) 'none)))
+  (let ((profile (or (elinit-entry-sandbox-profile entry) 'none)))
     (when (or (not (eq profile 'none))
-              (supervisor-entry-sandbox-network entry)
-              (supervisor-entry-sandbox-ro-bind entry)
-              (supervisor-entry-sandbox-rw-bind entry)
-              (supervisor-entry-sandbox-tmpfs entry)
-              (supervisor-entry-sandbox-raw-args entry))
+              (elinit-entry-sandbox-network entry)
+              (elinit-entry-sandbox-ro-bind entry)
+              (elinit-entry-sandbox-rw-bind entry)
+              (elinit-entry-sandbox-tmpfs entry)
+              (elinit-entry-sandbox-raw-args entry))
       (let* ((bwrap (or (executable-find "bwrap") "bwrap"))
-             (base-args (or (supervisor--sandbox-profile-args profile)
+             (base-args (or (elinit--sandbox-profile-args profile)
                             ;; Minimal base when profile is none but knobs set
                             (list "--die-with-parent"
                                   "--ro-bind" "/" "/"
                                   "--proc" "/proc"
                                   "--dev" "/dev")))
              (effective-network
-              (or (supervisor-entry-sandbox-network entry)
-                  (supervisor--sandbox-profile-default-network profile)))
+              (or (elinit-entry-sandbox-network entry)
+                  (elinit--sandbox-profile-default-network profile)))
              (argv (list bwrap)))
         ;; Append profile base args
         (setq argv (append argv base-args))
@@ -125,20 +125,20 @@ does not include the service command itself -- callers append that."
                (member "--unshare-all" argv))
           (setq argv (append argv (list "--share-net")))))
         ;; Apply read-only bind overrides
-        (dolist (path (supervisor-entry-sandbox-ro-bind entry))
+        (dolist (path (elinit-entry-sandbox-ro-bind entry))
           (setq argv (append argv (list "--ro-bind" path path))))
         ;; Apply read-write bind overrides
-        (dolist (path (supervisor-entry-sandbox-rw-bind entry))
+        (dolist (path (elinit-entry-sandbox-rw-bind entry))
           (setq argv (append argv (list "--bind" path path))))
         ;; Apply tmpfs overrides
-        (dolist (path (supervisor-entry-sandbox-tmpfs entry))
+        (dolist (path (elinit-entry-sandbox-tmpfs entry))
           (setq argv (append argv (list "--tmpfs" path))))
         ;; Apply raw args (expert mode, already validated)
-        (when (supervisor-entry-sandbox-raw-args entry)
-          (setq argv (append argv (supervisor-entry-sandbox-raw-args entry))))
+        (when (elinit-entry-sandbox-raw-args entry)
+          (setq argv (append argv (elinit-entry-sandbox-raw-args entry))))
         ;; Separator before service command
         (append argv (list "--"))))))
 
-(provide 'supervisor-sandbox)
+(provide 'elinit-sandbox)
 
-;;; supervisor-sandbox.el ends here
+;;; elinit-sandbox.el ends here

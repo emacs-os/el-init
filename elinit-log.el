@@ -1,11 +1,11 @@
-;;; supervisor-log.el --- Logging subsystem for supervisor.el -*- lexical-binding: t -*-
+;;; elinit-log.el --- Logging subsystem for elinit.el -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
 
 ;; Author: telecommuter <telecommuter@riseup.net>
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
-;; This file is part of supervisor.el.
+;; This file is part of elinit.el.
 
 ;; This program is free software: you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -22,9 +22,9 @@
 
 ;;; Commentary:
 
-;; Logging subsystem for supervisor.el: log framing, encode/decode,
+;; Logging subsystem for elinit.el: log framing, encode/decode,
 ;; record filtering/formatting, and writer lifecycle management.
-;; Run M-x supervisor-handbook for full documentation.
+;; Run M-x elinit-handbook for full documentation.
 
 ;;; Code:
 
@@ -32,45 +32,45 @@
 
 (declare-function json-encode "json" (object))
 
-;; External variables defined in supervisor-core.el
-(defvar supervisor-log-directory)
-(defvar supervisor-logd-pid-directory)
-(defvar supervisor-logd-command)
-(defvar supervisor-logrotate-command)
-(defvar supervisor-log-prune-command)
-(defvar supervisor-logrotate-keep-days)
-(defvar supervisor-logd-max-file-size)
-(defvar supervisor-log-prune-max-total-bytes)
-(defvar supervisor-logd-prune-min-interval)
-(defvar supervisor--writers)
-(defvar supervisor--stderr-writers)
-(defvar supervisor--stderr-pipes)
-(defvar supervisor--processes)
+;; External variables defined in elinit-core.el
+(defvar elinit-log-directory)
+(defvar elinit-logd-pid-directory)
+(defvar elinit-logd-command)
+(defvar elinit-logrotate-command)
+(defvar elinit-log-prune-command)
+(defvar elinit-logrotate-keep-days)
+(defvar elinit-logd-max-file-size)
+(defvar elinit-log-prune-max-total-bytes)
+(defvar elinit-logd-prune-min-interval)
+(defvar elinit--writers)
+(defvar elinit--stderr-writers)
+(defvar elinit--stderr-pipes)
+(defvar elinit--processes)
 
 ;; Forward declaration for core event logger
-(declare-function supervisor--log "supervisor-core"
+(declare-function elinit--log "elinit-core"
                   (level format-string &rest args))
 
 ;;; Logging
 
-(defvar supervisor--last-log-directory-warning nil
+(defvar elinit--last-log-directory-warning nil
   "Last warning string emitted for log-directory fallback issues.")
 
-(defun supervisor--default-log-directory ()
+(defun elinit--default-log-directory ()
   "Return the default user-local log directory."
-  (expand-file-name "supervisor" user-emacs-directory))
+  (expand-file-name "elinit" user-emacs-directory))
 
-(defun supervisor--warn-log-directory (format-string &rest args)
+(defun elinit--warn-log-directory (format-string &rest args)
   "Emit a throttled warning for log-directory issues.
 Use FORMAT-STRING and ARGS to compose the warning text.
 This uses `message' directly to avoid recursive file logging when the
 configured log directory is unavailable."
   (let ((warning (apply #'format format-string args)))
-    (unless (equal warning supervisor--last-log-directory-warning)
-      (setq supervisor--last-log-directory-warning warning)
-      (message "Supervisor: WARNING - %s" warning))))
+    (unless (equal warning elinit--last-log-directory-warning)
+      (setq elinit--last-log-directory-warning warning)
+      (message "Elinit: WARNING - %s" warning))))
 
-(defun supervisor--ensure-directory-writable (directory)
+(defun elinit--ensure-directory-writable (directory)
   "Ensure DIRECTORY exists and is writable.
 Return DIRECTORY when usable, otherwise return nil."
   (condition-case nil
@@ -82,36 +82,36 @@ Return DIRECTORY when usable, otherwise return nil."
              directory))
     (error nil)))
 
-(defun supervisor--effective-log-directory ()
+(defun elinit--effective-log-directory ()
   "Return a writable log directory path, or nil.
-Prefer `supervisor-log-directory'.  If it is not writable, fall back to
-`supervisor--default-log-directory'.  If neither is writable, return nil."
-  (let* ((configured supervisor-log-directory)
-         (configured-dir (supervisor--ensure-directory-writable configured))
-         (fallback (supervisor--default-log-directory))
+Prefer `elinit-log-directory'.  If it is not writable, fall back to
+`elinit--default-log-directory'.  If neither is writable, return nil."
+  (let* ((configured elinit-log-directory)
+         (configured-dir (elinit--ensure-directory-writable configured))
+         (fallback (elinit--default-log-directory))
          (fallback-dir (and (not configured-dir)
                             (not (equal configured fallback))
-                            (supervisor--ensure-directory-writable fallback))))
+                            (elinit--ensure-directory-writable fallback))))
     (cond
      (configured-dir configured-dir)
      (fallback-dir
-      (supervisor--warn-log-directory
+      (elinit--warn-log-directory
        "log directory %s is not writable; using %s"
        configured fallback-dir)
       fallback-dir)
      (t
-      (supervisor--warn-log-directory
+      (elinit--warn-log-directory
        "log directory %s is not writable; file logging disabled"
        configured)
       nil))))
 
-(defun supervisor--ensure-log-directory ()
+(defun elinit--ensure-log-directory ()
   "Return the effective writable log directory, or nil."
-  (supervisor--effective-log-directory))
+  (elinit--effective-log-directory))
 
-(defun supervisor--log-file (prog)
+(defun elinit--log-file (prog)
   "Return the log file path for PROG, or nil."
-  (when-let* ((log-directory (supervisor--ensure-log-directory)))
+  (when-let* ((log-directory (elinit--ensure-log-directory)))
     (expand-file-name (format "log-%s.log" prog) log-directory)))
 
 ;;;; Log framing protocol
@@ -127,7 +127,7 @@ Prefer `supervisor-log-directory'.  If it is not writable, fall back to
 ;;   <unit_len bytes>        unit_id (UTF-8)
 ;;   <remaining bytes>       payload
 
-(defun supervisor--log-frame-encode (event stream pid unit-id
+(defun elinit--log-frame-encode (event stream pid unit-id
                                           &optional payload exit-code
                                           exit-status)
   "Encode a log transport frame as a unibyte string.
@@ -183,21 +183,21 @@ EXIT-STATUS is 0 (none), 1 (exited), 2 (signaled), or 3 (spawn-failed)."
       (aset frame (+ 17 unit-len i) (aref payload-bytes i)))
     (string-to-unibyte frame)))
 
-(defun supervisor--log-send-frame (writer event stream pid unit-id
+(defun elinit--log-send-frame (writer event stream pid unit-id
                                          &optional payload exit-code
                                          exit-status)
   "Send a framed log event to WRITER process.
 EVENT, STREAM, PID, UNIT-ID, PAYLOAD, EXIT-CODE, and EXIT-STATUS are
-passed to `supervisor--log-frame-encode'.  Silently ignores errors
+passed to `elinit--log-frame-encode'.  Silently ignores errors
 when the writer process has died."
   (condition-case nil
       (process-send-string
        writer
-       (supervisor--log-frame-encode event stream pid unit-id
+       (elinit--log-frame-encode event stream pid unit-id
                                      payload exit-code exit-status))
     (error nil)))
 
-(defun supervisor--exit-status-code (status)
+(defun elinit--exit-status-code (status)
   "Map exit STATUS symbol to wire protocol value.
 Return 1 for `exited', 2 for `signal', 0 for anything else."
   (pcase status
@@ -207,49 +207,49 @@ Return 1 for `exited', 2 for `signal', 0 for anything else."
 
 ;;;; Binary log decoder
 
-(defconst supervisor--log-binary-magic "SLG1"
+(defconst elinit--log-binary-magic "SLG1"
   "Magic bytes at the start of a binary structured log file.")
 
-(defconst supervisor--log-binary-header-size 34
+(defconst elinit--log-binary-header-size 34
   "Size of a single binary record header in bytes.
 Layout: u32be record_len, u8 version, u8 event, u8 stream,
 u8 reserved, u64be timestamp_ns, u32be pid, u16be unit_len,
 i32be exit_code, u8 exit_status, u8[3] reserved, u32be payload_len.")
 
-(defun supervisor--log-read-u32be (str offset)
+(defun elinit--log-read-u32be (str offset)
   "Read big-endian u32 from unibyte string STR at OFFSET."
   (logior (ash (aref str offset) 24)
           (ash (aref str (+ offset 1)) 16)
           (ash (aref str (+ offset 2)) 8)
           (aref str (+ offset 3))))
 
-(defun supervisor--log-read-u16be (str offset)
+(defun elinit--log-read-u16be (str offset)
   "Read big-endian u16 from unibyte string STR at OFFSET."
   (logior (ash (aref str offset) 8)
           (aref str (+ offset 1))))
 
-(defun supervisor--log-read-u64be (str offset)
+(defun elinit--log-read-u64be (str offset)
   "Read big-endian u64 from unibyte string STR at OFFSET.
 Return the value as an Emacs integer (may lose precision on 32-bit)."
-  (let ((hi (supervisor--log-read-u32be str offset))
-        (lo (supervisor--log-read-u32be str (+ offset 4))))
+  (let ((hi (elinit--log-read-u32be str offset))
+        (lo (elinit--log-read-u32be str (+ offset 4))))
     (+ (ash hi 32) lo)))
 
-(defun supervisor--log-read-i32be (str offset)
+(defun elinit--log-read-i32be (str offset)
   "Read big-endian i32 (signed) from unibyte string STR at OFFSET."
-  (let ((u (supervisor--log-read-u32be str offset)))
+  (let ((u (elinit--log-read-u32be str offset)))
     (if (>= u #x80000000)
         (- u #x100000000)
       u)))
 
-(defun supervisor--log-wire-event (code)
+(defun elinit--log-wire-event (code)
   "Map wire event CODE to symbol."
   (pcase code
     (1 'output)
     (2 'exit)
     (_ (error "Unknown event code: %d" code))))
 
-(defun supervisor--log-wire-stream (code)
+(defun elinit--log-wire-stream (code)
   "Map wire stream CODE to symbol."
   (pcase code
     (1 'stdout)
@@ -257,7 +257,7 @@ Return the value as an Emacs integer (may lose precision on 32-bit)."
     (3 'meta)
     (_ (error "Unknown stream code: %d" code))))
 
-(defun supervisor--log-wire-exit-status (code)
+(defun elinit--log-wire-exit-status (code)
   "Map wire exit status CODE to symbol."
   (pcase code
     (0 nil)
@@ -266,7 +266,7 @@ Return the value as an Emacs integer (may lose precision on 32-bit)."
     (3 'spawn-failed)
     (_ (error "Unknown exit status code: %d" code))))
 
-(defun supervisor--log-decode-binary-records (str &optional offset)
+(defun elinit--log-decode-binary-records (str &optional offset)
   "Parse binary log buffer STR into record plists.
 OFFSET is the byte position to start parsing (default 0, skips
 SLG1 magic if present at start).  Return a plist
@@ -277,14 +277,14 @@ SLG1 magic if present at start).  Return a plist
          (warning nil))
     ;; Skip magic header if at start
     (when (and (= pos 0) (>= len 4)
-               (equal (substring str 0 4) supervisor--log-binary-magic))
+               (equal (substring str 0 4) elinit--log-binary-magic))
       (setq pos 4))
     (while (and (< pos len) (not warning))
       (let ((remaining (- len pos)))
-        (if (< remaining supervisor--log-binary-header-size)
+        (if (< remaining elinit--log-binary-header-size)
             ;; Incomplete trailing record
             (setq warning (format "truncated record at offset %d" pos))
-          (let* ((record-len (supervisor--log-read-u32be str pos))
+          (let* ((record-len (elinit--log-read-u32be str pos))
                  (total (+ 4 record-len)))
             (if (> total remaining)
                 ;; Incomplete record body
@@ -293,12 +293,12 @@ SLG1 magic if present at start).  Return a plist
                      (version (aref str base))
                      (event-code (aref str (+ base 1)))
                      (stream-code (aref str (+ base 2)))
-                     (ts-ns (supervisor--log-read-u64be str (+ base 4)))
-                     (pid (supervisor--log-read-u32be str (+ base 12)))
-                     (unit-len (supervisor--log-read-u16be str (+ base 16)))
-                     (exit-code (supervisor--log-read-i32be str (+ base 18)))
+                     (ts-ns (elinit--log-read-u64be str (+ base 4)))
+                     (pid (elinit--log-read-u32be str (+ base 12)))
+                     (unit-len (elinit--log-read-u16be str (+ base 16)))
+                     (exit-code (elinit--log-read-i32be str (+ base 18)))
                      (exit-status-code (aref str (+ base 22)))
-                     (payload-len (supervisor--log-read-u32be str (+ base 26)))
+                     (payload-len (elinit--log-read-u32be str (+ base 26)))
                      (expected-len (+ 30 unit-len payload-len))
                      (unit-start (+ base 30))
                      (payload-start (+ unit-start unit-len)))
@@ -308,9 +308,9 @@ SLG1 magic if present at start).  Return a plist
                   (error "Binary record length mismatch at offset %d: \
 declared %d, computed %d" pos record-len expected-len))
                 (condition-case err
-                    (let ((event (supervisor--log-wire-event event-code))
-                          (stream (supervisor--log-wire-stream stream-code))
-                          (exit-status (supervisor--log-wire-exit-status
+                    (let ((event (elinit--log-wire-event event-code))
+                          (stream (elinit--log-wire-stream stream-code))
+                          (exit-status (elinit--log-wire-exit-status
                                         exit-status-code))
                           (unit (substring str unit-start
                                            (+ unit-start unit-len)))
@@ -328,7 +328,7 @@ declared %d, computed %d" pos record-len expected-len))
                 (setq pos (+ pos total))))))))
     (list :records (nreverse records) :offset pos :warning warning)))
 
-(defun supervisor--log-binary-scan-to-record (str)
+(defun elinit--log-binary-scan-to-record (str)
   "Return offset of first valid binary record in STR, or nil.
 Scan by trying each byte position as a potential record start.
 Read u32be length, check that 4+length fits remaining data and
@@ -338,8 +338,8 @@ so linear scan is acceptable."
         (found nil))
     (cl-loop for pos from 0 below len
              until found
-             do (when (>= (- len pos) supervisor--log-binary-header-size)
-                  (let* ((record-len (supervisor--log-read-u32be str pos))
+             do (when (>= (- len pos) elinit--log-binary-header-size)
+                  (let* ((record-len (elinit--log-read-u32be str pos))
                          (total (+ 4 record-len)))
                     (when (and (<= total (- len pos))
                                (> record-len 0)
@@ -349,7 +349,7 @@ so linear scan is acceptable."
 
 ;;;; Log decoders and record utilities
 
-(defun supervisor--log-unescape-payload (escaped)
+(defun elinit--log-unescape-payload (escaped)
   "Reverse text-format escaping of ESCAPED payload string.
 Convert \\\\->\\, \\n->newline, \\r->CR, \\t->tab, \\xNN->byte."
   (let ((result (make-string (length escaped) 0))
@@ -386,7 +386,7 @@ Convert \\\\->\\, \\n->newline, \\r->CR, \\t->tab, \\xNN->byte."
         (setq rpos (1+ rpos) i (1+ i))))
     (substring result 0 rpos)))
 
-(defun supervisor--days-in-month (month year)
+(defun elinit--days-in-month (month year)
   "Return the number of days in MONTH for YEAR."
   (pcase month
     ((or 1 3 5 7 8 10 12) 31)
@@ -396,7 +396,7 @@ Convert \\\\->\\, \\n->newline, \\r->CR, \\t->tab, \\xNN->byte."
                     (= 0 (% year 400))))
            29 28))))
 
-(defun supervisor--log-parse-timestamp (ts-string)
+(defun elinit--log-parse-timestamp (ts-string)
   "Parse timestamp TS-STRING to float seconds.
 Accept RFC3339 format or epoch integer."
   (cond
@@ -415,7 +415,7 @@ Accept RFC3339 format or epoch integer."
                         (expt 10.0 (length frac-str)))
                    0.0)))
       (when (and (<= 1 month 12)
-                 (<= 1 day (supervisor--days-in-month month year))
+                 (<= 1 day (elinit--days-in-month month year))
                  (<= 0 hour 23)
                  (<= 0 min 59)
                  (<= 0 sec 60))
@@ -426,7 +426,7 @@ Accept RFC3339 format or epoch integer."
     (float (string-to-number ts-string)))
    (t nil)))
 
-(defun supervisor--log-decode-text-records (str)
+(defun elinit--log-decode-text-records (str)
   "Parse text-format structured log STR into record plists.
 Each line has the format: ts=TS unit=UNIT pid=PID stream=STREAM
 event=EVENT status=STATUS code=CODE payload=PAYLOAD."
@@ -444,7 +444,7 @@ event=EVENT status=STATUS code=CODE payload=PAYLOAD."
                (status-str (match-string 6 line))
                (code-str (match-string 7 line))
                (payload-raw (match-string 8 line))
-               (ts (supervisor--log-parse-timestamp ts-str))
+               (ts (elinit--log-parse-timestamp ts-str))
                (status (unless (equal status-str "-")
                          (intern status-str)))
                (code (if (equal code-str "-") 0
@@ -453,7 +453,7 @@ event=EVENT status=STATUS code=CODE payload=PAYLOAD."
                          ;; Exit events use "-" as absent-payload sentinel
                          ((and (eq event 'exit) (equal payload-raw "-")) "")
                          ;; Output events: always unescape (even empty)
-                         (t (supervisor--log-unescape-payload payload-raw)))))
+                         (t (elinit--log-unescape-payload payload-raw)))))
           (push (list :ts ts :unit unit :pid pid
                       :stream stream :event event
                       :status status :code code
@@ -461,7 +461,7 @@ event=EVENT status=STATUS code=CODE payload=PAYLOAD."
                 records))))
     (nreverse records)))
 
-(defun supervisor--log-decode-legacy-lines (str)
+(defun elinit--log-decode-legacy-lines (str)
   "Wrap raw log lines in STR as output record plists.
 Legacy logs have no structured metadata."
   (let ((records nil)
@@ -474,7 +474,7 @@ Legacy logs have no structured metadata."
             records))
     (nreverse records)))
 
-(defun supervisor--log-detect-format (file)
+(defun elinit--log-detect-format (file)
   "Detect log format of FILE by reading first bytes.
 Return `binary', `text', or `legacy'."
   (condition-case nil
@@ -483,14 +483,14 @@ Return `binary', `text', or `legacy'."
         (insert-file-contents-literally file nil 0 256)
         (cond
          ((and (>= (buffer-size) 4)
-               (equal (buffer-substring 1 5) supervisor--log-binary-magic))
+               (equal (buffer-substring 1 5) elinit--log-binary-magic))
           'binary)
          ((string-match "\\`ts=" (buffer-substring 1 (min 4 (1+ (buffer-size)))))
           'text)
          (t 'legacy)))
     (error 'legacy)))
 
-(defun supervisor--log-decode-file (file &optional limit offset max-bytes)
+(defun elinit--log-decode-file (file &optional limit offset max-bytes)
   "Decode structured log FILE into records.
 LIMIT is maximum number of records to return (from end).
 OFFSET is byte offset to start reading (for incremental reads).
@@ -500,7 +500,7 @@ chunk may be truncated; text/legacy decoders skip malformed lines,
 and for binary the chunk is scanned to find the first valid record
 boundary.
 Return (:records LIST :offset INT :format SYMBOL :warning STRING-OR-NIL)."
-  (let ((fmt (supervisor--log-detect-format file)))
+  (let ((fmt (elinit--log-detect-format file)))
     (condition-case err
         (with-temp-buffer
           (set-buffer-multibyte nil)
@@ -527,10 +527,10 @@ Return (:records LIST :offset INT :format SYMBOL :warning STRING-OR-NIL)."
                          (cond
                           (offset 0)
                           (tail-offset
-                           (or (supervisor--log-binary-scan-to-record content)
+                           (or (elinit--log-binary-scan-to-record content)
                                (length content)))
                           (t nil)))
-                        (result (supervisor--log-decode-binary-records
+                        (result (elinit--log-decode-binary-records
                                  content scan-start)))
                    (let ((records (plist-get result :records)))
                      (list :records (if (and limit (> (length records) limit))
@@ -542,7 +542,7 @@ Return (:records LIST :offset INT :format SYMBOL :warning STRING-OR-NIL)."
                            :warning (plist-get result :warning)))))
                 ('text
                  (let* ((str (decode-coding-string content 'utf-8))
-                        (records (supervisor--log-decode-text-records str)))
+                        (records (elinit--log-decode-text-records str)))
                    (list :records (if (and limit (> (length records) limit))
                                        (last records limit)
                                      records)
@@ -551,7 +551,7 @@ Return (:records LIST :offset INT :format SYMBOL :warning STRING-OR-NIL)."
                          :warning nil)))
                 (_
                  (let* ((str (decode-coding-string content 'utf-8))
-                        (records (supervisor--log-decode-legacy-lines str)))
+                        (records (elinit--log-decode-legacy-lines str)))
                    (list :records (if (and limit (> (length records) limit))
                                        (last records limit)
                                      records)
@@ -561,7 +561,7 @@ Return (:records LIST :offset INT :format SYMBOL :warning STRING-OR-NIL)."
       (error (list :records nil :offset 0 :format fmt
                    :warning (error-message-string err))))))
 
-(defun supervisor--log-record-priority (record)
+(defun elinit--log-record-priority (record)
   "Return priority symbol for RECORD.
 Stderr output and non-clean exits return `err', else `info'."
   (cond
@@ -574,20 +574,20 @@ Stderr output and non-clean exits return `err', else `info'."
     'err)
    (t 'info)))
 
-(defun supervisor--log-filter-records (records &optional since until priority)
+(defun elinit--log-filter-records (records &optional since until priority)
   "Filter RECORDS by timestamp range and priority.
 SINCE and UNTIL are float timestamps (inclusive).
 PRIORITY, when non-nil, filters to records matching that priority."
   (cl-remove-if-not
    (lambda (r)
      (let ((ts (plist-get r :ts))
-           (pri (supervisor--log-record-priority r)))
+           (pri (elinit--log-record-priority r)))
        (and (or (null since) (null ts) (>= ts since))
             (or (null until) (null ts) (<= ts until))
             (or (null priority) (eq pri priority)))))
    records))
 
-(defun supervisor--log-format-record-human (record)
+(defun elinit--log-format-record-human (record)
   "Format one structured log RECORD for human display."
   (let* ((ts (plist-get record :ts))
          (unit (or (plist-get record :unit) "?"))
@@ -607,7 +607,7 @@ PRIORITY, when non-nil, filters to records matching that priority."
               ts-str unit pid stream
               (or payload "")))))
 
-(defun supervisor--log-record-to-json (record)
+(defun elinit--log-record-to-json (record)
   "Encode structured log RECORD as a JSON object string.
 Return a single-line JSON string suitable for NDJSON output."
   (require 'json)
@@ -622,68 +622,68 @@ Return a single-line JSON string suitable for NDJSON output."
      (code . ,(plist-get record :code))
      (payload . ,(plist-get record :payload))
      (priority . ,(symbol-name
-                   (supervisor--log-record-priority record))))))
+                   (elinit--log-record-priority record))))))
 
 ;;;; Log writer lifecycle
 
-(defun supervisor--logd-pid-dir ()
+(defun elinit--logd-pid-dir ()
   "Return the directory for logd PID files.
-Use `supervisor-logd-pid-directory' when set, otherwise
-`supervisor-log-directory'."
-  (or supervisor-logd-pid-directory
-      (supervisor--effective-log-directory)
-      supervisor-log-directory))
+Use `elinit-logd-pid-directory' when set, otherwise
+`elinit-log-directory'."
+  (or elinit-logd-pid-directory
+      (elinit--effective-log-directory)
+      elinit-log-directory))
 
-(defun supervisor--stream-writer-id (id stream)
+(defun elinit--stream-writer-id (id stream)
   "Return PID-file ID for service ID and STREAM."
   (if (eq stream 'stderr)
       (format "%s.stderr" id)
     id))
 
-(defun supervisor--write-logd-pid-file (writer-id proc)
+(defun elinit--write-logd-pid-file (writer-id proc)
   "Write a PID file for log writer PROC serving WRITER-ID.
-The file is named `logd-WRITER-ID.pid' in `supervisor--logd-pid-dir'.
+The file is named `logd-WRITER-ID.pid' in `elinit--logd-pid-dir'.
 The rotation script reads these files when `--signal-reopen' is
 given to send SIGHUP to all active writers."
   (let ((pid-file (expand-file-name (format "logd-%s.pid" writer-id)
-                                    (supervisor--logd-pid-dir))))
+                                    (elinit--logd-pid-dir))))
     (condition-case err
         (write-region (number-to-string (process-id proc))
                       nil pid-file nil 'silent)
       (error
-       (supervisor--log 'warning "%s: could not write PID file: %s"
+       (elinit--log 'warning "%s: could not write PID file: %s"
                         writer-id (error-message-string err))))))
 
-(defun supervisor--remove-logd-pid-file (writer-id)
+(defun elinit--remove-logd-pid-file (writer-id)
   "Remove the PID file for log writer serving WRITER-ID."
   (let ((pid-file (expand-file-name (format "logd-%s.pid" writer-id)
-                                    (supervisor--logd-pid-dir))))
+                                    (elinit--logd-pid-dir))))
     (when (file-exists-p pid-file)
       (delete-file pid-file))))
 
-(defun supervisor--start-stream-writer (id stream log-file table
+(defun elinit--start-stream-writer (id stream log-file table
                                           &optional log-format)
   "Start log writer for service ID STREAM writing to LOG-FILE.
 TABLE receives the process keyed by ID.  STREAM is `stdout' or `stderr'.
 LOG-FORMAT is the structured log format symbol (`text' or `binary')."
   (condition-case err
-      (let* ((writer-id (supervisor--stream-writer-id id stream))
+      (let* ((writer-id (elinit--stream-writer-id id stream))
              (log-directory-raw (or (file-name-directory log-file)
-                                    (supervisor--ensure-log-directory)
-                                    supervisor-log-directory))
+                                    (elinit--ensure-log-directory)
+                                    elinit-log-directory))
              (log-directory (directory-file-name log-directory-raw))
              (fmt (or (and log-format (symbol-name log-format)) "text"))
-             (cmd (append (list supervisor-logd-command
+             (cmd (append (list elinit-logd-command
                                 "--file" log-file
                                 "--max-file-size-bytes"
-                                (number-to-string supervisor-logd-max-file-size)
+                                (number-to-string elinit-logd-max-file-size)
                                 "--log-dir" log-directory
                                 "--prune-cmd"
-                                (supervisor--build-prune-command log-format
+                                (elinit--build-prune-command log-format
                                                             log-directory)
                                 "--prune-min-interval-sec"
                                 (number-to-string
-                                 supervisor-logd-prune-min-interval))
+                                 elinit-logd-prune-min-interval))
                           (list "--framed"
                                 "--unit" id
                                 "--format" fmt)))
@@ -695,123 +695,123 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
                     :noquery t)))
         (set-process-query-on-exit-flag proc nil)
         (puthash id proc table)
-        (supervisor--write-logd-pid-file writer-id proc)
+        (elinit--write-logd-pid-file writer-id proc)
         proc)
     (error
-     (supervisor--log 'warning "%s(%s): log writer failed to start: %s"
+     (elinit--log 'warning "%s(%s): log writer failed to start: %s"
                       id stream (error-message-string err))
      nil)))
 
-(defun supervisor--start-writer (id log-file &optional log-format)
+(defun elinit--start-writer (id log-file &optional log-format)
   "Start stdout log writer process for service ID writing to LOG-FILE.
 LOG-FORMAT is the structured log format symbol (`text' or `binary')."
-  (supervisor--start-stream-writer id 'stdout log-file supervisor--writers
+  (elinit--start-stream-writer id 'stdout log-file elinit--writers
                                    log-format))
 
-(defun supervisor--start-stderr-writer (id log-file &optional log-format)
+(defun elinit--start-stderr-writer (id log-file &optional log-format)
   "Start dedicated stderr log writer process for service ID and LOG-FILE.
 LOG-FORMAT is the structured log format symbol (`text' or `binary')."
-  (supervisor--start-stream-writer id 'stderr log-file supervisor--stderr-writers
+  (elinit--start-stream-writer id 'stderr log-file elinit--stderr-writers
                                    log-format))
 
-(defun supervisor--start-stderr-pipe (id writer)
+(defun elinit--start-stderr-pipe (id writer)
   "Start an internal stderr pipe process for service ID using WRITER."
   (condition-case err
       (let ((pipe
              (make-pipe-process
-              :name (format "supervisor-stderr-%s" id)
+              :name (format "elinit-stderr-%s" id)
               :coding 'no-conversion
               :filter (lambda (_proc output)
                         (when (process-live-p writer)
                           (let ((pid (when-let* ((svc (gethash id
-                                                      supervisor--processes)))
+                                                      elinit--processes)))
                                       (process-id svc))))
-                            (supervisor--log-send-frame
+                            (elinit--log-send-frame
                              writer 1 2 (or pid 0) id output))))
               :sentinel (lambda (_proc _event) nil)
               :noquery t)))
         (set-process-query-on-exit-flag pipe nil)
-        (puthash id pipe supervisor--stderr-pipes)
+        (puthash id pipe elinit--stderr-pipes)
         pipe)
     (error
-     (supervisor--log 'warning "%s(stderr): could not create stderr pipe: %s"
+     (elinit--log 'warning "%s(stderr): could not create stderr pipe: %s"
                       id (error-message-string err))
      nil)))
 
-(defun supervisor--stop-stream-writer (id stream table)
+(defun elinit--stop-stream-writer (id stream table)
   "Stop stream writer for service ID STREAM from TABLE."
   (when-let* ((writer (gethash id table)))
     (when (process-live-p writer)
       (signal-process writer 'SIGTERM))
-    (supervisor--remove-logd-pid-file (supervisor--stream-writer-id id stream))
+    (elinit--remove-logd-pid-file (elinit--stream-writer-id id stream))
     (remhash id table)))
 
-(defun supervisor--stop-writer (id)
+(defun elinit--stop-writer (id)
   "Stop all log writer state for service ID."
-  (supervisor--stop-stream-writer id 'stdout supervisor--writers)
-  (supervisor--stop-stream-writer id 'stderr supervisor--stderr-writers)
-  (when-let* ((stderr-pipe (gethash id supervisor--stderr-pipes)))
+  (elinit--stop-stream-writer id 'stdout elinit--writers)
+  (elinit--stop-stream-writer id 'stderr elinit--stderr-writers)
+  (when-let* ((stderr-pipe (gethash id elinit--stderr-pipes)))
     (when (process-live-p stderr-pipe)
       (delete-process stderr-pipe))
-    (remhash id supervisor--stderr-pipes)))
+    (remhash id elinit--stderr-pipes)))
 
-(defun supervisor--stop-writer-if-same (id old-stdout old-stderr old-pipe)
+(defun elinit--stop-writer-if-same (id old-stdout old-stderr old-pipe)
   "Stop writers for ID only if they have not been replaced.
 OLD-STDOUT, OLD-STDERR, and OLD-PIPE are the process objects that
 were active when teardown was deferred.  If any writer has been
 replaced by a restart, that stream is skipped to avoid killing
 the replacement writer."
-  (when (and old-stdout (eq old-stdout (gethash id supervisor--writers)))
-    (supervisor--stop-stream-writer id 'stdout supervisor--writers))
-  (when (and old-stderr (eq old-stderr (gethash id supervisor--stderr-writers)))
-    (supervisor--stop-stream-writer id 'stderr supervisor--stderr-writers))
-  (when (and old-pipe (eq old-pipe (gethash id supervisor--stderr-pipes)))
+  (when (and old-stdout (eq old-stdout (gethash id elinit--writers)))
+    (elinit--stop-stream-writer id 'stdout elinit--writers))
+  (when (and old-stderr (eq old-stderr (gethash id elinit--stderr-writers)))
+    (elinit--stop-stream-writer id 'stderr elinit--stderr-writers))
+  (when (and old-pipe (eq old-pipe (gethash id elinit--stderr-pipes)))
     (when (process-live-p old-pipe)
       (delete-process old-pipe))
-    (remhash id supervisor--stderr-pipes)))
+    (remhash id elinit--stderr-pipes)))
 
-(defun supervisor--stop-all-writers ()
+(defun elinit--stop-all-writers ()
   "Stop all log writer processes and clear writer state hashes."
   (maphash (lambda (id writer)
              (when (process-live-p writer)
                (signal-process writer 'SIGTERM))
-             (supervisor--remove-logd-pid-file
-              (supervisor--stream-writer-id id 'stdout)))
-           supervisor--writers)
+             (elinit--remove-logd-pid-file
+              (elinit--stream-writer-id id 'stdout)))
+           elinit--writers)
   (maphash (lambda (id writer)
              (when (process-live-p writer)
                (signal-process writer 'SIGTERM))
-             (supervisor--remove-logd-pid-file
-              (supervisor--stream-writer-id id 'stderr)))
-           supervisor--stderr-writers)
+             (elinit--remove-logd-pid-file
+              (elinit--stream-writer-id id 'stderr)))
+           elinit--stderr-writers)
   (maphash (lambda (_id pipe)
              (when (process-live-p pipe)
                (delete-process pipe)))
-           supervisor--stderr-pipes)
-  (clrhash supervisor--writers)
-  (clrhash supervisor--stderr-writers)
-  (clrhash supervisor--stderr-pipes))
+           elinit--stderr-pipes)
+  (clrhash elinit--writers)
+  (clrhash elinit--stderr-writers)
+  (clrhash elinit--stderr-pipes))
 
-(defun supervisor--build-prune-command (&optional format-hint log-dir)
+(defun elinit--build-prune-command (&optional format-hint log-dir)
   "Build the shell command string for logd's --prune-cmd flag.
 Return a string suitable for passing to logd as the value of its
 `--prune-cmd' argument.  The command invokes the prune script with
 LOG-DIR (or the effective log directory when nil) and
-`supervisor-log-prune-max-total-bytes'.  FORMAT-HINT, when non-nil,
+`elinit-log-prune-max-total-bytes'.  FORMAT-HINT, when non-nil,
 is passed as `--format-hint' for forward compatibility."
   (let ((log-directory (or log-dir
-                           (supervisor--effective-log-directory)
-                           supervisor-log-directory)))
+                           (elinit--effective-log-directory)
+                           elinit-log-directory)))
     (concat (format "%s --log-dir %s --max-total-bytes %d"
-                    (shell-quote-argument supervisor-log-prune-command)
+                    (shell-quote-argument elinit-log-prune-command)
                     (shell-quote-argument log-directory)
-                    supervisor-log-prune-max-total-bytes)
+                    elinit-log-prune-max-total-bytes)
             (when format-hint
               (format " --format-hint %s"
                       (shell-quote-argument
                        (symbol-name format-hint)))))))
 
-(defun supervisor--signal-writers-reopen ()
+(defun elinit--signal-writers-reopen ()
   "Send SIGHUP to all live log writers to trigger file reopen.
 After external rotation renames the active log file, each logd
 writer must reopen its file descriptor.  logd handles SIGHUP by
@@ -819,58 +819,58 @@ closing and reopening the configured log file."
   (maphash (lambda (_id writer)
              (when (process-live-p writer)
                (signal-process writer 'SIGHUP)))
-           supervisor--writers)
+           elinit--writers)
   (maphash (lambda (_id writer)
              (when (process-live-p writer)
                (signal-process writer 'SIGHUP)))
-           supervisor--stderr-writers))
+           elinit--stderr-writers))
 
-(defun supervisor-run-log-maintenance ()
+(defun elinit-run-log-maintenance ()
   "Run log maintenance: rotate, signal writers to reopen, then prune.
 Execute the scheduled maintenance path asynchronously:
-1. Run `supervisor-logrotate-command' to rotate active logs.
+1. Run `elinit-logrotate-command' to rotate active logs.
 2. Signal all live writers to reopen their files.
-3. Run `supervisor-log-prune-command' to enforce the directory size cap."
+3. Run `elinit-log-prune-command' to enforce the directory size cap."
   (interactive)
-  (if-let* ((log-dir (supervisor--effective-log-directory)))
-      (let ((keep-days (number-to-string supervisor-logrotate-keep-days))
-            (max-bytes (number-to-string supervisor-log-prune-max-total-bytes)))
-        (supervisor--log 'info "log maintenance: rotating")
+  (if-let* ((log-dir (elinit--effective-log-directory)))
+      (let ((keep-days (number-to-string elinit-logrotate-keep-days))
+            (max-bytes (number-to-string elinit-log-prune-max-total-bytes)))
+        (elinit--log 'info "log maintenance: rotating")
         (set-process-sentinel
-         (start-process "supervisor-logrotate" nil
-                        supervisor-logrotate-command
+         (start-process "elinit-logrotate" nil
+                        elinit-logrotate-command
                         "--log-dir" log-dir
                         "--keep-days" keep-days)
          (lambda (_proc event)
            (when (string-match-p "finished" event)
-             (supervisor--signal-writers-reopen)
-             (supervisor--log 'info "log maintenance: pruning")
-             (start-process "supervisor-log-prune" nil
-                            supervisor-log-prune-command
+             (elinit--signal-writers-reopen)
+             (elinit--log 'info "log maintenance: pruning")
+             (start-process "elinit-log-prune" nil
+                            elinit-log-prune-command
                             "--log-dir" log-dir
                             "--max-total-bytes" max-bytes)))))
-    (supervisor--log 'warning
+    (elinit--log 'warning
                      "log maintenance skipped: no writable log directory")))
 
-(defun supervisor--builtin-logrotate-command ()
+(defun elinit--builtin-logrotate-command ()
   "Build the shell command for the built-in logrotate oneshot unit."
-  (let ((log-directory (or (supervisor--effective-log-directory)
-                           supervisor-log-directory)))
+  (let ((log-directory (or (elinit--effective-log-directory)
+                           elinit-log-directory)))
     (format "%s --log-dir %s --keep-days %d --signal-reopen --pid-dir %s"
-            (shell-quote-argument supervisor-logrotate-command)
+            (shell-quote-argument elinit-logrotate-command)
             (shell-quote-argument log-directory)
-            supervisor-logrotate-keep-days
-            (shell-quote-argument (supervisor--logd-pid-dir)))))
+            elinit-logrotate-keep-days
+            (shell-quote-argument (elinit--logd-pid-dir)))))
 
-(defun supervisor--builtin-log-prune-command ()
+(defun elinit--builtin-log-prune-command ()
   "Build the shell command for the built-in log-prune oneshot unit."
-  (let ((log-directory (or (supervisor--effective-log-directory)
-                           supervisor-log-directory)))
+  (let ((log-directory (or (elinit--effective-log-directory)
+                           elinit-log-directory)))
     (format "%s --log-dir %s --max-total-bytes %d"
-            (shell-quote-argument supervisor-log-prune-command)
+            (shell-quote-argument elinit-log-prune-command)
             (shell-quote-argument log-directory)
-            supervisor-log-prune-max-total-bytes)))
+            elinit-log-prune-max-total-bytes)))
 
-(provide 'supervisor-log)
+(provide 'elinit-log)
 
-;;; supervisor-log.el ends here
+;;; elinit-log.el ends here
