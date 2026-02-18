@@ -21,6 +21,26 @@ This plan has two tracks:
 2. Track B (next): optional Emacs PID1 patch and optional rc.boot/rc.shutdown
    integration.
 
+Emacs-side PID1 patch requirements are defined in:
+
+- `static-builds/PLAN-pid1-emacs-patch-support.md`
+
+## Document roles
+
+1. `static-builds/README.md` is administrator guidance.
+2. `static-builds/PLAN-pid1-emacs-patch-support.md` is the Emacs patch prerequisite spec.
+3. `static-builds/PLAN.md` is the packaging/integration execution contract that
+   depends on the prerequisite spec for PID1-labeled outputs.
+
+## Prerequisite gates
+
+1. The PID1-labeled variant outputs in this plan are blocked on completion of
+   `static-builds/PLAN-pid1-emacs-patch-support.md`.
+2. Track A Phase A3/A4 implementation MUST NOT be declared complete until patch
+   artifacts from `static-builds/patches/` exist and validate.
+3. `static-builds/README.md` is the administrator-facing handbook and MUST be
+   kept consistent with the active gate status (planned vs available).
+
 ## Scope Freeze
 The following existing files MUST remain unchanged in this plan:
 
@@ -33,8 +53,8 @@ The following existing files MUST remain unchanged in this plan:
 
 Only two new build files are introduced in Track A:
 
-- `static-builds/PKGBUILD-static-nox-supervisor`
-- `static-builds/emacs-static-nox-supervisor.nix`
+- `static-builds/PKGBUILD-static-nox-supervisor-patched-for-pid1`
+- `static-builds/emacs-static-nox-supervisor-patched-for-pid1.nix`
 
 ## Product Contract
 
@@ -46,6 +66,21 @@ The two new variants MUST produce a static Emacs build that:
 3. Starts supervisor automatically on startup through packaged startup Lisp.
 4. Provides a documented escape hatch to disable autostart at runtime.
 
+### C helper provisioning contract
+The two new variants MUST define how `libexec` C helpers are provided:
+
+1. `supervisor-logd` and `supervisor-runas` MUST be built at package-build
+   time and installed as executable files in the shipped artifact.
+2. Normal runtime MUST NOT depend on having a C compiler installed.
+3. Helper source files in runtime images MUST be omitted, or guaranteed older
+   than binaries, so startup does not spuriously mark helpers stale.
+4. Admin fallback path MUST be documented:
+   - either supply externally managed helper binaries and point
+     `supervisor-logd-command` / `supervisor-runas-command` to them,
+   - or rebuild helpers from source in an admin/dev environment.
+5. Documentation-only fallback is acceptable for admins, but prebuilt helper
+   binaries remain the default contract for these two new variants.
+
 ### PID1 contract (optional track)
 PID1 behavior MUST be optional and explicit. It MUST NOT be forced by default.
 When enabled, PID1 behavior MUST provide:
@@ -54,14 +89,17 @@ When enabled, PID1 behavior MUST provide:
 2. Optional boot/shutdown Lisp script execution policy.
 3. Signal-safe handling (handlers set flags; main loop performs work).
 
+The `-patched-for-pid1` suffix in variant filenames is a capability marker. It
+MUST NOT imply PID1 mode is enabled by default.
+
 ## Track A: Two New Build Variants
 
 ### Phase A1: Naming and layout lock
 Deliverables:
 
 1. Lock canonical names:
-   - `PKGBUILD-static-nox-supervisor`
-   - `emacs-static-nox-supervisor.nix`
+   - `PKGBUILD-static-nox-supervisor-patched-for-pid1`
+   - `emacs-static-nox-supervisor-patched-for-pid1.nix`
 2. Document exact relationship to "full static nox" baseline.
 3. Add file header notes that originals are untouched legacy variants.
 
@@ -88,10 +126,17 @@ Acceptance:
 ### Phase A3: PKGBUILD baked variant
 Deliverables:
 
-1. Implement `PKGBUILD-static-nox-supervisor` as a new variant.
+1. Implement `PKGBUILD-static-nox-supervisor-patched-for-pid1` as a new variant.
 2. Reuse static-linking checks already used by existing variants.
 3. Install supervisor runtime files and bootstrap startup Lisp in package.
-4. Add package-level smoke test that validates baked startup behavior.
+4. Build and install `libexec/supervisor-logd` and `libexec/supervisor-runas`
+   in the package payload.
+5. Add package-level smoke test that validates baked startup behavior.
+6. Add smoke check that helper binaries are executable and no startup rebuild is
+   required on first run.
+7. Consume documented Emacs PID1 patch artifact(s) from
+   `static-builds/patches/` as required by
+   `static-builds/PLAN-pid1-emacs-patch-support.md`.
 
 Acceptance:
 
@@ -102,10 +147,17 @@ Acceptance:
 ### Phase A4: Nix baked variant
 Deliverables:
 
-1. Implement `emacs-static-nox-supervisor.nix` as a new variant.
+1. Implement `emacs-static-nox-supervisor-patched-for-pid1.nix` as a new variant.
 2. Keep feature set aligned with PKGBUILD baked variant.
 3. Install the same supervisor files and startup bootstrap logic.
-4. Add Nix-side smoke tests equivalent to PKGBUILD checks.
+4. Build and install `libexec/supervisor-logd` and `libexec/supervisor-runas`
+   in the derivation output.
+5. Add Nix-side smoke tests equivalent to PKGBUILD checks.
+6. Add smoke check that helper binaries are executable and no startup rebuild is
+   required on first run.
+7. Consume documented Emacs PID1 patch artifact(s) from
+   `static-builds/patches/` as required by
+   `static-builds/PLAN-pid1-emacs-patch-support.md`.
 
 Acceptance:
 
@@ -122,7 +174,8 @@ Deliverables:
    - nativecomp
    - new baked variant
 2. Document "no-user-config" startup behavior and disable gate.
-3. Document intended use and non-goals for baked variant.
+3. Document helper-binary provisioning policy and admin fallback workflow.
+4. Document intended use and non-goals for baked variant.
 
 Acceptance:
 
@@ -204,6 +257,8 @@ Track A is complete when:
 1. Exactly two new build files exist and are documented.
 2. Both produce static Emacs with baked-in supervisor autostart.
 3. Existing six build files remain unchanged.
+4. Required PID1 patch artifact prerequisite is satisfied for PID1-labeled
+   outputs.
 
 Track B is complete only after optional PID1 patch and script policy behavior
 are implemented and tested behind explicit opt-in gates.
