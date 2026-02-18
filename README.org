@@ -2,7 +2,7 @@
 
 * supervisor.el
 
-#+ATTR_HTML: :align right :width 300
+#+ATTR_HTML: :align right :width 75
 [[file:supervisor_logo.png]]
 
 *A proper process supervisor with a systemd-inspired dependency model.*
