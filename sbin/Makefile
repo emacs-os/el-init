@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-SCRIPTS := supervisor-logrotate supervisor-log-prune supervisorctl
+SCRIPTS := supervisor-logrotate supervisor-log-prune supervisorctl supervisor-import
 TESTS   := $(sort $(wildcard tests/test-*.sh))
 
 .PHONY: all check lint test clean

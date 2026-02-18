@@ -1,0 +1,510 @@
+#!/bin/sh
+# Stay POSIX shell; GNU coreutils assumptions are fine.
+# No bashisms.
+# CRITICAL: Must pass ShellCheck.
+# Maintainer shell style:
+# - Only environment variables should be uppercase.
+# - Use set -eu by default; use pipefail only where supported and needed.
+# - Use ${...} form for variable expansion.
+# - Prefer short-circuit guards (for example: [ "${foo}" = "bar" ] && { ...; })
+#   instead of if/then/fi when behavior is equivalent.
+# - Prefer case/esac when there is more than one branch.
+# - Prefer shell parameter expansion over sed/cut/awk when simple.
+# - Use printf for messages and output (avoid echo for non-trivial output).
+# - Check external dependencies early with command -v.
+# - For temp files, use mktemp and cleanup with trap.
+# - Use if/then/fi only when required for correctness or clarity.
+# supervisor-import - convert a systemd .service file to a supervisor.el plist
+#
+# Reads a systemd unit file and prints the equivalent supervisor.el plist
+# to stdout (or writes it to a file in --output-dir).
+#
+# Usage: supervisor-import [OPTIONS] FILE
+#
+# Options:
+#   --output-dir DIR    Write output to DIR/<id>.el instead of stdout
+#   --dry-run           Print what would be written without writing
+#   --help, -h          Show this help message
+#
+# Exit codes:
+#   0  Success
+#   1  Runtime error (file not found, missing ExecStart, etc.)
+#   2  Invalid arguments
+#
+
+set -eu
+
+warn() {
+    printf 'Warning: %s\n' "${1}" >&2
+}
+
+die() {
+    code="${1}"
+    shift
+    printf 'Error: %s\n' "${*}" >&2
+    exit "${code}"
+}
+
+show_help() {
+    printf 'Usage: supervisor-import [OPTIONS] FILE\n'
+    printf '\n'
+    printf 'Convert a systemd .service file to a supervisor.el unit plist.\n'
+    printf '\n'
+    printf 'Options:\n'
+    printf '  --output-dir DIR    Write output to DIR/<id>.el instead of stdout\n'
+    printf '  --dry-run           Print what would be written without writing\n'
+    printf '  --help, -h          Show this help message\n'
+    printf '\n'
+    printf 'Exit codes:\n'
+    printf '  0  Success\n'
+    printf '  1  Runtime error\n'
+    printf '  2  Invalid arguments\n'
+}
+
+# normalize_dep ID
+# Strip .service suffix, keep .target, warn+skip other suffixes.
+# Prints normalized ID or nothing (if skipped).
+normalize_dep() {
+    _dep="${1}"
+    case "${_dep}" in
+        *.target)
+            printf '%s' "${_dep}"
+            ;;
+        *.service)
+            printf '%s' "${_dep%.service}"
+            ;;
+        *.socket|*.timer|*.path|*.mount|*.automount|*.swap|*.slice|*.scope)
+            warn "unsupported dependency type: ${_dep} (skipped)"
+            ;;
+        *)
+            printf '%s' "${_dep}"
+            ;;
+    esac
+}
+
+# normalize_dep_list "dep1 dep2 dep3"
+# Prints space-separated normalized deps.
+normalize_dep_list() {
+    _result=""
+    for _d in ${1}; do
+        _nd="$(normalize_dep "${_d}")"
+        [ -z "${_nd}" ] && continue
+        [ -n "${_result}" ] && _result="${_result} ${_nd}" || _result="${_nd}"
+    done
+    printf '%s' "${_result}"
+}
+
+# format_dep_list "dep1 dep2" -> ("dep1" "dep2")
+format_dep_list() {
+    _out="("
+    _first=1
+    for _d in ${1}; do
+        [ "${_first}" = "1" ] && _first=0 || _out="${_out} "
+        _out="${_out}\"${_d}\""
+    done
+    _out="${_out})"
+    printf '%s' "${_out}"
+}
+
+# escape_string VALUE -> escaped for embedding in double quotes
+escape_string() {
+    _s="${1}"
+    # Escape backslashes first, then double quotes
+    _s="$(printf '%s' "${_s}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+    printf '%s' "${_s}"
+}
+
+# --- Skipped-directive accumulator ---
+skipped_directives=""
+
+record_skipped() {
+    _directive="${1}"
+    _reason="${2}"
+    [ -n "${skipped_directives}" ] && skipped_directives="${skipped_directives}
+  ${_directive} -- ${_reason}" || skipped_directives="  ${_directive} -- ${_reason}"
+}
+
+# --- Option parsing ---
+output_dir=""
+dry_run=0
+input_file=""
+
+while [ $# -gt 0 ]; do
+    case "${1}" in
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        --output-dir)
+            [ $# -ge 2 ] || die 2 "--output-dir requires a value"
+            output_dir="${2}"
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=1
+            shift
+            ;;
+        -*)
+            die 2 "unknown option: ${1}"
+            ;;
+        *)
+            [ -z "${input_file}" ] || die 2 "only one input file allowed"
+            input_file="${1}"
+            shift
+            ;;
+    esac
+done
+
+[ -n "${input_file}" ] || die 2 "missing input file argument"
+[ -f "${input_file}" ] || die 1 "file not found: ${input_file}"
+[ -r "${input_file}" ] || die 1 "file not readable: ${input_file}"
+
+# Validate output-dir if given
+[ -z "${output_dir}" ] || [ -d "${output_dir}" ] || die 2 "--output-dir is not a directory: ${output_dir}"
+
+# Warn if not .service
+_basename="$(basename "${input_file}")"
+case "${_basename}" in
+    *.service) ;;
+    *) warn "file does not have .service extension: ${_basename}" ;;
+esac
+
+# Derive ID from filename
+unit_id="${_basename%.service}"
+
+# --- Parse the systemd unit file ---
+description=""
+svc_type=""
+exec_start=""
+restart_policy=""
+restart_sec=""
+working_directory=""
+after_deps=""
+requires_deps=""
+wants_deps=""
+before_deps=""
+env_pairs=""
+env_file=""
+exec_stop=""
+exec_reload=""
+kill_signal=""
+kill_mode=""
+remain_after_exit=""
+success_exit_status=""
+svc_user=""
+svc_group=""
+wanted_by=""
+required_by=""
+
+while IFS= read -r line || [ -n "${line}" ]; do
+    # Skip blank lines and comments
+    case "${line}" in
+        ""|\#*) continue ;;
+    esac
+
+    # Skip section headers
+    case "${line}" in
+        "["*"]") continue ;;
+    esac
+
+    # Strip inline comments (only if preceded by space)
+    # Note: systemd does not support inline comments, but be safe
+    _key="${line%%=*}"
+    _val="${line#*=}"
+
+    # Skip lines without =
+    [ "${_key}" != "${line}" ] || continue
+
+    # Strip leading/trailing whitespace from value
+    _val="$(printf '%s' "${_val}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+
+    case "${_key}" in
+        Description)
+            description="${_val}"
+            ;;
+        Type)
+            case "${_val}" in
+                simple|oneshot)
+                    svc_type="${_val}"
+                    ;;
+                forking|notify|dbus|idle)
+                    warn "Type=${_val} is not directly supported; defaulting to simple"
+                    record_skipped "Type=${_val}" "defaulted to simple"
+                    svc_type="simple"
+                    ;;
+                *)
+                    warn "unknown Type=${_val}; defaulting to simple"
+                    svc_type="simple"
+                    ;;
+            esac
+            ;;
+        ExecStart)
+            # Strip systemd exec prefixes: - (ignore failure), + (full privileges),
+            # ! (elevated privileges), !! (elevated + ambient)
+            _es="${_val}"
+            while true; do
+                case "${_es}" in
+                    -*|+*|!*) _es="${_es#?}" ;;
+                    *) break ;;
+                esac
+            done
+            # Strip leading whitespace left after prefix removal
+            _es="$(printf '%s' "${_es}" | sed 's/^[[:space:]]*//')"
+            exec_start="${_es}"
+            ;;
+        Restart)
+            case "${_val}" in
+                always|on-failure|on-success|no)
+                    restart_policy="${_val}"
+                    ;;
+                *)
+                    warn "unknown Restart=${_val}; skipping"
+                    ;;
+            esac
+            ;;
+        RestartSec)
+            # Strip trailing 's' suffix if present
+            case "${_val}" in
+                *s) restart_sec="${_val%s}" ;;
+                *)  restart_sec="${_val}" ;;
+            esac
+            ;;
+        WorkingDirectory)
+            working_directory="${_val}"
+            ;;
+        After)
+            _normalized="$(normalize_dep_list "${_val}")"
+            [ -z "${_normalized}" ] || {
+                [ -n "${after_deps}" ] && after_deps="${after_deps} ${_normalized}" || after_deps="${_normalized}"
+            }
+            ;;
+        Requires)
+            _normalized="$(normalize_dep_list "${_val}")"
+            [ -z "${_normalized}" ] || {
+                [ -n "${requires_deps}" ] && requires_deps="${requires_deps} ${_normalized}" || requires_deps="${_normalized}"
+            }
+            ;;
+        Wants)
+            _normalized="$(normalize_dep_list "${_val}")"
+            [ -z "${_normalized}" ] || {
+                [ -n "${wants_deps}" ] && wants_deps="${wants_deps} ${_normalized}" || wants_deps="${_normalized}"
+            }
+            ;;
+        Before)
+            _normalized="$(normalize_dep_list "${_val}")"
+            [ -z "${_normalized}" ] || {
+                [ -n "${before_deps}" ] && before_deps="${before_deps} ${_normalized}" || before_deps="${_normalized}"
+            }
+            ;;
+        Environment)
+            # Environment=KEY=VALUE or Environment="KEY=VALUE"
+            # Strip surrounding quotes if present
+            _env_raw="${_val}"
+            case "${_env_raw}" in
+                \"*\") _env_raw="${_env_raw#\"}"; _env_raw="${_env_raw%\"}" ;;
+                \'*\') _env_raw="${_env_raw#\'}"; _env_raw="${_env_raw%\'}" ;;
+            esac
+            _env_key="${_env_raw%%=*}"
+            _env_val="${_env_raw#*=}"
+            [ -n "${env_pairs}" ] && env_pairs="${env_pairs}
+${_env_key}=${_env_val}" || env_pairs="${_env_key}=${_env_val}"
+            ;;
+        EnvironmentFile)
+            # Strip leading - prefix
+            case "${_val}" in
+                -*) env_file="${_val#-}" ;;
+                *)  env_file="${_val}" ;;
+            esac
+            ;;
+        ExecStop)
+            exec_stop="${_val}"
+            ;;
+        ExecReload)
+            exec_reload="${_val}"
+            ;;
+        KillSignal)
+            kill_signal="${_val}"
+            ;;
+        KillMode)
+            case "${_val}" in
+                process|mixed)
+                    kill_mode="${_val}"
+                    ;;
+                control-group)
+                    warn "KillMode=control-group is not supported; skipping"
+                    record_skipped "KillMode=control-group" "no supervisor equivalent"
+                    ;;
+                *)
+                    warn "unknown KillMode=${_val}; skipping"
+                    ;;
+            esac
+            ;;
+        RemainAfterExit)
+            case "${_val}" in
+                yes|true) remain_after_exit="t" ;;
+                no|false) remain_after_exit="" ;;
+                *) warn "unknown RemainAfterExit=${_val}; skipping" ;;
+            esac
+            ;;
+        SuccessExitStatus)
+            success_exit_status="${_val}"
+            ;;
+        User)
+            svc_user="${_val}"
+            ;;
+        Group)
+            svc_group="${_val}"
+            ;;
+        WantedBy)
+            _normalized=""
+            for _w in ${_val}; do
+                [ -n "${_normalized}" ] && _normalized="${_normalized} ${_w}" || _normalized="${_w}"
+            done
+            [ -z "${_normalized}" ] || {
+                [ -n "${wanted_by}" ] && wanted_by="${wanted_by} ${_normalized}" || wanted_by="${_normalized}"
+            }
+            ;;
+        RequiredBy)
+            _normalized=""
+            for _r in ${_val}; do
+                [ -n "${_normalized}" ] && _normalized="${_normalized} ${_r}" || _normalized="${_r}"
+            done
+            [ -z "${_normalized}" ] || {
+                [ -n "${required_by}" ] && required_by="${required_by} ${_normalized}" || required_by="${_normalized}"
+            }
+            ;;
+        *)
+            warn "unknown directive: ${_key}=${_val}"
+            record_skipped "${_key}=${_val}" "no supervisor equivalent"
+            ;;
+    esac
+done < "${input_file}"
+
+# --- Validate required fields ---
+[ -n "${exec_start}" ] || die 1 "missing ExecStart directive"
+
+# Default type to simple
+[ -n "${svc_type}" ] || svc_type="simple"
+
+# --- Generate output ---
+_output=""
+
+_emit() {
+    [ -n "${_output}" ] && _output="${_output}
+${1}" || _output="${1}"
+}
+
+_escaped_id="$(escape_string "${unit_id}")"
+_emit "(:id \"${_escaped_id}\""
+
+_escaped_cmd="$(escape_string "${exec_start}")"
+_emit " :command \"${_escaped_cmd}\""
+
+[ -z "${description}" ] || {
+    _escaped_desc="$(escape_string "${description}")"
+    _emit " :description \"${_escaped_desc}\""
+}
+
+_emit " :type ${svc_type}"
+
+[ -z "${wanted_by}" ] || _emit " :wanted-by $(format_dep_list "${wanted_by}")"
+[ -z "${required_by}" ] || _emit " :required-by $(format_dep_list "${required_by}")"
+[ -z "${after_deps}" ] || _emit " :after $(format_dep_list "${after_deps}")"
+[ -z "${requires_deps}" ] || _emit " :requires $(format_dep_list "${requires_deps}")"
+[ -z "${wants_deps}" ] || _emit " :wants $(format_dep_list "${wants_deps}")"
+[ -z "${before_deps}" ] || _emit " :before $(format_dep_list "${before_deps}")"
+
+[ -z "${restart_policy}" ] || {
+    [ "${restart_policy}" = "no" ] || _emit " :restart ${restart_policy}"
+}
+
+[ -z "${restart_sec}" ] || _emit " :restart-sec ${restart_sec}"
+[ -z "${working_directory}" ] || {
+    _escaped_wd="$(escape_string "${working_directory}")"
+    _emit " :working-directory \"${_escaped_wd}\""
+}
+
+# Environment pairs
+[ -z "${env_pairs}" ] || {
+    _env_out=" :environment ("
+    _env_first=1
+    while IFS= read -r _ep; do
+        _ek="${_ep%%=*}"
+        _ev="${_ep#*=}"
+        _ek_esc="$(escape_string "${_ek}")"
+        _ev_esc="$(escape_string "${_ev}")"
+        if [ "${_env_first}" = "1" ]; then
+            _env_out="${_env_out}(\"${_ek_esc}\" . \"${_ev_esc}\")"
+            _env_first=0
+        else
+            _env_out="${_env_out}
+               (\"${_ek_esc}\" . \"${_ev_esc}\")"
+        fi
+    done <<EOF
+${env_pairs}
+EOF
+    _env_out="${_env_out})"
+    _emit "${_env_out}"
+}
+
+[ -z "${env_file}" ] || {
+    _escaped_ef="$(escape_string "${env_file}")"
+    _emit " :environment-file \"${_escaped_ef}\""
+}
+
+[ -z "${exec_stop}" ] || {
+    _escaped_es="$(escape_string "${exec_stop}")"
+    _emit " :exec-stop \"${_escaped_es}\""
+}
+
+[ -z "${exec_reload}" ] || {
+    _escaped_er="$(escape_string "${exec_reload}")"
+    _emit " :exec-reload \"${_escaped_er}\""
+}
+
+[ -z "${kill_signal}" ] || _emit " :kill-signal ${kill_signal}"
+[ -z "${kill_mode}" ] || _emit " :kill-mode ${kill_mode}"
+[ -z "${remain_after_exit}" ] || _emit " :remain-after-exit ${remain_after_exit}"
+
+[ -z "${success_exit_status}" ] || {
+    _ses_out="("
+    _ses_first=1
+    for _se in ${success_exit_status}; do
+        [ "${_ses_first}" = "1" ] && _ses_first=0 || _ses_out="${_ses_out} "
+        _ses_out="${_ses_out}${_se}"
+    done
+    _ses_out="${_ses_out})"
+    _emit " :success-exit-status ${_ses_out}"
+}
+
+[ -z "${svc_user}" ] || {
+    _escaped_user="$(escape_string "${svc_user}")"
+    _emit " :user \"${_escaped_user}\""
+}
+
+[ -z "${svc_group}" ] || {
+    _escaped_group="$(escape_string "${svc_group}")"
+    _emit " :group \"${_escaped_group}\""
+}
+
+_emit " :enabled t)"
+
+# --- Write output ---
+if [ -n "${output_dir}" ]; then
+    _outfile="${output_dir}/${unit_id}.el"
+    if [ "${dry_run}" = "1" ]; then
+        printf 'Would write: %s\n' "${_outfile}"
+        printf '%s\n' "${_output}"
+    else
+        printf '%s\n' "${_output}" > "${_outfile}"
+        printf 'Wrote: %s\n' "${_outfile}" >&2
+    fi
+else
+    printf '%s\n' "${_output}"
+fi
+
+# --- Print summary of skipped directives ---
+[ -z "${skipped_directives}" ] || {
+    printf '\n;; Skipped directives (no supervisor equivalent):\n' >&2
+    printf '%s\n' "${skipped_directives}" >&2
+}

@@ -53,6 +53,8 @@ dashboard, or ~supervisorctl~ from the terminal.
   nanosecond timestamps) for machine-parseable records.
 - *Sandbox* -- optional bubblewrap integration with curated profiles for
   process isolation (Linux only).
+- *systemd import* -- ~sbin/supervisor-import~ converts systemd ~.service~
+  files to supervisor unit plists.
 
 ** Requirements
 
@@ -79,7 +81,9 @@ provides detailed reference material:
 - [[#events-and-hooks][Events and Hooks]] - programmatic integration
 - [[#customization-reference][Customization Reference]] - all variables and faces
 - [[#command-reference][Command Reference]] - every interactive command
+- [[#topical-index][Topical Index]] - targeted lookup for specific behaviors
 - [[#service-management-systems-comparison][Systems Comparison]] - supervisor vs systemd vs runit vs s6
+- [[#supervisor-import][systemd Import]] - automated conversion of systemd service files
 
 * Quick Start
 :PROPERTIES:
@@ -462,13 +466,23 @@ Each file contains a single plist:
  :restart t)
 #+end_src
 
-Required keys:
+Minimum valid keys (schema):
 
 - ~:id~ (non-empty string)
 - ~:command~ (string, for non-target units)
 
-All other keys are optional.  See [[#service-definition][Service Definition]] for
-the complete key list and constraints.
+For operator-managed services, prefer an explicit baseline instead of relying on
+defaults:
+
+- ~:id~
+- ~:command~
+- ~:type~
+- ~:wanted-by~ or ~:required-by~
+- ~:restart~
+
+This package defaults ~:type~ to ~simple~, ~:enabled~ to ~t~, and ~:restart~ to
+~always~ when omitted.  See [[#service-definition][Service Definition]] for the full key
+list, defaults, and constraints.
 
 ** Unit File Best Practices (Data-Only Declarations)
 
@@ -2232,6 +2246,8 @@ All user options (defcustom) are listed below.
 | ~supervisor-logd-max-file-size~ | ~52428800~ (50 MiB) | Per-file size cap for log writer |
 | ~supervisor-log-prune-max-total-bytes~ | ~1073741824~ (1 GiB) | Total log directory size cap |
 | ~supervisor-logd-prune-min-interval~ | ~60~ | Throttle interval for logd-triggered prune (seconds) |
+| ~supervisor-log-follow-interval~ | ~1.0~ | Seconds between journal follow poll cycles |
+| ~supervisor-log-default-max-bytes~ | ~(* 5 1024 1024)~ (5 MiB) | Default tail byte cap when log decoding has no explicit record count |
 | ~supervisor-logd-pid-directory~ | ~nil~ (falls back to effective log directory) | Writer PID file directory |
 | ~supervisor-libexec-build-on-startup~ | ~prompt~ | Build bundled helper binaries on startup (~prompt/automatic/never~) |
 | ~supervisor-libexec-compiler-candidates~ | ~("cc" "clang" "gcc")~ | Candidate compiler commands, checked in order |
@@ -2258,7 +2274,13 @@ All user options (defcustom) are listed below.
 | Variable | Default | Purpose |
 | ~supervisor-dashboard-show-header-hints~ | ~nil~ | Reserved compatibility option (currently no effect); use ~h~ for key help |
 | ~supervisor-dashboard-show-timers~ | ~t~ | Show timer section |
+| ~supervisor-dashboard-log-view-record-limit~ | ~1000~ | Maximum decoded records shown by ~supervisor-dashboard-view-log~ |
 | ~supervisor-auto-refresh-interval~ | ~2~ | Auto-refresh cadence |
+
+** CLI Options
+
+| Variable | Default | Purpose |
+| ~supervisor-cli-follow-max-age~ | ~3600~ | Seconds before orphaned journal follow sessions are cleaned up |
 
 * Command Reference
 :PROPERTIES:
@@ -2273,6 +2295,7 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-start~ | Build plan and start target-closure DAG scheduler |
 | ~M-x supervisor-stop~ | Async graceful stop |
 | ~M-x supervisor-stop-now~ | Sync hard stop |
+| ~M-x supervisor-daemon-reload~ | Reload unit definitions from disk into memory without runtime changes |
 | ~M-x supervisor-run-log-maintenance~ | Run rotate, reopen, and prune immediately |
 | ~M-x supervisor-build-libexec-helpers~ | Compile missing/stale bundled libexec helpers |
 | ~M-x supervisor-verify~ | Verify config without start |
@@ -2293,7 +2316,10 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-refresh~ | Refresh dashboard buffer |
 | ~M-x supervisor-dashboard-cycle-filter~ | Cycle target filter |
 | ~M-x supervisor-dashboard-cycle-tag-filter~ | Cycle tag filter |
+| ~M-x supervisor-dashboard-toggle-targets~ | Toggle visibility of target entries |
+| ~M-x supervisor-dashboard-toggle-init-targets~ | Toggle visibility of init-transition targets (rescue/shutdown/etc) |
 | ~M-x supervisor-dashboard-toggle-auto-refresh~ | Toggle auto-refresh |
+| ~M-x supervisor-dashboard-toggle-proced-auto-update~ | Toggle Proced auto-update mode |
 | ~M-x supervisor-dashboard-quit~ | Quit dashboard |
 | ~M-x supervisor-dashboard-start~ | Start selected service |
 | ~M-x supervisor-dashboard-stop~ | Stop selected service (graceful, suppresses restart) |
@@ -2302,6 +2328,7 @@ All user options (defcustom) are listed below.
 | ~M-x supervisor-dashboard-kill-force~ | Kill selected service (no confirm) |
 | ~M-x supervisor-dashboard-reset-failed~ | Reset failed state |
 | ~M-x supervisor-dashboard-reload-unit~ | Hot-reload unit at point |
+| ~M-x supervisor-dashboard-daemon-reload~ | Reload all unit definitions from disk and refresh dashboard |
 | ~M-x supervisor-dashboard-enable~ | Enable entry (explicit) |
 | ~M-x supervisor-dashboard-disable~ | Disable entry (explicit) |
 | ~M-x supervisor-dashboard-mask~ | Mask entry (always disabled) |
@@ -2328,6 +2355,7 @@ All user options (defcustom) are listed below.
 ** Unit Edit Buffer Commands
 
 | Command | Purpose |
+| ~M-x supervisor-edit-mode~ | Unit edit minor mode (normally enabled automatically by ~supervisor-dashboard-edit~) |
 | ~M-x supervisor-edit-finish~ | Save unit file and return to dashboard |
 | ~M-x supervisor-edit-quit~ | Prompt-save if modified and return to dashboard |
 
@@ -2339,6 +2367,9 @@ All user options (defcustom) are listed below.
 This is a topical index for targeted lookup of less-obvious behavior.
 
 ** Topical Index
+:PROPERTIES:
+:CUSTOM_ID: topical-index
+:END:
 
 - Async oneshots (~:oneshot-async~, ~:oneshot-blocking~): [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Cat unit file (~cat~, ~i c~ in dashboard): [[#unit-files-modular-configuration][Unit Files]]
@@ -2361,6 +2392,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - JSON contracts (status/verify/list-timers + error shape): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Log rotation and log file paths: [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
 - Logging pipeline (~supervisor--log~, ~supervisor-verbose~, ~supervisor-log-to-file~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
+- Structured log formats (~:log-format text|binary~, ~supervisor-log-format-binary-enable~): [[#service-definition][Service Definition]], [[#persistence-and-files][Persistence and Files]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Manual stop behavior and restart suppression: [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Mask/unmask (~mask~, ~unmask~, ~m~ in dashboard): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Max concurrent startup spawn attempts (~supervisor-max-concurrent-starts~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
@@ -2370,8 +2402,8 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Reload unit (~reload~, ~u~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
 - Reset failed state (~reset-failed~, ~F~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
 - Manager targeting (caller identity, ~emacsclient~ discovery): [[#security][Security]]
-- Process sandbox (bubblewrap profiles, knobs, raw mode): [[#sandbox][Process Sandbox (bubblewrap)]]
-- Privilege-drop trust gate (~:user~, ~:group~, root-owned unit files): [[#security][Security]]
+- Bubblewrap sandboxing (~:sandbox-profile~, ~:sandbox-network~, bind mounts, raw mode): [[#sandbox][Process Sandbox (bubblewrap)]], [[#service-definition][Service Definition]]
+- Run service as another user/group (~:user~, ~:group~, trust gate): [[#security][Security]], [[#service-definition][Service Definition]]
 - Privilege-drop troubleshooting (identity errors, trust gate failures): [[#privilege-drop-troubleshooting][Privilege-Drop Troubleshooting]]
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
 - Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
@@ -2708,6 +2740,9 @@ Where behavior diverges across systems, parenthetical notes explain.
 | Unit file validation | yes (systemd-analyze verify) | no | no | yes (entry whitelist validation) |
 
 ** Example Conversions: systemd to supervisor
+:PROPERTIES:
+:CUSTOM_ID: example-conversions-systemd-to-supervisor
+:END:
 
 The examples below are strict do-the-same-thing translations.
 Each supervisor unit includes ~:command~ in the plist, because unit files
@@ -2873,6 +2908,133 @@ supervisor unit file (~nginx.el~), placed in a root-owned unit directory:
 
 Requirements: the Emacs manager must run as root, and the unit file must be
 owned by root and not world-writable.
+
+** Automated Import (~sbin/supervisor-import~)
+:PROPERTIES:
+:CUSTOM_ID: supervisor-import
+:END:
+
+The ~sbin/supervisor-import~ script automates the translation shown above.
+It reads a systemd ~.service~ file and prints the equivalent supervisor
+plist to stdout.
+
+#+begin_example
+sbin/supervisor-import /etc/systemd/system/foo.service
+#+end_example
+
+Write the result directly to a unit file:
+
+#+begin_example
+sbin/supervisor-import /etc/systemd/system/foo.service > ~/.config/supervisor/units/foo.el
+#+end_example
+
+Or use ~--output-dir~ to write automatically (the output filename is
+derived from the service name):
+
+#+begin_example
+sbin/supervisor-import --output-dir ~/.config/supervisor/units /etc/systemd/system/foo.service
+#+end_example
+
+*** Options
+
+| Flag | Description |
+|------|-------------|
+| ~--output-dir DIR~ | Write output to =DIR/<id>.el= instead of stdout |
+| ~--dry-run~ | Print what would be written without writing |
+| ~--help~, ~-h~ | Show usage information |
+
+*** Supported Directives
+
+All directives from the [[#example-conversions-systemd-to-supervisor][translation table]] are supported: ~Description~,
+~Type~ (simple, oneshot), ~ExecStart~, ~Restart~, ~RestartSec~,
+~WorkingDirectory~, ~After~, ~Requires~, ~Wants~, ~Before~,
+~Environment~, ~EnvironmentFile~, ~ExecStop~, ~ExecReload~,
+~KillSignal~, ~KillMode~, ~RemainAfterExit~, ~SuccessExitStatus~,
+~User~, ~Group~, ~WantedBy~, and ~RequiredBy~.
+
+Dependency IDs are normalized: ~.service~ suffixes are stripped,
+~.target~ suffixes are preserved, and unsupported unit types
+(~.socket~, ~.timer~, etc.) produce a warning and are skipped.
+
+Unsupported systemd directives (such as ~LimitNOFILE~ or ~CapabilityBoundingSet~)
+produce a warning on stderr and are skipped.  Unsupported ~Type~ values
+(~forking~, ~notify~, ~dbus~, ~idle~) produce a warning and default to ~simple~.
+
+The output always includes ~:enabled t~.
+
+Systemd exec prefixes (~-~, ~+~, ~!~, ~!!~) on ~ExecStart~ are
+stripped automatically.  Quoted ~Environment~ values
+(~Environment="KEY=VALUE"~) are handled correctly.
+
+*** Worked Example
+
+Given ~/etc/systemd/system/webapp.service~:
+
+#+begin_example
+[Unit]
+Description=Web Application
+After=database.service
+Requires=database.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/webapp/server.js
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Restart=always
+RestartSec=5s
+ExecStop=/usr/bin/pkill -TERM -f /opt/webapp/server.js
+KillSignal=SIGTERM
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+#+end_example
+
+Running:
+
+#+begin_example
+$ sbin/supervisor-import /etc/systemd/system/webapp.service
+#+end_example
+
+Produces on stdout:
+
+#+begin_src emacs-lisp
+(:id "webapp"
+ :command "/usr/bin/node /opt/webapp/server.js"
+ :description "Web Application"
+ :type simple
+ :wanted-by ("multi-user.target")
+ :after ("database")
+ :requires ("database")
+ :restart always
+ :restart-sec 5
+ :environment (("NODE_ENV" . "production")
+               ("PORT" . "3000"))
+ :exec-stop "/usr/bin/pkill -TERM -f /opt/webapp/server.js"
+ :kill-signal SIGTERM
+ :enabled t)
+#+end_src
+
+And on stderr:
+
+#+begin_example
+Warning: unknown directive: LimitNOFILE=65536
+
+;; Skipped directives (no supervisor equivalent):
+  LimitNOFILE=65536 -- no supervisor equivalent
+#+end_example
+
+The skipped-directive summary at the end lists every line that had no
+supervisor equivalent, so you can review what was dropped.
+
+*** Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Runtime error (file not found, missing ~ExecStart~) |
+| 2 | Invalid arguments |
 
 ** Privilege-Drop Troubleshooting
 :PROPERTIES:
