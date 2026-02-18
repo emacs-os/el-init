@@ -85,10 +85,10 @@ Uses sysexits.h EX_UNAVAILABLE to avoid collision with systemctl codes.")
   "CLI version string.")
 
 (defcustom supervisor-cli-follow-max-age 3600
-  "Seconds of inactivity before a follow session auto-expires.
-The timer resets on each successful poll, so active sessions never
-expire.  Only sessions with no new data for this duration are
-cleaned up."
+  "Seconds before an orphaned follow session is cleaned up.
+The activity timestamp resets on every poll cycle, so a session
+with an active poll timer will never expire.  This guard only
+catches leaked sessions whose timer was canceled or lost."
   :type 'integer
   :group 'supervisor)
 

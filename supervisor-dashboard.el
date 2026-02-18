@@ -161,6 +161,14 @@ counters.  Press `h' in the dashboard for full keybinding help."
   :type 'boolean
   :group 'supervisor)
 
+(defcustom supervisor-dashboard-log-view-record-limit 1000
+  "Maximum records decoded for `supervisor-dashboard-view-log'.
+Bounds both the number of records returned and the bytes read from
+disk (heuristic: LIMIT * 512 bytes tail read).  Must be a positive
+integer; the dashboard decode path is always bounded."
+  :type 'integer
+  :group 'supervisor)
+
 ;;; Dashboard
 
 (defvar-local supervisor--dashboard-tag-filter nil
@@ -1531,13 +1539,20 @@ Prompt with `completing-read' to choose on or off explicitly."
 (defun supervisor-dashboard-view-log ()
   "Open the log file for process at point.
 Decode all formats through the structured decoder and display in a
-read-only buffer with formatted timestamps and stream labels."
+read-only buffer with formatted timestamps and stream labels.
+The view is bounded to `supervisor-dashboard-log-view-record-limit'
+records for interactive responsiveness."
   (interactive)
   (let ((id (supervisor--require-service-row)))
     (let ((log-file (supervisor--log-file id)))
       (if (not (file-exists-p log-file))
           (message "No log file for %s" id)
-        (let* ((decoded (supervisor--log-decode-file log-file))
+        (let* ((limit (if (and (integerp supervisor-dashboard-log-view-record-limit)
+                              (> supervisor-dashboard-log-view-record-limit 0))
+                         supervisor-dashboard-log-view-record-limit
+                       1000))
+               (decoded (supervisor--log-decode-file
+                         log-file limit nil (* limit 512)))
                (records (plist-get decoded :records))
                (buf-name (format "*supervisor-log-%s*" id)))
           (with-current-buffer (get-buffer-create buf-name)

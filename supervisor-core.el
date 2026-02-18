@@ -4378,7 +4378,8 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
                                 (number-to-string supervisor-logd-max-file-size)
                                 "--log-dir" log-directory
                                 "--prune-cmd"
-                                (supervisor--build-prune-command log-format)
+                                (supervisor--build-prune-command log-format
+                                                            log-directory)
                                 "--prune-min-interval-sec"
                                 (number-to-string
                                  supervisor-logd-prune-min-interval))
@@ -4453,6 +4454,21 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
       (delete-process stderr-pipe))
     (remhash id supervisor--stderr-pipes)))
 
+(defun supervisor--stop-writer-if-same (id old-stdout old-stderr old-pipe)
+  "Stop writers for ID only if they have not been replaced.
+OLD-STDOUT, OLD-STDERR, and OLD-PIPE are the process objects that
+were active when teardown was deferred.  If any writer has been
+replaced by a restart, that stream is skipped to avoid killing
+the replacement writer."
+  (when (and old-stdout (eq old-stdout (gethash id supervisor--writers)))
+    (supervisor--stop-stream-writer id 'stdout supervisor--writers))
+  (when (and old-stderr (eq old-stderr (gethash id supervisor--stderr-writers)))
+    (supervisor--stop-stream-writer id 'stderr supervisor--stderr-writers))
+  (when (and old-pipe (eq old-pipe (gethash id supervisor--stderr-pipes)))
+    (when (process-live-p old-pipe)
+      (delete-process old-pipe))
+    (remhash id supervisor--stderr-pipes)))
+
 (defun supervisor--stop-all-writers ()
   "Stop all log writer processes and clear writer state hashes."
   (maphash (lambda (id writer)
@@ -4475,14 +4491,15 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
   (clrhash supervisor--stderr-writers)
   (clrhash supervisor--stderr-pipes))
 
-(defun supervisor--build-prune-command (&optional format-hint)
+(defun supervisor--build-prune-command (&optional format-hint log-dir)
   "Build the shell command string for logd's --prune-cmd flag.
 Return a string suitable for passing to logd as the value of its
 `--prune-cmd' argument.  The command invokes the prune script with
-the current `supervisor-log-directory' and
+LOG-DIR (or the effective log directory when nil) and
 `supervisor-log-prune-max-total-bytes'.  FORMAT-HINT, when non-nil,
 is passed as `--format-hint' for forward compatibility."
-  (let ((log-directory (or (supervisor--effective-log-directory)
+  (let ((log-directory (or log-dir
+                           (supervisor--effective-log-directory)
                            supervisor-log-directory)))
     (concat (format "%s --log-dir %s --max-total-bytes %d"
                     (shell-quote-argument supervisor-log-prune-command)
@@ -5361,10 +5378,17 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
         ;; Defer writer teardown to allow logd to drain buffered
         ;; frames after EOF.  The timer fires after 0.2s; if logd
         ;; has already exited by then, stop-writer is a no-op.
-        (let ((deferred-name name))
+        ;; Capture current writer processes so a fast restart
+        ;; (restart-sec=0) that replaces them is not affected.
+        (let ((deferred-name name)
+              (old-stdout (gethash name supervisor--writers))
+              (old-stderr (gethash name supervisor--stderr-writers))
+              (old-pipe (gethash name supervisor--stderr-pipes)))
           (run-at-time 0.2 nil
                        (lambda ()
-                         (supervisor--stop-writer deferred-name))))
+                         (supervisor--stop-writer-if-same
+                          deferred-name
+                          old-stdout old-stderr old-pipe))))
         ;; Record last exit info for telemetry
         (puthash name (list :status exit-status :code exit-code
                             :timestamp (float-time))
@@ -6239,7 +6263,8 @@ are blocked.  Manually started disabled units are tracked in
               (user (supervisor-entry-user entry))
               (group (supervisor-entry-group entry))
               (sandbox-entry (when (supervisor--sandbox-requesting-p entry)
-                               entry)))
+                               entry))
+              (log-format (supervisor-entry-log-format entry)))
           (cond
            ;; Masked (highest precedence - only mask blocks manual start)
            ((eq (gethash id supervisor--mask-override) 'masked)
@@ -6277,7 +6302,7 @@ are blocked.  Manually started disabled units are tracked in
                          unit-file-directory
                          user group
                          stdout-log-file stderr-log-file
-                         sandbox-entry)))
+                         sandbox-entry log-format)))
               (if proc
                   (progn
                     ;; Track manual start only on success so reconcile
@@ -6996,7 +7021,8 @@ Returns a plist with :stopped and :started counts."
                    (user (supervisor-entry-user entry))
                    (group (supervisor-entry-group entry))
                    (sandbox-entry (when (supervisor--sandbox-requesting-p entry)
-                                    entry)))
+                                    entry))
+                   (log-format (supervisor-entry-log-format entry)))
                (when (supervisor--get-effective-enabled id enabled-p)
                  (let ((args (supervisor--build-launch-command cmd user group
                                                               sandbox-entry)))
@@ -7013,7 +7039,7 @@ Returns a plist with :stopped and :started counts."
                                   unit-file-directory
                                   user group
                                   stdout-log-file stderr-log-file
-                                  sandbox-entry)))
+                                  sandbox-entry log-format)))
                        (if proc
                            (progn
                              (supervisor--emit-event 'process-started id (list :type type))
@@ -7184,6 +7210,7 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
                    (group (supervisor-entry-group entry))
                    (sandbox-entry (when (supervisor--sandbox-requesting-p entry)
                                     entry))
+                   (log-format (supervisor-entry-log-format entry))
                    (exe (car (supervisor--build-launch-command cmd user group
                                                               sandbox-entry))))
               (if (not (executable-find exe))
@@ -7195,7 +7222,7 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
                                  unit-file-directory
                                  user group
                                  stdout-log-file stderr-log-file
-                                 sandbox-entry)))
+                                 sandbox-entry log-format)))
                   (if new-proc
                       (list :id id :action "reloaded")
                     (list :id id

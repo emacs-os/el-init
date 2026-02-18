@@ -15627,7 +15627,7 @@ No warning is emitted when there are simply no child processes."
                      (lambda (_id _cmd _logging _type _restart
                               &optional _is-restart _wd _env _ef _rs _ufd
                               user group _stdout-log-file _stderr-log-file
-                              _sandbox-entry)
+                              _sandbox-entry _log-format)
                        (setq captured-user user)
                        (setq captured-group group)
                        t))
@@ -15899,8 +15899,8 @@ No warning is emitted when there are simply no child processes."
         (supervisor--restart-times (make-hash-table :test 'equal))
         (supervisor--restart-timers (make-hash-table :test 'equal))
         (writer-stopped nil))
-    (cl-letf (((symbol-function 'supervisor--stop-writer)
-               (lambda (id)
+    (cl-letf (((symbol-function 'supervisor--stop-writer-if-same)
+               (lambda (id &rest _args)
                  (when (string= id "svc3")
                    (setq writer-stopped t))))
               ((symbol-function 'supervisor--emit-event) #'ignore)
@@ -23843,7 +23843,7 @@ TS-NS are the record fields."
                                      :id id :exit-code exit-code
                                      :exit-status exit-status)
                                exit-frames)))
-                      ((symbol-function 'supervisor--stop-writer) #'ignore)
+                      ((symbol-function 'supervisor--stop-writer-if-same) #'ignore)
                       ((symbol-function 'supervisor--emit-event) #'ignore)
                       ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
                       ((symbol-function 'supervisor--handle-oneshot-exit) #'ignore)
@@ -23889,7 +23889,7 @@ TS-NS are the record fields."
             (cl-letf (((symbol-function 'supervisor--log-send-frame)
                        (lambda (&rest _args)
                          (cl-incf exit-frame-count)))
-                      ((symbol-function 'supervisor--stop-writer) #'ignore)
+                      ((symbol-function 'supervisor--stop-writer-if-same) #'ignore)
                       ((symbol-function 'supervisor--emit-event) #'ignore)
                       ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
                       ((symbol-function 'supervisor--should-restart-p) (lambda (&rest _) nil)))
@@ -23902,6 +23902,165 @@ TS-NS are the record fields."
         (when (process-live-p fake-writer) (delete-process fake-writer))))
     ;; Exactly one exit frame (only stdout writer, no stderr writer)
     (should (= 1 exit-frame-count))))
+
+(ert-deftest supervisor-test-deferred-teardown-skips-replaced-writer ()
+  "Deferred writer teardown does not kill a replacement writer."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--stderr-pipes (make-hash-table :test 'equal))
+        (supervisor-logd-pid-directory (make-temp-file "td-skip-" t)))
+    (let ((old-w (start-process "old-w" nil "sleep" "300"))
+          (new-w (start-process "new-w" nil "sleep" "300")))
+      (unwind-protect
+          (progn
+            ;; New writer is already in hash (restart replaced old)
+            (puthash "svc" new-w supervisor--writers)
+            ;; Deferred teardown fires with old writer reference
+            (supervisor--stop-writer-if-same "svc" old-w nil nil)
+            ;; New writer must survive
+            (should (eq new-w (gethash "svc" supervisor--writers)))
+            (should (process-live-p new-w)))
+        (when (process-live-p old-w) (delete-process old-w))
+        (when (process-live-p new-w) (delete-process new-w))
+        (delete-directory supervisor-logd-pid-directory t)))))
+
+(ert-deftest supervisor-test-deferred-teardown-stops-same-writer ()
+  "Deferred writer teardown stops the writer when not replaced."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--stderr-pipes (make-hash-table :test 'equal))
+        (supervisor-logd-pid-directory (make-temp-file "td-same-" t)))
+    (let ((old-w (start-process "old-w" nil "sleep" "300")))
+      (unwind-protect
+          (progn
+            ;; Writer still in hash (no restart occurred)
+            (puthash "svc" old-w supervisor--writers)
+            (supervisor--stop-writer-if-same "svc" old-w nil nil)
+            ;; Writer should be removed
+            (should-not (gethash "svc" supervisor--writers)))
+        (when (process-live-p old-w) (delete-process old-w))
+        (delete-directory supervisor-logd-pid-directory t)))))
+
+(ert-deftest supervisor-test-deferred-teardown-guards-stderr-writer ()
+  "Deferred teardown guards stderr writer independently of stdout."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--stderr-pipes (make-hash-table :test 'equal))
+        (supervisor-logd-pid-directory (make-temp-file "td-stderr-" t)))
+    (let ((old-stdout (start-process "old-out" nil "sleep" "300"))
+          (new-stdout (start-process "new-out" nil "sleep" "300"))
+          (old-stderr (start-process "old-err" nil "sleep" "300")))
+      (unwind-protect
+          (progn
+            ;; Stdout replaced, stderr not
+            (puthash "svc" new-stdout supervisor--writers)
+            (puthash "svc" old-stderr supervisor--stderr-writers)
+            (supervisor--stop-writer-if-same "svc" old-stdout old-stderr nil)
+            ;; Stdout: new writer survives (replaced)
+            (should (eq new-stdout (gethash "svc" supervisor--writers)))
+            (should (process-live-p new-stdout))
+            ;; Stderr: old writer stopped (not replaced)
+            (should-not (gethash "svc" supervisor--stderr-writers)))
+        (when (process-live-p old-stdout) (delete-process old-stdout))
+        (when (process-live-p new-stdout) (delete-process new-stdout))
+        (when (process-live-p old-stderr) (delete-process old-stderr))
+        (delete-directory supervisor-logd-pid-directory t)))))
+
+(ert-deftest supervisor-test-sentinel-deferred-teardown-captures-writer-identity ()
+  "Sentinel deferred teardown closure captures writer identity for guard."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--stderr-pipes (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--oneshot-callbacks (make-hash-table :test 'equal))
+        (supervisor--crash-log (make-hash-table :test 'equal))
+        (supervisor--last-exit-info (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (stop-if-same-args nil))
+    (let ((fake-writer (start-process "fw-cap" nil "sleep" "300")))
+      (unwind-protect
+          (progn
+            (puthash "cap-svc" fake-writer supervisor--writers)
+            (cl-letf (((symbol-function 'supervisor--log-send-frame) #'ignore)
+                      ((symbol-function 'supervisor--stop-writer-if-same)
+                       (lambda (id old-stdout old-stderr old-pipe)
+                         (setq stop-if-same-args
+                               (list id old-stdout old-stderr old-pipe))))
+                      ((symbol-function 'supervisor--emit-event) #'ignore)
+                      ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
+                      ((symbol-function 'supervisor--should-restart-p)
+                       (lambda (&rest _) nil)))
+              (let ((sentinel (supervisor--make-process-sentinel
+                               "cap-svc" '("sleep" "300") t 'simple t)))
+                (let ((fake-proc (start-process "cap-svc" nil "true")))
+                  (puthash "cap-svc" fake-proc supervisor--processes)
+                  (while (process-live-p fake-proc) (sit-for 0.05))
+                  (funcall sentinel fake-proc "finished\n")
+                  ;; Timer was scheduled; fire all pending timers
+                  (sit-for 0.3)
+                  ;; Verify the captured writer was passed to guard
+                  (should stop-if-same-args)
+                  (should (equal "cap-svc" (nth 0 stop-if-same-args)))
+                  (should (eq fake-writer (nth 1 stop-if-same-args)))))))
+        (when (process-live-p fake-writer) (delete-process fake-writer))))))
+
+(ert-deftest supervisor-test-exit-marker-per-restart-cycle ()
+  "Each restart cycle produces exactly one exit marker."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--stderr-pipes (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--oneshot-callbacks (make-hash-table :test 'equal))
+        (supervisor--crash-log (make-hash-table :test 'equal))
+        (supervisor--last-exit-info (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (exit-frame-count 0))
+    (let ((w1 (start-process "fw-rst1" nil "sleep" "300"))
+          (w2 (start-process "fw-rst2" nil "sleep" "300")))
+      (unwind-protect
+          (progn
+            ;; First cycle: writer w1
+            (puthash "rst-svc" w1 supervisor--writers)
+            (cl-letf (((symbol-function 'supervisor--log-send-frame)
+                       (lambda (&rest _args)
+                         (cl-incf exit-frame-count)))
+                      ((symbol-function 'supervisor--stop-writer-if-same) #'ignore)
+                      ((symbol-function 'supervisor--emit-event) #'ignore)
+                      ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
+                      ((symbol-function 'supervisor--should-restart-p)
+                       (lambda (&rest _) nil)))
+              (let ((sentinel (supervisor--make-process-sentinel
+                               "rst-svc" '("sleep" "300") t 'simple t)))
+                (let ((p1 (start-process "rst-svc" nil "true")))
+                  (puthash "rst-svc" p1 supervisor--processes)
+                  (while (process-live-p p1) (sit-for 0.05))
+                  (funcall sentinel p1 "finished\n"))
+                ;; Simulate restart: replace writer
+                (puthash "rst-svc" w2 supervisor--writers)
+                ;; Second cycle with new writer
+                (let ((p2 (start-process "rst-svc" nil "true")))
+                  (puthash "rst-svc" p2 supervisor--processes)
+                  (while (process-live-p p2) (sit-for 0.05))
+                  (funcall sentinel p2 "finished\n"))))
+            ;; Each termination produces exactly 1 exit frame
+            ;; (only stdout writer present in each cycle)
+            (should (= 2 exit-frame-count)))
+        (when (process-live-p w1) (delete-process w1))
+        (when (process-live-p w2) (delete-process w2))))))
 
 (ert-deftest supervisor-test-writer-failure-non-fatal ()
   "Writer start failure does not prevent service from starting."
@@ -24420,6 +24579,117 @@ TS-NS are the record fields."
                 (kill-buffer buf)))))
       (delete-file tmpfile))))
 
+(ert-deftest supervisor-test-dashboard-view-log-applies-record-limit ()
+  "Dashboard view-log bounds both record count and byte read."
+  (let ((tmpfile (make-temp-file "dash-view-limit-"))
+        (captured-limit 'unset)
+        (captured-max-bytes 'unset))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'supervisor--require-service-row)
+                     (lambda () "svc"))
+                    ((symbol-function 'supervisor--log-decode-file)
+                     (lambda (_file &optional limit _offset max-bytes)
+                       (setq captured-limit limit)
+                       (setq captured-max-bytes max-bytes)
+                       (list :records nil :offset 0 :format 'text
+                             :warning nil))))
+            (save-window-excursion
+              (supervisor-dashboard-view-log)
+              (should (equal supervisor-dashboard-log-view-record-limit
+                             captured-limit))
+              (should (equal (* supervisor-dashboard-log-view-record-limit 512)
+                             captured-max-bytes))
+              (when-let* ((buf (get-buffer "*supervisor-log-svc*")))
+                (kill-buffer buf)))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-dashboard-view-log-nil-limit-uses-default ()
+  "Dashboard view-log clamps nil limit to default 1000."
+  (let ((tmpfile (make-temp-file "dash-nil-limit-"))
+        (supervisor-dashboard-log-view-record-limit nil)
+        (captured-limit 'unset)
+        (captured-max-bytes 'unset))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'supervisor--require-service-row)
+                     (lambda () "svc"))
+                    ((symbol-function 'supervisor--log-decode-file)
+                     (lambda (_file &optional limit _offset max-bytes)
+                       (setq captured-limit limit)
+                       (setq captured-max-bytes max-bytes)
+                       (list :records nil :offset 0 :format 'text
+                             :warning nil))))
+            (save-window-excursion
+              (supervisor-dashboard-view-log)
+              (should (equal 1000 captured-limit))
+              (should (equal (* 1000 512) captured-max-bytes))
+              (when-let* ((buf (get-buffer "*supervisor-log-svc*")))
+                (kill-buffer buf)))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-dashboard-view-log-zero-limit-uses-default ()
+  "Dashboard view-log clamps zero limit to default 1000."
+  (let ((tmpfile (make-temp-file "dash-zero-limit-"))
+        (supervisor-dashboard-log-view-record-limit 0)
+        (captured-limit 'unset))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'supervisor--require-service-row)
+                     (lambda () "svc"))
+                    ((symbol-function 'supervisor--log-decode-file)
+                     (lambda (_file &optional limit _offset _max-bytes)
+                       (setq captured-limit limit)
+                       (list :records nil :offset 0 :format 'text
+                             :warning nil))))
+            (save-window-excursion
+              (supervisor-dashboard-view-log)
+              (should (equal 1000 captured-limit))
+              (when-let* ((buf (get-buffer "*supervisor-log-svc*")))
+                (kill-buffer buf)))))
+      (delete-file tmpfile))))
+
+(ert-deftest supervisor-test-dashboard-view-log-negative-limit-uses-default ()
+  "Dashboard view-log clamps negative limit to default 1000."
+  (let ((tmpfile (make-temp-file "dash-neg-limit-"))
+        (supervisor-dashboard-log-view-record-limit -5)
+        (captured-limit 'unset))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'supervisor--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'supervisor--require-service-row)
+                     (lambda () "svc"))
+                    ((symbol-function 'supervisor--log-decode-file)
+                     (lambda (_file &optional limit _offset _max-bytes)
+                       (setq captured-limit limit)
+                       (list :records nil :offset 0 :format 'text
+                             :warning nil))))
+            (save-window-excursion
+              (supervisor-dashboard-view-log)
+              (should (equal 1000 captured-limit))
+              (when-let* ((buf (get-buffer "*supervisor-log-svc*")))
+                (kill-buffer buf)))))
+      (delete-file tmpfile))))
+
 (ert-deftest supervisor-test-telemetry-log-tail-decodes-text ()
   "Telemetry log-tail decodes text format through structured decoder."
   (let ((tmpfile (make-temp-file "telem-tail-")))
@@ -24663,10 +24933,15 @@ identity must be correct regardless of whether log-format is set."
                         ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
                         ((symbol-function 'supervisor--should-restart-p) (lambda (&rest _) nil))
                         ((symbol-function 'run-at-time)
-                         (lambda (_time _repeat fn)
-                           (push '(deferred-teardown) action-log)
-                           (setq deferred-fn fn)
-                           nil)))
+                         (let ((real-rat (symbol-function 'run-at-time)))
+                           (lambda (time repeat fn)
+                             (if (symbolp fn)
+                                 ;; Pass through Emacs-internal timers
+                                 ;; (e.g. undo-auto--boundary-timer).
+                                 (funcall real-rat time repeat fn)
+                               (push '(deferred-teardown) action-log)
+                               (setq deferred-fn fn)
+                               nil)))))
                 (let ((sentinel (supervisor--make-process-sentinel
                                  "eof-drain-svc" '("sleep" "300") t 'simple t)))
                   (funcall sentinel fake-proc "finished\n")))))
@@ -24681,11 +24956,11 @@ identity must be correct regardless of whether log-format is set."
     (should (equal (nth 1 action-log) '(eof)))
     ;; Third: deferred teardown was SCHEDULED (not executed inline)
     (should (equal (nth 2 action-log) '(deferred-teardown)))
-    ;; Deferred function, when called, invokes stop-writer
+    ;; Deferred function, when called, invokes stop-writer-if-same
     (should deferred-fn)
     (let ((stopped nil))
-      (cl-letf (((symbol-function 'supervisor--stop-writer)
-                 (lambda (_name) (setq stopped t))))
+      (cl-letf (((symbol-function 'supervisor--stop-writer-if-same)
+                 (lambda (_name &rest _args) (setq stopped t))))
         (funcall deferred-fn))
       (should stopped))))
 
@@ -25588,6 +25863,395 @@ identity must be correct regardless of whether log-format is set."
   "Jan 31 is valid."
   (should (supervisor--log-parse-timestamp
            "2026-01-31T00:00:00Z")))
+
+;;;; Log-format propagation on non-DAG start paths
+
+(ert-deftest supervisor-test-manual-start-passes-log-format ()
+  "Manual start threads :log-format through to start-process."
+  (supervisor-test-with-unit-files
+      '(("echo hi" :id "svc1" :log-format text))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--restart-times (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--manually-stopped (make-hash-table :test 'equal))
+           (supervisor--manually-started (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+           (supervisor--computed-deps (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal))
+           (supervisor--remain-active (make-hash-table :test 'equal))
+           (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+           (captured-log-format :not-set))
+      (cl-letf (((symbol-function 'supervisor--start-process)
+                 (lambda (_id _cmd _logging _type _restart
+                          &optional _is-restart _wd _env _envf _rsec
+                          _ufd _user _group _sout _serr _sandbox
+                          log-format)
+                   (setq captured-log-format log-format)
+                   t)))
+        (let ((result (supervisor--manual-start "svc1")))
+          (should (eq 'started (plist-get result :status)))
+          (should (eq 'text captured-log-format)))))))
+
+(ert-deftest supervisor-test-reconcile-passes-log-format ()
+  "Reconcile start path threads :log-format through to start-process."
+  (supervisor-test-with-unit-files
+      '(("echo hi" :id "new-svc" :log-format text))
+    (let ((supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (captured-log-format :not-set))
+      (cl-letf (((symbol-function 'supervisor--start-process)
+                 (lambda (_id _cmd _logging _type _restart
+                          &optional _is-restart _wd _env _envf _rsec
+                          _ufd _user _group _sout _serr _sandbox
+                          log-format)
+                   (setq captured-log-format log-format)
+                   t))
+                ((symbol-function 'supervisor--refresh-dashboard) #'ignore)
+                ((symbol-function 'executable-find) (lambda (_) t)))
+        (supervisor--reconcile)
+        (should (eq 'text captured-log-format))))))
+
+(ert-deftest supervisor-test-reload-unit-passes-log-format ()
+  "Reload restart path threads :log-format through to start-process."
+  (supervisor-test-with-unit-files
+      '(("sleep 999" :id "svc1" :log-format text))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--restart-times (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--manually-stopped (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--mask-override (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--cycle-fallback-ids (make-hash-table :test 'equal))
+           (supervisor--computed-deps (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal))
+           (captured-log-format :not-set))
+      ;; Simulate a running process
+      (puthash "svc1" (start-process "test" nil "sleep" "999")
+               supervisor--processes)
+      (unwind-protect
+          (cl-letf (((symbol-function 'supervisor--manual-stop)
+                     (lambda (id)
+                       (let ((p (gethash id supervisor--processes)))
+                         (when (and p (process-live-p p))
+                           (delete-process p)))
+                       (list :status 'stopped :reason nil)))
+                    ((symbol-function 'supervisor--start-process)
+                     (lambda (_id _cmd _logging _type _restart
+                              &optional _is-restart _wd _env _envf _rsec
+                              _ufd _user _group _sout _serr _sandbox
+                              log-format)
+                       (setq captured-log-format log-format)
+                       t)))
+            (let ((result (supervisor--reload-unit "svc1")))
+              (should (equal "reloaded" (plist-get result :action)))
+              (should (eq 'text captured-log-format))))
+        ;; Cleanup
+        (let ((p (gethash "svc1" supervisor--processes)))
+          (when (and p (process-live-p p))
+            (delete-process p)))))))
+
+;;;; Prune hook directory correctness
+
+(ert-deftest supervisor-test-build-prune-command-uses-explicit-log-dir ()
+  "Build-prune-command uses LOG-DIR when provided, not global dir."
+  (let ((supervisor-log-prune-command "/opt/prune")
+        (supervisor-log-directory "/global/logs")
+        (supervisor-log-prune-max-total-bytes 2048))
+    (cl-letf (((symbol-function 'supervisor--effective-log-directory)
+               (lambda () "/global/logs")))
+      (let ((cmd (supervisor--build-prune-command nil "/custom/logs")))
+        (should (string-match-p (regexp-quote "/custom/logs") cmd))
+        (should-not (string-match-p (regexp-quote "/global/logs") cmd))))))
+
+(ert-deftest supervisor-test-writer-prune-cmd-uses-writer-log-dir ()
+  "Writer prune command targets the writer's log directory, not global."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--logd-pid-directory nil)
+        (captured-cmd nil)
+        (fake-proc (start-process "fake-logd" nil "sleep" "300")))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'supervisor--effective-log-directory)
+                     (lambda () "/global/logs"))
+                    ((symbol-function 'supervisor--ensure-log-directory)
+                     (lambda () "/global/logs"))
+                    ((symbol-function 'make-process)
+                     (lambda (&rest args)
+                       (setq captured-cmd (plist-get args :command))
+                       fake-proc))
+                    ((symbol-function 'supervisor--write-logd-pid-file) #'ignore))
+            (supervisor--start-stream-writer
+             "svc" 'stdout "/custom/app/log-svc.log"
+             supervisor--writers nil))
+          (should captured-cmd)
+          ;; --log-dir should be the custom directory
+          (let ((logdir-idx (cl-position "--log-dir" captured-cmd
+                                         :test #'equal)))
+            (should logdir-idx)
+            (should (equal "/custom/app" (nth (1+ logdir-idx) captured-cmd))))
+          ;; --prune-cmd should also reference the custom directory
+          (let ((prune-idx (cl-position "--prune-cmd" captured-cmd
+                                        :test #'equal)))
+            (should prune-idx)
+            (let ((prune-val (nth (1+ prune-idx) captured-cmd)))
+              (should (string-match-p (regexp-quote "/custom/app") prune-val))
+              (should-not (string-match-p (regexp-quote "/global/logs")
+                                          prune-val)))))
+      (when (process-live-p fake-proc) (delete-process fake-proc)))))
+
+;;;; Behavioral logrotate compression tests
+
+(ert-deftest supervisor-test-logrotate-tar-present-creates-archive ()
+  "When tar is available, logrotate compresses rotated files to .tar.gz."
+  (let ((log-dir (make-temp-file "lr-tar-" t))
+        (script (expand-file-name "sbin/supervisor-logrotate")))
+    (unwind-protect
+        (progn
+          ;; Create active log files
+          (with-temp-file (expand-file-name "log-svc1.log" log-dir)
+            (insert "line1\nline2\n"))
+          (with-temp-file (expand-file-name "supervisor.log" log-dir)
+            (insert "supervisor log data\n"))
+          ;; Run logrotate (tar should be available on all test hosts)
+          (should (zerop (call-process "sh" nil nil nil script
+                                       "--log-dir" log-dir)))
+          ;; Active files should have been rotated away
+          (should-not (file-exists-p (expand-file-name "log-svc1.log" log-dir)))
+          (should-not (file-exists-p (expand-file-name "supervisor.log" log-dir)))
+          ;; .tar.gz archives should exist
+          (let ((tar-files (directory-files log-dir nil "\\.tar\\.gz\\'")))
+            (should (>= (length tar-files) 2))))
+      (delete-directory log-dir t))))
+
+(ert-deftest supervisor-test-logrotate-tar-absent-rotation-succeeds ()
+  "When tar is absent, logrotate still rotates files without compression."
+  (let ((log-dir (make-temp-file "lr-notar-" t))
+        (bin-dir (make-temp-file "lr-bin-" t))
+        (script (expand-file-name "sbin/supervisor-logrotate")))
+    (unwind-protect
+        (progn
+          ;; Build a restricted PATH: symlink essential commands, omit tar
+          (dolist (cmd '("sh" "find" "date" "mv" "rm" "cat" "sed"
+                         "printf" "kill" "mkdir" "basename"))
+            (let ((real (executable-find cmd)))
+              (when real
+                (make-symbolic-link real
+                                    (expand-file-name cmd bin-dir) t))))
+          ;; Create active log file
+          (with-temp-file (expand-file-name "log-svc2.log" log-dir)
+            (insert "data\n"))
+          ;; Run logrotate with restricted PATH (no tar)
+          (let ((exit-code
+                 (call-process "env" nil nil nil
+                               (format "PATH=%s" bin-dir)
+                               (expand-file-name script)
+                               "--log-dir" log-dir)))
+            (should (zerop exit-code)))
+          ;; Active file should be gone (rotated)
+          (should-not (file-exists-p (expand-file-name "log-svc2.log" log-dir)))
+          ;; Rotated file should exist as plain .log, no .tar.gz
+          (let ((rotated (directory-files log-dir nil "log-svc2\\..+\\.log\\'")))
+            (should (>= (length rotated) 1)))
+          (let ((tar-files (directory-files log-dir nil "\\.tar\\.gz\\'")))
+            (should (= (length tar-files) 0))))
+      (delete-directory log-dir t)
+      (delete-directory bin-dir t))))
+
+;;;; Exit marker coverage for manual-stop and oneshot completion
+
+(ert-deftest supervisor-test-manual-stop-triggers-exit-frame ()
+  "Sentinel emits exit frame when process is killed by manual-stop."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--oneshot-callbacks (make-hash-table :test 'equal))
+        (supervisor--crash-log (make-hash-table :test 'equal))
+        (supervisor--last-exit-info (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (exit-frames nil))
+    ;; Mark as manually stopped (as manual-stop would before killing)
+    (puthash "manual-stop-svc" t supervisor--manually-stopped)
+    (let ((fake-writer (start-process "ms-fw" nil "sleep" "300")))
+      (unwind-protect
+          (progn
+            (puthash "manual-stop-svc" fake-writer supervisor--writers)
+            (let ((fake-proc (start-process "manual-stop-svc" nil "true")))
+              (puthash "manual-stop-svc" fake-proc supervisor--processes)
+              ;; Wait for "true" to exit (simulates kill-process sentinel)
+              (while (process-live-p fake-proc) (sit-for 0.05))
+              (cl-letf (((symbol-function 'supervisor--log-send-frame)
+                         (lambda (_w event _stream _pid unit-id &rest _args)
+                           (push (list event unit-id) exit-frames)))
+                        ((symbol-function 'process-send-eof)
+                         (lambda (_proc) nil))
+                        ((symbol-function 'supervisor--emit-event) #'ignore)
+                        ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
+                        ((symbol-function 'supervisor--should-restart-p) (lambda (&rest _) nil))
+                        ((symbol-function 'run-at-time) (lambda (&rest _) nil)))
+                (let ((sentinel (supervisor--make-process-sentinel
+                                 "manual-stop-svc" '("true") t 'simple t)))
+                  (funcall sentinel fake-proc "exited abnormally with code 15\n")))))
+        (when (process-live-p fake-writer) (delete-process fake-writer))))
+    ;; Exit frame (event=2) should have been sent
+    (should exit-frames)
+    (should (= 2 (car (car exit-frames))))
+    (should (equal "manual-stop-svc" (cadr (car exit-frames))))))
+
+(ert-deftest supervisor-test-oneshot-completion-triggers-exit-frame ()
+  "Sentinel emits exit frame when oneshot process completes normally."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--oneshot-completed (make-hash-table :test 'equal))
+        (supervisor--oneshot-callbacks (make-hash-table :test 'equal))
+        (supervisor--crash-log (make-hash-table :test 'equal))
+        (supervisor--last-exit-info (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (exit-frames nil))
+    (let ((fake-writer (start-process "os-fw" nil "sleep" "300")))
+      (unwind-protect
+          (progn
+            (puthash "oneshot-svc" fake-writer supervisor--writers)
+            (let ((fake-proc (start-process "oneshot-svc" nil "true")))
+              (puthash "oneshot-svc" fake-proc supervisor--processes)
+              (while (process-live-p fake-proc) (sit-for 0.05))
+              (cl-letf (((symbol-function 'supervisor--log-send-frame)
+                         (lambda (_w event _stream _pid unit-id &rest _args)
+                           (push (list event unit-id) exit-frames)))
+                        ((symbol-function 'process-send-eof)
+                         (lambda (_proc) nil))
+                        ((symbol-function 'supervisor--emit-event) #'ignore)
+                        ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
+                        ((symbol-function 'supervisor--should-restart-p) (lambda (&rest _) nil))
+                        ((symbol-function 'run-at-time) (lambda (&rest _) nil)))
+                ;; Oneshot sentinel: type=oneshot, restart=nil
+                (let ((sentinel (supervisor--make-process-sentinel
+                                 "oneshot-svc" '("true") t 'oneshot nil)))
+                  (funcall sentinel fake-proc "finished\n")))))
+        (when (process-live-p fake-writer) (delete-process fake-writer))))
+    ;; Exit frame (event=2) should have been sent
+    (should exit-frames)
+    (should (= 2 (car (car exit-frames))))
+    (should (equal "oneshot-svc" (cadr (car exit-frames))))))
+
+;;;; Behavioral equivalence: format-hint and vacuum alias
+
+(defun supervisor-test--make-prune-fixture ()
+  "Create a temp log dir with active + rotated files for prune tests.
+Return the directory path.  Caller must `delete-directory' when done.
+The fixture contains an active log and three rotated files with
+staggered mtimes so prune ordering is deterministic (oldest first)."
+  (let ((dir (make-temp-file "prune-fix-" t)))
+    ;; Active log (never pruned)
+    (with-temp-file (expand-file-name "log-svc.log" dir)
+      (insert (make-string 64 ?A)))
+    ;; Rotated files: 1024 bytes each, different timestamps in name
+    ;; and different mtime so sort-by-mtime is deterministic.
+    (let ((files '(("log-svc.20240101-120000.log" . "202401011200.00")
+                   ("log-svc.20240201-120000.log" . "202402011200.00")
+                   ("log-svc.20240301-120000.log" . "202403011200.00"))))
+      (dolist (entry files)
+        (let ((path (expand-file-name (car entry) dir)))
+          (with-temp-file path
+            (insert (make-string 1024 ?R)))
+          (call-process "touch" nil nil nil "-t" (cdr entry) path))))
+    dir))
+
+(ert-deftest supervisor-test-prune-format-hint-does-not-alter-order ()
+  "Prune deletion order is identical with and without --format-hint."
+  (let ((dir (supervisor-test--make-prune-fixture))
+        (script (expand-file-name "sbin/supervisor-log-prune")))
+    (unwind-protect
+        (let (output-plain output-text output-binary)
+          ;; Run with tiny cap to force all rotated files to be pruned.
+          ;; Use --dry-run so nothing is actually deleted.
+          (with-temp-buffer
+            (call-process script nil t nil
+                          "--log-dir" dir "--max-total-bytes" "100"
+                          "--dry-run")
+            (setq output-plain (buffer-string)))
+          (with-temp-buffer
+            (call-process script nil t nil
+                          "--log-dir" dir "--max-total-bytes" "100"
+                          "--format-hint" "text" "--dry-run")
+            (setq output-text (buffer-string)))
+          (with-temp-buffer
+            (call-process script nil t nil
+                          "--log-dir" dir "--max-total-bytes" "100"
+                          "--format-hint" "binary" "--dry-run")
+            (setq output-binary (buffer-string)))
+          ;; All three runs should produce prune lines
+          (should (string-match-p "^prune:" output-plain))
+          ;; Prune lines (action output) must be identical
+          (let ((prune-re "^prune:.*$"))
+            (should (equal (supervisor-test--grep-lines prune-re output-plain)
+                           (supervisor-test--grep-lines prune-re output-text)))
+            (should (equal (supervisor-test--grep-lines prune-re output-plain)
+                           (supervisor-test--grep-lines prune-re output-binary)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-prune-vacuum-alias-matches-regular ()
+  "Vacuum alias produces identical prune behavior to regular invocation."
+  (let ((dir (supervisor-test--make-prune-fixture))
+        (script (expand-file-name "sbin/supervisor-log-prune")))
+    (unwind-protect
+        (let (output-regular output-vacuum)
+          ;; Regular invocation
+          (with-temp-buffer
+            (call-process script nil t nil
+                          "--log-dir" dir "--max-total-bytes" "100"
+                          "--dry-run")
+            (setq output-regular (buffer-string)))
+          ;; Vacuum alias invocation
+          (with-temp-buffer
+            (call-process script nil t nil
+                          "--log-dir" dir "--vacuum"
+                          "--vacuum-max-total-bytes" "100"
+                          "--dry-run")
+            (setq output-vacuum (buffer-string)))
+          ;; Both should produce prune lines
+          (should (string-match-p "^prune:" output-regular))
+          ;; Prune lines must be identical
+          (let ((prune-re "^prune:.*$"))
+            (should (equal (supervisor-test--grep-lines prune-re output-regular)
+                           (supervisor-test--grep-lines prune-re output-vacuum)))))
+      (delete-directory dir t))))
+
+(defun supervisor-test--grep-lines (regexp str)
+  "Return all lines in STR matching REGEXP, preserving order."
+  (let ((lines nil))
+    (with-temp-buffer
+      (insert str)
+      (goto-char (point-min))
+      (while (re-search-forward regexp nil t)
+        (push (match-string 0) lines)))
+    (nreverse lines)))
 
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
