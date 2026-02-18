@@ -487,7 +487,8 @@ EOF
     _emit " :group \"${_escaped_group}\""
 }
 
-_emit " :enabled t)"
+# Close the plist -- append ) to the last line
+_output="${_output})"
 
 # --- Write output ---
 if [ -n "${output_dir}" ]; then

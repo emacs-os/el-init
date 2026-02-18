@@ -507,7 +507,6 @@ Good example (declarative):
  :command "/usr/local/bin/backup-runner --mode=incremental"
  :type oneshot
  :wanted-by ("multi-user.target")
- :enabled t
  :logging t)
 #+end_src
 
@@ -2765,7 +2764,7 @@ in these examples are non-target units (where ~:command~ is required).
 | ~KillSignal=...~ | ~:kill-signal ...~ | Signal symbol |
 | ~RemainAfterExit=yes~ | ~:remain-after-exit t~ | Oneshot active latch |
 | ~User=~/~Group=~ | ~:user~ / ~:group~ | Requires root manager + trusted unit file |
-| ~WantedBy=multi-user.target~ | ~:wanted-by (\"multi-user.target\")~ + ~:enabled t~ | Target membership |
+| ~WantedBy=multi-user.target~ | ~:wanted-by (\"multi-user.target\")~ | Target membership |
 
 *** Example 1: Simple Daemon
 
@@ -2798,8 +2797,7 @@ supervisor unit file (~my-daemon.el~):
  :after ("network-ready")
  :restart on-failure
  :restart-sec 5
- :working-directory "/var/lib/my-daemon"
- :enabled t)
+ :working-directory "/var/lib/my-daemon")
 #+end_src
 
 *** Example 2: Oneshot Setup Script
@@ -2827,8 +2825,7 @@ supervisor unit file (~setup-dirs.el~):
  :description "Create runtime directories"
  :type oneshot
  :wanted-by ("multi-user.target")
- :remain-after-exit t
- :enabled t)
+ :remain-after-exit t)
 #+end_src
 
 *** Example 3: Service with Dependencies and Environment
@@ -2868,8 +2865,7 @@ supervisor unit file (~webapp.el~):
                ("PORT" . "3000"))
  :restart always
  :exec-stop "/usr/bin/pkill -TERM -f /opt/webapp/server.js"
- :kill-signal SIGTERM
- :enabled t)
+ :kill-signal SIGTERM)
 #+end_src
 
 *** Example 4: Service with Privilege Drop
@@ -2901,8 +2897,7 @@ supervisor unit file (~nginx.el~), placed in a root-owned unit directory:
  :wanted-by ("multi-user.target")
  :restart on-failure
  :user "www-data"
- :group "www-data"
- :enabled t)
+ :group "www-data")
 #+end_src
 
 Requirements: the Emacs manager must run as root, and the unit file must be
@@ -2951,8 +2946,6 @@ Dependency IDs are normalized: ~.service~ suffixes are stripped,
 Unsupported systemd directives (such as ~LimitNOFILE~ or ~CapabilityBoundingSet~)
 produce a warning on stderr and are skipped.  Unsupported ~Type~ values
 (~forking~, ~notify~, ~dbus~, ~idle~) produce a warning and default to ~simple~.
-
-The output always includes ~:enabled t~.
 
 Systemd exec prefixes (~-~, ~+~, ~!~, ~!!~) on ~ExecStart~ are
 stripped automatically.  Quoted ~Environment~ values
@@ -3004,8 +2997,7 @@ Produces on stdout:
  :environment (("NODE_ENV" . "production")
                ("PORT" . "3000"))
  :exec-stop "/usr/bin/pkill -TERM -f /opt/webapp/server.js"
- :kill-signal SIGTERM
- :enabled t)
+ :kill-signal SIGTERM)
 #+end_src
 
 And on stderr:

@@ -97,7 +97,7 @@ WantedBy=multi-user.target")"
     assert_contains "${TEST_STDOUT}" ':restart on-failure' "restart"
     assert_contains "${TEST_STDOUT}" ':restart-sec 5' "restart-sec"
     assert_contains "${TEST_STDOUT}" ':working-directory "/var/lib/my-daemon"' "working-directory"
-    assert_contains "${TEST_STDOUT}" ':enabled t)' "enabled"
+    assert_not_contains "${TEST_STDOUT}" ':enabled' "enabled omitted"
 }
 
 test_oneshot_service() {
@@ -458,14 +458,14 @@ ExecStart=/bin/true")"
     assert_status "0" "${TEST_STATUS}" "exits 0"
     # Must start with (: and end with )
     assert_match "${TEST_STDOUT}" '^\(:id' "starts with (:id"
-    assert_match "${TEST_STDOUT}" ':enabled t\)$' "ends with :enabled t)"
+    assert_match "${TEST_STDOUT}" '\)$' "ends with closing paren"
 }
 
-test_enabled_always_present() {
-    _f="$(make_service "enabled" "[Service]
+test_enabled_not_emitted() {
+    _f="$(make_service "noenable" "[Service]
 ExecStart=/bin/true")"
     run_cmd "${SCRIPT}" "${_f}"
-    assert_contains "${TEST_STDOUT}" ':enabled t' "enabled always present"
+    assert_not_contains "${TEST_STDOUT}" ':enabled' "enabled not in output"
 }
 
 test_success_exit_status() {
