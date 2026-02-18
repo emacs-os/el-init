@@ -67,6 +67,23 @@ Rules:
 - **Always push** after committing to keep local and remote in sync.
 - **Always `make check`** before committing.
 
+## CI Badge Infrastructure
+
+The README test-count badge is powered by a GitHub Gist + shields.io endpoint.
+
+- **Gist:** `e686727a6d88c17c557003e73a9c020c` (secret gist, user `cypherpunk2001`)
+- **Filename inside gist:** `supervisor-el-tests.json`
+- **Secret:** `GIST_TOKEN` in repo Actions secrets -- a classic GitHub token with `gist` scope
+- **Updated by:** `.github/workflows/ci.yml`, `elisp` job, `snapshot` matrix run only, on push to master
+
+The workflow captures ERT output, parses the `Ran N tests` summary line, and
+PATCHes the Gist via the GitHub API.  The badge URL in README.org reads from
+that Gist via `https://img.shields.io/endpoint?url=...`.
+
+If the token expires, generate a new classic token with `gist` scope at
+https://github.com/settings/tokens and update the `GIST_TOKEN` secret in
+repo Settings -> Secrets and variables -> Actions.
+
 ## Development Commands
 
 ```bash

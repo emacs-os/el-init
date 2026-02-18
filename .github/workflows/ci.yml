@@ -46,7 +46,28 @@ jobs:
         run: make package-lint
 
       - name: ERT tests
-        run: make test
+        run: make test 2>&1 | tee /tmp/ert-output.txt; exit ${PIPESTATUS[0]}
+
+      - name: Update test badge
+        if: github.event_name == 'push' && matrix.emacs-version == 'snapshot'
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          LINE=$(grep "^Ran [0-9]" /tmp/ert-output.txt | tail -1)
+          TOTAL=$(echo "$LINE" | sed 's/Ran \([0-9]*\) tests.*/\1/')
+          UNEXPECTED=$(echo "$LINE" | sed 's/.*\([0-9]*\) unexpected.*/\1/')
+          if [ "$UNEXPECTED" = "0" ]; then
+            COLOR="brightgreen"
+            MSG="${TOTAL} passing"
+          else
+            COLOR="red"
+            MSG="${TOTAL} passing, ${UNEXPECTED} failing"
+          fi
+          curl -s -X PATCH \
+            -H "Authorization: token ${GIST_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"files\":{\"supervisor-el-tests.json\":{\"content\":\"{\\\"schemaVersion\\\":1,\\\"label\\\":\\\"tests\\\",\\\"message\\\":\\\"${MSG}\\\",\\\"color\\\":\\\"${COLOR}\\\"}\"}}}" \
+            https://api.github.com/gists/e686727a6d88c17c557003e73a9c020c
 
   c-tests:
     name: C (libexec)
