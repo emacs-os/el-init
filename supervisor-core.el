@@ -5959,12 +5959,25 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
                (stderr-pipe (or (when stderr-writer
                                   (supervisor--start-stderr-pipe id stderr-writer))
                                 merged-stderr-pipe))
-               (_ (when (and stderr-writer (not stderr-pipe))
-                    (supervisor--stop-stream-writer
-                     id 'stderr supervisor--stderr-writers)))
+               ;; If a pipe was needed but creation failed, abort
+               ;; start to preserve stream identity.  Clean up any
+               ;; writers already started.
+               (pipe-failed (and (or stderr-writer
+                                     (and writer (not split-stderr)
+                                          stderr-log-target))
+                                 (not stderr-pipe)))
+               (_ (when pipe-failed
+                    (when stderr-writer
+                      (supervisor--stop-stream-writer
+                       id 'stderr supervisor--stderr-writers))
+                    (supervisor--stop-writer id)
+                    (let ((msg "stderr pipe creation failed"))
+                      (puthash id msg supervisor--spawn-failure-reason)
+                      (supervisor--log 'warning "%s: %s" id msg))))
                (effective-split (or (and stderr-writer stderr-pipe)
                                     merged-stderr-pipe))
-               (proc (condition-case err
+               (proc (unless pipe-failed
+                       (condition-case err
                          (make-process
                           :name id
                           :command args
@@ -5993,7 +6006,7 @@ LOG-FORMAT is the structured log format symbol (`text' or `binary')."
                                  supervisor--spawn-failure-reason)
                         (supervisor--log 'warning "%s: %s"
                                          id (error-message-string err))
-                        nil))))
+                        nil)))))
           (when proc
             (set-process-query-on-exit-flag proc nil)
             (puthash id proc supervisor--processes))

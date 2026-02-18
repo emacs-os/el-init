@@ -23944,5 +23944,93 @@ identity must be correct regardless of whether log-format is set."
             (should-not captured-stderr)))
       (when (process-live-p fake-proc) (delete-process fake-proc)))))
 
+(ert-deftest supervisor-test-stderr-pipe-failure-aborts-merged-start ()
+  "Merged mode aborts service start when stderr pipe creation fails."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--stderr-pipes (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (writer-stopped nil)
+        (fake-writer (start-process "pipe-fail-fw" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+                   (lambda (_id _default) t))
+                  ((symbol-function 'supervisor--start-writer)
+                   (lambda (_id _file &optional _log-format) fake-writer))
+                  ((symbol-function 'supervisor--start-stderr-pipe)
+                   (lambda (_id _writer) nil))
+                  ((symbol-function 'supervisor--stop-writer)
+                   (lambda (_name) (setq writer-stopped t)))
+                  ((symbol-function 'supervisor--build-launch-command)
+                   (lambda (_cmd &rest _args) (list "sleep" "300"))))
+          (let ((proc (supervisor--start-process
+                       "pipe-fail-svc" "sleep 300" t 'simple 'always
+                       nil nil nil nil nil nil nil nil
+                       "/tmp/svc.shared.log" "/tmp/svc.shared.log")))
+            ;; Service must not start when pipe fails
+            (should-not proc)
+            ;; Writers cleaned up
+            (should writer-stopped)
+            ;; Failure reason recorded
+            (should (gethash "pipe-fail-svc"
+                             supervisor--spawn-failure-reason))))
+      (when (process-live-p fake-writer) (delete-process fake-writer)))))
+
+(ert-deftest supervisor-test-stderr-pipe-failure-aborts-split-start ()
+  "Split mode aborts service start when stderr pipe creation fails."
+  (let ((supervisor--writers (make-hash-table :test 'equal))
+        (supervisor--stderr-writers (make-hash-table :test 'equal))
+        (supervisor--stderr-pipes (make-hash-table :test 'equal))
+        (supervisor--processes (make-hash-table :test 'equal))
+        (supervisor--shutting-down nil)
+        (supervisor--restart-timers (make-hash-table :test 'equal))
+        (supervisor--manually-stopped (make-hash-table :test 'equal))
+        (supervisor--enabled-override (make-hash-table :test 'equal))
+        (supervisor--failed (make-hash-table :test 'equal))
+        (supervisor--logging (make-hash-table :test 'equal))
+        (supervisor--spawn-failure-reason (make-hash-table :test 'equal))
+        (writer-stopped nil)
+        (stderr-writer-stopped nil)
+        (fake-writer (start-process "pipe-fail-fw2" nil "sleep" "300"))
+        (fake-stderr-writer (start-process "pipe-fail-sew2" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supervisor--get-effective-logging)
+                   (lambda (_id _default) t))
+                  ((symbol-function 'supervisor--start-writer)
+                   (lambda (_id _file &optional _log-format) fake-writer))
+                  ((symbol-function 'supervisor--start-stderr-writer)
+                   (lambda (_id _file &optional _log-format) fake-stderr-writer))
+                  ((symbol-function 'supervisor--start-stderr-pipe)
+                   (lambda (_id _writer) nil))
+                  ((symbol-function 'supervisor--stop-writer)
+                   (lambda (_name) (setq writer-stopped t)))
+                  ((symbol-function 'supervisor--stop-stream-writer)
+                   (lambda (_id _stream _table)
+                     (setq stderr-writer-stopped t)))
+                  ((symbol-function 'supervisor--build-launch-command)
+                   (lambda (_cmd &rest _args) (list "sleep" "300"))))
+          (let ((proc (supervisor--start-process
+                       "pipe-fail-svc2" "sleep 300" t 'simple 'always
+                       nil nil nil nil nil nil nil nil
+                       "/tmp/svc.out.log" "/tmp/svc.err.log")))
+            ;; Service must not start when pipe fails
+            (should-not proc)
+            ;; Both writers cleaned up
+            (should writer-stopped)
+            (should stderr-writer-stopped)
+            ;; Failure reason recorded
+            (should (gethash "pipe-fail-svc2"
+                             supervisor--spawn-failure-reason))))
+      (when (process-live-p fake-writer) (delete-process fake-writer))
+      (when (process-live-p fake-stderr-writer)
+        (delete-process fake-stderr-writer)))))
+
 (provide 'supervisor-test)
 ;;; supervisor-test.el ends here
