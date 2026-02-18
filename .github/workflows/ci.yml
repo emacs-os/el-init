@@ -49,7 +49,7 @@ jobs:
         run: make test 2>&1 | tee /tmp/ert-output.txt; exit ${PIPESTATUS[0]}
 
       - name: Update test badge
-        if: github.event_name == 'push' && matrix.emacs-version == 'snapshot'
+        if: always() && github.event_name == 'push' && matrix.emacs-version == 'snapshot'
         env:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |

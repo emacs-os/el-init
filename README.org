@@ -11,9 +11,8 @@
 supervisor solution.  Whether you are building a full-send Emacs-OS, or
 simply want to orchestrate your desktop session services from within EXWM,
 or keep project daemons running while you work,
-supervisor.el has you covered.  ~M-x supervisor~
-opens the interactive dashboard from within your EXWM session;
-~supervisorctl~ provides the same control from the terminal or scripts.
+supervisor.el has you covered.  Use ~M-x supervisor~ for the interactive
+dashboard, or ~supervisorctl~ from the terminal.
 
 ** Features
 
@@ -1314,9 +1313,9 @@ entries.  This reduces noise for operators who use supervisor as a
 service manager rather than a PID1 init system.
 
 Press ~v~ to toggle target visibility.  When targets are shown,
-init-transition targets (rescue, shutdown, poweroff, reboot, and
-runlevel aliases) remain hidden by default.  Press ~V~ to include
-init-transition targets.
+init-transition targets (rescue, shutdown, poweroff, reboot,
+runlevel0, runlevel1, runlevel6) remain hidden by default.  Press
+~V~ to include init-transition targets.
 
 The header line always shows a bracket indicator for the current
 visibility state: =[services]= in the default view, =[services+targets]=
@@ -1406,7 +1405,7 @@ by a second key.  Timer actions use the ~y~ prefix.
 | ~f~ | Cycle target filter (all -> targetA -> targetB -> ...) |
 | ~F~ | Cycle tag filter |
 | ~v~ | Toggle target visibility (service-first default) |
-| ~V~ | Toggle init-transition targets (rescue, shutdown, runlevel) |
+| ~V~ | Toggle init-transition targets (rescue/shutdown/poweroff/reboot/runlevel0/1/6) |
 | ~g~ | Refresh dashboard |
 | ~G~ | Toggle auto-refresh (live monitoring) |
 | ~t~ | Open ~proced~ (system process list) |
