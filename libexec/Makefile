@@ -1,5 +1,5 @@
 CC ?= cc
-CFLAGS ?= -Wall -Wextra -Werror -pedantic -std=c99 -O2
+CFLAGS ?= -Wall -Wextra -Werror -pedantic -std=c99 -O2 -D_FORTIFY_SOURCE=2
 
 # Absolute paths to built binaries (passed to test sources via -D)
 LOGD_ABS  = $(abspath supervisor-logd)

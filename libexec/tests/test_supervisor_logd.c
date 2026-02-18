@@ -27,6 +27,23 @@ static void msleep(int ms)
 	nanosleep(&ts, NULL);
 }
 
+/* Write helper that checks the return value (silences -Werror=unused-result). */
+static void write_all(int fd, const void *buf, size_t len)
+{
+	ssize_t n = write(fd, buf, len);
+	TEST_CHECK(n == (ssize_t)len);
+}
+
+/* Write helper for intentional-overflow tests where the peer may close
+ * the pipe mid-write.  Consumes the return value without asserting. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-result"
+static void write_may_fail(int fd, const void *buf, size_t len)
+{
+	write(fd, buf, len);
+}
+#pragma GCC diagnostic pop
+
 /* Path to the built binary, set by Makefile via -D. */
 #ifndef LOGD_PATH
 #define LOGD_PATH "../supervisor-logd"
@@ -886,12 +903,12 @@ void test_logd_raw_rotation(void)
 	const char *batch1 =
 	    "aaaaaaaaaa" "aaaaaaaaaa" "aaaaaaaaaa"
 	    "aaaaaaaaaa" "aaaaaaaaaa" "aaaaaaaaaa";
-	write(in_pipe[1], batch1, strlen(batch1));
+	write_all(in_pipe[1], batch1, strlen(batch1));
 	msleep(100);
 
 	/* Write second batch into the new (post-rotation) file */
 	const char *batch2 = "bbbbbbbbbb\n";
-	write(in_pipe[1], batch2, strlen(batch2));
+	write_all(in_pipe[1], batch2, strlen(batch2));
 	msleep(100);
 
 	close(in_pipe[1]);
@@ -954,7 +971,7 @@ void test_logd_sighup_reopen(void)
 
 	/* Write first data */
 	const char *msg1 = "before-hup\n";
-	write(in_pipe[1], msg1, strlen(msg1));
+	write_all(in_pipe[1], msg1, strlen(msg1));
 	msleep(100); /* 100ms for logd to process */
 
 	/* Rename the log file (simulating rotation) */
@@ -968,7 +985,7 @@ void test_logd_sighup_reopen(void)
 
 	/* Write more data */
 	const char *msg2 = "after-hup\n";
-	write(in_pipe[1], msg2, strlen(msg2));
+	write_all(in_pipe[1], msg2, strlen(msg2));
 	msleep(100);
 
 	/* Close stdin to trigger clean exit */
@@ -1311,7 +1328,7 @@ void test_logd_text_rotation(void)
 			TEST_CHECK(n > 0);
 			total += n;
 		}
-		write(in_pipe[1], buf, (size_t)total);
+		write_all(in_pipe[1], buf, (size_t)total);
 		msleep(200);
 	}
 
@@ -1469,7 +1486,7 @@ void test_logd_sigterm_clean_exit(void)
 
 	/* Write some data */
 	const char *msg = "before-term\n";
-	write(in_pipe[1], msg, strlen(msg));
+	write_all(in_pipe[1], msg, strlen(msg));
 	msleep(100);
 
 	/* Send SIGTERM */
@@ -1533,11 +1550,11 @@ void test_logd_prune_on_rotation(void)
 	const char *batch =
 	    "aaaaaaaaaa" "aaaaaaaaaa" "aaaaaaaaaa"
 	    "aaaaaaaaaa" "aaaaaaaaaa" "aaaaaaaaaa";
-	write(in_pipe[1], batch, strlen(batch));
+	write_all(in_pipe[1], batch, strlen(batch));
 	msleep(200);
 
 	/* Write more to ensure we're past rotation */
-	write(in_pipe[1], "bbb\n", 4);
+	write_all(in_pipe[1], "bbb\n", 4);
 	msleep(200);
 
 	close(in_pipe[1]);
@@ -1598,7 +1615,7 @@ void test_logd_prune_throttle(void)
 		const char *batch =
 		    "aaaaaaaaaa" "aaaaaaaaaa" "aaaaaaaaaa"
 		    "aaaaaaaaaa" "aaaaaaaaaa" "aaaaaaaaaa";
-		write(in_pipe[1], batch, strlen(batch));
+		write_all(in_pipe[1], batch, strlen(batch));
 		msleep(200);
 	}
 
@@ -1665,7 +1682,7 @@ void test_logd_framed_sighup_reopen(void)
 	int flen = build_frame(frame, EVT_OUTPUT, STREAM_STDOUT, 42,
 			       "svc", 0, STATUS_NONE,
 			       (const unsigned char *)"before", 6);
-	write(in_pipe[1], frame, (size_t)flen);
+	write_all(in_pipe[1], frame, (size_t)flen);
 	msleep(100);
 
 	/* Rename and HUP */
@@ -1679,7 +1696,7 @@ void test_logd_framed_sighup_reopen(void)
 	flen = build_frame(frame, EVT_OUTPUT, STREAM_STDOUT, 42,
 			   "svc", 0, STATUS_NONE,
 			   (const unsigned char *)"after", 5);
-	write(in_pipe[1], frame, (size_t)flen);
+	write_all(in_pipe[1], frame, (size_t)flen);
 	msleep(100);
 
 	close(in_pipe[1]);
@@ -1741,7 +1758,7 @@ void test_logd_binary_sighup_reopen(void)
 	int flen = build_frame(frame, EVT_OUTPUT, STREAM_STDOUT, 42,
 			       "svc", 0, STATUS_NONE,
 			       (const unsigned char *)"hi", 2);
-	write(in_pipe[1], frame, (size_t)flen);
+	write_all(in_pipe[1], frame, (size_t)flen);
 	msleep(100);
 
 	/* Rename and HUP */
@@ -1755,7 +1772,7 @@ void test_logd_binary_sighup_reopen(void)
 	flen = build_frame(frame, EVT_OUTPUT, STREAM_STDOUT, 42,
 			   "svc", 0, STATUS_NONE,
 			   (const unsigned char *)"lo", 2);
-	write(in_pipe[1], frame, (size_t)flen);
+	write_all(in_pipe[1], frame, (size_t)flen);
 	msleep(100);
 
 	close(in_pipe[1]);
@@ -2149,10 +2166,10 @@ void test_logd_rotation_non_log_extension(void)
 	const char *batch =
 	    "aaaaaaaaaa" "aaaaaaaaaa" "aaaaaaaaaa"
 	    "aaaaaaaaaa" "aaaaaaaaaa" "aaaaaaaaaa";
-	write(in_pipe[1], batch, strlen(batch));
+	write_all(in_pipe[1], batch, strlen(batch));
 	msleep(100);
 
-	write(in_pipe[1], "bbb\n", 4);
+	write_all(in_pipe[1], "bbb\n", 4);
 	msleep(100);
 
 	close(in_pipe[1]);
@@ -2208,7 +2225,7 @@ void test_logd_framed_sigterm(void)
 	int flen = build_frame(frame, EVT_OUTPUT, STREAM_STDOUT, 42,
 			       "svc", 0, STATUS_NONE,
 			       (const unsigned char *)"data", 4);
-	write(in_pipe[1], frame, (size_t)flen);
+	write_all(in_pipe[1], frame, (size_t)flen);
 	msleep(100);
 
 	kill(pid, SIGTERM);
@@ -2410,13 +2427,13 @@ void test_logd_framed_buffer_overflow(void)
 	unsigned char hdr[4];
 	hdr[0] = 0; hdr[1] = 1; hdr[2] = 0x11; hdr[3] = 0x70;
 	/* body_len = 0x00011170 = 69,936 */
-	write(in_pipe[1], hdr, 4);
+	write_may_fail(in_pipe[1], hdr, 4);
 
 	/* Send 8K chunks to fill the 64K buffer */
 	unsigned char chunk[8192];
 	memset(chunk, 0, sizeof(chunk));
 	for (int i = 0; i < 9; i++) {
-		write(in_pipe[1], chunk, sizeof(chunk));
+		write_may_fail(in_pipe[1], chunk, sizeof(chunk));
 		msleep(50);
 	}
 
