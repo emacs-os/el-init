@@ -54,8 +54,9 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |
           LINE=$(grep "^Ran [0-9]" /tmp/ert-output.txt | tail -1)
-          TOTAL=$(echo "$LINE" | sed 's/Ran \([0-9]*\) tests.*/\1/')
-          UNEXPECTED=$(echo "$LINE" | sed 's/.*\([0-9]*\) unexpected.*/\1/')
+          TOTAL=$(echo "$LINE" | grep -o '[0-9]* tests' | grep -o '^[0-9]*')
+          UNEXPECTED=$(echo "$LINE" | grep -o '[0-9]* unexpected' | grep -o '^[0-9]*')
+          UNEXPECTED=${UNEXPECTED:-0}
           if [ "$UNEXPECTED" = "0" ]; then
             COLOR="brightgreen"
             MSG="${TOTAL} passing"
