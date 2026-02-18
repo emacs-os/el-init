@@ -43,7 +43,9 @@ start, stop, inspect, and manage everything from inside Emacs.
 - *CLI* -- ~sbin/supervisorctl~ for scripting and remote use (human and JSON
   output).
 - *Logging* -- external log writer helpers with rotation and pruning for
-  bounded growth (configurable per-file and total size caps).
+  bounded growth (configurable per-file and total size caps).  Optional
+  structured log formats (human-readable text or compact binary with
+  nanosecond timestamps) for machine-parseable records.
 - *Sandbox* -- optional bubblewrap integration with curated profiles for
   process isolation (Linux only).
 
@@ -2626,7 +2628,7 @@ Where behavior diverges across systems, parenthetical notes explain.
 | D-Bus activation | yes | no | no | no |
 | Device activation | yes (.device from udev) | no | no | no |
 | *Logging* | | | | |
-| Integrated logging daemon | yes (journald, structured binary) | yes (svlogd, plain text) | yes (s6-log, plain text) | yes (supervisor-logd, plain text) |
+| Integrated logging daemon | yes (journald, structured binary) | yes (svlogd, plain text) | yes (s6-log, plain text) | yes (supervisor-logd, text or binary) |
 | Per-service log capture | yes (journal tags by unit) | yes (service/log/run pipe) | yes (servicedir/log pipe) | yes (per-id log files) |
 | Log rotation | yes (journal size/time) | yes (svlogd built-in) | yes (s6-log built-in) | yes (supervisor-logrotate) |
 | Log pruning | yes (journald vacuum) | no (manual) | no (manual) | yes (supervisor-log-prune) |
