@@ -2,7 +2,8 @@
 
 * supervisor.el
 
-<a href="supervisor_logo.png"><img align="right" width="300" src="supervisor_logo.png" alt="supervisor.el logo"></a>
+#+ATTR_HTML: :align right :width 300
+[[file:supervisor_logo.png]]
 
 *A proper process supervisor with a systemd-inspired dependency model.*
 
@@ -50,8 +51,6 @@ start, stop, inspect, and manage everything from inside Emacs.
   nanosecond timestamps) for machine-parseable records.
 - *Sandbox* -- optional bubblewrap integration with curated profiles for
   process isolation (Linux only).
-
-<br clear="right">
 
 ** Requirements
 
