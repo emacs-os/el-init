@@ -18,7 +18,7 @@
  *   --prune-min-interval-sec N  Minimum seconds between prune calls
  *   --framed                 Enable framed transport protocol on stdin
  *   --unit ID                Unit identifier (required with --framed)
- *   --format text|binary     Output record format (default: text)
+ *   --format text|binary     Output record format (default: text when --framed)
  *
  * Signal behavior:
  *   HUP:       Close and reopen the target file
@@ -711,6 +711,10 @@ int main(int argc, char **argv)
 			"supervisor-logd: --unit is required with --framed\n");
 		return EXIT_USAGE;
 	}
+
+	/* When framed transport is active, default to text format. */
+	if (framed && format == FMT_RAW)
+		format = FMT_TEXT;
 
 	/* Suppress unused warning when log_dir is not used yet */
 	(void)log_dir;

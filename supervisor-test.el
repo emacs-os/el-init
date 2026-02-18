@@ -17712,6 +17712,117 @@ stderr through the stdout writer for correct stream=2 tagging."
             (when (process-live-p proc) (delete-process proc))))
       (delete-directory dir t))))
 
+(ert-deftest supervisor-test-logd-text-framed-default-format ()
+  "Framed logd without --format defaults to text, not raw."
+  (let* ((logd (supervisor-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-deffmt-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-deffmt"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "test-svc"
+                                   "--max-file-size-bytes" "1048576")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 1 42 "test-svc" "hi"))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                (should (file-exists-p log-file))
+                (let* ((content (with-temp-buffer
+                                  (insert-file-contents log-file)
+                                  (buffer-string)))
+                       (records (supervisor--log-decode-text-records content)))
+                  ;; If raw, records would be empty (no ts= prefix)
+                  (should (= 1 (length records)))
+                  (should (equal (plist-get (car records) :payload) "hi"))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-logd-text-nul-highbyte-round-trip ()
+  "End-to-end: NUL and high-byte payloads survive C text escaping."
+  (let* ((logd (supervisor-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-bytes-" t))
+         (log-file (expand-file-name "log-svc.log" dir))
+         (nul-payload (unibyte-string 0 65 0 66))  ; \x00 A \x00 B
+         (high-payload (unibyte-string #x80 #xff #xfe 92 110))) ; high bytes + backslash + n
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-bytes"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "test-svc"
+                                   "--format" "text"
+                                   "--max-file-size-bytes" "1048576")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 1 42 "test-svc"
+                                                    nul-payload))
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 1 42 "test-svc"
+                                                    high-payload))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                (should (file-exists-p log-file))
+                (let* ((content (with-temp-buffer
+                                  (insert-file-contents log-file)
+                                  (buffer-string)))
+                       (records (supervisor--log-decode-text-records content)))
+                  (should (= 2 (length records)))
+                  ;; NUL bytes round-trip through \x00 escaping
+                  (should (equal (plist-get (nth 0 records) :payload)
+                                 nul-payload))
+                  ;; High bytes + backslash round-trip
+                  (should (equal (plist-get (nth 1 records) :payload)
+                                 high-payload))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-logd-text-timestamp-rfc3339nano ()
+  "Text records from logd have strict RFC3339Nano UTC timestamps."
+  (let* ((logd (supervisor-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-ts-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-ts"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "test-svc"
+                                   "--format" "text"
+                                   "--max-file-size-bytes" "1048576")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 1 42 "test-svc" "x"))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                (should (file-exists-p log-file))
+                (let ((content (with-temp-buffer
+                                 (insert-file-contents log-file)
+                                 (buffer-string))))
+                  ;; Raw ts= token must match YYYY-MM-DDTHH:MM:SS.NNNNNNNNNZ
+                  (should (string-match
+                           "\\`ts=\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}T[0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\.[0-9]\\{9\\}Z\\) "
+                           content))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
 (ert-deftest supervisor-test-logd-text-rejects-invalid-event-stream ()
   "Logd rejects frames with invalid event/stream pairings."
   (let* ((logd (supervisor-test--ensure-logd-binary))
