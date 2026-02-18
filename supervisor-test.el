@@ -23343,6 +23343,83 @@ TS-NS are the record fields."
             (when (process-live-p proc) (delete-process proc))))
       (delete-directory dir t))))
 
+(ert-deftest supervisor-test-logd-binary-overwrites-non-binary-file ()
+  "Binary logd truncates and rewrites a pre-existing non-binary file."
+  (let* ((logd (supervisor-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-nonbin-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (progn
+          ;; Pre-populate with text content
+          (with-temp-file log-file
+            (insert "ts=2026-01-01T00:00:00.000000000Z unit=old pid=1 "
+                    "stream=stdout event=output status=- code=- "
+                    "payload=legacy\n"))
+          (let ((proc (make-process
+                       :name "test-logd-nonbin"
+                       :command (list logd
+                                     "--file" log-file
+                                     "--framed"
+                                     "--unit" "test-svc"
+                                     "--format" "binary"
+                                     "--max-file-size-bytes" "1048576")
+                       :connection-type 'pipe
+                       :coding 'no-conversion)))
+            (unwind-protect
+                (progn
+                  (process-send-string
+                   proc (supervisor--log-frame-encode 1 1 42 "test-svc"
+                                                      "new"))
+                  (sleep-for 0.3)
+                  (process-send-eof proc)
+                  (sleep-for 0.3)
+                  (should (file-exists-p log-file))
+                  (let* ((content (with-temp-buffer
+                                    (set-buffer-multibyte nil)
+                                    (insert-file-contents-literally log-file)
+                                    (buffer-string))))
+                    ;; File must start with SLG1 magic
+                    (should (>= (length content) 4))
+                    (should (equal (substring content 0 4) "SLG1"))
+                    ;; Decode must succeed
+                    (let* ((result (supervisor--log-decode-binary-records
+                                   content))
+                           (records (plist-get result :records)))
+                      (should (null (plist-get result :warning)))
+                      (should (= 1 (length records)))
+                      (should (equal (plist-get (car records) :payload)
+                                     "new")))))
+              (when (process-live-p proc) (delete-process proc)))))
+      (delete-directory dir t))))
+
+(ert-deftest supervisor-test-decode-file-preserves-corruption-diagnostic ()
+  "Decode-file surfaces specific corruption diagnostic, not generic error."
+  (let* ((dir (make-temp-file "logd-diag-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (progn
+          ;; Write a binary file with intentionally bad record_len
+          (let* ((record (supervisor-test--make-binary-record
+                          1 1 42 "svc" "hello" 0 0 1000)))
+            ;; Inflate record_len by 10 (mismatch with actual content)
+            (let ((bad-len (+ 30 3 5 10)))
+              (aset record 0 (logand (ash bad-len -24) #xff))
+              (aset record 1 (logand (ash bad-len -16) #xff))
+              (aset record 2 (logand (ash bad-len -8) #xff))
+              (aset record 3 (logand bad-len #xff)))
+            (with-temp-file log-file
+              (set-buffer-multibyte nil)
+              (insert supervisor--log-binary-magic record
+                      (make-string 10 0))))
+          (let ((result (supervisor--log-decode-file log-file)))
+            ;; Must surface the specific mismatch diagnostic
+            (should (stringp (plist-get result :warning)))
+            (should (string-match-p "length mismatch"
+                                    (plist-get result :warning)))
+            ;; Records should be nil (error before any valid record)
+            (should (null (plist-get result :records)))))
+      (delete-directory dir t))))
+
 ;;;; Phase 5: Decoder and user surfaces tests
 
 (ert-deftest supervisor-test-text-decode-records ()

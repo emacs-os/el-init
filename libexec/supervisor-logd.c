@@ -540,6 +540,46 @@ static ssize_t write_binary_header(int fd)
 	return write_full(fd, SLG1_MAGIC, 4);
 }
 
+/* Ensure binary file starts with SLG1 magic.
+ * For empty files, write the header.  For non-empty files, check the
+ * first 4 bytes: if SLG1 is present, seek to end; if absent, warn,
+ * truncate, and write a fresh header.
+ * Returns new current_size on success, -1 on error. */
+static off_t ensure_binary_header(int fd, off_t current_size,
+				  const char *path)
+{
+	if (current_size == 0) {
+		if (write_binary_header(fd) < 0) {
+			fprintf(stderr,
+				"supervisor-logd: write header %s: %s\n",
+				path, strerror(errno));
+			return -1;
+		}
+		return 4;
+	}
+	/* Non-empty: check magic */
+	unsigned char magic[4];
+	if (lseek(fd, 0, SEEK_SET) < 0)
+		return -1;
+	ssize_t n = read(fd, magic, 4);
+	if (n == 4 && memcmp(magic, SLG1_MAGIC, 4) == 0) {
+		/* Valid binary file, seek to end */
+		off_t end = lseek(fd, 0, SEEK_END);
+		return (end < 0) ? -1 : end;
+	}
+	/* Not a binary file -- truncate and rewrite */
+	fprintf(stderr,
+		"supervisor-logd: %s is not a binary log, truncating\n",
+		path);
+	if (ftruncate(fd, 0) < 0)
+		return -1;
+	if (lseek(fd, 0, SEEK_SET) < 0)
+		return -1;
+	if (write_binary_header(fd) < 0)
+		return -1;
+	return 4;
+}
+
 /* Write one binary structured record. Returns bytes written or -1. */
 static ssize_t write_binary_record(int fd, const struct frame *f,
 				   const char *unit_id,
@@ -753,16 +793,15 @@ int main(int argc, char **argv)
 	if (current_size < 0)
 		current_size = 0;
 
-	/* Write binary header for fresh binary files */
-	if (format == FMT_BINARY && current_size == 0) {
-		if (write_binary_header(fd) < 0) {
-			fprintf(stderr,
-				"supervisor-logd: write header %s: %s\n",
-				file_path, strerror(errno));
+	/* Ensure binary file has SLG1 header */
+	if (format == FMT_BINARY) {
+		off_t new_size = ensure_binary_header(fd, current_size,
+						      file_path);
+		if (new_size < 0) {
 			close(fd);
 			return EXIT_IO;
 		}
-		current_size = 4;
+		current_size = new_size;
 	}
 
 	time_t last_prune = 0;
@@ -840,14 +879,14 @@ int main(int argc, char **argv)
 				current_size = file_size(fd);
 				if (current_size < 0)
 					current_size = 0;
-				/* Write binary header after reopen */
-				if (format == FMT_BINARY &&
-				    current_size == 0) {
-					if (write_binary_header(fd) < 0) {
+				if (format == FMT_BINARY) {
+					off_t ns = ensure_binary_header(
+					    fd, current_size, file_path);
+					if (ns < 0) {
 						close(fd);
 						return EXIT_IO;
 					}
-					current_size = 4;
+					current_size = ns;
 				}
 			}
 

@@ -4153,7 +4153,7 @@ LIMIT is maximum number of records to return (from end).
 OFFSET is byte offset to start reading (for incremental reads).
 Return (:records LIST :offset INT :format SYMBOL :warning STRING-OR-NIL)."
   (let ((fmt (supervisor--log-detect-format file)))
-    (condition-case nil
+    (condition-case err
         (with-temp-buffer
           (set-buffer-multibyte nil)
           (if offset
@@ -4191,7 +4191,8 @@ Return (:records LIST :offset INT :format SYMBOL :warning STRING-OR-NIL)."
                        :offset end-offset
                        :format 'legacy
                        :warning nil))))))
-      (error (list :records nil :offset 0 :format fmt :warning "read error")))))
+      (error (list :records nil :offset 0 :format fmt
+                   :warning (error-message-string err))))))
 
 (defun supervisor--log-record-priority (record)
   "Return priority symbol for RECORD.
