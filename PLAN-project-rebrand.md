@@ -63,7 +63,7 @@ Out of scope:
 - `supervisor-dashboard.el` -> `elinit-dashboard.el`
 - `supervisor-cli.el` -> `elinit-cli.el`
 
-### Scripts and helpers (7 files)
+### Scripts and helpers (7 source files, binaries follow)
 
 - `sbin/supervisorctl` -> `sbin/elinitctl`
 - `sbin/supervisor-import` -> `sbin/elinit-import`
@@ -72,7 +72,9 @@ Out of scope:
 - `libexec/supervisor-logd.c` -> `libexec/elinit-logd.c`
 - `libexec/supervisor-runas.c` -> `libexec/elinit-runas.c`
 - `libexec/supervisor-rlimits.c` -> `libexec/elinit-rlimits.c`
-- Built binaries match new source names.
+
+Built binaries (`supervisor-logd`, `supervisor-runas`, `supervisor-rlimits`)
+are derived from source names and follow automatically.
 
 ### Elisp test files (18 files)
 
@@ -101,12 +103,15 @@ Out of scope:
 - `libexec/tests/test_supervisor_runas.c` -> `libexec/tests/test_elinit_runas.c`
 - `libexec/tests/test_supervisor_rlimits.c` -> `libexec/tests/test_elinit_rlimits.c`
 
-### Shell test files (2 files)
+### Shell test files (2 renames, 2 unchanged)
 
+Renamed:
 - `sbin/tests/test-supervisorctl.sh` -> `sbin/tests/test-elinitctl.sh`
 - `sbin/tests/test-supervisor-import.sh` -> `sbin/tests/test-elinit-import.sh`
-- `sbin/tests/test-logrotate.sh` -- no rename (no supervisor prefix)
-- `sbin/tests/test-log-prune.sh` -- no rename (no supervisor prefix)
+
+No rename needed (no supervisor prefix in filename, internal references updated in place):
+- `sbin/tests/test-logrotate.sh`
+- `sbin/tests/test-log-prune.sh`
 
 ### Assets (2 files)
 
@@ -141,8 +146,8 @@ Out of scope:
 - Defcustom variables (42): all `supervisor-*` -> `elinit-*`
 - Defvar variables (140): all `supervisor-*`/`supervisor--*` -> `elinit-*`/`elinit--*`
 - Hook variable: `supervisor-event-hook` -> `elinit-event-hook`
-- Autoload-marked functions (10): all renamed with prefix
-- Declare-function forms (100+): all target names updated
+- Autoload-marked functions (11): all renamed with prefix
+- Declare-function forms (101): all target names updated
 - CLI branding: `"supervisorctl"` -> `"elinitctl"` in usage/version strings
 
 ### Internal string references
@@ -170,9 +175,9 @@ Out of scope:
 | Defgroup | 2 |
 | Mode definitions | 4 |
 | Keymaps | 2 |
-| Autoloads | 10 |
+| Autoloads | 11 |
 | Provide forms | 28 (10 modules + 18 tests) |
-| Declare-function | 100+ |
+| Declare-function | 101 |
 
 ## Compatibility Policy
 
@@ -188,16 +193,25 @@ Compatibility mechanisms:
 
 ## Intentional Supervisor References Allowlist
 
-The following `supervisor` references are intentionally retained after the rebrand,
-for migration compatibility or historical documentation:
+### Documentation references (retained now)
+
+These files contain `supervisor` references that are historical or describe the
+migration itself and are not renamed:
 
 - `PLAN-project-rebrand.md` -- this plan file (references old names throughout)
 - `PLAN-*.md` files in `sbin/`, `libexec/`, `static-builds/` -- historical dev docs
 - `static-builds/patches/README-pid1-supervisor-integration.md` -- historical patch docs
 - `.github/workflows/ci.yml` -- external gist filename `supervisor-el-tests.json` (rename separately)
-- Compatibility aliases in `elinit.el` (Phase 7 removal candidates):
-  - `(defalias 'supervisor #'elinit)` and similar key command aliases
+
+### Future code aliases (created in Phase 2, removed in Phase 7)
+
+These `supervisor` symbols will be introduced as compatibility shims during
+Phase 2 and are Phase 7 removal candidates.  They do not exist yet:
+
+- `(defalias 'supervisor #'elinit)` and similar key command aliases
 - Any `define-obsolete-function-alias` / `define-obsolete-variable-alias` forms
+
+### Boundary rule
 
 All other `supervisor` references must be eliminated by Phase 6 completion.
 
