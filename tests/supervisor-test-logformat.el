@@ -1228,8 +1228,11 @@
           (progn
             ;; Create both service processes outside the mock scope so
             ;; sit-for does not intercept Emacs-internal timers.
+            ;; Delete p1 before creating p2 so Emacs does not
+            ;; uniquify the name to "rst-svc<1>" on snapshot builds.
             (let ((p1 (start-process "rst-svc" nil "true")))
               (while (process-live-p p1) (sit-for 0.05))
+              (delete-process p1)
               (let ((p2 (start-process "rst-svc" nil "true")))
                 (while (process-live-p p2) (sit-for 0.05))
                 ;; First cycle: writer w1
