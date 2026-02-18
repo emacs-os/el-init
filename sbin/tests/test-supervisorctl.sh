@@ -361,7 +361,10 @@ test_missing_emacsclient() {
 test_missing_base64() {
     no_b64_dir="${TEST_TMPDIR}/no-b64"
     mkdir -p "${no_b64_dir}"
-    for cmd in emacsclient sed printf cat rm mktemp sh; do
+    # Create a dummy emacsclient (may not exist on CI runners without Emacs)
+    printf '#!/bin/sh\nprintf "\"0:aGVsbG8=\"\\n"\n' > "${no_b64_dir}/emacsclient"
+    chmod +x "${no_b64_dir}/emacsclient"
+    for cmd in sed printf cat rm mktemp sh; do
         real="$(command -v "${cmd}" 2>/dev/null)" || continue
         ln -sf "${real}" "${no_b64_dir}/${cmd}"
     done
@@ -373,7 +376,10 @@ test_missing_base64() {
 test_missing_sed() {
     no_sed_dir="${TEST_TMPDIR}/no-sed"
     mkdir -p "${no_sed_dir}"
-    for cmd in emacsclient base64 printf cat rm mktemp sh; do
+    # Create a dummy emacsclient (may not exist on CI runners without Emacs)
+    printf '#!/bin/sh\nprintf "\"0:aGVsbG8=\"\\n"\n' > "${no_sed_dir}/emacsclient"
+    chmod +x "${no_sed_dir}/emacsclient"
+    for cmd in base64 printf cat rm mktemp sh; do
         real="$(command -v "${cmd}" 2>/dev/null)" || continue
         ln -sf "${real}" "${no_sed_dir}/${cmd}"
     done

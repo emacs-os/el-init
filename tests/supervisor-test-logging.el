@@ -557,7 +557,12 @@
                              (hash-table-count supervisor--processes))
                        (clrhash supervisor--writers)))
                     ((symbol-function 'run-at-time)
-                     (lambda (&rest _args) nil)))
+                     (let ((real-run-at-time
+                            (symbol-function 'run-at-time)))
+                       (lambda (secs repeat fn &rest args)
+                         (if (symbolp fn)
+                             (apply real-run-at-time secs repeat fn args)
+                           nil)))))
             ;; Call supervisor-stop — writers should NOT be stopped eagerly
             (supervisor-stop)
             ;; Writers should not have been stopped yet (services still live)

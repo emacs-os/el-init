@@ -1175,27 +1175,33 @@
       (unwind-protect
           (progn
             (puthash "cap-svc" fake-writer supervisor--writers)
-            (cl-letf (((symbol-function 'supervisor--log-send-frame) #'ignore)
-                      ((symbol-function 'supervisor--stop-writer-if-same)
-                       (lambda (id old-stdout old-stderr old-pipe)
-                         (setq stop-if-same-args
-                               (list id old-stdout old-stderr old-pipe))))
-                      ((symbol-function 'supervisor--emit-event) #'ignore)
-                      ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
-                      ((symbol-function 'supervisor--should-restart-p)
-                       (lambda (&rest _) nil)))
-              (let ((sentinel (supervisor--make-process-sentinel
-                               "cap-svc" '("sleep" "300") t 'simple t)))
-                (let ((fake-proc (start-process "cap-svc" nil "true")))
-                  (puthash "cap-svc" fake-proc supervisor--processes)
-                  (while (process-live-p fake-proc) (sit-for 0.05))
-                  (funcall sentinel fake-proc "finished\n")
-                  ;; Timer was scheduled; fire all pending timers
-                  (sit-for 0.3)
-                  ;; Verify the captured writer was passed to guard
-                  (should stop-if-same-args)
-                  (should (equal "cap-svc" (nth 0 stop-if-same-args)))
-                  (should (eq fake-writer (nth 1 stop-if-same-args)))))))
+            (let ((deferred-fn nil))
+              (cl-letf (((symbol-function 'supervisor--log-send-frame) #'ignore)
+                        ((symbol-function 'supervisor--stop-writer-if-same)
+                         (lambda (id old-stdout old-stderr old-pipe)
+                           (setq stop-if-same-args
+                                 (list id old-stdout old-stderr old-pipe))))
+                        ((symbol-function 'supervisor--emit-event) #'ignore)
+                        ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
+                        ((symbol-function 'supervisor--should-restart-p)
+                         (lambda (&rest _) nil))
+                        ((symbol-function 'run-at-time)
+                         (lambda (_secs _repeat fn &rest _args)
+                           (setq deferred-fn fn)
+                           nil)))
+                (let ((sentinel (supervisor--make-process-sentinel
+                                 "cap-svc" '("sleep" "300") t 'simple t)))
+                  (let ((fake-proc (start-process "cap-svc" nil "true")))
+                    (puthash "cap-svc" fake-proc supervisor--processes)
+                    (while (process-live-p fake-proc) (sit-for 0.05))
+                    (funcall sentinel fake-proc "finished\n")
+                    ;; Fire the captured deferred teardown callback
+                    (should deferred-fn)
+                    (funcall deferred-fn)
+                    ;; Verify the captured writer was passed to guard
+                    (should stop-if-same-args)
+                    (should (equal "cap-svc" (nth 0 stop-if-same-args)))
+                    (should (eq fake-writer (nth 1 stop-if-same-args))))))))
         (when (process-live-p fake-writer) (delete-process fake-writer))))))
 
 (ert-deftest supervisor-test-exit-marker-per-restart-cycle ()
@@ -1229,6 +1235,8 @@
                       ((symbol-function 'supervisor--emit-event) #'ignore)
                       ((symbol-function 'supervisor--maybe-refresh-dashboard) #'ignore)
                       ((symbol-function 'supervisor--should-restart-p)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'run-at-time)
                        (lambda (&rest _) nil)))
               (let ((sentinel (supervisor--make-process-sentinel
                                "rst-svc" '("sleep" "300") t 'simple t)))
