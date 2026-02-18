@@ -2003,5 +2003,255 @@ configured timers must be visible for analysis."
           (when info-buf (kill-buffer info-buf)))))))
 
 
+;;; Target Visibility Tests
+
+(ert-deftest supervisor-test-dashboard-default-hides-targets ()
+  "Default dashboard view hides all target-type entries."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple)
+        (nil :id "app.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--target-convergence (make-hash-table :test 'equal))
+          (supervisor--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (supervisor--dashboard-show-targets nil)
+          (supervisor--dashboard-show-init-targets nil))
+      (let* ((entries (supervisor--get-entries))
+             (service-ids
+              (cl-loop for entry in entries
+                       when (supervisor--service-row-p (car entry))
+                       collect (cdr (car entry)))))
+        (should (member "svc" service-ids))
+        (should-not (member "app.target" service-ids))))))
+
+(ert-deftest supervisor-test-dashboard-show-targets-toggle ()
+  "Toggling show-targets makes target entries visible."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple)
+        (nil :id "app.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--target-convergence (make-hash-table :test 'equal))
+          (supervisor--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (supervisor--dashboard-show-targets t)
+          (supervisor--dashboard-show-init-targets nil))
+      (let* ((entries (supervisor--get-entries))
+             (service-ids
+              (cl-loop for entry in entries
+                       when (supervisor--service-row-p (car entry))
+                       collect (cdr (car entry)))))
+        (should (member "svc" service-ids))
+        (should (member "app.target" service-ids))))))
+
+(ert-deftest supervisor-test-dashboard-init-targets-hidden-when-targets-shown ()
+  "Init-transition targets remain hidden when regular targets are shown."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple)
+        (nil :id "app.target" :type target)
+        (nil :id "rescue.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--target-convergence (make-hash-table :test 'equal))
+          (supervisor--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (supervisor--dashboard-show-targets t)
+          (supervisor--dashboard-show-init-targets nil))
+      (let* ((entries (supervisor--get-entries))
+             (service-ids
+              (cl-loop for entry in entries
+                       when (supervisor--service-row-p (car entry))
+                       collect (cdr (car entry)))))
+        (should (member "svc" service-ids))
+        (should (member "app.target" service-ids))
+        (should-not (member "rescue.target" service-ids))))))
+
+(ert-deftest supervisor-test-dashboard-init-targets-shown-when-toggled ()
+  "Init-transition targets shown when both toggles are on."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple)
+        (nil :id "app.target" :type target)
+        (nil :id "rescue.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--target-convergence (make-hash-table :test 'equal))
+          (supervisor--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (supervisor--dashboard-show-targets t)
+          (supervisor--dashboard-show-init-targets t))
+      (let* ((entries (supervisor--get-entries))
+             (service-ids
+              (cl-loop for entry in entries
+                       when (supervisor--service-row-p (car entry))
+                       collect (cdr (car entry)))))
+        (should (member "svc" service-ids))
+        (should (member "app.target" service-ids))
+        (should (member "rescue.target" service-ids))))))
+
+(ert-deftest supervisor-test-dashboard-target-filter-bypasses-visibility ()
+  "When target-filter is active, targets are shown regardless of visibility."
+  (supervisor-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("app.target"))
+        ("sleep 1" :id "svc-b")
+        (nil :id "app.target" :type target))
+    (let* ((supervisor--processes (make-hash-table :test 'equal))
+           (supervisor--failed (make-hash-table :test 'equal))
+           (supervisor--oneshot-completed (make-hash-table :test 'equal))
+           (supervisor--entry-state (make-hash-table :test 'equal))
+           (supervisor--invalid (make-hash-table :test 'equal))
+           (supervisor--enabled-override (make-hash-table :test 'equal))
+           (supervisor--restart-override (make-hash-table :test 'equal))
+           (supervisor--logging (make-hash-table :test 'equal))
+           (supervisor--target-convergence (make-hash-table :test 'equal))
+           (supervisor--target-convergence-reasons
+            (make-hash-table :test 'equal))
+           (members-hash (make-hash-table :test 'equal))
+           (supervisor--current-plan
+            (supervisor-plan--create
+             :target-members members-hash
+             :entries nil
+             :invalid (make-hash-table :test 'equal)
+             :by-target nil
+             :deps (make-hash-table :test 'equal)
+             :requires-deps (make-hash-table :test 'equal)
+             :dependents (make-hash-table :test 'equal)
+             :cycle-fallback-ids (make-hash-table :test 'equal)
+             :order-index (make-hash-table :test 'equal)
+             :meta nil))
+           (supervisor--dashboard-target-filter "app.target")
+           (supervisor--dashboard-show-targets nil))
+      (puthash "app.target" '(:requires nil :wants ("svc-a")) members-hash)
+      (let* ((snapshot (supervisor--build-snapshot))
+             (all-entries (supervisor--get-entries snapshot))
+             (service-ids
+              (cl-loop for entry in all-entries
+                       when (supervisor--service-row-p (car entry))
+                       collect (cdr (car entry)))))
+        (should (member "svc-a" service-ids))
+        (should (member "app.target" service-ids))
+        (should-not (member "svc-b" service-ids))))))
+
+(ert-deftest supervisor-test-dashboard-init-transition-target-predicate ()
+  "Init-transition target predicate identifies correct IDs."
+  (should (supervisor--init-transition-target-p "rescue.target"))
+  (should (supervisor--init-transition-target-p "shutdown.target"))
+  (should (supervisor--init-transition-target-p "poweroff.target"))
+  (should (supervisor--init-transition-target-p "reboot.target"))
+  (should (supervisor--init-transition-target-p "runlevel0.target"))
+  (should (supervisor--init-transition-target-p "runlevel1.target"))
+  (should (supervisor--init-transition-target-p "runlevel6.target"))
+  (should-not (supervisor--init-transition-target-p "basic.target"))
+  (should-not (supervisor--init-transition-target-p "multi-user.target"))
+  (should-not (supervisor--init-transition-target-p "graphical.target"))
+  (should-not (supervisor--init-transition-target-p "default.target"))
+  (should-not (supervisor--init-transition-target-p "app.target")))
+
+(ert-deftest supervisor-test-dashboard-header-shows-filter-state ()
+  "Header line always includes visibility indicator."
+  (supervisor-test-with-unit-files nil
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--failed (make-hash-table :test 'equal))
+          (supervisor--oneshot-completed (make-hash-table :test 'equal))
+          (supervisor--dashboard-show-targets nil)
+          (supervisor--dashboard-show-init-targets nil))
+      ;; Default: services-only indicator
+      (let ((header (supervisor--dashboard-header-line)))
+        (should (string-match-p "\\[services\\]" header))
+        (should-not (string-match-p "targets" header)))
+      ;; Show targets: services+targets
+      (let ((supervisor--dashboard-show-targets t))
+        (let ((header (supervisor--dashboard-header-line)))
+          (should (string-match-p "services" header))
+          (should (string-match-p "targets" header))
+          (should-not (string-match-p "init" header))))
+      ;; Show targets + init: services+targets+init
+      (let ((supervisor--dashboard-show-targets t)
+            (supervisor--dashboard-show-init-targets t))
+        (let ((header (supervisor--dashboard-header-line)))
+          (should (string-match-p "services" header))
+          (should (string-match-p "targets" header))
+          (should (string-match-p "init" header))))
+      ;; Init toggled but targets hidden: init suppressed from header
+      (let ((supervisor--dashboard-show-targets nil)
+            (supervisor--dashboard-show-init-targets t))
+        (let ((header (supervisor--dashboard-header-line)))
+          (should (string-match-p "\\[services\\]" header))
+          (should-not (string-match-p "init" header)))))))
+
+(ert-deftest supervisor-test-dashboard-services-remain-sortable ()
+  "Service rows preserve tabulated-list sorting after target filtering."
+  (supervisor-test-with-unit-files
+      '(("sleep 60" :id "alpha" :type simple)
+        ("sleep 60" :id "beta" :type simple)
+        (nil :id "app.target" :type target))
+    (let ((supervisor--processes (make-hash-table :test 'equal))
+          (supervisor--entry-state (make-hash-table :test 'equal))
+          (supervisor--invalid (make-hash-table :test 'equal))
+          (supervisor--enabled-override (make-hash-table :test 'equal))
+          (supervisor--restart-override (make-hash-table :test 'equal))
+          (supervisor--logging (make-hash-table :test 'equal))
+          (supervisor--target-convergence (make-hash-table :test 'equal))
+          (supervisor--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (supervisor--dashboard-show-targets nil))
+      (let* ((entries (supervisor--get-entries))
+             (service-ids
+              (cl-loop for entry in entries
+                       when (supervisor--service-row-p (car entry))
+                       collect (cdr (car entry)))))
+        ;; Both services visible and in order
+        (should (equal '("alpha" "beta") service-ids))))))
+
+(ert-deftest supervisor-test-dashboard-keymap-binds-v ()
+  "Dashboard keymap binds v to toggle targets."
+  (should (eq (lookup-key supervisor-dashboard-mode-map "v")
+              #'supervisor-dashboard-toggle-targets)))
+
+(ert-deftest supervisor-test-dashboard-keymap-binds-shift-v ()
+  "Dashboard keymap binds V to toggle init-transition targets."
+  (should (eq (lookup-key supervisor-dashboard-mode-map "V")
+              #'supervisor-dashboard-toggle-init-targets)))
+
+(ert-deftest supervisor-test-dashboard-toggle-targets-flips-state ()
+  "Toggle-targets command flips show-targets state."
+  (with-temp-buffer
+    (let ((supervisor--dashboard-show-targets nil))
+      ;; Stub refresh to avoid needing a full dashboard buffer
+      (cl-letf (((symbol-function 'supervisor--refresh-dashboard)
+                 (lambda ())))
+        (supervisor-dashboard-toggle-targets)
+        (should supervisor--dashboard-show-targets)
+        (supervisor-dashboard-toggle-targets)
+        (should-not supervisor--dashboard-show-targets)))))
+
+(ert-deftest supervisor-test-dashboard-toggle-init-targets-flips-state ()
+  "Toggle-init-targets command flips show-init-targets state."
+  (with-temp-buffer
+    (let ((supervisor--dashboard-show-init-targets nil))
+      (cl-letf (((symbol-function 'supervisor--refresh-dashboard)
+                 (lambda ())))
+        (supervisor-dashboard-toggle-init-targets)
+        (should supervisor--dashboard-show-init-targets)
+        (supervisor-dashboard-toggle-init-targets)
+        (should-not supervisor--dashboard-show-init-targets)))))
+
 (provide 'supervisor-test-dashboard)
 ;;; supervisor-test-dashboard.el ends here

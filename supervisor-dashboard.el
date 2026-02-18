@@ -189,12 +189,30 @@ nil means show all entries, otherwise a tag symbol or string.")
   "Current target filter for dashboard.
 nil means show all entries, otherwise a target ID string.")
 
+(defvar-local supervisor--dashboard-show-targets nil
+  "Non-nil means show target-type entries in the dashboard.
+Default is nil, hiding targets for a service-first view.")
+
+(defvar-local supervisor--dashboard-show-init-targets nil
+  "Non-nil means include init-transition targets when targets are shown.
+Init-transition targets are systemd-style shutdown, reboot, rescue, and
+runlevel alias targets that are not relevant for non-PID1 usage.")
+
+(defconst supervisor--init-transition-target-ids
+  '("rescue.target" "shutdown.target" "poweroff.target" "reboot.target"
+    "runlevel0.target" "runlevel1.target" "runlevel6.target")
+  "Target IDs that represent init-transition targets.
+These are hidden by default even when regular targets are shown.")
+
 (defvar supervisor-dashboard-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
     ;; Navigation / filter
     (define-key map "f" #'supervisor-dashboard-cycle-filter)
     (define-key map "F" #'supervisor-dashboard-cycle-tag-filter)
+    ;; Visibility
+    (define-key map "v" #'supervisor-dashboard-toggle-targets)
+    (define-key map "V" #'supervisor-dashboard-toggle-init-targets)
     ;; Refresh
     (define-key map "g" #'supervisor-dashboard-refresh)
     (define-key map "G" #'supervisor-dashboard-toggle-auto-refresh)
@@ -301,6 +319,8 @@ This is called on first use to avoid loading transient at package load time."
          ["Navigation"
           ("f" "Target filter" supervisor-dashboard-cycle-filter)
           ("F" "Tag filter" supervisor-dashboard-cycle-tag-filter)
+          ("v" "Show targets" supervisor-dashboard-toggle-targets)
+          ("V" "Show init targets" supervisor-dashboard-toggle-init-targets)
           ("g" "Refresh" supervisor-dashboard-refresh)
           ("G" "Auto-refresh" supervisor-dashboard-toggle-auto-refresh)]
          ["System"
@@ -432,6 +452,16 @@ SNAPSHOT and PROGRAMS are forwarded to `supervisor--health-counts'."
 (defun supervisor--service-row-p (id)
   "Return non-nil if ID represents a service row."
   (and (consp id) (eq (car id) :service)))
+
+(defun supervisor--target-type-p (type)
+  "Return non-nil if TYPE is the target entry type."
+  (eq type 'target))
+
+(defun supervisor--init-transition-target-p (id)
+  "Return non-nil if ID is an init-transition target.
+Init-transition targets are shutdown, reboot, rescue, and runlevel
+alias targets that are not relevant for non-PID1 usage."
+  (member id supervisor--init-transition-target-ids))
 
 (defun supervisor--row-kind (id)
   "Return the kind of dashboard row for ID.
@@ -708,6 +738,8 @@ if `supervisor-dashboard-show-timers' is non-nil."
          (seen (make-hash-table :test 'equal))
          (tag-filter supervisor--dashboard-tag-filter)
          (target-filter supervisor--dashboard-target-filter)
+         (show-targets supervisor--dashboard-show-targets)
+         (show-init-targets supervisor--dashboard-show-init-targets)
          (target-member-hash
           (when (and supervisor--current-plan target-filter)
             (supervisor-plan-target-members supervisor--current-plan)))
@@ -747,7 +779,15 @@ if `supervisor-dashboard-show-timers' is non-nil."
                               (let ((members (gethash target-filter
                                                       target-member-hash)))
                                 (or (member id (plist-get members :requires))
-                                    (member id (plist-get members :wants)))))))
+                                    (member id (plist-get members :wants))))))
+                        ;; Target visibility: hide targets by default
+                        ;; unless toggled or a target-filter is active.
+                        (or (not (supervisor--target-type-p type))
+                            target-filter
+                            (and show-targets
+                                 (or show-init-targets
+                                     (not (supervisor--init-transition-target-p
+                                           id))))))
                 (push (list (cons :service id)
                             (supervisor--make-dashboard-entry
                              id type parent-target enabled-p restart-policy
@@ -894,7 +934,7 @@ If PROGRAMS is provided, use it instead of calling
             " inv")))
 
 (defvar supervisor--help-text
-  (concat "[f]ilter [g]refresh [G]live [t]proced [T]auto "
+  (concat "[f]ilter [v]targets [g]refresh [G]live [t]proced [T]auto "
           "[l]ifecycle [p]olicy [i]nspect [y]timers [?]menu [h]elp [q]uit")
   "Key hints displayed in dashboard header.")
 
@@ -947,10 +987,20 @@ SNAPSHOT and PROGRAMS are forwarded to `supervisor--health-counts'."
                                    'face 'supervisor-status-invalid)
                        " inv"))
          (root (when supervisor--current-plan
-                 (supervisor-plan-activation-root supervisor--current-plan))))
-    (if root
-        (concat base "    " (propertize "root" 'face 'bold) ": " root)
-      base)))
+                 (supervisor-plan-activation-root supervisor--current-plan)))
+         (view-parts (list "services")))
+    (when supervisor--dashboard-show-targets
+      (setq view-parts (append view-parts (list "targets")))
+      (when supervisor--dashboard-show-init-targets
+        (setq view-parts (append view-parts (list "init")))))
+    (let* ((view-tag (propertize
+                      (concat "[" (mapconcat #'identity view-parts "+") "]")
+                      'face 'supervisor-section-separator))
+           (result (if root
+                       (concat base "    "
+                               (propertize "root" 'face 'bold) ": " root)
+                     base)))
+      (concat result "    " view-tag))))
 
 (defun supervisor--refresh-dashboard ()
   "Refresh the dashboard buffer if it exists.
@@ -1035,6 +1085,33 @@ Includes all target-type entries, even those with no members."
                  (format "%s" supervisor--dashboard-tag-filter)
                "all"))
     (supervisor--refresh-dashboard)))
+
+(defun supervisor-dashboard-toggle-targets ()
+  "Toggle visibility of target-type entries in the dashboard.
+When targets are hidden (the default), only service and oneshot rows
+are shown.  Init-transition targets remain hidden unless separately
+toggled with \\[supervisor-dashboard-toggle-init-targets]."
+  (interactive)
+  (setq supervisor--dashboard-show-targets
+        (not supervisor--dashboard-show-targets))
+  (message "Targets: %s"
+           (if supervisor--dashboard-show-targets "shown" "hidden"))
+  (supervisor--refresh-dashboard))
+
+(defun supervisor-dashboard-toggle-init-targets ()
+  "Toggle visibility of init-transition targets in the dashboard.
+Init-transition targets (rescue, shutdown, poweroff, reboot, runlevel
+aliases) are hidden by default even when regular targets are shown.
+This toggle has no effect when targets are hidden entirely."
+  (interactive)
+  (setq supervisor--dashboard-show-init-targets
+        (not supervisor--dashboard-show-init-targets))
+  (if supervisor--dashboard-show-targets
+      (message "Init targets: %s"
+               (if supervisor--dashboard-show-init-targets "shown" "hidden"))
+    (message "Init targets: %s (targets are hidden, toggle with v first)"
+             (if supervisor--dashboard-show-init-targets "shown" "hidden")))
+  (supervisor--refresh-dashboard))
 
 (defun supervisor-dashboard-target-members ()
   "Show members of target at point."
@@ -1265,6 +1342,8 @@ With prefix argument, show status legend instead."
     (princ "--------------\n")
     (princ "  f     Cycle target filter (all -> target1 -> target2 -> ...)\n")
     (princ "  F     Cycle tag filter\n")
+    (princ "  v     Toggle target visibility (service-first default)\n")
+    (princ "  V     Toggle init-transition targets (rescue/shutdown/poweroff/reboot/rl0/1/6)\n")
     (princ "  g     Refresh dashboard\n")
     (princ "  G     Toggle auto-refresh (live monitoring)\n")
     (princ "  t     Open proced (system process list)\n")

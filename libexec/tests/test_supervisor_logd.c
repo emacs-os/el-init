@@ -9,6 +9,8 @@
 #include "vendor/acutest.h"
 #include "test_helpers.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +27,20 @@ static void msleep(int ms)
 	ts.tv_sec = ms / 1000;
 	ts.tv_nsec = (ms % 1000) * 1000000L;
 	nanosleep(&ts, NULL);
+}
+
+/* Return non-zero if /dev/full exists and actually rejects writes.
+ * Some container runtimes expose /dev/full but silently accept writes. */
+static int dev_full_rejects_write(void)
+{
+	int fd = open("/dev/full", O_WRONLY);
+	if (fd < 0)
+		return 0;
+	char byte = 'x';
+	ssize_t w = write(fd, &byte, 1);
+	int saved = errno;
+	close(fd);
+	return (w < 0 && saved == ENOSPC);
 }
 
 /* Write helper that checks the return value (silences -Werror=unused-result). */
@@ -1798,16 +1814,15 @@ void test_logd_binary_sighup_reopen(void)
 
 void test_logd_framed_write_error(void)
 {
-	/* Point log file at a read-only path to trigger write error.
-	 * Create a file, make it read-only, then run logd. */
+	if (!dev_full_rejects_write()) {
+		TEST_MSG("Skipping: /dev/full not available or not rejecting writes");
+		return;
+	}
 	char *tmpdir = make_tmpdir();
 	char logpath[512];
 	snprintf(logpath, sizeof(logpath), "%s/test.log", tmpdir);
 
-	/* Create the file, then make the directory read-only so
-	 * the file can be opened (O_RDWR|O_APPEND on existing works)
-	 * but... actually we need a different approach.
-	 * Use /dev/full which returns ENOSPC on write. */
+	/* Use /dev/full which returns ENOSPC on write. */
 	const char *argv[] = { LOGD_PATH,
 			       "--file", "/dev/full",
 			       "--max-file-size-bytes", "100000",
@@ -1824,6 +1839,7 @@ void test_logd_framed_write_error(void)
 	TEST_CHECK(run_cmd(argv, frame, (size_t)flen, &r) == 0);
 	TEST_CHECK(r.exit_code == 2);
 	TEST_CHECK(strstr(r.err, "write") != NULL);
+	TEST_MSG("stderr: %s", r.err);
 	run_result_free(&r);
 
 	remove_tmpdir(tmpdir);
@@ -1836,6 +1852,10 @@ void test_logd_framed_write_error(void)
 
 void test_logd_raw_write_error(void)
 {
+	if (!dev_full_rejects_write()) {
+		TEST_MSG("Skipping: /dev/full not available or not rejecting writes");
+		return;
+	}
 	const char *argv[] = { LOGD_PATH,
 			       "--file", "/dev/full",
 			       "--max-file-size-bytes", "100000",
@@ -1846,6 +1866,7 @@ void test_logd_raw_write_error(void)
 			   strlen(input), &r) == 0);
 	TEST_CHECK(r.exit_code == 2);
 	TEST_CHECK(strstr(r.err, "write") != NULL);
+	TEST_MSG("stderr: %s", r.err);
 	run_result_free(&r);
 }
 
@@ -2007,6 +2028,10 @@ void test_logd_binary_negative_exit_code(void)
 
 void test_logd_binary_write_error(void)
 {
+	if (!dev_full_rejects_write()) {
+		TEST_MSG("Skipping: /dev/full not available or not rejecting writes");
+		return;
+	}
 	const char *argv[] = { LOGD_PATH,
 			       "--file", "/dev/full",
 			       "--max-file-size-bytes", "100000",
