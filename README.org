@@ -8,8 +8,9 @@
 
 ~supervisor.el~ is an Emacs Lisp-based service supervisor.  It follows a
 familiar systemd-like interface (service types, dependencies, restart
-policies) adapted for Emacs.  ~M-x supervisor~ is the main interface:
-start, stop, inspect, and manage everything from inside Emacs.
+policies) adapted for Emacs.  ~M-x supervisor~ opens the interactive
+dashboard; ~supervisorctl~ provides the same control from the terminal
+or scripts.
 
 ** Features
 
