@@ -1,0 +1,37 @@
+Base (the “static core”)
+
+Grub
+
+Kernel: build a monolithic, hardware-tailored kernel so a machine can boot without initrd (tool-assisted: detect HW → generate .config → build).
+
+Init: a static init layer (TBD): either patched Emacs acting as init, or a tiny shim that does the early mounts/setup then exec’s Emacs.
+
+PID1/control plane: static Emacs supervisor (your supervisor.el) runs the system: targets, deps, restarts, timers, logging, dashboard, CLI, sandboxing.
+
+Userland essentials: GNU coreutils (serious GNU base) + static git.
+
+Filesystem model: rootfs is a git repo — / is checked in, so the base state is versioned and reproducible.
+
+The missing product
+
+A single base management tool that:
+
+scans hardware and generates kernel configs for “no-initrd” boots
+
+builds the static base artifacts (kernel/init/emacs/coreutils/git)
+
+assembles the rootfs image and enforces invariants
+
+handles updates/rollback for the base (so it’s safe to run)
+
+Everything else
+
+    Use Guix for non-base software and the broader ecosystem:
+
+        Xorg/Wayland, desktop stack, apps, dev tools, etc.
+
+
+
+    Runtime OS (stalimacs): static, minimal, stable, no compilers required.
+
+    Build OS (Guix environment): reproducible toolchain + reproducible build scripts that emit your base artifacts.
