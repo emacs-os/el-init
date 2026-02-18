@@ -432,15 +432,16 @@ static ssize_t write_text_record(int fd, const struct frame *f,
 	else
 		snprintf(code_str, sizeof(code_str), "-");
 
-	/* Escape payload for output events, use "-" for exit */
+	/* Escape payload for output events (even empty); "-" for exit. */
 	char *escaped = NULL;
 	size_t escaped_len = 0;
 	const char *payload_str = "-";
-	if (f->event == EVT_OUTPUT && f->payload_len > 0) {
+	if (f->event == EVT_OUTPUT) {
 		escaped = escape_payload(f->payload, f->payload_len,
 					 &escaped_len);
-		if (escaped)
-			payload_str = escaped;
+		if (!escaped)
+			return -1;
+		payload_str = escaped;
 	}
 
 	/* Build record line */

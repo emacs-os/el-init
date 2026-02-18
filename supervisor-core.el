@@ -4102,8 +4102,11 @@ event=EVENT status=STATUS code=CODE payload=PAYLOAD."
                          (intern status-str)))
                (code (if (equal code-str "-") 0
                        (string-to-number code-str)))
-               (payload (if (equal payload-raw "-") ""
-                          (supervisor--log-unescape-payload payload-raw))))
+               (payload (cond
+                         ;; Exit events use "-" as absent-payload sentinel
+                         ((and (eq event 'exit) (equal payload-raw "-")) "")
+                         ;; Output events: always unescape (even empty)
+                         (t (supervisor--log-unescape-payload payload-raw)))))
           (push (list :ts ts :unit unit :pid pid
                       :stream stream :event event
                       :status status :code code

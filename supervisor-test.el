@@ -23105,6 +23105,33 @@ TS-NS are the record fields."
   (should (equal (supervisor--log-unescape-payload "nul\\x00byte")
                  (concat "nul" (string 0) "byte"))))
 
+(ert-deftest supervisor-test-text-decode-literal-dash-payload ()
+  "Text decoder preserves literal dash in output payload."
+  (let* ((line (concat "ts=2026-02-16T12:34:56.123Z unit=svc pid=42 "
+                       "stream=stdout event=output status=- code=- "
+                       "payload=-\n"))
+         (records (supervisor--log-decode-text-records line)))
+    (should (= 1 (length records)))
+    (should (equal (plist-get (car records) :payload) "-"))))
+
+(ert-deftest supervisor-test-text-decode-empty-payload ()
+  "Text decoder handles empty output payload."
+  (let* ((line (concat "ts=2026-02-16T12:34:56.123Z unit=svc pid=42 "
+                       "stream=stdout event=output status=- code=- "
+                       "payload=\n"))
+         (records (supervisor--log-decode-text-records line)))
+    (should (= 1 (length records)))
+    (should (equal (plist-get (car records) :payload) ""))))
+
+(ert-deftest supervisor-test-text-decode-exit-dash-payload ()
+  "Text decoder maps exit event payload=- to empty string."
+  (let* ((line (concat "ts=2026-02-16T12:34:56.123Z unit=svc pid=42 "
+                       "stream=meta event=exit status=exited code=0 "
+                       "payload=-\n"))
+         (records (supervisor--log-decode-text-records line)))
+    (should (= 1 (length records)))
+    (should (equal (plist-get (car records) :payload) ""))))
+
 (ert-deftest supervisor-test-legacy-fallback ()
   "Legacy decoder wraps raw lines as output records."
   (let ((records (supervisor--log-decode-legacy-lines "line1\nline2\n")))
