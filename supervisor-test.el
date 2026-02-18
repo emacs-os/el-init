@@ -23256,6 +23256,93 @@ TS-NS are the record fields."
   "Binary magic constant is SLG1."
   (should (equal supervisor--log-binary-magic "SLG1")))
 
+(ert-deftest supervisor-test-binary-decode-rejects-length-mismatch ()
+  "Binary decoder fails hard when record_len disagrees with fields."
+  (let* ((record (supervisor-test--make-binary-record
+                  1 1 42 "svc" "hello" 0 0 1000)))
+    ;; Inflate record_len by 10 bytes beyond actual content.
+    ;; Original record_len = 30 + 3 + 5 = 38.  Set to 48.
+    (let ((bad-len (+ 30 3 5 10)))
+      (aset record 0 (logand (ash bad-len -24) #xff))
+      (aset record 1 (logand (ash bad-len -16) #xff))
+      (aset record 2 (logand (ash bad-len -8) #xff))
+      (aset record 3 (logand bad-len #xff)))
+    ;; Pad data so the inflated total fits in the buffer
+    (let ((data (concat supervisor--log-binary-magic record
+                        (make-string 10 0))))
+      (should-error (supervisor--log-decode-binary-records data)
+                    :type 'error))))
+
+(ert-deftest supervisor-test-logd-binary-e2e-round-trip ()
+  "End-to-end: framed input to logd --format binary produces decodable records."
+  (let* ((logd (supervisor-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-bin-e2e-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-bin-e2e"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "test-svc"
+                                   "--format" "binary"
+                                   "--max-file-size-bytes" "1048576")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                ;; Output on stdout
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 1 42 "test-svc"
+                                                    "hello"))
+                ;; Output on stderr
+                (process-send-string
+                 proc (supervisor--log-frame-encode 1 2 42 "test-svc"
+                                                    "warn"))
+                ;; Exit event
+                (process-send-string
+                 proc (supervisor--log-frame-encode 2 3 42 "test-svc"
+                                                    nil 0 1))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                (should (file-exists-p log-file))
+                (let* ((content (with-temp-buffer
+                                  (set-buffer-multibyte nil)
+                                  (insert-file-contents-literally log-file)
+                                  (buffer-string)))
+                       (result (supervisor--log-decode-binary-records
+                                content))
+                       (records (plist-get result :records)))
+                  ;; SLG1 magic header present
+                  (should (equal (substring content 0 4) "SLG1"))
+                  ;; No warnings (clean decode)
+                  (should (null (plist-get result :warning)))
+                  ;; 3 records decoded
+                  (should (= 3 (length records)))
+                  (let ((r1 (nth 0 records))
+                        (r2 (nth 1 records))
+                        (r3 (nth 2 records)))
+                    ;; Output record 1
+                    (should (eq (plist-get r1 :event) 'output))
+                    (should (eq (plist-get r1 :stream) 'stdout))
+                    (should (equal (plist-get r1 :payload) "hello"))
+                    ;; Output exit fields forced to 0/none
+                    (should (= (plist-get r1 :code) 0))
+                    (should (null (plist-get r1 :status)))
+                    ;; Output record 2
+                    (should (eq (plist-get r2 :stream) 'stderr))
+                    (should (equal (plist-get r2 :payload) "warn"))
+                    (should (= (plist-get r2 :code) 0))
+                    (should (null (plist-get r2 :status)))
+                    ;; Exit record
+                    (should (eq (plist-get r3 :event) 'exit))
+                    (should (eq (plist-get r3 :stream) 'meta))
+                    (should (eq (plist-get r3 :status) 'exited))
+                    (should (= (plist-get r3 :code) 0)))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
 ;;;; Phase 5: Decoder and user surfaces tests
 
 (ert-deftest supervisor-test-text-decode-records ()

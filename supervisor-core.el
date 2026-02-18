@@ -3990,10 +3990,14 @@ SLG1 magic if present at start).  Return a plist
                      (exit-code (supervisor--log-read-i32be str (+ base 18)))
                      (exit-status-code (aref str (+ base 22)))
                      (payload-len (supervisor--log-read-u32be str (+ base 26)))
+                     (expected-len (+ 30 unit-len payload-len))
                      (unit-start (+ base 30))
                      (payload-start (+ unit-start unit-len)))
                 (when (/= version 1)
                   (error "Unknown binary log version: %d" version))
+                (unless (= record-len expected-len)
+                  (error "Binary record length mismatch at offset %d: \
+declared %d, computed %d" pos record-len expected-len))
                 (condition-case err
                     (let ((event (supervisor--log-wire-event event-code))
                           (stream (supervisor--log-wire-stream stream-code))

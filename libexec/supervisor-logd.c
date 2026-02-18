@@ -567,9 +567,12 @@ static ssize_t write_binary_record(int fd, const struct frame *f,
 	put_u32be(hdr + 16, f->pid);             /* pid */
 	put_u16be(hdr + 20, (unsigned short)unit_id_len); /* unit_len */
 
-	/* exit_code as unsigned for put */
-	put_u32be(hdr + 22, (unsigned int)f->exit_code);
-	hdr[26] = f->exit_status;                /* exit_status */
+	/* Output events must have exit_code=0 and exit_status=none. */
+	if (f->event == EVT_EXIT) {
+		put_u32be(hdr + 22, (unsigned int)f->exit_code);
+		hdr[26] = f->exit_status;
+	}
+	/* else: hdr[22..26] already 0 from memset */
 	/* hdr[27..29] reserved, already 0 */
 	put_u32be(hdr + 30, f->payload_len);     /* payload_len */
 
