@@ -244,8 +244,8 @@ case "${stripped}" in
         }
         trap follow_cleanup INT TERM
 
-        # Stream follow file content
-        tail -f "${follow_file}" &
+        # Stream follow file from start (not last 10 lines default)
+        tail -n +1 -f "${follow_file}" &
         tail_pid="${!}"
         wait "${tail_pid}" 2>/dev/null || true
         follow_cleanup
