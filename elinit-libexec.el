@@ -43,14 +43,14 @@
 
 
 (defvar elinit-runas-command
-  (expand-file-name "libexec/supervisor-runas"
+  (expand-file-name "libexec/elinit-runas"
                     (file-name-directory (or load-file-name
                                              buffer-file-name "")))
   "Path to the elinit-runas privilege-drop helper.
 Used when `:user' or `:group' is set on a unit entry.")
 
 (defvar elinit-rlimits-command
-  (expand-file-name "libexec/supervisor-rlimits"
+  (expand-file-name "libexec/elinit-rlimits"
                     (file-name-directory (or load-file-name
                                              buffer-file-name "")))
   "Path to the elinit-rlimits resource limit helper.
@@ -59,13 +59,13 @@ Used when any `:limit-*' key is set on a unit entry.")
 (defun elinit--libexec-build-targets ()
   "Return build target specs for bundled libexec helpers.
 Each spec is a plist with keys `:name', `:binary-file', and `:source-file'."
-  (list (list :name "supervisor-logd"
+  (list (list :name "elinit-logd"
               :binary-file elinit-logd-command
               :source-file (concat elinit-logd-command ".c"))
-        (list :name "supervisor-runas"
+        (list :name "elinit-runas"
               :binary-file elinit-runas-command
               :source-file (concat elinit-runas-command ".c"))
-        (list :name "supervisor-rlimits"
+        (list :name "elinit-rlimits"
               :binary-file elinit-rlimits-command
               :source-file (concat elinit-rlimits-command ".c"))))
 

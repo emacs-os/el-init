@@ -1,12 +1,12 @@
 /*
- * supervisor-runas - privilege-drop helper for supervisor.el
+ * elinit-runas - privilege-drop helper for elinit
  *
  * Drops privileges to the specified user/group and execve's
  * the target command.  No shell mediation.
  *
  * Usage:
- *   supervisor-runas --user USER [--group GROUP] -- COMMAND [ARGS...]
- *   supervisor-runas --group GROUP -- COMMAND [ARGS...]
+ *   elinit-runas --user USER [--group GROUP] -- COMMAND [ARGS...]
+ *   elinit-runas --group GROUP -- COMMAND [ARGS...]
  *
  * USER/GROUP may be a name or numeric id.
  *
@@ -23,7 +23,7 @@
  *   113  privilege operation failed (setuid/setgid/initgroups)
  *   114  exec failed
  *
- * Copyright (C) 2026 supervisor.el contributors
+ * Copyright (C) 2026 elinit contributors
  * License: GPL-3.0-or-later
  */
 
@@ -71,21 +71,21 @@ int main(int argc, char **argv)
 		}
 		if (strcmp(argv[i], "--user") == 0) {
 			if (i + 1 >= argc) {
-				fprintf(stderr, "supervisor-runas: --user "
+				fprintf(stderr, "elinit-runas: --user "
 						"requires an argument\n");
 				return EXIT_USAGE;
 			}
 			user_arg = argv[++i];
 		} else if (strcmp(argv[i], "--group") == 0) {
 			if (i + 1 >= argc) {
-				fprintf(stderr, "supervisor-runas: --group "
+				fprintf(stderr, "elinit-runas: --group "
 						"requires an argument\n");
 				return EXIT_USAGE;
 			}
 			group_arg = argv[++i];
 		} else {
 			fprintf(stderr,
-				"supervisor-runas: unknown option: %s\n",
+				"elinit-runas: unknown option: %s\n",
 				argv[i]);
 			return EXIT_USAGE;
 		}
@@ -93,14 +93,14 @@ int main(int argc, char **argv)
 
 	if (cmd_start < 0 || cmd_start >= argc) {
 		fprintf(stderr,
-			"supervisor-runas: missing command after \"--\"\n"
-			"usage: supervisor-runas --user USER [--group GROUP] "
+			"elinit-runas: missing command after \"--\"\n"
+			"usage: elinit-runas --user USER [--group GROUP] "
 			"-- CMD [ARGS...]\n");
 		return EXIT_USAGE;
 	}
 
 	if (!user_arg && !group_arg) {
-		fprintf(stderr, "supervisor-runas: at least one of --user or "
+		fprintf(stderr, "elinit-runas: at least one of --user or "
 				"--group required\n");
 		return EXIT_USAGE;
 	}
@@ -125,7 +125,7 @@ int main(int argc, char **argv)
 				if (!pw) {
 					fprintf(
 					    stderr,
-					    "supervisor-runas: uid %s exists "
+					    "elinit-runas: uid %s exists "
 					    "but has no passwd entry "
 					    "(cannot determine primary "
 					    "group)\n",
@@ -139,7 +139,7 @@ int main(int argc, char **argv)
 			struct passwd *pw = getpwnam(user_arg);
 			if (!pw) {
 				fprintf(stderr,
-					"supervisor-runas: unknown user: %s\n",
+					"elinit-runas: unknown user: %s\n",
 					user_arg);
 				return EXIT_RESOLVE;
 			}
@@ -162,7 +162,7 @@ int main(int argc, char **argv)
 			struct group *gr = getgrnam(group_arg);
 			if (!gr) {
 				fprintf(stderr,
-					"supervisor-runas: unknown group: %s\n",
+					"elinit-runas: unknown group: %s\n",
 					group_arg);
 				return EXIT_RESOLVE;
 			}
@@ -175,7 +175,7 @@ int main(int argc, char **argv)
 	if (user_name) {
 		if (initgroups(user_name, target_gid) != 0) {
 			fprintf(stderr,
-				"supervisor-runas: initgroups(%s, %u): %s\n",
+				"elinit-runas: initgroups(%s, %u): %s\n",
 				user_name, (unsigned)target_gid,
 				strerror(errno));
 			return EXIT_PRIVDROP;
@@ -184,7 +184,7 @@ int main(int argc, char **argv)
 		/* No user name available; set supplementary groups to just the
 		 * target gid (group-only mode). */
 		if (setgroups(1, &target_gid) != 0) {
-			fprintf(stderr, "supervisor-runas: setgroups: %s\n",
+			fprintf(stderr, "elinit-runas: setgroups: %s\n",
 				strerror(errno));
 			return EXIT_PRIVDROP;
 		}
@@ -193,7 +193,7 @@ int main(int argc, char **argv)
 	/* Step 2: Set primary group */
 	if (have_gid) {
 		if (setgid(target_gid) != 0) {
-			fprintf(stderr, "supervisor-runas: setgid(%u): %s\n",
+			fprintf(stderr, "elinit-runas: setgid(%u): %s\n",
 				(unsigned)target_gid, strerror(errno));
 			return EXIT_PRIVDROP;
 		}
@@ -202,7 +202,7 @@ int main(int argc, char **argv)
 	/* Step 3: Set uid (must be last — after this we lose privilege) */
 	if (have_uid) {
 		if (setuid(target_uid) != 0) {
-			fprintf(stderr, "supervisor-runas: setuid(%u): %s\n",
+			fprintf(stderr, "elinit-runas: setuid(%u): %s\n",
 				(unsigned)target_uid, strerror(errno));
 			return EXIT_PRIVDROP;
 		}
@@ -212,7 +212,7 @@ int main(int argc, char **argv)
 	execv(argv[cmd_start], &argv[cmd_start]);
 
 	/* If we get here, exec failed */
-	fprintf(stderr, "supervisor-runas: exec %s: %s\n", argv[cmd_start],
+	fprintf(stderr, "elinit-runas: exec %s: %s\n", argv[cmd_start],
 		strerror(errno));
 	return EXIT_EXEC;
 }

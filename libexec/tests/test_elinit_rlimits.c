@@ -1,5 +1,5 @@
 /*
- * test_supervisor_rlimits.c -- tests for the supervisor-rlimits helper
+ * test_elinit_rlimits.c -- tests for the elinit-rlimits helper
  */
 
 #include "vendor/acutest.h"

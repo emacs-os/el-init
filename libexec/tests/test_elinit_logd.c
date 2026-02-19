@@ -1,5 +1,5 @@
 /*
- * test_supervisor_logd.c -- black-box tests for supervisor-logd
+ * test_elinit_logd.c -- black-box tests for elinit-logd
  *
  * acutest.h: https://github.com/mity/acutest
  * Commit: 31751b4089c93b46a9fd8a8183a695f772de66de
@@ -63,7 +63,7 @@ static void write_may_fail(int fd, const void *buf, size_t len)
 
 /* Path to the built binary, set by Makefile via -D. */
 #ifndef LOGD_PATH
-#define LOGD_PATH "../supervisor-logd"
+#define LOGD_PATH "../elinit-logd"
 #endif
 
 /* ----------------------------------------------------------------
@@ -976,7 +976,7 @@ void test_logd_sighup_reopen(void)
 		close(in_pipe[1]);
 		dup2(in_pipe[0], STDIN_FILENO);
 		close(in_pipe[0]);
-		execl(LOGD_PATH, "supervisor-logd",
+		execl(LOGD_PATH, "elinit-logd",
 		      "--file", logpath,
 		      "--max-file-size-bytes", "100000",
 		      (char *)NULL);
@@ -1492,7 +1492,7 @@ void test_logd_sigterm_clean_exit(void)
 		close(in_pipe[1]);
 		dup2(in_pipe[0], STDIN_FILENO);
 		close(in_pipe[0]);
-		execl(LOGD_PATH, "supervisor-logd",
+		execl(LOGD_PATH, "elinit-logd",
 		      "--file", logpath,
 		      "--max-file-size-bytes", "100000",
 		      (char *)NULL);
@@ -1552,7 +1552,7 @@ void test_logd_prune_on_rotation(void)
 		close(in_pipe[1]);
 		dup2(in_pipe[0], STDIN_FILENO);
 		close(in_pipe[0]);
-		execl(LOGD_PATH, "supervisor-logd",
+		execl(LOGD_PATH, "elinit-logd",
 		      "--file", logpath,
 		      "--max-file-size-bytes", "50",
 		      "--prune-cmd", prune_cmd,
@@ -1615,7 +1615,7 @@ void test_logd_prune_throttle(void)
 		close(in_pipe[1]);
 		dup2(in_pipe[0], STDIN_FILENO);
 		close(in_pipe[0]);
-		execl(LOGD_PATH, "supervisor-logd",
+		execl(LOGD_PATH, "elinit-logd",
 		      "--file", logpath,
 		      "--max-file-size-bytes", "50",
 		      "--prune-cmd", prune_cmd,
@@ -1683,7 +1683,7 @@ void test_logd_framed_sighup_reopen(void)
 		close(in_pipe[1]);
 		dup2(in_pipe[0], STDIN_FILENO);
 		close(in_pipe[0]);
-		execl(LOGD_PATH, "supervisor-logd",
+		execl(LOGD_PATH, "elinit-logd",
 		      "--file", logpath,
 		      "--max-file-size-bytes", "100000",
 		      "--framed", "--unit", "svc",
@@ -1759,7 +1759,7 @@ void test_logd_binary_sighup_reopen(void)
 		close(in_pipe[1]);
 		dup2(in_pipe[0], STDIN_FILENO);
 		close(in_pipe[0]);
-		execl(LOGD_PATH, "supervisor-logd",
+		execl(LOGD_PATH, "elinit-logd",
 		      "--file", logpath,
 		      "--max-file-size-bytes", "100000",
 		      "--framed", "--unit", "svc",
@@ -2180,7 +2180,7 @@ void test_logd_rotation_non_log_extension(void)
 		close(in_pipe[1]);
 		dup2(in_pipe[0], STDIN_FILENO);
 		close(in_pipe[0]);
-		execl(LOGD_PATH, "supervisor-logd",
+		execl(LOGD_PATH, "elinit-logd",
 		      "--file", logpath,
 		      "--max-file-size-bytes", "50",
 		      (char *)NULL);
@@ -2236,7 +2236,7 @@ void test_logd_framed_sigterm(void)
 		close(in_pipe[1]);
 		dup2(in_pipe[0], STDIN_FILENO);
 		close(in_pipe[0]);
-		execl(LOGD_PATH, "supervisor-logd",
+		execl(LOGD_PATH, "elinit-logd",
 		      "--file", logpath,
 		      "--max-file-size-bytes", "100000",
 		      "--framed", "--unit", "svc",
@@ -2431,7 +2431,7 @@ void test_logd_framed_buffer_overflow(void)
 		close(in_pipe[1]);
 		dup2(in_pipe[0], STDIN_FILENO);
 		close(in_pipe[0]);
-		execl(LOGD_PATH, "supervisor-logd",
+		execl(LOGD_PATH, "elinit-logd",
 		      "--file", logpath,
 		      "--max-file-size-bytes", "1000000",
 		      "--framed", "--unit", "svc",

@@ -1,5 +1,5 @@
 /*
- * test_supervisor_runas.c -- black-box tests for supervisor-runas
+ * test_elinit_runas.c -- black-box tests for elinit-runas
  *
  * acutest.h: https://github.com/mity/acutest
  * Commit: 31751b4089c93b46a9fd8a8183a695f772de66de
@@ -20,7 +20,7 @@
 
 /* Path to the built binary, set by Makefile via -D. */
 #ifndef RUNAS_PATH
-#define RUNAS_PATH "../supervisor-runas"
+#define RUNAS_PATH "../elinit-runas"
 #endif
 
 /* ----------------------------------------------------------------

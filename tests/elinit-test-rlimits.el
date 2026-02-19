@@ -328,7 +328,7 @@
   "Elinit-rlimits appears in libexec build targets."
   (let ((names (mapcar (lambda (target) (plist-get target :name))
                        (elinit--libexec-build-targets))))
-    (should (member "supervisor-rlimits" names))))
+    (should (member "elinit-rlimits" names))))
 
 ;;; Phase 3 introspection surface tests
 

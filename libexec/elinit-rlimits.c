@@ -1,11 +1,11 @@
 /*
- * supervisor-rlimits - resource limit helper for supervisor.el
+ * elinit-rlimits - resource limit helper for elinit
  *
  * Sets ulimit-style resource limits (via setrlimit) and then
  * execv's the target command.  No shell mediation.
  *
  * Usage:
- *   supervisor-rlimits [--nofile SOFT:HARD] [--nproc SOFT:HARD] \
+ *   elinit-rlimits [--nofile SOFT:HARD] [--nproc SOFT:HARD] \
  *                      [--core SOFT:HARD] [--fsize SOFT:HARD]   \
  *                      [--as SOFT:HARD] -- COMMAND [ARGS...]
  *
@@ -17,7 +17,7 @@
  *   112  setrlimit failed
  *   114  exec failed
  *
- * Copyright (C) 2026 supervisor.el contributors
+ * Copyright (C) 2026 elinit contributors
  * License: GPL-3.0-or-later
  */
 
@@ -114,7 +114,7 @@ int main(int argc, char **argv)
 	limits[4].name = "as";
 
 	if (argc < 2) {
-		fprintf(stderr, "supervisor-rlimits: usage: supervisor-rlimits "
+		fprintf(stderr, "elinit-rlimits: usage: elinit-rlimits "
 				"[--nofile S:H] [--nproc S:H] [--core S:H] "
 				"[--fsize S:H] [--as S:H] -- CMD [ARGS...]\n");
 		return EXIT_USAGE;
@@ -128,13 +128,13 @@ int main(int argc, char **argv)
 		}
 		if (strcmp(argv[i], "--nofile") == 0) {
 			if (i + 1 >= argc) {
-				fprintf(stderr, "supervisor-rlimits: "
+				fprintf(stderr, "elinit-rlimits: "
 						"--nofile requires an argument\n");
 				return EXIT_USAGE;
 			}
 			if (parse_limit(argv[++i], &limits[0].soft,
 					&limits[0].hard) < 0) {
-				fprintf(stderr, "supervisor-rlimits: "
+				fprintf(stderr, "elinit-rlimits: "
 						"invalid --nofile value: %s\n",
 					argv[i]);
 				return EXIT_USAGE;
@@ -142,13 +142,13 @@ int main(int argc, char **argv)
 			limits[0].set = 1;
 		} else if (strcmp(argv[i], "--nproc") == 0) {
 			if (i + 1 >= argc) {
-				fprintf(stderr, "supervisor-rlimits: "
+				fprintf(stderr, "elinit-rlimits: "
 						"--nproc requires an argument\n");
 				return EXIT_USAGE;
 			}
 			if (parse_limit(argv[++i], &limits[1].soft,
 					&limits[1].hard) < 0) {
-				fprintf(stderr, "supervisor-rlimits: "
+				fprintf(stderr, "elinit-rlimits: "
 						"invalid --nproc value: %s\n",
 					argv[i]);
 				return EXIT_USAGE;
@@ -156,13 +156,13 @@ int main(int argc, char **argv)
 			limits[1].set = 1;
 		} else if (strcmp(argv[i], "--core") == 0) {
 			if (i + 1 >= argc) {
-				fprintf(stderr, "supervisor-rlimits: "
+				fprintf(stderr, "elinit-rlimits: "
 						"--core requires an argument\n");
 				return EXIT_USAGE;
 			}
 			if (parse_limit(argv[++i], &limits[2].soft,
 					&limits[2].hard) < 0) {
-				fprintf(stderr, "supervisor-rlimits: "
+				fprintf(stderr, "elinit-rlimits: "
 						"invalid --core value: %s\n",
 					argv[i]);
 				return EXIT_USAGE;
@@ -170,13 +170,13 @@ int main(int argc, char **argv)
 			limits[2].set = 1;
 		} else if (strcmp(argv[i], "--fsize") == 0) {
 			if (i + 1 >= argc) {
-				fprintf(stderr, "supervisor-rlimits: "
+				fprintf(stderr, "elinit-rlimits: "
 						"--fsize requires an argument\n");
 				return EXIT_USAGE;
 			}
 			if (parse_limit(argv[++i], &limits[3].soft,
 					&limits[3].hard) < 0) {
-				fprintf(stderr, "supervisor-rlimits: "
+				fprintf(stderr, "elinit-rlimits: "
 						"invalid --fsize value: %s\n",
 					argv[i]);
 				return EXIT_USAGE;
@@ -184,27 +184,27 @@ int main(int argc, char **argv)
 			limits[3].set = 1;
 		} else if (strcmp(argv[i], "--as") == 0) {
 			if (i + 1 >= argc) {
-				fprintf(stderr, "supervisor-rlimits: "
+				fprintf(stderr, "elinit-rlimits: "
 						"--as requires an argument\n");
 				return EXIT_USAGE;
 			}
 			if (parse_limit(argv[++i], &limits[4].soft,
 					&limits[4].hard) < 0) {
-				fprintf(stderr, "supervisor-rlimits: "
+				fprintf(stderr, "elinit-rlimits: "
 						"invalid --as value: %s\n",
 					argv[i]);
 				return EXIT_USAGE;
 			}
 			limits[4].set = 1;
 		} else {
-			fprintf(stderr, "supervisor-rlimits: "
+			fprintf(stderr, "elinit-rlimits: "
 					"unknown option: %s\n", argv[i]);
 			return EXIT_USAGE;
 		}
 	}
 
 	if (cmd_start < 0 || cmd_start >= argc) {
-		fprintf(stderr, "supervisor-rlimits: "
+		fprintf(stderr, "elinit-rlimits: "
 				"missing -- separator or command\n");
 		return EXIT_USAGE;
 	}
@@ -216,7 +216,7 @@ int main(int argc, char **argv)
 	}
 
 	if (nlimits == 0) {
-		fprintf(stderr, "supervisor-rlimits: "
+		fprintf(stderr, "elinit-rlimits: "
 				"no limits specified\n");
 		return EXIT_USAGE;
 	}
@@ -228,7 +228,7 @@ int main(int argc, char **argv)
 			rl.rlim_cur = limits[i].soft;
 			rl.rlim_max = limits[i].hard;
 			if (setrlimit(limits[i].resource, &rl) < 0) {
-				fprintf(stderr, "supervisor-rlimits: "
+				fprintf(stderr, "elinit-rlimits: "
 						"setrlimit %s failed: %s\n",
 					limits[i].name, strerror(errno));
 				return EXIT_RLIMIT;
@@ -240,7 +240,7 @@ int main(int argc, char **argv)
 	execvp(argv[cmd_start], &argv[cmd_start]);
 
 	/* Only reached on exec failure */
-	fprintf(stderr, "supervisor-rlimits: exec %s: %s\n",
+	fprintf(stderr, "elinit-rlimits: exec %s: %s\n",
 		argv[cmd_start], strerror(errno));
 	return EXIT_EXEC;
 }

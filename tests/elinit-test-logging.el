@@ -15,9 +15,9 @@
 ;;; Logging config contract (PLAN-logging.md Phase 1)
 
 (ert-deftest elinit-test-logd-command-path ()
-  "Log writer command path points to libexec/supervisor-logd."
+  "Log writer command path points to libexec/elinit-logd."
   (should (stringp elinit-logd-command))
-  (should (string-match "libexec/supervisor-logd\\'" elinit-logd-command)))
+  (should (string-match "libexec/elinit-logd\\'" elinit-logd-command)))
 
 (ert-deftest elinit-test-libexec-build-on-startup-default ()
   "Libexec helper build policy defaults to prompt."
@@ -57,9 +57,9 @@
 (ert-deftest elinit-test-libexec-pending-build-targets-missing-binary ()
   "Pending helper detection includes targets missing compiled binaries."
   (let* ((tmp (make-temp-file "sv-libexec-" t))
-         (logd-bin (expand-file-name "supervisor-logd" tmp))
-         (runas-bin (expand-file-name "supervisor-runas" tmp))
-         (rlimits-bin (expand-file-name "supervisor-rlimits" tmp))
+         (logd-bin (expand-file-name "elinit-logd" tmp))
+         (runas-bin (expand-file-name "elinit-runas" tmp))
+         (rlimits-bin (expand-file-name "elinit-rlimits" tmp))
          (logd-src (concat logd-bin ".c"))
          (runas-src (concat runas-bin ".c"))
          (rlimits-src (concat rlimits-bin ".c")))
@@ -84,24 +84,24 @@
                 (elinit-rlimits-command rlimits-bin))
             (let ((pending (elinit--libexec-pending-build-targets)))
               (should (= 1 (length pending)))
-              (should (equal "supervisor-logd"
+              (should (equal "elinit-logd"
                              (plist-get (car pending) :name))))))
       (delete-directory tmp t))))
 
 (ert-deftest elinit-test-libexec-pending-build-targets-missing-source ()
   "Pending helper detection includes missing binaries without sources."
   (let* ((tmp (make-temp-file "sv-libexec-" t))
-         (logd-bin (expand-file-name "supervisor-logd" tmp))
-         (runas-bin (expand-file-name "supervisor-runas" tmp))
-         (rlimits-bin (expand-file-name "supervisor-rlimits" tmp)))
+         (logd-bin (expand-file-name "elinit-logd" tmp))
+         (runas-bin (expand-file-name "elinit-runas" tmp))
+         (rlimits-bin (expand-file-name "elinit-rlimits" tmp)))
     (unwind-protect
         (let ((elinit-logd-command logd-bin)
               (elinit-runas-command runas-bin)
               (elinit-rlimits-command rlimits-bin))
           (let ((pending (elinit--libexec-pending-build-targets)))
             (should (= 3 (length pending)))
-            (should (equal '("supervisor-logd" "supervisor-runas"
-                             "supervisor-rlimits")
+            (should (equal '("elinit-logd" "elinit-runas"
+                             "elinit-rlimits")
                            (mapcar (lambda (target)
                                      (plist-get target :name))
                                    pending)))))
@@ -110,9 +110,9 @@
 (ert-deftest elinit-test-build-libexec-helpers-invokes-compiler ()
   "Helper build path invokes the compiler for each pending source."
   (let* ((tmp (make-temp-file "sv-libexec-" t))
-         (logd-bin (expand-file-name "supervisor-logd" tmp))
-         (runas-bin (expand-file-name "supervisor-runas" tmp))
-         (rlimits-bin (expand-file-name "supervisor-rlimits" tmp))
+         (logd-bin (expand-file-name "elinit-logd" tmp))
+         (runas-bin (expand-file-name "elinit-runas" tmp))
+         (rlimits-bin (expand-file-name "elinit-rlimits" tmp))
          (logd-src (concat logd-bin ".c"))
          (runas-src (concat runas-bin ".c"))
          (rlimits-src (concat rlimits-bin ".c"))
@@ -147,9 +147,9 @@
 (ert-deftest elinit-test-build-libexec-helpers-fails-without-compiler ()
   "Helper build returns failure when no compiler is available."
   (let* ((tmp (make-temp-file "sv-libexec-" t))
-         (logd-bin (expand-file-name "supervisor-logd" tmp))
-         (runas-bin (expand-file-name "supervisor-runas" tmp))
-         (rlimits-bin (expand-file-name "supervisor-rlimits" tmp))
+         (logd-bin (expand-file-name "elinit-logd" tmp))
+         (runas-bin (expand-file-name "elinit-runas" tmp))
+         (rlimits-bin (expand-file-name "elinit-rlimits" tmp))
          (logd-src (concat logd-bin ".c"))
          (runas-src (concat runas-bin ".c"))
          (rlimits-src (concat rlimits-bin ".c")))
@@ -179,7 +179,7 @@
         (built nil))
     (cl-letf (((symbol-function 'elinit--libexec-pending-build-targets)
                (lambda ()
-                 (list (list :name "supervisor-logd"))))
+                 (list (list :name "elinit-logd"))))
               ((symbol-function 'y-or-n-p)
                (lambda (_prompt)
                  (setq asked t)
@@ -199,7 +199,7 @@
         (built nil))
     (cl-letf (((symbol-function 'elinit--libexec-pending-build-targets)
                (lambda ()
-                 (list (list :name "supervisor-logd"))))
+                 (list (list :name "elinit-logd"))))
               ((symbol-function 'elinit-build-libexec-helpers)
                (lambda ()
                  (setq built t)

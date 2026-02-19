@@ -1,12 +1,12 @@
 /*
- * supervisor-logd - per-service log writer for supervisor.el
+ * elinit-logd - per-service log writer for elinit
  *
  * Reads service output from stdin and writes to a log file with
  * append semantics.  Keeps the file descriptor open during steady
  * state for efficiency.
  *
  * Usage:
- *   supervisor-logd --file PATH --max-file-size-bytes N [OPTIONS]
+ *   elinit-logd --file PATH --max-file-size-bytes N [OPTIONS]
  *
  * Required flags:
  *   --file PATH              Target log file
@@ -32,7 +32,7 @@
  *   1    Usage error
  *   2    File operation error
  *
- * Copyright (C) 2026 supervisor.el contributors
+ * Copyright (C) 2026 elinit contributors
  * License: GPL-3.0-or-later
  */
 
@@ -289,7 +289,7 @@ static int rotate_log(int fd, const char *file_path,
 	}
 
 	if (rename(file_path, rotated) != 0) {
-		fprintf(stderr, "supervisor-logd: rotate %s -> %s: %s\n",
+		fprintf(stderr, "elinit-logd: rotate %s -> %s: %s\n",
 			file_path, rotated, strerror(errno));
 		free(rotated);
 		if (ftruncate(fd, 0) == 0) {
@@ -303,7 +303,7 @@ static int rotate_log(int fd, const char *file_path,
 	int new_fd = open_log(file_path);
 	if (new_fd < 0) {
 		fprintf(stderr,
-			"supervisor-logd: reopen after rotate %s: %s\n",
+			"elinit-logd: reopen after rotate %s: %s\n",
 			file_path, strerror(errno));
 		free(rotated);
 		return -1;
@@ -524,7 +524,7 @@ static off_t ensure_binary_header(int fd, off_t current_size,
 	if (current_size == 0) {
 		if (write_binary_header(fd) < 0) {
 			fprintf(stderr,
-				"supervisor-logd: write header %s: %s\n",
+				"elinit-logd: write header %s: %s\n",
 				path, strerror(errno));
 			return -1;
 		}
@@ -542,7 +542,7 @@ static off_t ensure_binary_header(int fd, off_t current_size,
 	}
 	/* Not a binary file -- truncate and rewrite */
 	fprintf(stderr,
-		"supervisor-logd: %s is not a binary log, truncating\n",
+		"elinit-logd: %s is not a binary log, truncating\n",
 		path);
 	if (ftruncate(fd, 0) < 0)
 		return -1;
@@ -613,7 +613,7 @@ static ssize_t write_binary_record(int fd, const struct frame *f,
 static void usage(void)
 {
 	fprintf(stderr,
-		"usage: supervisor-logd --file PATH --max-file-size-bytes N "
+		"usage: elinit-logd --file PATH --max-file-size-bytes N "
 		"[--log-dir DIR] [--prune-cmd CMD] "
 		"[--prune-min-interval-sec N] "
 		"[--framed] [--unit ID] [--format text|binary]\n");
@@ -635,7 +635,7 @@ int main(int argc, char **argv)
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--file") == 0) {
 			if (++i >= argc) {
-				fprintf(stderr, "supervisor-logd: --file "
+				fprintf(stderr, "elinit-logd: --file "
 						"requires an argument\n");
 				return EXIT_USAGE;
 			}
@@ -644,7 +644,7 @@ int main(int argc, char **argv)
 			if (++i >= argc) {
 				fprintf(
 				    stderr,
-				    "supervisor-logd: --max-file-size-bytes "
+				    "elinit-logd: --max-file-size-bytes "
 				    "requires an argument\n");
 				return EXIT_USAGE;
 			}
@@ -652,20 +652,20 @@ int main(int argc, char **argv)
 			if (max_size <= 0) {
 				fprintf(
 				    stderr,
-				    "supervisor-logd: --max-file-size-bytes "
+				    "elinit-logd: --max-file-size-bytes "
 				    "must be positive\n");
 				return EXIT_USAGE;
 			}
 		} else if (strcmp(argv[i], "--log-dir") == 0) {
 			if (++i >= argc) {
-				fprintf(stderr, "supervisor-logd: --log-dir "
+				fprintf(stderr, "elinit-logd: --log-dir "
 						"requires an argument\n");
 				return EXIT_USAGE;
 			}
 			log_dir = argv[i];
 		} else if (strcmp(argv[i], "--prune-cmd") == 0) {
 			if (++i >= argc) {
-				fprintf(stderr, "supervisor-logd: --prune-cmd "
+				fprintf(stderr, "elinit-logd: --prune-cmd "
 						"requires an argument\n");
 				return EXIT_USAGE;
 			}
@@ -674,7 +674,7 @@ int main(int argc, char **argv)
 			if (++i >= argc) {
 				fprintf(
 				    stderr,
-				    "supervisor-logd: --prune-min-interval-sec "
+				    "elinit-logd: --prune-min-interval-sec "
 				    "requires an argument\n");
 				return EXIT_USAGE;
 			}
@@ -683,14 +683,14 @@ int main(int argc, char **argv)
 			framed = 1;
 		} else if (strcmp(argv[i], "--unit") == 0) {
 			if (++i >= argc) {
-				fprintf(stderr, "supervisor-logd: --unit "
+				fprintf(stderr, "elinit-logd: --unit "
 						"requires an argument\n");
 				return EXIT_USAGE;
 			}
 			unit_id = argv[i];
 		} else if (strcmp(argv[i], "--format") == 0) {
 			if (++i >= argc) {
-				fprintf(stderr, "supervisor-logd: --format "
+				fprintf(stderr, "elinit-logd: --format "
 						"requires an argument\n");
 				return EXIT_USAGE;
 			}
@@ -700,31 +700,31 @@ int main(int argc, char **argv)
 				format = FMT_BINARY;
 			else {
 				fprintf(stderr,
-					"supervisor-logd: --format must be "
+					"elinit-logd: --format must be "
 					"text or binary\n");
 				return EXIT_USAGE;
 			}
 		} else {
-			fprintf(stderr, "supervisor-logd: unknown option: %s\n",
+			fprintf(stderr, "elinit-logd: unknown option: %s\n",
 				argv[i]);
 			return EXIT_USAGE;
 		}
 	}
 
 	if (!file_path) {
-		fprintf(stderr, "supervisor-logd: --file is required\n");
+		fprintf(stderr, "elinit-logd: --file is required\n");
 		usage();
 		return EXIT_USAGE;
 	}
 	if (max_size <= 0) {
 		fprintf(stderr,
-			"supervisor-logd: --max-file-size-bytes is required\n");
+			"elinit-logd: --max-file-size-bytes is required\n");
 		usage();
 		return EXIT_USAGE;
 	}
 	if (framed && !unit_id) {
 		fprintf(stderr,
-			"supervisor-logd: --unit is required with --framed\n");
+			"elinit-logd: --unit is required with --framed\n");
 		return EXIT_USAGE;
 	}
 
@@ -757,7 +757,7 @@ int main(int argc, char **argv)
 	/* Open log file */
 	int fd = open_log(file_path);
 	if (fd < 0) {
-		fprintf(stderr, "supervisor-logd: open %s: %s\n", file_path,
+		fprintf(stderr, "elinit-logd: open %s: %s\n", file_path,
 			strerror(errno));
 		return EXIT_IO;
 	}
@@ -791,7 +791,7 @@ int main(int argc, char **argv)
 				fd = open_log(file_path);
 				if (fd < 0) {
 					fprintf(stderr,
-						"supervisor-logd: reopen "
+						"elinit-logd: reopen "
 						"%s: %s\n",
 						file_path, strerror(errno));
 					return EXIT_IO;
@@ -813,7 +813,7 @@ int main(int argc, char **argv)
 
 			if (write_full(fd, buf, (size_t)n) < 0) {
 				fprintf(stderr,
-					"supervisor-logd: write %s: %s\n",
+					"elinit-logd: write %s: %s\n",
 					file_path, strerror(errno));
 				close(fd);
 				return EXIT_IO;
@@ -844,7 +844,7 @@ int main(int argc, char **argv)
 				fd = open_log(file_path);
 				if (fd < 0) {
 					fprintf(stderr,
-						"supervisor-logd: reopen "
+						"elinit-logd: reopen "
 						"%s: %s\n",
 						file_path, strerror(errno));
 					return EXIT_IO;
@@ -875,7 +875,7 @@ int main(int argc, char **argv)
 			/* Append to accumulation buffer */
 			if (accum_len + (size_t)n > ACCUM_SIZE) {
 				fprintf(stderr,
-					"supervisor-logd: frame buffer "
+					"elinit-logd: frame buffer "
 					"overflow\n");
 				break;
 			}
@@ -893,7 +893,7 @@ int main(int argc, char **argv)
 					break; /* incomplete */
 				if (rc < 0) {
 					fprintf(stderr,
-						"supervisor-logd: protocol "
+						"elinit-logd: protocol "
 						"error\n");
 					/* -1: structural error, skip 1 byte.
 					 * Other negative: semantic error,
@@ -914,7 +914,7 @@ int main(int argc, char **argv)
 
 				if (written < 0) {
 					fprintf(stderr,
-						"supervisor-logd: write "
+						"elinit-logd: write "
 						"%s: %s\n",
 						file_path, strerror(errno));
 					close(fd);

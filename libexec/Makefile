@@ -2,9 +2,9 @@ CC ?= cc
 CFLAGS ?= -Wall -Wextra -Werror -pedantic -std=c99 -O2 -D_FORTIFY_SOURCE=2
 
 # Absolute paths to built binaries (passed to test sources via -D)
-LOGD_ABS     = $(abspath supervisor-logd)
-RUNAS_ABS    = $(abspath supervisor-runas)
-RLIMITS_ABS  = $(abspath supervisor-rlimits)
+LOGD_ABS     = $(abspath elinit-logd)
+RUNAS_ABS    = $(abspath elinit-runas)
+RLIMITS_ABS  = $(abspath elinit-rlimits)
 
 # Test compiler flags -- pass all binary paths so any test can use them
 TEST_CFLAGS  = $(CFLAGS) -Itests/vendor \
@@ -19,15 +19,15 @@ TEST_BINS = $(TEST_SRCS:.c=)
 
 .PHONY: all tests test check clean
 
-all: supervisor-runas supervisor-logd supervisor-rlimits
+all: elinit-runas elinit-logd elinit-rlimits
 
-supervisor-runas: supervisor-runas.c
+elinit-runas: elinit-runas.c
 	$(CC) $(CFLAGS) -o $@ $<
 
-supervisor-logd: supervisor-logd.c
+elinit-logd: elinit-logd.c
 	$(CC) $(CFLAGS) -o $@ $<
 
-supervisor-rlimits: supervisor-rlimits.c
+elinit-rlimits: elinit-rlimits.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 tests: all $(TEST_BINS)
@@ -45,4 +45,4 @@ test: tests
 check: all test
 
 clean:
-	rm -f supervisor-runas supervisor-logd supervisor-rlimits $(TEST_BINS)
+	rm -f elinit-runas elinit-logd elinit-rlimits $(TEST_BINS)

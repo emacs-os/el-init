@@ -1,9 +1,9 @@
-supervisor-runas
-supervisor-logd
-supervisor-rlimits
-tests/test_supervisor_logd
-tests/test_supervisor_runas
-tests/test_supervisor_rlimits
+elinit-runas
+elinit-logd
+elinit-rlimits
+tests/test_elinit_logd
+tests/test_elinit_runas
+tests/test_elinit_rlimits
 *.gcda
 *.gcno
 *.gcov

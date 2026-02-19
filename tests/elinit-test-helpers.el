@@ -91,8 +91,8 @@ and clean up afterward."
   "Build elinit-logd if missing or stale, return path.
 Compares source mtime against binary mtime to detect staleness."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (logd (expand-file-name "libexec/supervisor-logd" root))
-         (src (expand-file-name "libexec/supervisor-logd.c" root))
+         (logd (expand-file-name "libexec/elinit-logd" root))
+         (src (expand-file-name "libexec/elinit-logd.c" root))
          (stale (and (file-exists-p logd)
                      (file-exists-p src)
                      (time-less-p
@@ -107,7 +107,7 @@ Compares source mtime against binary mtime to detect staleness."
     logd))
 
 (defvar elinit-test-runas-binary
-  (expand-file-name "libexec/supervisor-runas"
+  (expand-file-name "libexec/elinit-runas"
                     (file-name-directory
                      (directory-file-name
                       (file-name-directory (or load-file-name

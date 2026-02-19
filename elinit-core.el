@@ -132,7 +132,7 @@ A user timer with the same `:id' overrides the built-in one.")
 ;;;; Log writer and maintenance paths
 
 (defcustom elinit-logd-command
-  (expand-file-name "libexec/supervisor-logd"
+  (expand-file-name "libexec/elinit-logd"
                     (file-name-directory (or load-file-name
                                              buffer-file-name "")))
   "Path to the per-service log writer helper.
