@@ -111,7 +111,7 @@ provides detailed reference material:
 :CUSTOM_ID: from-lisp-machines-to-gnu-emacs
 :END:
 
-[[file:assets/elinit-branding-lisp-machine.png]]
+[[file:assets/elinit-branding-lisp-machine-small.png]]
 
 In 1958 John McCarthy sat down to design a language.  He based it on
 lambda calculus.  He called it Lisp.  The paper came out in 1960.  It
