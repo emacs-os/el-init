@@ -78,17 +78,21 @@ The [[#quick-start][Quick Start]] below gets you running immediately. The rest o
 provides detailed reference material:
 
 - [[#service-definition][Service Definition]] - all unit-file keywords for defining services
-- [[#unit-files-modular-configuration][Unit Files]] - authority roots, precedence, and unit-file management
-- [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] - targets, dependencies, and restarts
-- [[#runtime-overrides-and-reconciliation][Runtime Overrides]] - enabling, disabling, and policy changes at runtime
-- [[#timer-subsystem-handbook][Timer Subsystem]] - scheduled unit execution (oneshot, simple, target)
-- [[#dashboard-handbook-m-x-elinit][Dashboard]] - the interactive UI
-- [[#cli-handbook-sbinelinitctl][CLI]] - terminal control with ~elinitctl~
-- [[#events-and-hooks][Events and Hooks]] - programmatic integration
-- [[#customization-reference][Customization Reference]] - all variables and faces
-- [[#command-reference][Command Reference]] - every interactive command
-- [[#topical-index][Topical Index]] - targeted lookup for specific behaviors
-- [[#service-management-systems-comparison][Systems Comparison]] - elinit vs systemd vs runit vs s6
+- [[#unit-files-modular-configuration][Unit Files]] - authority roots, file format, precedence, and editing workflow
+- [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] - DAG startup, lifecycle state, restart behavior
+- [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]] - policy overrides and reconcile semantics
+- [[#target-system-handbook][Target System]] - built-in targets, aliases, runlevel compatibility
+- [[#timer-subsystem-handbook][Timer Subsystem]] - triggers, retry/catch-up behavior, scheduler lifecycle
+- [[#dashboard-handbook-m-x-elinit][Dashboard]] - service-first UI, keymap, inspect/actions
+- [[#cli-handbook-sbinelinitctl][CLI]] - transport wrapper, commands, output contracts, exit codes
+- [[#events-and-hooks][Events and Hooks]] - event payloads and integration hooks
+- [[#persistence-and-files][Persistence and Files]] - logs, rotation/prune, overrides and timer state files
+- [[#customization-reference][Customization Reference]] - all options and dashboard faces
+- [[#command-reference][Command Reference]] - interactive and dashboard command map
+- [[#security][Security]] - manager targeting, transport boundary, trust gate, sandbox, rlimits
+- [[#service-management-systems-comparison][Service Management Systems Comparison]] - matrix, conversions, import tooling
+- [[#development][Development]] - test/lint workflows
+- [[#topical-index][Topical Index]] - exhaustive cross-reference (last handbook section)
 
 * From Lisp Machines to GNU Emacs
 :PROPERTIES:
@@ -2445,67 +2449,6 @@ All user options (defcustom) are listed below.
 | ~M-x elinit-edit-finish~ | Save unit file and return to dashboard |
 | ~M-x elinit-edit-quit~ | Prompt-save if modified and return to dashboard |
 
-* Indexes
-:PROPERTIES:
-:CUSTOM_ID: indexes
-:END:
-
-This is a topical index for targeted lookup of less-obvious behavior.
-
-** Topical Index
-:PROPERTIES:
-:CUSTOM_ID: topical-index
-:END:
-
-- Async oneshots (~:oneshot-async~, ~:oneshot-blocking~): [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Cat unit file (~cat~, ~i c~ in dashboard): [[#unit-files-modular-configuration][Unit Files]]
-- Blocking oneshot timeout (~:oneshot-timeout~, ~elinit-oneshot-timeout~): [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
-- Command parsing (no implicit shell, use ~sh -c~ when needed): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Config file watch and debounce (~elinit-watch-config~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
-- Crash-loop detection (~elinit-max-restarts~, ~elinit-restart-window~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
-- Cycle fallback behavior for dependencies: [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Dashboard filtering (target/tag): [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
-- Disabled unit manual start (session-only, systemctl model): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
-- Dashboard live updates (~elinit-auto-refresh-interval~): [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]], [[#customization-reference][Customization Reference]]
-- Dashboard mode/filter state (buffer-local target/tag/auto-refresh): [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
-- Dashboard visual customization (status/type/separator faces): [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
-- Dependency semantics split (~:after~ vs ~:requires~): [[#service-definition][Service Definition]]
-- Edit unit file (~edit~, ~i e~ in dashboard, scaffold template): [[#unit-files-modular-configuration][Unit Files]]
-- Event API (~elinit-event-hook~ and event types): [[#events-and-hooks][Events and Hooks]]
-- Exit code semantics for oneshots (signals stored negative): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Graceful vs hard stop (~elinit-stop~ vs ~elinit-stop-now~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#command-reference][Command Reference]]
-- Hyphen-prefixed IDs in CLI (use ~--~ separator): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]]
-- JSON contracts (status/verify/list-timers + error shape): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]]
-- Log rotation and log file paths: [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
-- Logging pipeline (~elinit--log~, ~elinit-verbose~, ~elinit-log-to-file~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
-- Structured log formats (~:log-format text|binary~, ~elinit-log-format-binary-enable~): [[#service-definition][Service Definition]], [[#persistence-and-files][Persistence and Files]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
-- Manual stop behavior and restart suppression: [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
-- Mask/unmask (~mask~, ~unmask~, ~m~ in dashboard): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
-- Max concurrent startup spawn attempts (~elinit-max-concurrent-starts~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
-- Adding a new service (~edit~, scaffold template): [[#unit-files-modular-configuration][Unit Files]]
-- Override precedence (runtime override vs config default): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
-- Override persistence (~elinit-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
-- Reload unit (~reload~, ~u~ in dashboard): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]]
-- Reset failed state (~reset-failed~, ~F~ in dashboard): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
-- Manager targeting (caller identity, ~emacsclient~ discovery): [[#security][Security]]
-- Bubblewrap sandboxing (~:sandbox-profile~, ~:sandbox-network~, bind mounts, raw mode): [[#sandbox][Process Sandbox (bubblewrap)]], [[#service-definition][Service Definition]]
-- Run service as another user/group (~:user~, ~:group~, trust gate): [[#security][Security]], [[#service-definition][Service Definition]]
-- Privilege-drop troubleshooting (identity errors, trust gate failures): [[#privilege-drop-troubleshooting][Privilege-Drop Troubleshooting]]
-- Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
-- Wrapper help vs no-command usage text: [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]]
-- Startup timeout force-complete (~elinit-startup-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
-- Mutator inventory and classification (explicit verb / unit-definition): [[#service-management-systems-comparison][Service Management Systems Comparison]]
-- Systemd example conversions (unit file to elinit config): [[#service-management-systems-comparison][Service Management Systems Comparison]]
-- Systemd feature support matrix: [[#service-management-systems-comparison][Service Management Systems Comparison]]
-- Systemd oneshot comparison (~:oneshot-blocking~, ~:oneshot-timeout~ mapping): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Timer catch-up window (~elinit-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
-- Timer disabled/gated behavior (~elinit-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook][Timer Subsystem]], [[#command-reference][Command Reference]]
-- Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~, ~masked-target~, ~target-not-found~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
-- Timer retry policy (~elinit-timer-retry-intervals~, signal non-retry): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
-- Timer state persistence and schema compatibility (~elinit-timer-state-file~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#persistence-and-files][Persistence and Files]]
-- Unit file scaffold template (created by ~edit~ on missing file): [[#unit-files-modular-configuration][Unit Files]]
-- Unit file validate-on-save (after-save-hook in edited buffers): [[#unit-files-modular-configuration][Unit Files]]
-
 * Security
 :PROPERTIES:
 :CUSTOM_ID: security
@@ -3356,6 +3299,80 @@ Interactive load:
 #+begin_src bash
 emacs -Q -l elinit.el
 #+end_src
+
+* Indexes
+:PROPERTIES:
+:CUSTOM_ID: indexes
+:END:
+
+This is a topical index for targeted lookup of less-obvious behavior.
+
+** Topical Index
+:PROPERTIES:
+:CUSTOM_ID: topical-index
+:END:
+
+- Activation closure and stage progression: [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#target-system-handbook][Target System]]
+- Alias targets and runlevel mapping: [[#target-system-handbook][Target System]]
+- Async oneshots (~:oneshot-async~, ~:oneshot-blocking~): [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Blocking oneshot timeout (~:oneshot-timeout~, ~elinit-oneshot-timeout~): [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Bubblewrap sandbox profiles and safe knobs: [[#sandbox][Process Sandbox (bubblewrap)]], [[#service-definition][Service Definition]]
+- Bubblewrap raw mode and conflict guards: [[#sandbox-expert-raw-mode][Expert Raw Mode]], [[#service-definition][Service Definition]]
+- Built-in targets and default target chain: [[#target-system-handbook][Target System]]
+- Cat unit file (~cat~, ~i c~): [[#unit-files-modular-configuration][Unit Files]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
+- CLI ~journal~ command and follow mode (~-f~): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]], [[#persistence-and-files][Persistence and Files]]
+- CLI JSON contracts and error envelope: [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]]
+- Command parsing (no implicit shell; use ~sh -c~ for shell operators): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Config file watch and debounce (~elinit-watch-config~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
+- Crash-loop detection (~elinit-max-restarts~, ~elinit-restart-window~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Cycle fallback behavior for dependency graphs: [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Dashboard filtering (target/tag): [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
+- Dashboard live updates (~elinit-auto-refresh-interval~): [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]], [[#customization-reference][Customization Reference]]
+- Dashboard mode/filter state (buffer-local target/tag/auto-refresh): [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
+- Dashboard service-first default view: [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
+- Dashboard timer rows and timer actions: [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]], [[#timer-subsystem-handbook][Timer Subsystem]]
+- Dashboard visual customization (faces): [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]], [[#customization-reference][Customization Reference]]
+- Daemon reload and reconcile semantics: [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]]
+- Dependency semantics split (~:after~ / ~:requires~ / ~:before~ / ~:wants~): [[#service-definition][Service Definition]]
+- Disabled unit manual start (session-only, systemctl model): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
+- Edit unit file (~edit~, ~i e~, scaffold template): [[#unit-files-modular-configuration][Unit Files]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
+- Environment variables and files (~:environment~, ~:environment-file~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#service-definition][Service Definition]]
+- Event API (~elinit-event-hook~ and event types): [[#events-and-hooks][Events and Hooks]]
+- Exit code semantics for oneshots (signals stored negative): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
+- Graceful stop vs immediate kill (~elinit-stop~ vs ~elinit-stop-now~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#command-reference][Command Reference]]
+- Hyphen-prefixed IDs in CLI (use ~--~ separator): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]]
+- ID resolution and duplicate handling: [[#service-definition][Service Definition]], [[#unit-files-modular-configuration][Unit Files]]
+- Integrated log maintenance units (~logrotate~, ~log-prune~): [[#persistence-and-files][Persistence and Files]]
+- Libexec helper rebuild policy (~elinit-libexec-build-on-startup~): [[#customization-reference][Customization Reference]]
+- Log file paths, per-stream logs, and log directory behavior: [[#persistence-and-files][Persistence and Files]], [[#service-definition][Service Definition]]
+- Logging pipeline (~elinit--log~, ~elinit-verbose~, ~elinit-log-to-file~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
+- Logging structured formats (~:log-format text|binary~): [[#service-definition][Service Definition]], [[#persistence-and-files][Persistence and Files]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
+- Manager targeting (caller identity, ~emacsclient~ discovery): [[#security][Security]]
+- Mask/unmask semantics: [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
+- Max concurrent startup spawn attempts (~elinit-max-concurrent-starts~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Mutator inventory and classification (explicit verb vs unit-definition): [[#service-management-systems-comparison][Service Management Systems Comparison]]
+- Override precedence (runtime overrides vs unit defaults): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
+- Override persistence (~elinit-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
+- Privilege-drop trust gate for ~:user~ / ~:group~: [[#security][Security]], [[#service-definition][Service Definition]]
+- Privilege-drop troubleshooting (identity errors, trust gate failures): [[#privilege-drop-troubleshooting][Privilege-Drop Troubleshooting]]
+- Reload unit (~reload~, dashboard ~u~): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
+- Resource limits (~:limit-*~ keys, syntax, status surfaces): [[#resource-limits][Resource Limits]], [[#service-definition][Service Definition]]
+- Security boundary (~emacsclient --eval~, socket/server-file access): [[#security][Security]]
+- Service-management comparison matrix: [[#service-management-systems-comparison][Service Management Systems Comparison]]
+- Startup timeout force-complete (~elinit-startup-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- systemd conversion examples and mapping notes: [[#example-conversions-systemd-to-elinit][Example Conversions: systemd to elinit]]
+- systemd import converter (~sbin/elinit-import~): [[#elinit-import][Automated Import (~sbin/elinit-import~)]]
+- Target reachability semantics in dashboard: [[#understanding-the-dashboard][Understanding the Dashboard View]], [[#target-system-handbook][Target System]]
+- Timer catch-up window (~elinit-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
+- Timer denylist for init-transition targets: [[#target-system-handbook][Target System]]
+- Timer disabled/gated behavior (~elinit-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook][Timer Subsystem]], [[#command-reference][Command Reference]]
+- Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~, ~masked-target~, ~target-not-found~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
+- Timer retry policy (~elinit-timer-retry-intervals~, signal non-retry): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
+- Timer state persistence and schema compatibility (~elinit-timer-state-file~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#persistence-and-files][Persistence and Files]]
+- Unit file format, required keys, and validation flow: [[#unit-files-modular-configuration][Unit Files]], [[#service-definition][Service Definition]]
+- Unit file validate-on-save in edit buffers: [[#unit-files-modular-configuration][Unit Files]]
+- Wrapper help output vs no-command usage output: [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]]
+- Wrapper launch order (~elinit-rlimits -> elinit-runas -> bwrap -> executable~): [[#sandbox][Process Sandbox (bubblewrap)]], [[#resource-limits][Resource Limits]]
 
 * License
 :PROPERTIES:
