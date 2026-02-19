@@ -339,10 +339,9 @@ Set to a file path string to watch a specific file instead."
   "File notification descriptor for config watching.")
 
 (defvar elinit--current-plan nil
-  "The last plan built by `elinit-daemon-reload'.
-When non-nil, holds a `elinit-plan' struct representing the most
-recently loaded configuration.  Set by `elinit-daemon-reload' and
-cleared by `elinit-start' (which builds its own fresh plan).")
+  "The most recent plan struct.
+Set by `elinit-start', `elinit--reconcile', `elinit-daemon-reload',
+and isolate.  Used by conflict preflight and closure-aware views.")
 
 ;;; Program Loading
 
@@ -2419,8 +2418,11 @@ This normalizes short-form entries to their explicit form."
          (oneshot-blocking (elinit-entry-oneshot-blocking parsed))
          (oneshot-timeout (elinit-entry-oneshot-timeout parsed))
          (tags (elinit-entry-tags parsed))
+         (conflicts (elinit-entry-conflicts parsed))
          (plist nil))
     ;; Build plist from parsed values, only including non-default values
+    (when conflicts
+      (setq plist (plist-put plist :conflicts conflicts)))
     (when tags
       (setq plist (plist-put plist :tags tags)))
     (when requires
@@ -5053,16 +5055,15 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
 
 ;;; Conflict Transaction Primitives
 
-(defvar elinit--current-plan nil
-  "The most recent plan struct for conflict lookups.
-Set during `elinit-start', `elinit--reconcile', and isolate.")
-
 (defun elinit--conflict-preflight (id plan)
   "Stop active units that conflict with ID according to PLAN.
 Look up both forward conflicts (ID declares :conflicts) and reverse
 conflicts (other units declare :conflicts listing ID).  For each
-active conflicting unit, stop it and mark it conflict-suppressed.
-Return the list of stopped IDs."
+active conflicting unit -- whether a live process or a latched
+remain-after-exit oneshot -- stop or deactivate it and mark it
+conflict-suppressed.  Also cancel any pending delay or restart
+timers for conflicting units regardless of process state.
+Return the list of stopped or deactivated IDs."
   (let ((stopped nil))
     (when plan
       (let* ((forward (gethash id (elinit-plan-conflicts-deps plan)))
@@ -5071,21 +5072,38 @@ Return the list of stopped IDs."
                              (append forward reverse))))
         (dolist (cid all-conflicts)
           (unless (equal cid id)
-            (let ((proc (gethash cid elinit--processes)))
-              (when (and proc (process-live-p proc))
-                ;; Cancel any pending restart timer
-                (let ((timer (gethash cid elinit--restart-timers)))
+            (let ((proc (gethash cid elinit--processes))
+                  (alive (let ((p (gethash cid elinit--processes)))
+                           (and p (process-live-p p))))
+                  (latched (gethash cid elinit--remain-active)))
+              ;; Cancel pending restart timer unconditionally
+              (let ((timer (gethash cid elinit--restart-timers)))
+                (when (and timer (timerp timer))
+                  (cancel-timer timer)
+                  (remhash cid elinit--restart-timers)))
+              ;; Cancel pending delay timer unconditionally
+              (when (hash-table-p elinit--dag-delay-timers)
+                (let ((timer (gethash cid elinit--dag-delay-timers)))
                   (when (and timer (timerp timer))
                     (cancel-timer timer)
-                    (remhash cid elinit--restart-timers)))
-                ;; Mark as conflict-suppressed and manually-stopped
+                    (remhash cid elinit--dag-delay-timers))))
+              ;; Handle live process
+              (when alive
                 (puthash cid id elinit--conflict-suppressed)
                 (puthash cid t elinit--manually-stopped)
-                ;; Stop the process
                 (let ((kill-signal (elinit--kill-signal-for-id cid)))
                   (signal-process proc kill-signal))
                 (elinit--log 'info
                   "conflict: stopping %s (conflicts with %s)" cid id)
+                (push cid stopped))
+              ;; Handle latched remain-after-exit oneshot (not alive but active)
+              (when (and latched (not alive))
+                (remhash cid elinit--remain-active)
+                (puthash cid id elinit--conflict-suppressed)
+                (puthash cid t elinit--manually-stopped)
+                (elinit--log 'info
+                  "conflict: deactivating latched %s (conflicts with %s)"
+                  cid id)
                 (push cid stopped)))))))
     stopped))
 
@@ -5963,6 +5981,8 @@ Does not restart changed entries - use dashboard kill/start for that."
          (result (elinit--apply-actions actions plan))
          (stopped (plist-get result :stopped))
          (started (plist-get result :started)))
+    ;; Publish plan so conflict preflight uses current data
+    (setq elinit--current-plan plan)
     ;; Populate legacy globals from plan for dashboard
     (clrhash elinit--invalid)
     (when (boundp 'elinit--invalid-timers)

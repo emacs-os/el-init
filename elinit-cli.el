@@ -2906,6 +2906,8 @@ Requires --yes flag.  Transaction-scoped (does not persist default change)."
            (if json-p 'json 'human)))
          (t
           (let* ((plan (elinit--build-plan (elinit--effective-programs)))
+                 ;; Publish plan so conflict preflight uses current data
+                 (_ (setq elinit--current-plan plan))
                  (entries (elinit-plan-entries plan))
                  (found (cl-find target entries
                                  :key #'elinit-entry-id

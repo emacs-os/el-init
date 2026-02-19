@@ -1882,6 +1882,19 @@ conflicting ID, proving precedence derives from list position."
    (elinit-migrate-entry-to-service '("foo" :type "bad"))
    :type 'error))
 
+(ert-deftest elinit-test-migrate-entry-preserves-conflicts ()
+  "Migration round-trips :conflicts through plist form."
+  (let ((result (elinit--migrate-entry-to-plist
+                 '("sleep 100" :id "a" :conflicts ("b" "c")))))
+    (should (listp result))
+    (should (equal '("b" "c") (plist-get (cdr result) :conflicts)))))
+
+(ert-deftest elinit-test-migrate-entry-omits-nil-conflicts ()
+  "Migration omits :conflicts when nil."
+  (let ((result (elinit--migrate-entry-to-plist "nm-applet")))
+    ;; Simple string with no conflicts stays a string
+    (should (stringp result))))
+
 ;;; Bug fix verification tests
 
 (ert-deftest elinit-test-validate-after-must-be-string-or-list ()

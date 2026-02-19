@@ -475,7 +475,9 @@ restart-timer cancellation on `no'."
   (let ((elinit--processes (make-hash-table :test 'equal))
         (elinit--restart-timers (make-hash-table :test 'equal))
         (elinit--conflict-suppressed (make-hash-table :test 'equal))
-        (elinit--manually-stopped (make-hash-table :test 'equal)))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal)))
     ;; A conflicts B and B conflicts A
     (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
                        ("sleep 2" :id "b" :conflicts "a")))

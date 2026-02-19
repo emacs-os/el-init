@@ -1635,6 +1635,11 @@
                   ":success-exit-status"))
       (should (string-match-p kw scaffold)))))
 
+(ert-deftest elinit-test-scaffold-conflicts-key ()
+  "Scaffold template mentions :conflicts keyword."
+  (let ((scaffold (elinit--unit-file-scaffold "test-id")))
+    (should (string-match-p ":conflicts" scaffold))))
+
 ;;;; Phase N2: Metadata Surface Tests
 
 (ert-deftest elinit-test-cli-entry-info-description ()

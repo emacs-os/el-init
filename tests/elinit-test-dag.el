@@ -643,6 +643,8 @@ Only auto-started (not manually-started) disabled units are stopped."
         (elinit--restart-timers (make-hash-table :test 'equal))
         (elinit--conflict-suppressed (make-hash-table :test 'equal))
         (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal))
         (signals-sent nil))
     ;; Mock a running process for "b"
     (let ((fake-proc (start-process "b" nil "sleep" "300")))
@@ -667,8 +669,10 @@ Only auto-started (not manually-started) disabled units are stopped."
   (let ((elinit--processes (make-hash-table :test 'equal))
         (elinit--restart-timers (make-hash-table :test 'equal))
         (elinit--conflict-suppressed (make-hash-table :test 'equal))
-        (elinit--manually-stopped (make-hash-table :test 'equal)))
-    ;; No process for "b" - not running
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal)))
+    ;; No process for "b", no latched state - not active at all
     (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
                        ("sleep 2" :id "b")))
            (plan (elinit--build-plan programs))
@@ -684,6 +688,8 @@ Only auto-started (not manually-started) disabled units are stopped."
         (elinit--restart-timers (make-hash-table :test 'equal))
         (elinit--conflict-suppressed (make-hash-table :test 'equal))
         (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal))
         (timer (run-at-time 999 nil #'ignore)))
     ;; Set up a pending restart timer for "b"
     (puthash "b" timer elinit--restart-timers)
@@ -711,7 +717,9 @@ Only auto-started (not manually-started) disabled units are stopped."
   (let ((elinit--processes (make-hash-table :test 'equal))
         (elinit--restart-timers (make-hash-table :test 'equal))
         (elinit--conflict-suppressed (make-hash-table :test 'equal))
-        (elinit--manually-stopped (make-hash-table :test 'equal)))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal)))
     (should (null (elinit--conflict-preflight "a" nil)))))
 
 (ert-deftest elinit-test-conflict-preflight-symmetric ()
@@ -719,7 +727,9 @@ Only auto-started (not manually-started) disabled units are stopped."
   (let ((elinit--processes (make-hash-table :test 'equal))
         (elinit--restart-timers (make-hash-table :test 'equal))
         (elinit--conflict-suppressed (make-hash-table :test 'equal))
-        (elinit--manually-stopped (make-hash-table :test 'equal)))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal)))
     ;; b declares conflict with a, but we start a
     (let ((fake-proc (start-process "b" nil "sleep" "300")))
       (puthash "b" fake-proc elinit--processes)
@@ -731,6 +741,83 @@ Only auto-started (not manually-started) disabled units are stopped."
         (should (member "b" stopped)))
       (when (process-live-p fake-proc)
         (delete-process fake-proc)))))
+
+(ert-deftest elinit-test-conflict-preflight-latched-oneshot ()
+  "Conflict preflight deactivates latched remain-after-exit oneshot."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal)))
+    ;; b is a latched oneshot (not alive, but remain-active)
+    (puthash "b" t elinit--remain-active)
+    (let* ((programs '(("true" :id "a" :conflicts "b")
+                       ("true" :id "b" :type oneshot :remain-after-exit t)))
+           (plan (elinit--build-plan programs))
+           (stopped (elinit--conflict-preflight "a" plan)))
+      ;; b should be in stopped list
+      (should (member "b" stopped))
+      ;; b should be conflict-suppressed
+      (should (equal (gethash "b" elinit--conflict-suppressed) "a"))
+      ;; remain-active should be cleared
+      (should (null (gethash "b" elinit--remain-active))))))
+
+(ert-deftest elinit-test-conflict-preflight-cancels-delay-timer ()
+  "Conflict preflight cancels pending delay timer."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal))
+        (timer (run-at-time 999 nil #'ignore)))
+    ;; b has a pending delay timer (not yet started)
+    (puthash "b" timer elinit--dag-delay-timers)
+    (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
+                       ("sleep 2" :id "b")))
+           (plan (elinit--build-plan programs)))
+      (elinit--conflict-preflight "a" plan)
+      ;; Delay timer should be cancelled and removed
+      (should (null (gethash "b" elinit--dag-delay-timers))))))
+
+(ert-deftest elinit-test-conflict-preflight-restart-timer-no-process ()
+  "Conflict preflight cancels restart timer even without live process."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal))
+        (timer (run-at-time 999 nil #'ignore)))
+    ;; b has a pending restart timer but no live process
+    (puthash "b" timer elinit--restart-timers)
+    (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
+                       ("sleep 2" :id "b")))
+           (plan (elinit--build-plan programs)))
+      (elinit--conflict-preflight "a" plan)
+      ;; Restart timer should be cancelled and removed
+      (should (null (gethash "b" elinit--restart-timers))))))
+
+(ert-deftest elinit-test-reconcile-publishes-current-plan ()
+  "Reconcile publishes elinit--current-plan for conflict lookups."
+  (elinit-test-with-unit-files
+      '(("true" :id "svc" :type simple))
+    (let ((elinit--current-plan nil)
+          (elinit--enabled-override (make-hash-table :test 'equal))
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--restart-override (make-hash-table :test 'equal))
+          (elinit--logging (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal)))
+      (cl-letf (((symbol-function 'elinit--start-process)
+                 (lambda (_id _cmd _log _type _restart &rest _args) t))
+                ((symbol-function 'elinit--refresh-dashboard) #'ignore)
+                ((symbol-function 'executable-find) (lambda (_) t)))
+        (elinit--reconcile)
+        ;; Plan should now be published
+        (should (elinit-plan-p elinit--current-plan))))))
 
 (provide 'elinit-test-dag)
 ;;; elinit-test-dag.el ends here
