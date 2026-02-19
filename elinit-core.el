@@ -4356,18 +4356,20 @@ LIMITS-ENTRY, when non-nil, is the parsed entry tuple for resource limits."
     (puthash id
              (run-at-time delay nil
                           (lambda ()
-                            ;; Stop conflicting units before restarting
-                            (elinit--conflict-preflight
-                             id elinit--current-plan)
-                            (elinit--start-process
-                             id cmd default-logging type config-restart t
-                             working-directory environment
-                             environment-file restart-sec
-                             unit-file-directory
-                             user group
-                             stdout-log-file stderr-log-file
-                             sandbox-entry log-format
-                             limits-entry)))
+                            ;; Guard: skip if suppressed between schedule and fire
+                            (unless (gethash id elinit--conflict-suppressed)
+                              ;; Stop conflicting units before restarting
+                              (elinit--conflict-preflight
+                               id elinit--current-plan)
+                              (elinit--start-process
+                               id cmd default-logging type config-restart t
+                               working-directory environment
+                               environment-file restart-sec
+                               unit-file-directory
+                               user group
+                               stdout-log-file stderr-log-file
+                               sandbox-entry log-format
+                               limits-entry))))
              elinit--restart-timers)))
 
 (defun elinit--make-process-sentinel (id cmd default-logging type config-restart
@@ -5090,8 +5092,17 @@ Return the list of stopped or deactivated IDs."
         (when alive
           (puthash cid id elinit--conflict-suppressed)
           (puthash cid t elinit--manually-stopped)
-          (let ((kill-signal (elinit--kill-signal-for-id cid)))
-            (signal-process proc kill-signal))
+          (let ((kill-signal (elinit--kill-signal-for-id cid))
+                (kill-mode (elinit--kill-mode-for-id cid))
+                (p proc))
+            (signal-process p kill-signal)
+            ;; SIGKILL escalation timer (same as manual-stop)
+            (run-at-time elinit-shutdown-timeout nil
+                         (lambda ()
+                           (when (process-live-p p)
+                             (if (eq kill-mode 'mixed)
+                                 (elinit--kill-with-descendants p)
+                               (signal-process p 'SIGKILL))))))
           (elinit--log 'info
             "conflict: stopping %s (conflicts with %s)" cid id)
           (push cid stopped))

@@ -847,5 +847,70 @@ conflict-stopped rather than done."
         ;; Plan should now be published
         (should (elinit-plan-p elinit--current-plan))))))
 
+(ert-deftest elinit-test-conflict-preflight-sigkill-escalation ()
+  "Conflict preflight sets up SIGKILL escalation timer for stubborn processes."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--oneshot-completed (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal))
+        (escalation-fired nil))
+    ;; Mock a running process for "b"
+    (let ((fake-proc (start-process "b" nil "sleep" "300")))
+      (puthash "b" fake-proc elinit--processes)
+      (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
+                         ("sleep 2" :id "b")))
+             (plan (elinit--build-plan programs)))
+        ;; Mock run-at-time to capture escalation timer setup
+        (let ((original-run-at-time (symbol-function 'run-at-time)))
+          (cl-letf (((symbol-function 'run-at-time)
+                     (lambda (secs repeat fn &rest args)
+                       ;; Detect the escalation timer (non-nil secs, nil repeat)
+                       (when (and (numberp secs) (null repeat)
+                                  (> secs 0))
+                         (setq escalation-fired t))
+                       ;; Don't actually schedule
+                       nil)))
+            (elinit--conflict-preflight "a" plan))))
+      ;; SIGKILL escalation timer should have been set up
+      (should escalation-fired)
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+(ert-deftest elinit-test-restart-callback-suppression-guard ()
+  "Restart callback skips start when unit is conflict-suppressed at fire time."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal))
+        (elinit--current-plan nil)
+        (elinit--failed (make-hash-table :test 'equal))
+        (start-called nil))
+    ;; Schedule a restart via elinit--schedule-restart
+    (cl-letf (((symbol-function 'elinit--start-process)
+               (lambda (&rest _args)
+                 (setq start-called t)
+                 t))
+              ((symbol-function 'elinit--format-exit-status)
+               (lambda (&rest _) "exited 0")))
+      ;; Schedule with 0-delay so timer fires immediately on sit-for
+      (let ((elinit-restart-delay 0))
+        (elinit--schedule-restart
+         "svc" "sleep 300" t 'simple 'always "exited" 0)
+        ;; Set conflict-suppressed AFTER scheduling (simulates race)
+        (puthash "svc" "other" elinit--conflict-suppressed)
+        ;; Let the timer fire
+        (sit-for 0.1)
+        ;; Start should NOT have been called
+        (should-not start-called)))
+    ;; Clean up timer if still pending
+    (let ((timer (gethash "svc" elinit--restart-timers)))
+      (when (and timer (timerp timer))
+        (cancel-timer timer)))))
+
 (provide 'elinit-test-dag)
 ;;; elinit-test-dag.el ends here

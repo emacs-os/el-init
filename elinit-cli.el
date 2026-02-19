@@ -2932,17 +2932,22 @@ Requires --yes flag.  Transaction-scoped (does not persist default change)."
                      (closure (elinit--expand-transaction
                                target entries-by-id members
                                (elinit-plan-order-index plan)))
-                     ;; Determine current running IDs
-                     (running-ids nil)
+                     ;; Determine current active IDs (running + latched oneshots)
+                     (active-ids nil)
                      (_ (maphash
                          (lambda (id proc)
                            (when (and proc (process-live-p proc))
-                             (push id running-ids)))
+                             (push id active-ids)))
                          elinit--processes))
-                     ;; Stop entries running but not in new closure
+                     (_ (maphash
+                         (lambda (id _val)
+                           (unless (member id active-ids)
+                             (push id active-ids)))
+                         elinit--remain-active))
+                     ;; Stop entries active but not in new closure
                      (stop-count 0)
                      (start-count 0))
-                (dolist (id running-ids)
+                (dolist (id active-ids)
                   (unless (gethash id closure)
                     (elinit--manual-stop id)
                     (cl-incf stop-count)))
@@ -2954,7 +2959,8 @@ Requires --yes flag.  Transaction-scoped (does not persist default change)."
                                  (proc (gethash id elinit--processes)))
                             (or (not (gethash id closure))
                                 (eq (elinit-entry-type e) 'target)
-                                (and proc (process-live-p proc)))))
+                                (and proc (process-live-p proc))
+                                (gethash id elinit--remain-active))))
                         (elinit-plan-by-target plan))))
                   (setq start-count (length to-start))
                   ;; Start via DAG scheduler (respects oneshot-blocking)
