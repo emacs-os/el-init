@@ -180,6 +180,21 @@
       (elinit--pid1-boot)
       (should (equal '(start load-script) call-order)))))
 
+(ert-deftest elinit-test-pid1-boot-require-missing-skips-start ()
+  "Boot with `require' policy and missing script errors, skipping start.
+When `elinit--pid1-load-script' signals an error due to a missing
+required script, `elinit-start' must not be called."
+  (let ((elinit-pid1-mode-enabled t)
+        (elinit-pid1-boot-script "/nonexistent/required-boot.el")
+        (elinit-pid1-boot-policy 'require)
+        (start-called nil))
+    (cl-letf (((symbol-function 'elinit--log)
+               (lambda (&rest _)))
+              ((symbol-function 'elinit-start)
+               (lambda () (setq start-called t))))
+      (should-error (elinit--pid1-boot))
+      (should-not start-called))))
+
 ;;;; Shutdown function tests
 
 (ert-deftest elinit-test-pid1-shutdown-calls-stop ()
@@ -216,6 +231,21 @@
                (lambda () (push 'stop call-order))))
       (elinit--pid1-shutdown)
       (should (equal '(stop load-script) call-order)))))
+
+(ert-deftest elinit-test-pid1-shutdown-require-missing-skips-stop ()
+  "Shutdown with `require' policy and missing script errors, skipping stop.
+When `elinit--pid1-load-script' signals an error due to a missing
+required script, `elinit-stop-now' must not be called."
+  (let ((elinit-pid1-mode-enabled t)
+        (elinit-pid1-shutdown-script "/nonexistent/required-shutdown.el")
+        (elinit-pid1-shutdown-policy 'require)
+        (stop-called nil))
+    (cl-letf (((symbol-function 'elinit--log)
+               (lambda (&rest _)))
+              ((symbol-function 'elinit-stop-now)
+               (lambda () (setq stop-called t))))
+      (should-error (elinit--pid1-shutdown))
+      (should-not stop-called))))
 
 ;;;; Hook registration tests
 
