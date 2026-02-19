@@ -10,8 +10,8 @@ them into `libexec/Makefile` so they can run locally and in CI as part of the
 normal quality gates.
 
 Scope:
-- `libexec/supervisor-logd.c`
-- `libexec/supervisor-runas.c`
+- `libexec/elinit-logd.c`
+- `libexec/elinit-runas.c`
 - `libexec/Makefile`
 - root `Makefile` (integration point)
 - `CLAUDE.md` testing requirements
@@ -43,8 +43,8 @@ Note:
 
 Create this directory structure:
 
-- `libexec/tests/test_supervisor_logd.c`
-- `libexec/tests/test_supervisor_runas.c`
+- `libexec/tests/test_elinit_logd.c`
+- `libexec/tests/test_elinit_runas.c`
 - `libexec/tests/test_helpers.h`
 - `libexec/tests/test_helpers.c`
 - `libexec/tests/vendor/acutest.h`
@@ -67,7 +67,7 @@ Add variables:
 - `TEST_BINS`
 
 Add targets:
-- `all`: build `supervisor-runas` and `supervisor-logd` (existing behavior)
+- `all`: build `elinit-runas` and `elinit-logd` (existing behavior)
 - `tests`: build all test executables
 - `test`: run all test executables
 - `check`: run `all` then `test`
@@ -91,7 +91,7 @@ This ensures `make check` validates both Elisp and C paths.
 
 ## Coverage Plan
 
-### `supervisor-logd` comprehensive coverage
+### `elinit-logd` comprehensive coverage
 
 Text mode:
 - Required field presence in every record line.
@@ -116,7 +116,7 @@ File behavior:
 - Reopen on SIGHUP.
 - Exit handling and clean EOF behavior.
 
-### `supervisor-runas` comprehensive coverage
+### `elinit-runas` comprehensive coverage
 
 Argument and usage handling:
 - Missing command, missing identity, unknown options.

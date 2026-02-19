@@ -31,12 +31,12 @@ Admin-facing guidance remains in `static-builds/README.md`.
 1. Patch development in `~/repos/emacs`.
 2. Exporting patch files into this repository under `static-builds/patches/`.
 3. Defining stable runtime behavior and integration points required by
-   supervisor.el.
+   elinit.
 
 ### Out of scope
 1. Replacing initramfs responsibilities (mount/fsck/network).
 2. Making PID1 behavior default for all Emacs invocations.
-3. Hard-coding supervisor.el as a compile-time Emacs dependency.
+3. Hard-coding elinit as a compile-time Emacs dependency.
 
 ## Required Deliverables
 
@@ -46,8 +46,8 @@ Admin-facing guidance remains in `static-builds/README.md`.
    - `static-builds/patches/emacs-0002-pid1-hooks-and-signals.patch`
 3. A validation note with exact build/test commands and outputs:
    - `static-builds/patches/README-pid1-validation.md`
-4. A short integration note mapping Emacs hook points to supervisor behavior:
-   - `static-builds/patches/README-pid1-supervisor-integration.md`
+4. A short integration note mapping Emacs hook points to elinit behavior:
+   - `static-builds/patches/README-pid1-elinit-integration.md`
 
 ## Behavioral Contract
 
@@ -59,7 +59,7 @@ Admin-facing guidance remains in `static-builds/README.md`.
 ### 2) PID1 mode state
 1. Emacs MUST expose a Lisp-visible boolean for PID1 mode state.
 2. PID1 mode MUST be queryable from Lisp during startup and runtime.
-3. PID1 mode MUST NOT require supervisor.el to be loaded.
+3. PID1 mode MUST NOT require elinit to be loaded.
 
 ### 3) Child reaping
 1. PID1 mode MUST reap child processes using non-blocking wait semantics.
@@ -87,7 +87,7 @@ Admin-facing guidance remains in `static-builds/README.md`.
 ### 6) rc script integration contract
 1. Emacs patch MUST support running Lisp-managed boot/shutdown logic through
    hook points.
-2. Script execution policy logic MUST remain in Lisp layer (supervisor/site
+2. Script execution policy logic MUST remain in Lisp layer (elinit/site
    startup), not hard-coded in C.
 3. Default script paths for this repository MUST be:
    - `/lib/init/rc.boot.el`
@@ -95,17 +95,17 @@ Admin-facing guidance remains in `static-builds/README.md`.
 4. Missing script behavior MUST be policy-driven by Lisp config, not by C
    fatal exits.
 
-## Supervisor Integration Contract
-This patch MUST enable the supervisor-side workflow defined in
+## Elinit Integration Contract
+This patch MUST enable the elinit-side workflow defined in
 `static-builds/PLAN.md` and `static-builds/README.md`.
 
-Required supervisor-side variables (implemented in this repository) are:
+Required elinit-side variables (implemented in this repository) are:
 
-1. `supervisor-pid1-mode-enabled`
-2. `supervisor-pid1-boot-script`
-3. `supervisor-pid1-shutdown-script`
-4. `supervisor-pid1-boot-policy`
-5. `supervisor-pid1-shutdown-policy`
+1. `elinit-pid1-mode-enabled`
+2. `elinit-pid1-boot-script`
+3. `elinit-pid1-shutdown-script`
+4. `elinit-pid1-boot-policy`
+5. `elinit-pid1-shutdown-policy`
 
 Policies MUST support:
 
@@ -120,7 +120,7 @@ variables to drive behavior entirely from Lisp.
 On completion, this plan MUST unblock the following downstream work:
 
 1. `static-builds/PLAN.md` Track A Phase A3/A4 for
-   `*-supervisor-patched-for-pid1` variants.
+   `*-elinit-patched-for-pid1` variants.
 2. Finalization of PID1 sections in `static-builds/README.md` from "planned"
    wording to "available" wording.
 3. A coherent static-builds document set where:
@@ -191,7 +191,7 @@ Deliverables:
 
 1. Add stable hook symbols and invocation points.
 2. Document hook semantics and timing.
-3. Document integration contract for supervisor-side rc logic.
+3. Document integration contract for elinit-side rc logic.
 
 Acceptance:
 
@@ -219,7 +219,7 @@ This plan is complete when:
 
 1. Emacs patch artifacts exist in `static-builds/patches/`.
 2. `--pid1` mode, reaping, and hook primitives are implemented and validated.
-3. Supervisor-side PID1 Lisp policies can be layered on top without additional
+3. Elinit-side PID1 Lisp policies can be layered on top without additional
    C changes.
 
 ## Explicit Non-Goals

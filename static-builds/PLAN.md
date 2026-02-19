@@ -1,4 +1,4 @@
-# PLAN: static-builds supervisor-baked variants and optional PID1 mode
+# PLAN: static-builds elinit-baked variants and optional PID1 mode
 
 Date: 2026-02-18
 Status: Draft Locked
@@ -12,7 +12,7 @@ All requirements in this file are mandatory.
 - SHOULD and MAY are not used.
 
 ## Objective
-Add a new "baked-in supervisor" static Emacs path that requires no prior user
+Add a new "baked-in elinit" static Emacs path that requires no prior user
 configuration, while preserving existing static build variants exactly as-is.
 
 This plan has two tracks:
@@ -53,30 +53,30 @@ The following existing files MUST remain unchanged in this plan:
 
 Only two new build files are introduced in Track A:
 
-- `static-builds/PKGBUILD-static-nox-supervisor-patched-for-pid1`
-- `static-builds/emacs-static-nox-supervisor-patched-for-pid1.nix`
+- `static-builds/PKGBUILD-static-nox-elinit-patched-for-pid1`
+- `static-builds/emacs-static-nox-elinit-patched-for-pid1.nix`
 
 ## Product Contract
 
-### Baked-in supervisor contract
+### Baked-in elinit contract
 The two new variants MUST produce a static Emacs build that:
 
-1. Includes supervisor.el in the final artifact.
-2. Boots with supervisor enabled by default, with no user init file required.
-3. Starts supervisor automatically on startup through packaged startup Lisp.
+1. Includes elinit in the final artifact.
+2. Boots with elinit enabled by default, with no user init file required.
+3. Starts elinit automatically on startup through packaged startup Lisp.
 4. Provides a documented escape hatch to disable autostart at runtime.
 
 ### C helper provisioning contract
 The two new variants MUST define how `libexec` C helpers are provided:
 
-1. `supervisor-logd` and `supervisor-runas` MUST be built at package-build
+1. `elinit-logd` and `elinit-runas` MUST be built at package-build
    time and installed as executable files in the shipped artifact.
 2. Normal runtime MUST NOT depend on having a C compiler installed.
 3. Helper source files in runtime images MUST be omitted, or guaranteed older
    than binaries, so startup does not spuriously mark helpers stale.
 4. Admin fallback path MUST be documented:
    - either supply externally managed helper binaries and point
-     `supervisor-logd-command` / `supervisor-runas-command` to them,
+     `elinit-logd-command` / `elinit-runas-command` to them,
    - or rebuild helpers from source in an admin/dev environment.
 5. Documentation-only fallback is acceptable for admins, but prebuilt helper
    binaries remain the default contract for these two new variants.
@@ -98,8 +98,8 @@ MUST NOT imply PID1 mode is enabled by default.
 Deliverables:
 
 1. Lock canonical names:
-   - `PKGBUILD-static-nox-supervisor-patched-for-pid1`
-   - `emacs-static-nox-supervisor-patched-for-pid1.nix`
+   - `PKGBUILD-static-nox-elinit-patched-for-pid1`
+   - `emacs-static-nox-elinit-patched-for-pid1.nix`
 2. Document exact relationship to "full static nox" baseline.
 3. Add file header notes that originals are untouched legacy variants.
 
@@ -112,24 +112,24 @@ Acceptance:
 Deliverables:
 
 1. Add packaged startup Lisp that is installed into site startup paths and
-   auto-loads supervisor.
-2. Bootstrap MUST call supervisor startup path without requiring `~/.emacs`.
+   auto-loads elinit.
+2. Bootstrap MUST call elinit startup path without requiring `~/.emacs`.
 3. Bootstrap MUST include an explicit disable mechanism:
    - env var gate, or
    - Lisp variable gate in early init context.
 
 Acceptance:
 
-1. Fresh runtime with no user config starts supervisor automatically.
+1. Fresh runtime with no user config starts elinit automatically.
 2. Disable gate prevents autostart predictably.
 
 ### Phase A3: PKGBUILD baked variant
 Deliverables:
 
-1. Implement `PKGBUILD-static-nox-supervisor-patched-for-pid1` as a new variant.
+1. Implement `PKGBUILD-static-nox-elinit-patched-for-pid1` as a new variant.
 2. Reuse static-linking checks already used by existing variants.
-3. Install supervisor runtime files and bootstrap startup Lisp in package.
-4. Build and install `libexec/supervisor-logd` and `libexec/supervisor-runas`
+3. Install elinit runtime files and bootstrap startup Lisp in package.
+4. Build and install `libexec/elinit-logd` and `libexec/elinit-runas`
    in the package payload.
 5. Add package-level smoke test that validates baked startup behavior.
 6. Add smoke check that helper binaries are executable and no startup rebuild is
@@ -141,16 +141,16 @@ Deliverables:
 Acceptance:
 
 1. Package builds and passes static checks.
-2. `emacs --batch` smoke confirms supervisor load path is valid.
+2. `emacs --batch` smoke confirms elinit load path is valid.
 3. Non-interactive startup test confirms autostart hook executes.
 
 ### Phase A4: Nix baked variant
 Deliverables:
 
-1. Implement `emacs-static-nox-supervisor-patched-for-pid1.nix` as a new variant.
+1. Implement `emacs-static-nox-elinit-patched-for-pid1.nix` as a new variant.
 2. Keep feature set aligned with PKGBUILD baked variant.
-3. Install the same supervisor files and startup bootstrap logic.
-4. Build and install `libexec/supervisor-logd` and `libexec/supervisor-runas`
+3. Install the same elinit files and startup bootstrap logic.
+4. Build and install `libexec/elinit-logd` and `libexec/elinit-runas`
    in the derivation output.
 5. Add Nix-side smoke tests equivalent to PKGBUILD checks.
 6. Add smoke check that helper binaries are executable and no startup rebuild is
@@ -161,7 +161,7 @@ Deliverables:
 
 Acceptance:
 
-1. Nix build produces static binary and baked supervisor files.
+1. Nix build produces static binary and baked elinit files.
 2. Nix smoke test confirms autostart bootstrap is wired.
 3. Runtime behavior matches PKGBUILD baked variant contract.
 
@@ -198,15 +198,15 @@ Acceptance:
 1. Patch design documents signal-safety and reaping semantics.
 2. Default behavior remains unchanged when PID1 mode is disabled.
 
-### Phase B2: Supervisor PID1 Lisp interface
+### Phase B2: Elinit PID1 Lisp interface
 Deliverables:
 
 1. Introduce PID1 control variables:
-   - `supervisor-pid1-mode-enabled`
-   - `supervisor-pid1-boot-script`
-   - `supervisor-pid1-shutdown-script`
-   - `supervisor-pid1-boot-policy`
-   - `supervisor-pid1-shutdown-policy`
+   - `elinit-pid1-mode-enabled`
+   - `elinit-pid1-boot-script`
+   - `elinit-pid1-shutdown-script`
+   - `elinit-pid1-boot-policy`
+   - `elinit-pid1-shutdown-policy`
 2. Policy set MUST support:
    - `never`
    - `if-present`
@@ -255,7 +255,7 @@ This plan does not include:
 Track A is complete when:
 
 1. Exactly two new build files exist and are documented.
-2. Both produce static Emacs with baked-in supervisor autostart.
+2. Both produce static Emacs with baked-in elinit autostart.
 3. Existing six build files remain unchanged.
 4. Required PID1 patch artifact prerequisite is satisfied for PID1-labeled
    outputs.

@@ -9,9 +9,9 @@ Add first-class automated tests for all shell programs in `sbin/` and integrate
 them with `./sbin/Makefile` and root `make check`.
 
 Targets in scope:
-- `sbin/supervisor-logrotate`
-- `sbin/supervisor-log-prune`
-- `sbin/supervisorctl`
+- `sbin/elinit-logrotate`
+- `sbin/elinit-log-prune`
+- `sbin/elinitctl`
 
 ## Current State
 
@@ -77,7 +77,7 @@ Implementation constraints:
 - `sbin/tests/testlib.sh`
 - `sbin/tests/test-logrotate.sh`
 - `sbin/tests/test-log-prune.sh`
-- `sbin/tests/test-supervisorctl.sh`
+- `sbin/tests/test-elinitctl.sh`
 
 Each test file:
 - Starts with `#!/bin/sh` and `set -eu`
@@ -106,8 +106,8 @@ Create `sbin/Makefile` with these targets:
 
 Recommended variables:
 - `SHELL := /bin/sh`
-- `SCRIPTS := supervisor-logrotate supervisor-log-prune supervisorctl`
-- `TESTS := tests/test-logrotate.sh tests/test-log-prune.sh tests/test-supervisorctl.sh`
+- `SCRIPTS := elinit-logrotate elinit-log-prune elinitctl`
+- `TESTS := tests/test-logrotate.sh tests/test-log-prune.sh tests/test-elinitctl.sh`
 
 ## Root Makefile Integration
 
@@ -124,7 +124,7 @@ This keeps one canonical command:
 
 ## Coverage Plan
 
-### supervisor-logrotate
+### elinit-logrotate
 
 - Argument parsing and required `--log-dir`.
 - Validation for `--keep-days`.
@@ -134,7 +134,7 @@ This keeps one canonical command:
 - `--signal-reopen` behavior with valid/invalid pid files.
 - Tar present vs tar missing behavior.
 
-### supervisor-log-prune
+### elinit-log-prune
 
 - Argument parsing and required `--log-dir`.
 - Alias flags (`--vacuum`, `--vacuum-max-total-bytes`, `--format-hint`).
@@ -144,7 +144,7 @@ This keeps one canonical command:
 - Protection behavior (`--protect-id`, active file guards).
 - Dry-run output contract.
 
-### supervisorctl
+### elinitctl
 
 - Option parsing (`--json`, `--socket`, `--server-file`, `--timeout`).
 - Mutual exclusion of socket/server-file.
