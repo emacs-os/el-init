@@ -92,7 +92,7 @@ provides detailed reference material:
 - [[#security][Security]] - manager targeting, transport boundary, trust gate, sandbox, rlimits
 - [[#service-management-systems-comparison][Service Management Systems Comparison]] - matrix, conversions, import tooling
 - [[#development][Development]] - test/lint workflows
-- [[#topical-index][Topical Index]] - exhaustive cross-reference (last handbook section)
+- [[#topical-index][Topical Index]] - exhaustive cross-reference
 
 * From Lisp Machines to GNU Emacs
 :PROPERTIES:
@@ -162,10 +162,6 @@ Every window system.  VAXen to Apple Silicon.  The Lisp Machines sit in
 museums now.  GNU Emacs kept going.  It carried the same idea forward.
 The user should be able to take apart every layer of the system and put
 it back together differently.
-
-el-init comes from that tradition.  Emacs already manages your
-windows, your mail, your shell, your version control.  Managing your
-system services is just the next thing on the list.
 
 * Quick Start
 :PROPERTIES:
