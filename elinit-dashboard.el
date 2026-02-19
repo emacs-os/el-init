@@ -1239,9 +1239,10 @@ With prefix argument, show status legend instead."
         (princ (format " Requires: %s\n"
                        (mapconcat #'identity requires ", "))))
       (let ((conflicts (elinit-entry-conflicts entry)))
-        (when conflicts
-          (princ (format "Conflicts: %s\n"
-                         (mapconcat #'identity conflicts ", ")))))
+        (princ (format "Conflicts: %s\n"
+                       (if conflicts
+                           (mapconcat #'identity conflicts ", ")
+                         "none"))))
       ;; Target-specific convergence info
       (when (eq type 'target)
         (let* ((effective-id (elinit--resolve-target-alias id))
