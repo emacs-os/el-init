@@ -39,6 +39,9 @@
     (should (hash-table-p (elinit-plan-cycle-fallback-ids plan)))
     ;; order-index is a hash table
     (should (hash-table-p (elinit-plan-order-index plan)))
+    ;; conflicts-deps and conflict-reverse are hash tables
+    (should (hash-table-p (elinit-plan-conflicts-deps plan)))
+    (should (hash-table-p (elinit-plan-conflict-reverse plan)))
     ;; New Phase 3 fields are nil when no activation root
     (should-not (elinit-plan-target-members plan))
     (should-not (elinit-plan-activation-root plan))
@@ -1116,6 +1119,73 @@ Regression test: stderr pipe processes used to pollute the process list."
     (should (fboundp 'elinit-dashboard-menu))
     (should (get 'elinit-dashboard-menu 'transient--prefix))))
 
+
+;;;; Conflicts planner tests
+
+(ert-deftest elinit-test-plan-conflicts-metadata ()
+  "Plan with :conflicts builds conflicts-deps hash."
+  (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
+                     ("sleep 2" :id "b")))
+         (plan (elinit--build-plan programs)))
+    (should (hash-table-p (elinit-plan-conflicts-deps plan)))
+    (should (equal (gethash "a" (elinit-plan-conflicts-deps plan))
+                   '("b")))))
+
+(ert-deftest elinit-test-plan-conflicts-reverse ()
+  "Plan reverse map is symmetric: A conflicts B means B has A in reverse."
+  (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
+                     ("sleep 2" :id "b")))
+         (plan (elinit--build-plan programs)))
+    (should (member "a" (gethash "b" (elinit-plan-conflict-reverse plan))))))
+
+(ert-deftest elinit-test-plan-conflicts-missing-dropped ()
+  "Missing conflict target is warned and dropped from plan."
+  (let* ((programs '(("sleep 1" :id "a" :conflicts "nonexistent")))
+         (plan (elinit--build-plan programs)))
+    ;; Missing target should be dropped
+    (should (null (gethash "a" (elinit-plan-conflicts-deps plan))))))
+
+(ert-deftest elinit-test-plan-conflicts-fingerprint ()
+  "Plan with conflicts has different fingerprint than without."
+  (let* ((programs-a '(("sleep 1" :id "a")
+                       ("sleep 2" :id "b")))
+         (programs-b '(("sleep 1" :id "a" :conflicts "b")
+                       ("sleep 2" :id "b")))
+         (plan-a (elinit--build-plan programs-a))
+         (plan-b (elinit--build-plan programs-b)))
+    (should-not (equal (plist-get (elinit-plan-meta plan-a) :fingerprint)
+                       (plist-get (elinit-plan-meta plan-b) :fingerprint)))))
+
+(ert-deftest elinit-test-plan-conflicts-self-rejected ()
+  "Self-reference in :conflicts is caught by validation."
+  (let* ((programs '(("sleep 1" :id "a" :conflicts "a")))
+         (plan (elinit--build-plan programs)))
+    ;; Entry with self-conflict is invalid
+    (should (gethash "a" (elinit-plan-invalid plan)))))
+
+(ert-deftest elinit-test-plan-conflicts-deterministic ()
+  "Same input produces same conflicts metadata."
+  (let* ((programs '(("sleep 1" :id "a" :conflicts ("b" "c"))
+                     ("sleep 2" :id "b")
+                     ("sleep 3" :id "c")))
+         (plan1 (elinit--build-plan programs))
+         (plan2 (elinit--build-plan programs)))
+    (should (equal (gethash "a" (elinit-plan-conflicts-deps plan1))
+                   (gethash "a" (elinit-plan-conflicts-deps plan2))))
+    (should (equal (plist-get (elinit-plan-meta plan1) :fingerprint)
+                   (plist-get (elinit-plan-meta plan2) :fingerprint)))))
+
+(ert-deftest elinit-test-plan-conflicts-both-directions ()
+  "Both A and B declaring :conflicts produces both forward and reverse."
+  (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
+                     ("sleep 2" :id "b" :conflicts "a")))
+         (plan (elinit--build-plan programs)))
+    (should (equal (gethash "a" (elinit-plan-conflicts-deps plan))
+                   '("b")))
+    (should (equal (gethash "b" (elinit-plan-conflicts-deps plan))
+                   '("a")))
+    (should (member "b" (gethash "a" (elinit-plan-conflict-reverse plan))))
+    (should (member "a" (gethash "b" (elinit-plan-conflict-reverse plan))))))
 
 (provide 'elinit-test-plan)
 ;;; elinit-test-plan.el ends here

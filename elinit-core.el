@@ -1784,6 +1784,8 @@ identical input.  Within `meta', only `:timestamp' is non-deterministic;
   cycle-fallback-ids ; hash: id -> t for entries with cleared edges
   order-index      ; hash: id -> original index for stable ordering
   target-members   ; hash: target-id -> (:requires (ids) :wants (ids))
+  conflicts-deps   ; hash: id -> validated :conflicts list
+  conflict-reverse  ; hash: id -> list of ids that conflict with this id
   activation-root  ; resolved root target ID string, or nil
   activation-closure ; hash: id -> t for entries in the closure, or nil
   meta)            ; plist with :version, :timestamp (non-deterministic)
@@ -2879,6 +2881,19 @@ The plan includes:
                            (lambda (dep)
                              (member dep all-ids))
                            wants))
+                         ;; Validate :conflicts - warn + drop missing
+                         (conflicts (elinit-entry-conflicts entry))
+                         (valid-conflicts
+                          (cl-remove-if-not
+                           (lambda (dep)
+                             (cond
+                              ((not (member dep all-ids))
+                               (elinit--log 'warning
+                                 ":conflicts '%s' for %s does not exist, dropping"
+                                 dep id)
+                               nil)
+                              (t t)))
+                           conflicts))
                          ;; Auto-order rule: for target entries, :requires
                          ;; and :wants imply :after (ordering edges)
                          (valid-after
@@ -2899,7 +2914,8 @@ The plan includes:
                                   valid-wants))
                              combined-deps)
                     ;; Return entry with validated deps
-                    ;; :after is at index 9, :requires at index 13
+                    ;; :after is at index 9, :requires at index 13,
+                    ;; :conflicts at index 44
                     (let ((new-entry entry))
                       (unless (equal after valid-after)
                         (setq new-entry
@@ -2911,6 +2927,10 @@ The plan includes:
                               (append (cl-subseq new-entry 0 13)
                                       (list valid-requires)
                                       (cl-subseq new-entry 14))))
+                      (unless (equal conflicts valid-conflicts)
+                        (setq new-entry
+                              (append (cl-subseq new-entry 0 44)
+                                      (list valid-conflicts))))
                       new-entry)))
                 valid-entries)))
           ;; Filter out entries marked invalid during validation
@@ -2940,7 +2960,19 @@ The plan includes:
             (let ((final-entries (cl-remove-if
                                   (lambda (entry)
                                     (gethash (elinit-entry-id entry) invalid))
-                                  valid-entries)))
+                                  valid-entries))
+                  ;; Build conflicts maps from validated entries
+                  (conflicts-deps (make-hash-table :test 'equal))
+                  (conflict-reverse (make-hash-table :test 'equal)))
+              (dolist (entry sorted-entries)
+                (let* ((id (elinit-entry-id entry))
+                       (clist (elinit-entry-conflicts entry)))
+                  (when clist
+                    (puthash id clist conflicts-deps)
+                    (dolist (target clist)
+                      (puthash target
+                               (cons id (gethash target conflict-reverse))
+                               conflict-reverse)))))
               ;; Return the plan struct
               (elinit-plan--create
                :entries final-entries
@@ -2951,6 +2983,8 @@ The plan includes:
                :dependents dependents
                :cycle-fallback-ids cycle-fallback-ids
                :order-index order-index
+               :conflicts-deps conflicts-deps
+               :conflict-reverse conflict-reverse
                :target-members nil
                :activation-root nil
                :activation-closure nil
@@ -2959,23 +2993,27 @@ The plan includes:
                            :fingerprint
                            (elinit--plan-fingerprint
                             sorted-entries deps requires-deps
-                            order-index))))))))))
+                            order-index conflicts-deps))))))))))
 
-(defun elinit--plan-fingerprint (entries deps requires-deps order-index)
+(defun elinit--plan-fingerprint (entries deps requires-deps
+                                          order-index conflicts-deps)
   "Compute deterministic fingerprint of plan content.
 ENTRIES is the sorted entry list.  DEPS and REQUIRES-DEPS are hashes
 of id to dependency lists.  ORDER-INDEX is hash of id to original index.
+CONFLICTS-DEPS is hash of id to validated conflicts list.
 Returns a hex string (SHA-1 of serialized plan data)."
   (let ((parts nil))
     (dolist (entry entries)
       (let* ((id (elinit-entry-id entry))
              (d (gethash id deps))
              (r (gethash id requires-deps))
-             (idx (gethash id order-index)))
-        (push (format "%s:%s:%s:%s" id
+             (idx (gethash id order-index))
+             (c (gethash id conflicts-deps)))
+        (push (format "%s:%s:%s:%s:%s" id
                       (prin1-to-string d)
                       (prin1-to-string r)
-                      idx)
+                      idx
+                      (prin1-to-string c))
               parts)))
     (sha1 (mapconcat #'identity (nreverse parts) "\n"))))
 
