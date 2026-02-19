@@ -13,7 +13,7 @@ gates live in plan files:
 1. `PLAN-pid1-emacs-patch-support.md` defines the Emacs patch prerequisite.
    Status: **complete** — patches in `patches/`.
 2. `PLAN.md` defines the packaging/integration plan.
-   Status: **Track A complete** — all 8 variants available.
+   Status: **Track A in progress** -- 6 vanilla variants available, 2 baked variants under review.
 3. This `README.md` is the administrator handbook.
 
 ## Pick your path
@@ -23,7 +23,7 @@ gates live in plan files:
    elinit, and I handle early boot in initramfs.
 3. I want static Emacs with `--pid1` reaping support plus baked-in
    elinit, and I handle early boot in Emacs Lisp (`rc.boot.el` /
-   `rc.shutdown.el`).
+   `rc.shutdown.el`). **(Planned -- Track B, not yet implemented.)**
 
 ## Variant matrix
 
@@ -108,7 +108,7 @@ These two paths share the same base mechanics:
 2. Install Emacs at a stable absolute path, typically `/usr/bin/emacs`.
 3. Configure bootloader kernel cmdline to hand off PID1 to Emacs:
    `init=/usr/bin/emacs`
-4. Place system unit files under `/etc/elinit/`.
+4. Place system unit files under `/etc/elinit.el/`.
 5. Set unit enablement in unit files (`:enabled t`) plus target membership
    (`:wanted-by (...)` or `:required-by (...)`) before first boot.
 6. Keep helper binaries (`elinit-logd`, `elinit-runas`) installed and
@@ -134,7 +134,7 @@ Use these canonical system paths:
 
 | Purpose | Path |
 | --- | --- |
-| Elinit unit files (system admin tier) | `/etc/elinit/*.el` |
+| Elinit unit files (system admin tier) | `/etc/elinit.el/*.el` |
 | Optional rc boot script | `/lib/init/rc.boot.el` |
 | Optional rc shutdown script | `/lib/init/rc.shutdown.el` |
 | Optional local boot extension | `/etc/rc.0.local.el` |
@@ -155,10 +155,10 @@ Recommended workflow:
 Example:
 
 ```bash
-install -d /mnt/etc/elinit
+install -d /mnt/etc/elinit.el
 install -d /mnt/lib/init
 
-cat > /mnt/etc/elinit/sshd.el <<'EOF'
+cat > /mnt/etc/elinit.el/sshd.el <<'EOF'
 (:id "sshd"
  :command "/usr/sbin/sshd -D -e"
  :type simple
@@ -182,9 +182,15 @@ Use this when mount/dev/fsck/network setup is already done before PID1 handoff.
 
 1. Do not rely on rc Lisp scripts for core early init.
 2. Keep `/lib/init/rc.boot.el` optional or absent.
-3. Focus on elinit unit set under `/etc/elinit/`.
+3. Focus on elinit unit set under `/etc/elinit.el/`.
 
 ## Path 3 specifics -- Emacs Lisp handles early boot
+
+**Status: planned (Track B) -- not yet implemented in elinit.**
+The PID1 Emacs patches (hooks, signals, reaping) are complete, but the
+elinit-side PID1 variables and rc script loading logic described below are
+Track B deliverables that have not been implemented yet. See `PLAN.md`
+phases B2/B3.
 
 Use this when you want sinit-style boot/shutdown logic in Lisp.
 

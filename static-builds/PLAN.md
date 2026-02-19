@@ -112,16 +112,20 @@ Acceptance:
 Deliverables:
 
 1. Add packaged startup Lisp that is installed into site startup paths and
-   auto-loads elinit.
+   auto-loads elinit in `--pid1` mode.
 2. Bootstrap MUST call elinit startup path without requiring `~/.emacs`.
+   Autostart fires only when `--pid1` is passed; normal Emacs usage is
+   unaffected.
 3. Bootstrap MUST include an explicit disable mechanism:
-   - env var gate, or
-   - Lisp variable gate in early init context.
+   - env var gate (`EMACS_ELINIT_DISABLE`), and
+   - Lisp variable gate (`elinit-pid1-autostart-disabled`) in early init context.
 
 Acceptance:
 
-1. Fresh runtime with no user config starts elinit automatically.
-2. Disable gate prevents autostart predictably.
+1. Fresh `--pid1` runtime with no user config starts elinit automatically.
+2. Without `--pid1`, elinit is on the load-path but does not autostart.
+3. `EMACS_ELINIT_DISABLE=1` prevents autostart in `--pid1` mode.
+4. `elinit-pid1-autostart-disabled` set to t prevents autostart in `--pid1` mode.
 
 ### Phase A3: PKGBUILD baked variant
 Deliverables:

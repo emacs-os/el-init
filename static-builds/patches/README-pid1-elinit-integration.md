@@ -57,10 +57,14 @@ signal received (e.g. SIGTERM)
 
 ## Elinit-side integration
 
+**Note:** This section describes the planned Track B design. The elinit-side
+PID1 variables and rc script loading logic below have not been implemented
+yet. The Emacs C-level hooks are complete and available.
+
 Elinit adds its PID1 integration via these hooks. The elinit-side
 Lisp variables control behavior:
 
-### Variables (implemented in elinit, not in the patch)
+### Variables (planned for elinit Track B -- not yet implemented)
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
