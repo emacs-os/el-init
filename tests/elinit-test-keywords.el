@@ -2887,5 +2887,12 @@ No warning is emitted when there are simply no child processes."
     (should (stringp result))
     (should (string-match-p ":conflicts.*own ID" result))))
 
+(ert-deftest elinit-test-validate-conflicts-duplicate-key ()
+  "Duplicate :conflicts plist key is rejected."
+  (let ((result (elinit--validate-entry
+                 '("cmd" :id "svc" :conflicts "a" :conflicts "b"))))
+    (should (stringp result))
+    (should (string-match-p "duplicate key :conflicts" result))))
+
 (provide 'elinit-test-keywords)
 ;;; elinit-test-keywords.el ends here
