@@ -571,6 +571,10 @@
                     ((symbol-function 'elinit--dag-cleanup) #'ignore)
                     ((symbol-function 'elinit--emit-event) #'ignore)
                     ((symbol-function 'elinit-timer-scheduler-stop) #'ignore)
+                    ;; Mock signal-process so processes stay alive
+                    ;; (on some Emacs versions SIGTERM kills synchronously)
+                    ((symbol-function 'signal-process)
+                     (lambda (_proc _sig) t))
                     ((symbol-function 'elinit--stop-all-writers)
                      (lambda ()
                        (setq writers-stopped-at

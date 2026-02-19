@@ -249,19 +249,28 @@ void test_nofile_applied(void)
 
 void test_nproc_applied(void)
 {
-	/* Use a low value that fits within any CI runner's hard limit */
+	/* Query current hard limit and set to half of it.  We cannot
+	   raise nproc above the hard limit without root, and values
+	   below the running process count prevent fork. */
 	struct rlimit rl;
-	if (getrlimit(RLIMIT_NPROC, &rl) != 0 || rl.rlim_max < 100) {
-		TEST_MSG("skipping: cannot query or insufficient nproc hard limit");
+	if (getrlimit(RLIMIT_NPROC, &rl) != 0 ||
+	    rl.rlim_max == RLIM_INFINITY || rl.rlim_max < 200) {
+		TEST_MSG("skipping: cannot determine safe nproc value");
 		return;
 	}
-	const char *argv[] = { RLIMITS_PATH, "--nproc", "100:100",
+	rlim_t val = rl.rlim_max / 2;
+	char buf[64];
+	char expect[64];
+	snprintf(buf, sizeof(buf), "%llu:%llu",
+	         (unsigned long long)val, (unsigned long long)val);
+	snprintf(expect, sizeof(expect), "%llu", (unsigned long long)val);
+	const char *argv[] = { RLIMITS_PATH, "--nproc", buf,
 	                        "--", "sh", "-c", "ulimit -u", NULL };
 	struct run_result r = {0};
 	TEST_CHECK(run_cmd(argv, NULL, 0, &r) == 0);
 	TEST_CHECK(r.exit_code == 0);
-	TEST_CHECK(strstr(r.out, "100") != NULL);
-	TEST_MSG("stdout: %s", r.out);
+	TEST_CHECK(strstr(r.out, expect) != NULL);
+	TEST_MSG("stdout: %s, expected: %s", r.out, expect);
 	run_result_free(&r);
 }
 

@@ -71,7 +71,7 @@ Rules:
 
 The README test-count badge is powered by a GitHub Gist + shields.io endpoint.
 
-- **Gist:** `e686727a6d88c17c557003e73a9c020c` (secret gist, user `cypherpunk2001`)
+- **Gist:** `e686727a6d88c17c557003e73a9c020c` (secret gist, user `el-sloppo`)
 - **Filename inside gist:** `elinit-tests.json`
 - **Secret:** `GIST_TOKEN` in repo Actions secrets -- a classic GitHub token with `gist` scope
 - **Updated by:** `.github/workflows/ci.yml`, `elisp` job, `snapshot` matrix run only, on push to master
