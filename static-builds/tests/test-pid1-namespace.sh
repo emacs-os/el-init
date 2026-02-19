@@ -359,12 +359,21 @@ test_normal_emacs_no_pid1_hooks() {
     # to be up.
     sleep 3
     # Capture Emacs PID before sending signal, to verify it exits.
-    _nep_emacs_pid="$(find_emacs_pid)" || true
-    send_signal_to_pid1 TERM || true
+    _nep_emacs_pid="$(find_emacs_pid)" || _nep_emacs_pid=""
+    if [ -z "${_nep_emacs_pid}" ]; then
+        cleanup_pid1
+        _fail_test "could not find Emacs PID for backward-compat test"
+        return 1
+    fi
+    if ! send_signal_to_pid1 TERM; then
+        cleanup_pid1
+        _fail_test "failed to send SIGTERM to Emacs PID ${_nep_emacs_pid}"
+        return 1
+    fi
     # Wait for the process to exit.
     sleep 2
     # Verify SIGTERM actually killed the process (standard fatal behavior).
-    if [ -n "${_nep_emacs_pid}" ] && kill -0 "${_nep_emacs_pid}" 2>/dev/null; then
+    if kill -0 "${_nep_emacs_pid}" 2>/dev/null; then
         cleanup_pid1
         _fail_test "Emacs should have died from SIGTERM without --pid1"
         return 1
