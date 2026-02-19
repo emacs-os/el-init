@@ -217,12 +217,14 @@ stripped="${stripped%\"}"
 # Handle FOLLOW protocol for journal -f streaming
 case "${stripped}" in
     FOLLOW:*)
-        # Parse FOLLOW:base64_initial:follow_file:session_id
+        # Parse FOLLOW:<base64>\t<follow_file>\t<session_id>
+        # Tab-delimited to avoid conflicts with : in unit IDs / paths
         rest="${stripped#FOLLOW:}"
-        follow_b64="${rest%%:*}"
-        rest="${rest#*:}"
-        follow_file="${rest%%:*}"
-        follow_session="${rest#*:}"
+        _tab="$(printf '\t')"
+        follow_b64="${rest%%"${_tab}"*}"
+        rest="${rest#*"${_tab}"}"
+        follow_file="${rest%%"${_tab}"*}"
+        follow_session="${rest#*"${_tab}"}"
 
         # Decode and print initial output
         initial="$(printf '%s' "${follow_b64}" | base64 -d 2>/dev/null)" || {

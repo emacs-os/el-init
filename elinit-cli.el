@@ -96,10 +96,11 @@ Uses sysexits.h EX_UNAVAILABLE to avoid collision with systemctl codes.")
   "CLI version string.")
 
 (defcustom elinit-cli-follow-max-age 3600
-  "Seconds before an orphaned follow session is cleaned up.
-The activity timestamp resets on every poll cycle, so a session
-with an active poll timer will never expire.  This guard only
-catches leaked sessions whose timer was canceled or lost."
+  "Seconds before an inactive follow session is cleaned up.
+The activity timestamp resets only when the log file produces new
+records.  A session for a quiet unit will expire after this many
+seconds of silence, which also catches orphaned sessions whose
+client disconnected without cleanup."
   :type 'integer
   :group 'elinit)
 
@@ -1907,10 +1908,10 @@ Append formatted records to the follow file and reschedule."
                               #'elinit--log-format-record-human)
                             filtered "\n")))
                 (when (and filtered (> (length text) 0))
-                  (append-to-file (concat text "\n") nil follow-file))))
+                  (append-to-file (concat text "\n") nil follow-file)))
+              ;; Reset activity timer only when log produced new records
+              (plist-put session :last-activity (float-time)))
             (plist-put session :offset new-offset)
-            ;; Reset activity timer so active sessions never expire
-            (plist-put session :last-activity (float-time))
             (elinit--cli-follow-schedule-poll session-id))))))))
 
 (defun elinit--cli-follow-stop (session-id)
@@ -2019,7 +2020,7 @@ Display structured log records for a unit.  Requires -u/--unit."
                             "")))
                     (elinit--cli-make-result
                      elinit-cli-exit-success 'follow
-                     (format "FOLLOW:%s:%s:%s"
+                     (format "FOLLOW:%s\t%s\t%s"
                              (base64-encode-string
                               (encode-coding-string
                                initial-output 'utf-8)

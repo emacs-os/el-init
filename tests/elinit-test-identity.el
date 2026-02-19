@@ -73,6 +73,34 @@
                           (elinit--validate-entry
                            '("cmd" :group (33 34))))))
 
+(ert-deftest elinit-test-validate-user-empty-string ()
+  "Validation rejects :user as empty string."
+  (should (string-match-p ":user must not be an empty string"
+                          (elinit--validate-entry
+                           '("cmd" :user "")))))
+
+(ert-deftest elinit-test-validate-user-negative-integer ()
+  "Validation rejects :user as negative integer."
+  (should (string-match-p ":user must be a non-negative integer"
+                          (elinit--validate-entry
+                           '("cmd" :user -1)))))
+
+(ert-deftest elinit-test-validate-group-empty-string ()
+  "Validation rejects :group as empty string."
+  (should (string-match-p ":group must not be an empty string"
+                          (elinit--validate-entry
+                           '("cmd" :group "")))))
+
+(ert-deftest elinit-test-validate-group-negative-integer ()
+  "Validation rejects :group as negative integer."
+  (should (string-match-p ":group must be a non-negative integer"
+                          (elinit--validate-entry
+                           '("cmd" :group -5)))))
+
+(ert-deftest elinit-test-validate-user-zero-valid ()
+  "Validation accepts :user as zero (root UID)."
+  (should-not (elinit--validate-entry '("cmd" :user 0))))
+
 (ert-deftest elinit-test-validate-user-string-valid ()
   "Validation accepts :user as string."
   (should-not (elinit--validate-entry '("cmd" :user "postgres"))))

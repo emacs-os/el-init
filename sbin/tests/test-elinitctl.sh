@@ -434,7 +434,7 @@ test_follow_protocol_initial_output() {
 case "\$*" in
     *journal-follow-stop*) exit 0 ;;
 esac
-printf '"FOLLOW:aW5pdGlhbA==:${follow_file}:test-session"\n'
+printf '"FOLLOW:aW5pdGlhbA==\t${follow_file}\ttest-session"\n'
 STUB
     chmod +x "${stub_dir}/emacsclient"
 
@@ -473,7 +473,7 @@ STUB
 
     cat > "${stub_dir}/emacsclient" <<STUB
 #!/bin/sh
-printf '"FOLLOW:baddata:${follow_file}:test-session"\n'
+printf '"FOLLOW:baddata\t${follow_file}\ttest-session"\n'
 STUB
     chmod +x "${stub_dir}/emacsclient"
 

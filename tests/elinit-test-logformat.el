@@ -2674,7 +2674,7 @@ identity must be correct regardless of whether log-format is set."
                                        (elinit-cli-result-output result)))
               ;; Cleanup the session
               (let ((output (elinit-cli-result-output result)))
-                (when (string-match "FOLLOW:[^:]*:[^:]*:\\(.+\\)" output)
+                (when (string-match "FOLLOW:[^\t]*\t[^\t]*\t\\(.+\\)" output)
                   (elinit--cli-follow-stop (match-string 1 output)))))))
       (delete-file tmpfile))))
 
@@ -2693,7 +2693,7 @@ identity must be correct regardless of whether log-format is set."
                            '("journal" "-u" "svc" "-f"))))
               (should (string-prefix-p "FOLLOW:" output))
               ;; Cleanup the session
-              (when (string-match "FOLLOW:[^:]*:[^:]*:\\(.+\\)" output)
+              (when (string-match "FOLLOW:[^\t]*\t[^\t]*\t\\(.+\\)" output)
                 (elinit--cli-follow-stop (match-string 1 output))))))
       (delete-file tmpfile))))
 
@@ -2717,7 +2717,7 @@ identity must be correct regardless of whether log-format is set."
                             '("-u" "svc" "-f") nil))
                    (output (elinit-cli-result-output result)))
               (should (string-match
-                       "FOLLOW:\\([^:]*\\):\\([^:]*\\):\\(.+\\)" output))
+                       "FOLLOW:\\([^\t]*\\)\t\\([^\t]*\\)\t\\(.+\\)" output))
               (let* ((b64 (match-string 1 output))
                      (decoded (decode-coding-string
                                (base64-decode-string b64) 'utf-8)))
@@ -2861,7 +2861,7 @@ identity must be correct regardless of whether log-format is set."
       (delete-directory tmpdir t))))
 
 (ert-deftest elinit-test-follow-poll-resets-activity-timer ()
-  "Follow poll resets last-activity so active sessions never expire."
+  "Follow poll with new records resets last-activity timestamp."
   (let ((tmpdir (make-temp-file "follow-test-" t))
         (elinit--cli-follow-sessions (make-hash-table :test 'equal))
         (elinit-cli-follow-max-age 10))
@@ -2899,6 +2899,42 @@ identity must be correct regardless of whether log-format is set."
               (should (< (- (float-time)
                             (plist-get session :last-activity))
                          2.0)))
+            (elinit--cli-follow-stop session-id)))
+      (delete-directory tmpdir t))))
+
+(ert-deftest elinit-test-follow-poll-no-new-records-no-activity-reset ()
+  "Follow poll without new records does not reset last-activity."
+  (let ((tmpdir (make-temp-file "follow-test-" t))
+        (elinit--cli-follow-sessions (make-hash-table :test 'equal))
+        (elinit-cli-follow-max-age 10))
+    (unwind-protect
+        (let* ((log-file (expand-file-name "svc.log" tmpdir)))
+          (with-temp-file log-file
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=initial\n"))
+          (let* ((decoded (elinit--log-decode-file log-file))
+                 (offset (plist-get decoded :offset))
+                 (finfo (elinit--cli-follow-start
+                         "svc" log-file offset nil nil nil nil))
+                 (session-id (plist-get finfo :session-id)))
+            ;; Cancel scheduled timer
+            (let ((session (gethash session-id
+                                    elinit--cli-follow-sessions)))
+              (when (plist-get session :timer)
+                (cancel-timer (plist-get session :timer)))
+              ;; Set last-activity to 5 seconds ago
+              (plist-put session :last-activity (- (float-time) 5)))
+            ;; Poll with no new data -- activity should NOT reset
+            (elinit--cli-follow-poll session-id)
+            (let ((session (gethash session-id
+                                    elinit--cli-follow-sessions)))
+              (should session)
+              (when (plist-get session :timer)
+                (cancel-timer (plist-get session :timer)))
+              ;; last-activity should still be ~5 seconds ago, not recent
+              (should (> (- (float-time)
+                            (plist-get session :last-activity))
+                         4.0)))
             (elinit--cli-follow-stop session-id)))
       (delete-directory tmpdir t))))
 
