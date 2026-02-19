@@ -5,7 +5,7 @@
  * Commit: 31751b4089c93b46a9fd8a8183a695f772de66de
  *
  * Note: most privilege-drop tests require root and are gated behind
- * the SUPERVISOR_TEST_ROOT=1 environment variable.  Without root,
+ * the ELINIT_TEST_ROOT=1 environment variable.  Without root,
  * only argument parsing and error-path tests run.
  */
 
@@ -247,13 +247,13 @@ void test_runas_numeric_gid_only(void)
 }
 
 /* ----------------------------------------------------------------
- * Root-only tests (gated by SUPERVISOR_TEST_ROOT=1)
+ * Root-only tests (gated by ELINIT_TEST_ROOT=1)
  * ---------------------------------------------------------------- */
 
 void test_runas_root_drop_to_nobody(void)
 {
-	if (getuid() != 0 || !getenv("SUPERVISOR_TEST_ROOT")) {
-		TEST_MSG("Skipping: requires root + SUPERVISOR_TEST_ROOT=1");
+	if (getuid() != 0 || !getenv("ELINIT_TEST_ROOT")) {
+		TEST_MSG("Skipping: requires root + ELINIT_TEST_ROOT=1");
 		return;
 	}
 

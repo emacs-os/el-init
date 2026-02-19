@@ -14,7 +14,7 @@
 /* Maximum size for a built wire frame. */
 #define FRAME_BUF_SIZE 65536
 
-/* Wire frame event types (must match supervisor-logd.c). */
+/* Wire frame event types (must match elinit-logd.c). */
 #define EVT_OUTPUT 1
 #define EVT_EXIT   2
 
