@@ -22,4 +22,4 @@ git apply path/to/emacs-0003-fix-pid1-signal-handler-overrides.patch
 ## Documentation
 
 - [README-pid1-validation.md](README-pid1-validation.md) - Build commands, test results, signal mapping
-- [README-pid1-supervisor-integration.md](README-pid1-supervisor-integration.md) - Hook API, supervisor.el integration
+- [README-pid1-elinit-integration.md](README-pid1-elinit-integration.md) - Hook API, elinit integration

@@ -1,19 +1,19 @@
-# Full-featured static emacs-nox with PID1 patches and baked-in supervisor.el
+# Full-featured static emacs-nox with PID1 patches and baked-in elinit
 #
-# Usage: nix-build emacs-static-nox-supervisor-patched-for-pid1.nix
+# Usage: nix-build emacs-static-nox-elinit-patched-for-pid1.nix
 #
 # This variant extends emacs-static-nox.nix with:
 #   1. PID1 Emacs patches (--pid1 flag, signal handling, child reaping, hooks)
-#   2. Bundled supervisor.el (process supervisor) in site-lisp
-#   3. Prebuilt C helpers (supervisor-logd, supervisor-runas, supervisor-rlimits)
-#   4. Autostart bootstrap: supervisor hooks into pid1-boot-hook when --pid1 is used
+#   2. Bundled elinit (process supervisor) in site-lisp
+#   3. Prebuilt C helpers (elinit-logd, elinit-runas, elinit-rlimits)
+#   4. Autostart bootstrap: elinit hooks into pid1-boot-hook when --pid1 is used
 #
 # The -patched-for-pid1 suffix is a CAPABILITY marker: the binary supports
 # --pid1 mode but does NOT activate it unless --pid1 is explicitly passed.
 # Normal Emacs usage (without --pid1) is completely unchanged.
 #
-# Disable gate: set EMACS_SUPERVISOR_DISABLE=1 env var, or set
-# supervisor-pid1-autostart-disabled to t in early-init.el.
+# Disable gate: set EMACS_ELINIT_DISABLE=1 env var, or set
+# elinit-pid1-autostart-disabled to t in early-init.el.
 #
 # Requirements: Nix with <nixpkgs> channel (any recent nixpkgs)
 # Build time: ~10 minutes on 12 cores
@@ -23,12 +23,12 @@
 let
   inherit (pkgs) stdenv fetchurl;
 
-  # ── Supervisor source (from local repo) ──
+  # ── Elinit source (from local repo) ──
   # To build from a released version, replace with:
-  #   supervisorSrc = fetchFromGitHub { owner = "..."; repo = "supervisor.el"; ... };
-  supervisorSrc = builtins.path {
+  #   elinitSrc = fetchFromGitHub { owner = "..."; repo = "elinit"; ... };
+  elinitSrc = builtins.path {
     path = ./..;
-    name = "supervisor-el-src";
+    name = "elinit-src";
     filter = path: type:
       let base = builtins.baseNameOf path; in
       # Include .el files, libexec C sources, sbin scripts, and patches
@@ -181,7 +181,7 @@ let
   };
 
 in stdenv.mkDerivation {
-  pname = "emacs-static-nox-supervisor-patched-for-pid1";
+  pname = "emacs-static-nox-elinit-patched-for-pid1";
   version = "30.2";
 
   src = fetchurl {
@@ -246,56 +246,56 @@ in stdenv.mkDerivation {
 
     make DESTDIR="" install
 
-    # ── Build supervisor C helpers ──
-    echo "=== Building supervisor C helpers ==="
-    for helper in supervisor-logd supervisor-runas supervisor-rlimits; do
+    # ── Build elinit C helpers ──
+    echo "=== Building elinit C helpers ==="
+    for helper in elinit-logd elinit-runas elinit-rlimits; do
       echo "Building $helper..."
       gcc -Wall -Wextra -Werror -pedantic -std=c99 -O2 \
-        -o "''${helper}" "${supervisorSrc}/libexec/''${helper}.c"
+        -o "''${helper}" "${elinitSrc}/libexec/''${helper}.c"
     done
 
-    # ── Install supervisor.el runtime files ──
-    local sup_dest=$out/share/emacs/site-lisp/supervisor
+    # ── Install elinit runtime files ──
+    local sup_dest=$out/share/emacs/site-lisp/elinit
     mkdir -p "$sup_dest/libexec"
 
     for el_file in \
-      supervisor.el supervisor-core.el supervisor-log.el \
-      supervisor-overrides.el supervisor-sandbox.el supervisor-libexec.el \
-      supervisor-units.el supervisor-timer.el supervisor-dashboard.el \
-      supervisor-cli.el; do
-      cp "${supervisorSrc}/$el_file" "$sup_dest/"
+      elinit elinit-core.el elinit-log.el \
+      elinit-overrides.el elinit-sandbox.el elinit-libexec.el \
+      elinit-units.el elinit-timer.el elinit-dashboard.el \
+      elinit-cli.el; do
+      cp "${elinitSrc}/$el_file" "$sup_dest/"
     done
 
     # ── Install prebuilt C helpers ──
-    for helper in supervisor-logd supervisor-runas supervisor-rlimits; do
+    for helper in elinit-logd elinit-runas elinit-rlimits; do
       install -m 755 "''${helper}" "$sup_dest/libexec/"
     done
 
     # ── Install sbin scripts ──
-    for script in supervisorctl supervisor-import supervisor-log-prune supervisor-logrotate; do
-      if [ -f "${supervisorSrc}/sbin/$script" ]; then
-        install -m 755 "${supervisorSrc}/sbin/$script" "$out/bin/"
+    for script in elinitctl elinit-import elinit-log-prune elinit-logrotate; do
+      if [ -f "${elinitSrc}/sbin/$script" ]; then
+        install -m 755 "${elinitSrc}/sbin/$script" "$out/bin/"
       fi
     done
 
     # ── Install autostart bootstrap ──
     cat > "$out/share/emacs/site-lisp/site-start.el" <<SITE_START_EOF
-;;; site-start.el --- Supervisor PID1 autostart bootstrap  -*- lexical-binding: t -*-
+;;; site-start.el --- Elinit PID1 autostart bootstrap  -*- lexical-binding: t -*-
 
-;; Installed by emacs-static-nox-supervisor-patched-for-pid1.
-;; This file auto-loads supervisor.el when Emacs is started with --pid1.
+;; Installed by emacs-static-nox-elinit-patched-for-pid1.
+;; This file auto-loads elinit when Emacs is started with --pid1.
 
-;; Always add supervisor to load-path (available for manual use too)
+;; Always add elinit to load-path (available for manual use too)
 (add-to-list 'load-path "$sup_dest")
 
-;; Autostart supervisor in PID1 mode (unless explicitly disabled)
+;; Autostart elinit in PID1 mode (unless explicitly disabled)
 (when (and (bound-and-true-p pid1-mode)
-           (not (getenv "EMACS_SUPERVISOR_DISABLE"))
-           (not (bound-and-true-p supervisor-pid1-autostart-disabled)))
-  (require 'supervisor)
+           (not (getenv "EMACS_ELINIT_DISABLE"))
+           (not (bound-and-true-p elinit-pid1-autostart-disabled)))
+  (require 'elinit)
   ;; Helpers are prebuilt — never attempt to compile on startup
-  (setq supervisor-libexec-build-on-startup 'never)
-  (add-hook 'pid1-boot-hook #'supervisor-start))
+  (setq elinit-libexec-build-on-startup 'never)
+  (add-hook 'pid1-boot-hook #'elinit-start))
 
 ;;; site-start.el ends here
 SITE_START_EOF
@@ -342,15 +342,15 @@ SITE_START_EOF
     $out/bin/emacs --help 2>&1 | grep -q "\-\-pid1" || { echo "FAIL: --help missing --pid1"; exit 1; }
     echo "PASS: --help shows --pid1"
 
-    # Supervisor load-path verification
+    # Elinit load-path verification
     $out/bin/emacs --batch \
       --eval "(add-to-list 'load-path \"$sup_dest\")" \
-      --eval '(require (quote supervisor))' \
-      --eval '(message "supervisor loaded: %s" (featurep (quote supervisor)))' 2>&1
-    echo "PASS: supervisor.el loads successfully"
+      --eval '(require (quote elinit))' \
+      --eval '(message "elinit loaded: %s" (featurep (quote elinit)))' 2>&1
+    echo "PASS: elinit loads successfully"
 
     # C helper binary verification
-    for helper in supervisor-logd supervisor-runas supervisor-rlimits; do
+    for helper in elinit-logd elinit-runas elinit-rlimits; do
       test -x "$sup_dest/libexec/$helper" || { echo "FAIL: $helper not executable"; exit 1; }
       echo "PASS: $helper is executable"
     done
@@ -361,7 +361,7 @@ SITE_START_EOF
   '';
 
   meta = with pkgs.lib; {
-    description = "GNU Emacs (nox) — static, full-featured, PID1 patched, with supervisor.el";
+    description = "GNU Emacs (nox) — static, full-featured, PID1 patched, with elinit";
     homepage = "https://www.gnu.org/software/emacs/";
     license = licenses.gpl3Plus;
     platforms = [ "x86_64-linux" ];

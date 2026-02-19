@@ -1,18 +1,18 @@
-[[https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml][https://github.com/cypherpunk2001/supervisor.el/actions/workflows/ci.yml/badge.svg]]
-[[https://gist.github.com/cypherpunk2001/e686727a6d88c17c557003e73a9c020c][https://img.shields.io/endpoint.svg?url=https://gist.githubusercontent.com/cypherpunk2001/e686727a6d88c17c557003e73a9c020c/raw/supervisor-el-tests.json]]
+[[https://github.com/emacs-os/el-init/actions/workflows/ci.yml][https://github.com/emacs-os/el-init/actions/workflows/ci.yml/badge.svg]]
+[[https://gist.github.com/cypherpunk2001/e686727a6d88c17c557003e73a9c020c][https://img.shields.io/endpoint.svg?url=https://gist.githubusercontent.com/cypherpunk2001/e686727a6d88c17c557003e73a9c020c/raw/elinit-tests.json]]
 
-* supervisor.el
+* elinit
 
-[[file:supervisor_logo_small.png]]
+[[file:el-init-branding.png]]
 
 *A proper process supervisor with a systemd-inspired dependency model.*
 
-~supervisor.el~ is an Emacs Lisp-based, systemd-inspired init and
-supervisor solution.  Whether you are building a full-send Emacs-OS, or
+~elinit~ is an Emacs Lisp-based, systemd-inspired init and
+process-supervision solution.  Whether you are building a full-send Emacs-OS, or
 simply want to orchestrate your desktop session services from within EXWM,
 or keep project daemons running while you work,
-supervisor.el has you covered.  Use ~M-x supervisor~ for the interactive
-dashboard, or ~supervisorctl~ from the terminal.
+elinit has you covered.  Use ~M-x elinit~ for the interactive
+dashboard, or ~elinitctl~ from the terminal.
 
 ** Features
 
@@ -31,21 +31,21 @@ dashboard, or ~supervisorctl~ from the terminal.
   pending -> waiting-on-deps -> delayed -> started -> failed-to-spawn.
 - *Structured event system* -- hook-based events for process-exit,
   process-started, target-reached, target-degraded, timer-trigger, and more.
-  Full programmatic integration via ~supervisor-event-hook~.
+  Full programmatic integration via ~elinit-event-hook~.
 - *Service types* -- long-running ~simple~ daemons with restart policies and
   run-once ~oneshot~ tasks with configurable blocking and timeout.
 - *Graceful shutdown* -- SIGTERM with configurable timeout, then SIGKILL.
   Sentinel-driven completion tracking (no polling).
-- *3-tier authority model* -- ~/usr/lib/supervisor.el/~ (vendor),
-  ~/etc/supervisor.el/~ (admin), =~/.config/supervisor.el/= (user).
+- *3-tier authority model* -- ~/usr/lib/elinit/~ (vendor),
+  ~/etc/elinit/~ (admin), =~/.config/elinit/= (user).
   Higher tiers override lower tiers completely.  Daemon-reload support.
 - *Persistent overrides* -- enable/disable, mask/unmask, restart-policy, and
   logging overrides persist across restarts.
 - *Timers* -- calendar and relative timers for oneshot, simple, and target
   units with persistent catch-up semantics after downtime.
-- *Dashboard* -- ~M-x supervisor~ for a live view with lifecycle actions,
+- *Dashboard* -- ~M-x elinit~ for a live view with lifecycle actions,
   policy changes, dependency inspection, and log viewing.
-- *CLI* -- ~sbin/supervisorctl~ for scripting and remote use (human and JSON
+- *CLI* -- ~sbin/elinitctl~ for scripting and remote use (human and JSON
   output).
 - *Logging* -- external log writer helpers with rotation and pruning for
   bounded growth (configurable per-file and total size caps).  Optional
@@ -53,8 +53,8 @@ dashboard, or ~supervisorctl~ from the terminal.
   nanosecond timestamps) for machine-parseable records.
 - *Sandbox* -- optional bubblewrap integration with curated profiles for
   process isolation (Linux only).
-- *systemd import* -- ~sbin/supervisor-import~ converts systemd ~.service~
-  files to supervisor unit plists.
+- *systemd import* -- ~sbin/elinit-import~ converts systemd ~.service~
+  files to elinit unit plists.
 
 ** Requirements
 
@@ -65,7 +65,7 @@ dashboard, or ~supervisorctl~ from the terminal.
 
 ** Handbook Overview
 
-This document is the complete reference. Run ~M-x supervisor-handbook~ to open
+This document is the complete reference. Run ~M-x elinit-handbook~ to open
 it in Emacs at any time.
 
 The [[#quick-start][Quick Start]] below gets you running immediately. The rest of the handbook
@@ -76,13 +76,13 @@ provides detailed reference material:
 - [[#startup-and-lifecycle-model][Startup and Lifecycle Model]] - targets, dependencies, and restarts
 - [[#runtime-overrides-and-reconciliation][Runtime Overrides]] - enabling, disabling, and policy changes at runtime
 - [[#timer-subsystem-handbook][Timer Subsystem]] - scheduled unit execution (oneshot, simple, target)
-- [[#dashboard-handbook-m-x-supervisor][Dashboard]] - the interactive UI
-- [[#cli-handbook-sbinsupervisorctl][CLI]] - terminal control with ~supervisorctl~
+- [[#dashboard-handbook-m-x-elinit][Dashboard]] - the interactive UI
+- [[#cli-handbook-sbinelinitctl][CLI]] - terminal control with ~elinitctl~
 - [[#events-and-hooks][Events and Hooks]] - programmatic integration
 - [[#customization-reference][Customization Reference]] - all variables and faces
 - [[#command-reference][Command Reference]] - every interactive command
 - [[#topical-index][Topical Index]] - targeted lookup for specific behaviors
-- [[#service-management-systems-comparison][Systems Comparison]] - supervisor vs systemd vs runit vs s6
+- [[#service-management-systems-comparison][Systems Comparison]] - elinit vs systemd vs runit vs s6
 
 * Quick Start
 :PROPERTIES:
@@ -90,24 +90,24 @@ provides detailed reference material:
 :END:
 
 #+begin_src emacs-lisp
-(add-to-list 'load-path "~/repos/supervisor.el")
-(require 'supervisor)
+(add-to-list 'load-path "~/repos/el-init")
+(require 'elinit)
 
-;; Use supervisor-stop-now for immediate SIGKILL - ensures clean X session exit
-(add-hook 'kill-emacs-hook #'supervisor-stop-now)
+;; Use elinit-stop-now for immediate SIGKILL - ensures clean X session exit
+(add-hook 'kill-emacs-hook #'elinit-stop-now)
 
-;; Don't ask about running processes on exit - supervisor handles cleanup
+;; Don't ask about running processes on exit - elinit handles cleanup
 (setq confirm-kill-processes nil)
 
-;; Start supervisor and config watcher
-(supervisor-mode 1)
+;; Start elinit and config watcher
+(elinit-mode 1)
 #+end_src
 
 Services are defined as individual unit files in your authority roots (default
-=~/.config/supervisor.el/=).  For example:
+=~/.config/elinit/=).  For example:
 
 #+begin_src emacs-lisp
-;; ~/.config/supervisor.el/xhost.el
+;; ~/.config/elinit/xhost.el
 (:id "xhost"
  :command "xhost +SI:localuser:$USER"
  :type oneshot
@@ -116,7 +116,7 @@ Services are defined as individual unit files in your authority roots (default
 #+end_src
 
 #+begin_src emacs-lisp
-;; ~/.config/supervisor.el/nm-applet.el
+;; ~/.config/elinit/nm-applet.el
 (:id "nm-applet"
  :command "nm-applet"
  :type simple
@@ -126,19 +126,19 @@ Services are defined as individual unit files in your authority roots (default
  :tags (applet tray))
 #+end_src
 
-With the above configuration running, ~sbin/supervisorctl status~ shows:
+With the above configuration running, ~sbin/elinitctl status~ shows:
 
 #+begin_example
-$ sbin/supervisorctl status
+$ sbin/elinitctl status
 ID               TYPE     TARGET               ENABLED  STATUS     RESTART  LOG   PID     REASON
 ----------------------------------------------------------------------------------------------------
 xhost            oneshot  graphical.target     yes      done       n/a      yes   -       -
 nm-applet        simple   graphical.target     yes      running    always   yes   1396    -
 #+end_example
 
-~M-x supervisor~ opens an interactive dashboard for managing services:
+~M-x elinit~ opens an interactive dashboard for managing services:
 
-#+CAPTION: Supervisor dashboard
+#+CAPTION: Elinit dashboard
 [[file:doc/dashboard.png]]
 
 Each service gets its own ~.el~ file in an authority root.  See
@@ -150,7 +150,7 @@ all available keywords.
 :CUSTOM_ID: understanding-the-dashboard
 :END:
 
-When you first run ~M-x supervisor~, you will see a mix of target statuses that
+When you first run ~M-x elinit~, you will see a mix of target statuses that
 might look surprising.  Some targets show *reached*, others show *unreachable*,
 and you might wonder if something is broken.  It is not -- this is how the
 target system works.
@@ -160,7 +160,7 @@ target system works.
 
 *** Why some targets are "reached"
 
-At startup, supervisor picks a root target (by default ~graphical.target~) and
+At startup, elinit picks a root target (by default ~graphical.target~) and
 walks its dependency chain to figure out what needs to start.  The built-in
 target hierarchy is:
 
@@ -182,7 +182,7 @@ Targets like ~rescue.target~, ~shutdown.target~, ~poweroff.target~, and
 ~reboot.target~ are *not* in ~graphical.target~'s dependency chain.  Nothing
 pulls them in during a normal boot, so they sit outside the activation closure.
 
-Supervisor shows these as *unreachable* -- meaning "not part of the current
+Elinit shows these as *unreachable* -- meaning "not part of the current
 startup transaction."  This is expected.  These targets only activate when you
 explicitly request them with ~isolate~ or ~init~.
 
@@ -242,9 +242,9 @@ Each unit file is a single plist expression with ~:id~ required.
 | ~:logging~ | boolean | ~t~ | Per-process log capture |
 | ~:stdout-log-file~ | string or ~nil~ | ~nil~ | Optional stdout log path override |
 | ~:stderr-log-file~ | string or ~nil~ | ~nil~ | Optional stderr log path override; defaults to stdout target |
-| ~:oneshot-blocking~ | boolean | ~supervisor-oneshot-default-blocking~ | For ~oneshot~ only |
+| ~:oneshot-blocking~ | boolean | ~elinit-oneshot-default-blocking~ | For ~oneshot~ only |
 | ~:oneshot-async~ | boolean | ~nil~ | Inverse of ~:oneshot-blocking~ |
-| ~:oneshot-timeout~ | number or ~nil~ | ~supervisor-oneshot-timeout~ | For ~oneshot~ only |
+| ~:oneshot-timeout~ | number or ~nil~ | ~elinit-oneshot-timeout~ | For ~oneshot~ only |
 | ~:tags~ | symbol, string, or list | ~nil~ | Dashboard tag filtering |
 | ~:working-directory~ | string | ~nil~ | Process working directory |
 | ~:environment~ | alist of ~(KEY . VALUE)~ | ~nil~ | Environment variables |
@@ -280,8 +280,8 @@ Each unit file is a single plist expression with ~:id~ required.
 ** Validation Rules
 
 Validation is performed by unit-file validation
-(~supervisor--validate-unit-file-plist~) plus
-~supervisor--validate-entry~ during plan building.
+(~elinit--validate-unit-file-plist~) plus
+~elinit--validate-entry~ during plan building.
 
 - Malformed plist structures are rejected (non-proper lists, odd number of
   elements).
@@ -343,7 +343,7 @@ Validation is performed by unit-file validation
   ~:sandbox-rw-bind~) must exist on disk; ~:sandbox-tmpfs~ destinations do
   not require existence (bwrap creates them).
 - ~:sandbox-raw-args~ must be a list of strings.  Rejected unless
-  ~supervisor-sandbox-allow-raw-bwrap~ is non-nil.  Raw args that conflict
+  ~elinit-sandbox-allow-raw-bwrap~ is non-nil.  Raw args that conflict
   with the effective network mode or duplicate profile-managed setup are
   rejected (see [[#sandbox-expert-raw-mode][Expert Raw Mode]]).
 - Sandbox keys are rejected for ~:type target~.
@@ -351,7 +351,7 @@ Validation is performed by unit-file validation
   non-Linux hosts are rejected.
 - Units requesting sandbox without =bwrap= (bubblewrap) installed are rejected.
 - ~:log-format~ must be ~text~ or ~binary~.  ~binary~ is rejected unless
-  ~supervisor-log-format-binary-enable~ is non-nil.  ~:log-format~ is rejected
+  ~elinit-log-format-binary-enable~ is non-nil.  ~:log-format~ is rejected
   for ~:type target~.
 - ~:limit-nofile~, ~:limit-nproc~, ~:limit-core~, ~:limit-fsize~, ~:limit-as~
   each accept a non-negative integer (sets both soft and hard), the symbol
@@ -417,24 +417,24 @@ Valid entries are normalized to schema v1 tuple form:
     limit-nofile limit-nproc limit-core limit-fsize limit-as)
 #+end_src
 
-Accessor functions (~supervisor-entry-id~, ~supervisor-entry-command~, etc.) are
+Accessor functions (~elinit-entry-id~, ~elinit-entry-command~, etc.) are
 the canonical way to read entry fields.
 
 ** Validation and Dry-Run Commands
 
-~M-x supervisor-verify~:
+~M-x elinit-verify~:
 
 - validates services
 - validates timers when timer module is available
 - populates invalid hashes for dashboard/CLI visibility
-- opens ~*supervisor-verify*~ report buffer
+- opens ~*elinit-verify*~ report buffer
 
-~M-x supervisor-dry-run~:
+~M-x elinit-dry-run~:
 
 - builds plan without starting processes
 - prints resolved target closure and dependency metadata
 - prints timer validation summary when timers are configured
-- opens ~*supervisor-dry-run*~ report buffer
+- opens ~*elinit-dry-run*~ report buffer
 
 * Unit Files (Modular Configuration)
 :PROPERTIES:
@@ -452,10 +452,10 @@ multiple roots, the highest-precedence root wins completely (no key-level
 merge).  Non-existent roots are silently skipped.
 
 #+begin_src emacs-lisp
-(setq supervisor-unit-authority-path
-      '("/usr/lib/supervisor.el/"    ; Tier 1: vendor (lowest precedence)
-        "/etc/supervisor.el/"        ; Tier 2: system admin
-        "~/.config/supervisor.el/")) ; Tier 3: user (highest precedence)
+(setq elinit-unit-authority-path
+      '("/usr/lib/elinit/"    ; Tier 1: vendor (lowest precedence)
+        "/etc/elinit/"        ; Tier 2: system admin
+        "~/.config/elinit/")) ; Tier 3: user (highest precedence)
 #+end_src
 
 The default three-tier layout mirrors systemd's resolution order.  You can add,
@@ -469,7 +469,7 @@ precedence rules described below.
 Each file contains a single plist:
 
 #+begin_src emacs-lisp
-;; ~/.config/supervisor.el/nm-applet.el
+;; ~/.config/elinit/nm-applet.el
 (:id "nm-applet"
  :command "nm-applet"
  :type simple
@@ -538,7 +538,7 @@ Bad example (logic in declaration):
 ** Precedence and Merge Semantics
 
 Within each authority root, unit files (~*.el~) are scanned in alphabetical order.
-Roots are resolved in the order listed in ~supervisor-unit-authority-path~ (low to
+Roots are resolved in the order listed in ~elinit-unit-authority-path~ (low to
 high precedence).  When the same unit ID appears in multiple roots, the
 highest-precedence root wins completely -- no per-key merge is performed.
 
@@ -548,14 +548,14 @@ highest-precedence root wins completely -- no per-key merge is performed.
   are shadowed.
 - ID absent from all roots: not loaded (use ~edit ID~ to create a new unit),
   except default log maintenance IDs (~logrotate~, ~log-prune~) when
-  ~supervisor-seed-default-maintenance-units~ is enabled.
+  ~elinit-seed-default-maintenance-units~ is enabled.
 
 *** Override Example
 
 A vendor root provides a default service:
 
 #+begin_src emacs-lisp
-;; /usr/lib/supervisor.el/polkit.el  (Tier 1, vendor)
+;; /usr/lib/elinit/polkit.el  (Tier 1, vendor)
 (:id "polkit"
  :command "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
  :type simple
@@ -565,7 +565,7 @@ A vendor root provides a default service:
 A user root overrides it with different target membership and logging:
 
 #+begin_src emacs-lisp
-;; ~/.config/supervisor.el/polkit.el  (Tier 3, user)
+;; ~/.config/elinit/polkit.el  (Tier 3, user)
 (:id "polkit"
  :command "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
  :type simple
@@ -581,10 +581,10 @@ If an authority root does not exist, it is silently skipped.  This means a
 misconfigured path does not cause an error -- it simply contributes no units:
 
 #+begin_src emacs-lisp
-(setq supervisor-unit-authority-path
+(setq elinit-unit-authority-path
       '("/nonexistent/root/"          ; Silently skipped (does not exist)
-        "/etc/supervisor.el/"         ; Active if exists
-        "~/.config/supervisor.el/"))  ; Active if exists
+        "/etc/elinit/"         ; Active if exists
+        "~/.config/elinit/"))  ; Active if exists
 #+end_src
 
 *** Invalid Winner Blocks Fallback Example
@@ -594,7 +594,7 @@ valid lower-tier unit for the same ID.  This prevents surprising behavior where
 a broken override silently reverts to the vendor default:
 
 #+begin_src emacs-lisp
-;; /usr/lib/supervisor.el/backup.el  (Tier 1, vendor -- valid)
+;; /usr/lib/elinit/backup.el  (Tier 1, vendor -- valid)
 (:id "backup"
  :command "/usr/bin/backup-agent"
  :type simple
@@ -602,7 +602,7 @@ a broken override silently reverts to the vendor default:
 #+end_src
 
 #+begin_src emacs-lisp
-;; ~/.config/supervisor.el/backup.el  (Tier 3, user -- INVALID: missing :command)
+;; ~/.config/elinit/backup.el  (Tier 3, user -- INVALID: missing :command)
 (:id "backup"
  :type simple)
 #+end_src
@@ -630,15 +630,15 @@ editing.  If the file does not exist, a scaffold template is created with the
 service ID and common configuration keys commented out.
 
 On save, the unit file is validated automatically and results are reported in
-the minibuffer.  A minor mode (~supervisor-edit-mode~) is activated with
-convenient return bindings: press ~q~ to return to the ~*supervisor*~
+the minibuffer.  A minor mode (~elinit-edit-mode~) is activated with
+convenient return bindings: press ~q~ to return to the ~*elinit*~
 dashboard (prompts to save if modified), or ~C-c C-q~ to save and return
 unconditionally.  Killing the buffer also returns to the dashboard.
 
 From the CLI:
 
 #+begin_src sh
-supervisorctl edit nm-applet
+elinitctl edit nm-applet
 #+end_src
 
 This resolves the unit file path and launches ~$VISUAL~ or ~$EDITOR~.  If the
@@ -654,7 +654,7 @@ read-only mode (~view-mode~).  Press ~q~ to return.
 From the CLI:
 
 #+begin_src sh
-supervisorctl cat nm-applet
+elinitctl cat nm-applet
 #+end_src
 
 This outputs the raw unit file content.  Returns an error if the file does not
@@ -665,11 +665,11 @@ exist.  With ~--json~, returns ~{"path": "...", "content": "..."}~.
 *** Step 1: Create the unit file
 
 Create a file in your highest-precedence authority root (default
-=~/.config/supervisor.el/=).  The filename should be ~ID.el~ (e.g.,
+=~/.config/elinit/=).  The filename should be ~ID.el~ (e.g.,
 ~nm-applet.el~):
 
 #+begin_src emacs-lisp
-;; ~/.config/supervisor.el/nm-applet.el
+;; ~/.config/elinit/nm-applet.el
 (:id "nm-applet"
  :command "nm-applet"
  :type simple
@@ -681,7 +681,7 @@ Or press ~i e~ in the dashboard to scaffold a unit file interactively.
 
 *** Step 2: Reload
 
-Run ~supervisorctl daemon-reload~ to pick up the new unit file.
+Run ~elinitctl daemon-reload~ to pick up the new unit file.
 
 * Startup and Lifecycle Model
 :PROPERTIES:
@@ -692,13 +692,13 @@ Run ~supervisorctl daemon-reload~ to pick up the new unit file.
 
 Startup begins from a resolved root target:
 
-- ~supervisor-default-target~ selects the startup root.
-- If it is ~default.target~, supervisor resolves
-  ~supervisor-default-target-link~ first.
+- ~elinit-default-target~ selects the startup root.
+- If it is ~default.target~, elinit resolves
+  ~elinit-default-target-link~ first.
 - Alias targets (for example ~runlevel5.target~) are resolved to canonical
   targets before activation.
 
-The root must exist and be ~:type target~.  Supervisor then computes an
+The root must exist and be ~:type target~.  Elinit then computes an
 activation closure:
 
 - Target units pull in their own ~:requires~ and ~:wants~.
@@ -730,7 +730,7 @@ Scheduling is a global DAG over the activation closure.
 - Dependents unlock when prerequisites become ready.
 - Disabled entries are marked ready immediately.
 - Start failures mark ready immediately (do not block graph).
-- Optional ~supervisor-max-concurrent-starts~ limits active spawn attempts.
+- Optional ~elinit-max-concurrent-starts~ limits active spawn attempts.
 
 Ready semantics:
 
@@ -747,7 +747,7 @@ Startup completion requires all of:
 
 ** Lifecycle State Machine
 
-Per-entry runtime state is tracked in ~supervisor--entry-state~.
+Per-entry runtime state is tracked in ~elinit--entry-state~.
 
 States:
 
@@ -760,7 +760,7 @@ States:
 - ~startup-timeout~
 
 ~invalid~ is a surfaced status (from validation hash tables), not a lifecycle FSM
-state in ~supervisor--entry-state~.
+state in ~elinit--entry-state~.
 
 Invalid transitions signal errors unless forced by internal maintenance paths.
 
@@ -793,20 +793,20 @@ For example, ~:success-exit-status (42 SIGUSR1)~ treats exit code 42
 and ~SIGUSR1~ as clean exits for restart-policy evaluation.
 
 Set the policy at runtime from the dashboard policy menu (~p r~, explicit
-selection) or via CLI: ~supervisorctl restart-policy always myservice~.
+selection) or via CLI: ~elinitctl restart-policy always myservice~.
 
 Crash-loop protection:
 
-- Delay: ~supervisor-restart-delay~ (overridden per-unit by ~:restart-sec~)
-- Window: ~supervisor-restart-window~ seconds
-- Threshold: ~supervisor-max-restarts~
+- Delay: ~elinit-restart-delay~ (overridden per-unit by ~:restart-sec~)
+- Window: ~elinit-restart-window~ seconds
+- Threshold: ~elinit-max-restarts~
 - On crash-loop threshold, service is marked failed (~dead~) and restart stops.
 
 ~oneshot~ services are not auto-restarted.
 
 ** Per-Unit Restart Delay (~:restart-sec~)
 
-Set ~:restart-sec~ to override ~supervisor-restart-delay~ for a single unit.
+Set ~:restart-sec~ to override ~elinit-restart-delay~ for a single unit.
 A value of ~0~ means immediate retry.  If ~nil~ (the default), the global
 delay applies.  ~simple~ only.
 
@@ -850,9 +850,9 @@ Effective environment build order:
 ** Reload Semantics (~:exec-reload~)
 
 When a running ~simple~ unit has ~:exec-reload~ commands, reloading it
-(~supervisorctl reload ID~, dashboard ~l u~) runs the reload commands
+(~elinitctl reload ID~, dashboard ~l u~) runs the reload commands
 sequentially without stopping or restarting the process.  Each command
-has a per-command timeout of ~supervisor-shutdown-timeout~ seconds.
+has a per-command timeout of ~elinit-shutdown-timeout~ seconds.
 
 - If reload commands succeed, the unit reports ~reloaded~.
 - If any reload command fails, the unit reports an error and the process
@@ -862,7 +862,7 @@ has a per-command timeout of ~supervisor-shutdown-timeout~ seconds.
 
 ** Oneshot Exit Encoding
 
-For oneshot completion tracking (~supervisor--oneshot-completed~):
+For oneshot completion tracking (~elinit--oneshot-completed~):
 
 - normal exit stores exit code (~0~, ~1~, ...)
 - signal death stores negative signal number (~SIGKILL~ -> ~-9~)
@@ -871,16 +871,16 @@ This is used by status/reporting and timer retry eligibility.
 
 ** Comparison with systemd Oneshot Semantics
 
-Supervisor oneshot services are modeled after systemd's ~Type=oneshot~
+Elinit oneshot services are modeled after systemd's ~Type=oneshot~
 services, but the mapping is not one-to-one.
 
-| Supervisor | systemd | Notes |
+| Elinit | systemd | Notes |
 |------------+---------+-------|
 | ~:type oneshot~ | ~Type=oneshot~ | Run-to-completion services |
 | ~:oneshot-blocking t~ | ~Type=oneshot~ (inherent) | Blocking is inherent to ~Type=oneshot~; ordering deps wait for exit |
 | ~:oneshot-async t~ | No direct equivalent | Process runs without blocking dependency progression |
 | ~:oneshot-timeout 30~ | ~TimeoutStartSec=30~ | Kill the process if it hasn't exited in time |
-| No restart for oneshot | ~Restart=~ partially valid | systemd allows ~Restart=on-failure~ etc. for oneshot; supervisor forbids all restart for oneshot |
+| No restart for oneshot | ~Restart=~ partially valid | systemd allows ~Restart=on-failure~ etc. for oneshot; elinit forbids all restart for oneshot |
 | ~:working-directory~ | ~WorkingDirectory=~ | Process working directory |
 | ~:environment~ | ~Environment=~ | Key-value pairs as alist |
 | ~:environment-file~ | ~EnvironmentFile=~ | Paths to env files; ~-~ prefix = optional |
@@ -898,53 +898,53 @@ services, but the mapping is not one-to-one.
 
 Key differences:
 
-- *Blocking is the default.*  Supervisor oneshots block dependency progression by
-  default (~supervisor-oneshot-default-blocking~ is ~t~).  In systemd,
+- *Blocking is the default.*  Elinit oneshots block dependency progression by
+  default (~elinit-oneshot-default-blocking~ is ~t~).  In systemd,
   blocking is inherent to ~Type=oneshot~: ordered dependencies wait
   for the oneshot process to exit before starting.
   ~RemainAfterExit=~ controls whether the unit stays in "active" state
   after exit, not whether it blocks ordering.
-- *Restart policy.*  Supervisor forbids all restart policies for
+- *Restart policy.*  Elinit forbids all restart policies for
   oneshot services.  systemd permits ~Restart=on-failure~,
   ~on-abnormal~, ~on-abort~, and ~on-watchdog~ for ~Type=oneshot~
   (restarting on non-clean exit), but disallows ~always~ and
   ~on-success~.
-- *Timeout default.*  Supervisor defaults to ~supervisor-oneshot-timeout~
+- *Timeout default.*  Elinit defaults to ~elinit-oneshot-timeout~
   (30 seconds).  systemd disables the startup timeout for oneshot by
   default (~TimeoutStartSec=infinity~), relying on the administrator
   to set explicit limits.
-- *RemainAfterExit.*  Supervisor supports ~:remain-after-exit t~ for
+- *RemainAfterExit.*  Elinit supports ~:remain-after-exit t~ for
   oneshot units.  If the process exits with code 0, the unit status
   latches to ~active~ until explicitly stopped.  Non-zero exit still
   results in ~failed~ status.  ~stop~ on an active latched unit
   transitions it to ~stopped~.  ~start~ on an active unit is a no-op.
   ~restart~ re-runs the oneshot.
 - *Target model and closure.*  Both systems sequence oneshots with dependency
-  ordering.  Supervisor activation is root-target closure based
+  ordering.  Elinit activation is root-target closure based
   (~:required-by~/~:wanted-by~ + ~:requires~/~:wants~), then globally
   topologically ordered.
 
 ** Stop Semantics
 
-Per-unit stop (~supervisorctl stop ID~, dashboard ~l t~):
+Per-unit stop (~elinitctl stop ID~, dashboard ~l t~):
 
 1. If the unit has ~:exec-stop~ commands, they run sequentially with the unit's
    effective working directory and environment.  Each command has a per-command
-   timeout of ~supervisor-shutdown-timeout~ seconds.
+   timeout of ~elinit-shutdown-timeout~ seconds.
 2. After stop commands complete (or fail), the process is terminated via signal.
    The signal used is the unit's ~:kill-signal~ (default ~SIGTERM~).
 3. Stop commands failing does not abort the shutdown path.
 
-~supervisor-stop~ (async graceful):
+~elinit-stop~ (async graceful):
 
 1. Runs ~:exec-stop~ command chains for applicable simple units.
 2. Sends each unit's ~:kill-signal~ (default ~SIGTERM~) to remaining live
    processes.
-3. After ~supervisor-shutdown-timeout~, sends ~SIGKILL~ to survivors.
+3. After ~elinit-shutdown-timeout~, sends ~SIGKILL~ to survivors.
    For units with ~:kill-mode mixed~, ~SIGKILL~ is also sent to discovered
    descendant processes of the main process.
 
-~supervisor-stop-now~ (sync hard stop):
+~elinit-stop-now~ (sync hard stop):
 
 - sends immediate ~SIGKILL~
 - waits up to ~0.5s~ for process death
@@ -977,10 +977,10 @@ Per-unit stop (~supervisorctl stop ID~, dashboard ~l t~):
 
 Four override tables are supported:
 
-- mask override (~supervisor--mask-override~)
-- enabled override (~supervisor--enabled-override~)
-- restart override (~supervisor--restart-override~)
-- logging override (~supervisor--logging~)
+- mask override (~elinit--mask-override~)
+- enabled override (~elinit--enabled-override~)
+- restart override (~elinit--restart-override~)
+- logging override (~elinit--logging~)
 
 Effective value resolution for enabled state:
 
@@ -990,7 +990,7 @@ Effective value resolution for enabled state:
 
 Enable/disable semantics follow the systemctl model:
 
-- ~enable ID~: unit should start on next ~supervisor-start~.  Persisted as
+- ~enable ID~: unit should start on next ~elinit-start~.  Persisted as
   override.
 - ~disable ID~: unit should NOT start automatically.  Persisted.
 - ~start ID~ on a disabled unit: starts it this session only.  Does not
@@ -998,28 +998,28 @@ Enable/disable semantics follow the systemctl model:
 
 ** Persistence of Overrides
 
-Overrides are persisted in ~supervisor-overrides-file~.
+Overrides are persisted in ~elinit-overrides-file~.
 
 - Saved with atomic write (temp file + rename)
-- Loaded on ~supervisor-start~
+- Loaded on ~elinit-start~
 - Corrupt file is logged and preserved
 
 Interactive helpers:
 
-- ~M-x supervisor-overrides-load~
-- ~M-x supervisor-overrides-save~
-- ~M-x supervisor-overrides-clear~
+- ~M-x elinit-overrides-load~
+- ~M-x elinit-overrides-save~
+- ~M-x elinit-overrides-clear~
 
 All dashboard policy commands (~enable~, ~disable~, ~mask~, ~unmask~,
 ~set-restart-policy~, ~set-logging~) persist overrides immediately via
-~supervisor--save-overrides~, matching the CLI behaviour.
+~elinit--save-overrides~, matching the CLI behaviour.
 
 * Target System
 :PROPERTIES:
 :CUSTOM_ID: target-system-handbook
 :END:
 
-Supervisor uses systemd-style targets for startup ordering and runtime
+Elinit uses systemd-style targets for startup ordering and runtime
 isolation.  Targets are dependency-only units (no command) whose IDs
 end in ~.target~.
 
@@ -1032,7 +1032,7 @@ Canonical built-in targets (lowest authority, user overrides win):
 | ~basic.target~ | (none) | Basic system initialization |
 | ~multi-user.target~ | ~basic.target~ | Multi-user services |
 | ~graphical.target~ | ~multi-user.target~ | Graphical session |
-| ~default.target~ | (none) | Startup root (alias resolved via ~supervisor-default-target-link~) |
+| ~default.target~ | (none) | Startup root (alias resolved via ~elinit-default-target-link~) |
 | ~rescue.target~ | ~basic.target~ | Single-user rescue mode |
 | ~shutdown.target~ | (none) | Shutdown synchronization barrier |
 | ~poweroff.target~ | ~shutdown.target~ | Power-off target |
@@ -1040,7 +1040,7 @@ Canonical built-in targets (lowest authority, user overrides win):
 
 ** SysV Init Runlevel Compatibility
 
-Supervisor maps SysV numeric runlevels to targets using systemd mapping
+Elinit maps SysV numeric runlevels to targets using systemd mapping
 semantics.  The mapping is fixed and not configurable:
 
 | Runlevel | Target | Description |
@@ -1107,21 +1107,21 @@ not timer-eligible= and excluded from the scheduler.
 :CUSTOM_ID: timer-subsystem-handbook
 :END:
 
-Timer subsystem lives in ~supervisor-timer.el~ and is enabled by default.
-Both ~supervisor-mode~ and ~supervisor-timer-subsystem-mode~ must be
+Timer subsystem lives in ~elinit-timer.el~ and is enabled by default.
+Both ~elinit-mode~ and ~elinit-timer-subsystem-mode~ must be
 active for timers to run.
 
 To disable:
 
 #+begin_src emacs-lisp
-(supervisor-timer-subsystem-mode -1)
+(elinit-timer-subsystem-mode -1)
 #+end_src
 
 Disabling the timer subsystem disables all timer-driven scheduling,
 including ~logrotate-daily~ and ~log-prune-daily~.  It does not disable
 normal unit startup.
 
-** Timer Configuration (~supervisor-timers~)
+** Timer Configuration (~elinit-timers~)
 
 Each timer is a plist.
 
@@ -1142,7 +1142,7 @@ Optional keys:
 - ~:persistent~ (boolean, default ~t~)
 
 #+begin_src emacs-lisp
-(setq supervisor-timers
+(setq elinit-timers
       '((:id "daily-backup"
          :target "backup-oneshot"       ;; oneshot target
          :on-calendar (:hour 3 :minute 0)
@@ -1191,7 +1191,7 @@ Semantics:
 ~:on-startup-sec~:
 
 - positive integer seconds after scheduler startup
-- fires once per supervisor session
+- fires once per elinit session
 
 ~:on-unit-active-sec~:
 
@@ -1223,7 +1223,7 @@ Miss metadata is stored in timer state.
 
 ** Retry Policy
 
-Configured by ~supervisor-timer-retry-intervals~ (default ~'(30 120 600)~).
+Configured by ~elinit-timer-retry-intervals~ (default ~'(30 120 600)~).
 
 - Retryable failures for oneshot targets: positive exit codes only
 - Retryable failures for simple targets: spawn failures
@@ -1237,14 +1237,14 @@ Configured by ~supervisor-timer-retry-intervals~ (default ~'(30 120 600)~).
 Configured by:
 
 - ~:persistent~ per timer (default ~t~)
-- ~supervisor-timer-catch-up-limit~ in seconds (default 24h)
+- ~elinit-timer-catch-up-limit~ in seconds (default 24h)
 
 On scheduler start, persistent timers may trigger catch-up runs for missed
 schedules within the configured window.
 
 ** Timer Persistence
 
-Timer runtime state file: ~supervisor-timer-state-file~.
+Timer runtime state file: ~elinit-timer-state-file~.
 
 - Atomic writes (temp + rename)
 - Schema versioned
@@ -1275,37 +1275,37 @@ State is saved on every trigger, completion, and scheduler stop.
 ** Timer Scheduler Lifecycle
 
 - Started after startup completion
-- Stopped on ~supervisor-stop~, ~supervisor-stop-now~, and when timer mode is disabled
+- Stopped on ~elinit-stop~, ~elinit-stop-now~, and when timer mode is disabled
 - Uses ~run-at-time~ scheduling (no polling loop)
 
 ** Timer Visibility Surfaces
 
 Dashboard:
 
-- Timer section is shown when ~supervisor-dashboard-show-timers~ is non-nil.
+- Timer section is shown when ~elinit-dashboard-show-timers~ is non-nil.
 - Target and tag filters apply only to the service section; the timer section
-  is always visible when ~supervisor-dashboard-show-timers~ is non-nil.
+  is always visible when ~elinit-dashboard-show-timers~ is non-nil.
 - When the timer subsystem is disabled, the timer section renders with
   an explicit "(disabled)" label and no interactive timer actions.
 - When no timers are configured, the section shows "no timers configured".
 
 CLI:
 
-- ~supervisorctl list-timers~ shows timer runtime/invalid definitions.
+- ~elinitctl list-timers~ shows timer runtime/invalid definitions.
 - If subsystem is gated off, command returns explicit disabled status.
 
-* Dashboard (~M-x supervisor~)
+* Dashboard (~M-x elinit~)
 :PROPERTIES:
-:CUSTOM_ID: dashboard-handbook-m-x-supervisor
+:CUSTOM_ID: dashboard-handbook-m-x-elinit
 :END:
 
-Dashboard buffer: ~*supervisor*~, major mode ~supervisor-dashboard-mode~
+Dashboard buffer: ~*elinit*~, major mode ~elinit-dashboard-mode~
 (derived from ~tabulated-list-mode~).
 
 ** Service-First Default View
 
 The dashboard defaults to a service-first view that hides target-type
-entries.  This reduces noise for operators who use supervisor as a
+entries.  This reduces noise for operators who use elinit as a
 service manager rather than a PID1 init system.
 
 Press ~v~ to toggle target visibility.  When targets are shown,
@@ -1364,7 +1364,7 @@ latched active until explicitly stopped.
 
 Timer rows appear in a dedicated section below services with their own
 column layout: ~ID~, ~TARGET~, ~ENABLED~, ~LAST-RUN~, ~NEXT-RUN~,
-~EXIT~, ~REASON~, ~TYPE~, ~RESULT~.  This matches the columns of ~supervisorctl list-timers~.
+~EXIT~, ~REASON~, ~TYPE~, ~RESULT~.  This matches the columns of ~elinitctl list-timers~.
 
 Timer rows support interactive timer actions via the ~y~ submenu.
 Service-only commands (lifecycle, policy, inspect) reject timer rows
@@ -1485,44 +1485,44 @@ Limitations in this version:
 
 ** Mode Interaction and Buffer-Local State
 
-- ~supervisor-mode~ is the parent global mode; enabling it runs
-  ~supervisor-start~, disabling it runs ~supervisor-stop~.
-- ~supervisor-timer-subsystem-mode~ is a global gate for the timer subsystem
-  and only becomes active when ~supervisor-mode~ is also enabled.
-- ~supervisor-dashboard-mode~ is the major mode for ~*supervisor*~ and can be
+- ~elinit-mode~ is the parent global mode; enabling it runs
+  ~elinit-start~, disabling it runs ~elinit-stop~.
+- ~elinit-timer-subsystem-mode~ is a global gate for the timer subsystem
+  and only becomes active when ~elinit-mode~ is also enabled.
+- ~elinit-dashboard-mode~ is the major mode for ~*elinit*~ and can be
   opened independently of whether supervision is currently running.
 - Dashboard filters are buffer-local:
-  ~supervisor--dashboard-target-filter~ and ~supervisor--dashboard-tag-filter~.
-- Dashboard auto-refresh timer (~supervisor--auto-refresh-timer~) is buffer-local
-  and defaults to off until toggled with ~G~ / ~M-x supervisor-dashboard-toggle-auto-refresh~.
+  ~elinit--dashboard-target-filter~ and ~elinit--dashboard-tag-filter~.
+- Dashboard auto-refresh timer (~elinit--auto-refresh-timer~) is buffer-local
+  and defaults to off until toggled with ~G~ / ~M-x elinit-dashboard-toggle-auto-refresh~.
 
 ** Dashboard Faces
 
-All dashboard faces are in customization group ~supervisor~:
+All dashboard faces are in customization group ~elinit~:
 
 | Face | Used for |
-| ~supervisor-status-running~ | Status ~running~ |
-| ~supervisor-status-done~ | Status ~done~ |
-| ~supervisor-status-failed~ | Status ~failed~ |
-| ~supervisor-status-dead~ | Status ~dead~ |
-| ~supervisor-status-invalid~ | Status ~invalid~ |
-| ~supervisor-status-pending~ | Status ~pending~ |
-| ~supervisor-status-stopped~ | Status ~stopped~ |
-| ~supervisor-type-simple~ | Type ~simple~ |
-| ~supervisor-type-oneshot~ | Type ~oneshot~ |
-| ~supervisor-type-timer~ | Type ~timer~ rows |
-| ~supervisor-enabled-yes~ | Enabled column (~yes~) |
-| ~supervisor-enabled-no~ | Enabled column (~no~) |
-| ~supervisor-reason~ | Reason column values |
-| ~supervisor-section-separator~ | Section header/separator rows |
+| ~elinit-status-running~ | Status ~running~ |
+| ~elinit-status-done~ | Status ~done~ |
+| ~elinit-status-failed~ | Status ~failed~ |
+| ~elinit-status-dead~ | Status ~dead~ |
+| ~elinit-status-invalid~ | Status ~invalid~ |
+| ~elinit-status-pending~ | Status ~pending~ |
+| ~elinit-status-stopped~ | Status ~stopped~ |
+| ~elinit-type-simple~ | Type ~simple~ |
+| ~elinit-type-oneshot~ | Type ~oneshot~ |
+| ~elinit-type-timer~ | Type ~timer~ rows |
+| ~elinit-enabled-yes~ | Enabled column (~yes~) |
+| ~elinit-enabled-no~ | Enabled column (~no~) |
+| ~elinit-reason~ | Reason column values |
+| ~elinit-section-separator~ | Section header/separator rows |
 
-* CLI (~sbin/supervisorctl~)
+* CLI (~sbin/elinitctl~)
 :PROPERTIES:
-:CUSTOM_ID: cli-handbook-sbinsupervisorctl
+:CUSTOM_ID: cli-handbook-sbinelinitctl
 :END:
 
 The shell wrapper is transport-only; behavior is implemented in
-~supervisor-cli.el~ dispatchers.
+~elinit-cli.el~ dispatchers.
 
 Requires the Emacs server to be running:
 
@@ -1534,7 +1534,7 @@ Requires the Emacs server to be running:
 ** Wrapper Syntax
 
 #+begin_src bash
-sbin/supervisorctl [WRAPPER-OPTIONS] COMMAND [COMMAND-ARGS]
+sbin/elinitctl [WRAPPER-OPTIONS] COMMAND [COMMAND-ARGS]
 #+end_src
 
 ** Wrapper Options
@@ -1554,7 +1554,7 @@ Wrapper transport rules:
 Wrapper/dispatcher usage behavior:
 
 - Wrapper ~--help~ prints wrapper option help.
-- Calling ~supervisorctl~ with no command prints dispatcher usage text and
+- Calling ~elinitctl~ with no command prints dispatcher usage text and
   command list.
 
 ** CLI Commands
@@ -1593,7 +1593,7 @@ Target commands:
 - ~init [--yes] N~ (switch to runlevel 0-6; maps to systemd-style target)
 - ~telinit [--yes] N~ (alias for ~init~)
 
-Supervisor-specific commands:
+Elinit-specific commands:
 
 - ~verify~
 - ~reset-failed [--] [ID...]~ (with IDs: reset those; without: reset all)
@@ -1631,8 +1631,8 @@ IDs.
 ~start~, ~stop~, ~restart~:
 
 - with IDs: operate on those IDs
-- with no IDs: operate on whole supervisor (~start~, ~stop~, ~stop+start~)
-- ~start --target TARGET~: start full supervisor from TARGET for that invocation
+- with no IDs: operate on whole elinit (~start~, ~stop~, ~stop+start~)
+- ~start --target TARGET~: start full elinit from TARGET for that invocation
   only (cannot be combined with specific IDs)
 - ~start~ on a disabled unit: succeeds (session-only, no override change).
   Only masked units are blocked from manual start.
@@ -1644,14 +1644,14 @@ IDs.
 
 ~list-timers~:
 
-- explicit disabled response when ~supervisor-timer-subsystem-mode~ is off
-- works even when ~supervisor-mode~ is off (shows configured timer definitions)
+- explicit disabled response when ~elinit-timer-subsystem-mode~ is off
+- works even when ~elinit-mode~ is off (shows configured timer definitions)
 
 ~cat~:
 
 - requires exactly one ID argument
 - outputs raw file content from the authoritative unit file (resolved via
-  ~supervisor-unit-authority-path~)
+  ~elinit-unit-authority-path~)
 - error if file does not exist
 - JSON: ~{"path": "...", "content": "..."}~
 
@@ -1790,7 +1790,7 @@ Empty collections are encoded as arrays (not ~null~).
 
 ** Unified Event Hook
 
-~supervisor-event-hook~ receives one plist per event:
+~elinit-event-hook~ receives one plist per event:
 
 - ~:type~ (symbol)
 - ~:ts~ (float timestamp)
@@ -1818,19 +1818,19 @@ are not emitted by runtime paths in this release.
 
 ** Minibuffer Notifications
 
-By default, supervisor does not show minibuffer messages for process failures
+By default, elinit does not show minibuffer messages for process failures
 or non-zero exits. Use an event hook if you want immediate notification:
 
 #+begin_src emacs-lisp
-(add-hook 'supervisor-event-hook
+(add-hook 'elinit-event-hook
           (lambda (event)
             (pcase (plist-get event :type)
               ('process-failed
-               (message "Supervisor: FAILED to start %s" (plist-get event :id)))
+               (message "Elinit: FAILED to start %s" (plist-get event :id)))
               ('process-exit
                (let ((code (plist-get (plist-get event :data) :code)))
                  (unless (eq code 0)
-                   (message "Supervisor: %s exited with code %s"
+                   (message "Elinit: %s exited with code %s"
                             (plist-get event :id) code)))))))
 #+end_src
 
@@ -1843,16 +1843,16 @@ This is optional. You can also check the dashboard or logs.
 
 ** Log Files
 
-- Supervisor-level log file (optional):
-- ~<supervisor-log-directory>/supervisor.log~ (controlled by ~supervisor-log-to-file~)
+- Elinit-level log file (optional):
+- ~<elinit-log-directory>/elinit.log~ (controlled by ~elinit-log-to-file~)
 - Per-process logs:
-- ~<supervisor-log-directory>/log-<id>.log~ by default (controlled per service
+- ~<elinit-log-directory>/log-<id>.log~ by default (controlled per service
   logging policy)
 
 By default, each unit merges stdout and stderr into the same per-process
 log file.  Units can override stream targets with ~:stdout-log-file~ and
 ~:stderr-log-file~.  If both resolve to the same path, streams remain merged.
-If they differ, supervisor writes stdout and stderr via separate logd writers.
+If they differ, elinit writes stdout and stderr via separate logd writers.
 These stream overrides are literal file paths; use writable paths and ensure
 the target directories exist.
 
@@ -1861,42 +1861,42 @@ Example split stream configuration:
 #+begin_src emacs-lisp
 (:id "example-svc"
  :command "/usr/bin/example"
- :stdout-log-file "~/.config/supervisor/log/example-svc.out.log"
- :stderr-log-file "~/.config/supervisor/log/example-svc.err.log")
+ :stdout-log-file "~/.config/elinit/log/example-svc.out.log"
+ :stderr-log-file "~/.config/elinit/log/example-svc.err.log")
 #+end_src
 
-Log files are managed by external ~supervisor-logd~ writer processes.
-Each writer enforces a per-file size cap (~supervisor-logd-max-file-size~)
+Log files are managed by external ~elinit-logd~ writer processes.
+Each writer enforces a per-file size cap (~elinit-logd-max-file-size~)
 and rotates locally when the limit is reached.
 
-The default ~supervisor-log-directory~ is user-local
-(~(expand-file-name "supervisor" user-emacs-directory)~), so userland setups
+The default ~elinit-log-directory~ is user-local
+(~(expand-file-name "elinit" user-emacs-directory)~), so userland setups
 work without requiring write access to ~/var/log~.
 
-If ~supervisor-log-directory~ is configured to an unwritable location,
-supervisor automatically falls back to the same user-local default path.
+If ~elinit-log-directory~ is configured to an unwritable location,
+elinit automatically falls back to the same user-local default path.
 If neither location is writable, file logging is skipped and services
 still run.
 
 Bundled helpers can be built from Emacs with
-~M-x supervisor-build-libexec-helpers~.  Startup can prompt or auto-build
-missing/stale helpers via ~supervisor-libexec-build-on-startup~.
+~M-x elinit-build-libexec-helpers~.  Startup can prompt or auto-build
+missing/stale helpers via ~elinit-libexec-build-on-startup~.
 
-~supervisor-logd~ and ~supervisor-runas~ are deliberately narrow helper
-executables.  ~supervisor-logd~ handles continuous append/rotate I/O outside
-the Emacs Lisp scheduler loop, and ~supervisor-runas~ performs privileged
+~elinit-logd~ and ~elinit-runas~ are deliberately narrow helper
+executables.  ~elinit-logd~ handles continuous append/rotate I/O outside
+the Emacs Lisp scheduler loop, and ~elinit-runas~ performs privileged
 identity transitions (~setuid/setgid/initgroups~) when units request
 ~:user~ / ~:group~.
 
 *** Scheduled Rotation
 
-The ~sbin/supervisor-logrotate~ script provides scheduled rotation and
+The ~sbin/elinit-logrotate~ script provides scheduled rotation and
 pruning of log files.  It rotates active log files by renaming them with
 a timestamp suffix (~YYYYMMDD-HHMMSS~), optionally signals logd writers
 to reopen their files, and prunes old rotated files by age.
 
 #+begin_example
-sbin/supervisor-logrotate --log-dir /path/to/logs --keep-days 14
+sbin/elinit-logrotate --log-dir /path/to/logs --keep-days 14
 #+end_example
 
 Options:
@@ -1915,18 +1915,18 @@ Script output behavior:
 A typical cron entry for daily rotation:
 
 #+begin_example
-0 3 * * * /path/to/supervisor-logrotate --log-dir /path/to/supervisor-log-directory --signal-reopen
+0 3 * * * /path/to/elinit-logrotate --log-dir /path/to/elinit-log-directory --signal-reopen
 #+end_example
 
 *** Global Pruning
 
-The ~sbin/supervisor-log-prune~ script enforces a hard cap on the total
+The ~sbin/elinit-log-prune~ script enforces a hard cap on the total
 size of the log directory.  It deletes the oldest rotated files first
 until the directory is at or below the cap.  Active log files
-(~log-<id>.log~, ~supervisor.log~) are never deleted.
+(~log-<id>.log~, ~elinit.log~) are never deleted.
 
 #+begin_example
-sbin/supervisor-log-prune --log-dir /path/to/logs --max-total-bytes 1073741824
+sbin/elinit-log-prune --log-dir /path/to/logs --max-total-bytes 1073741824
 #+end_example
 
 Options:
@@ -1974,7 +1974,7 @@ The ~--protect-id~ flag provides additional explicit protection.
 A typical cron entry for periodic pruning (e.g. hourly):
 
 #+begin_example
-0 * * * * /path/to/supervisor-log-prune --log-dir /path/to/supervisor-log-directory --max-total-bytes 1073741824
+0 * * * * /path/to/elinit-log-prune --log-dir /path/to/elinit-log-directory --max-total-bytes 1073741824
 #+end_example
 
 *** Integrated Maintenance
@@ -1983,7 +1983,7 @@ Three paths keep log growth bounded end-to-end:
 
 1. *logd path* -- each logd writer rotates its own file when the
    per-file size cap is reached, then triggers the prune script
-   (throttled by ~supervisor-logd-prune-min-interval~ seconds) to keep
+   (throttled by ~elinit-logd-prune-min-interval~ seconds) to keep
    the directory within the total size cap.
 
 2. *Daily automatic path* -- a built-in ~logrotate~ oneshot unit and
@@ -1993,7 +1993,7 @@ Three paths keep log growth bounded end-to-end:
    (the default).  The rotate unit uses ~--signal-reopen~, so log writers
    reopen after rotation.
 
-3. *Manual path* -- ~M-x supervisor-run-log-maintenance~ runs the
+3. *Manual path* -- ~M-x elinit-run-log-maintenance~ runs the
    full maintenance sequence asynchronously: rotate all active logs,
    signal writers to reopen, then prune.
 
@@ -2001,38 +2001,38 @@ Built-in ~logrotate~ and ~log-prune~ units are inert fallback
 definitions -- they do not declare ~:wanted-by~ and are not activated
 during startup.  They exist solely so that the built-in timers
 ~logrotate-daily~ and ~log-prune-daily~ can find the target entry at
-runtime.  When ~supervisor-seed-default-maintenance-units~ is enabled
+runtime.  When ~elinit-seed-default-maintenance-units~ is enabled
 (the default), the first startup seeds unit files for these IDs into
 the highest-precedence authority root.
 
 A user-created unit file with ~:id "logrotate"~ overrides the built-in
 entry, and a user-created unit file with ~:id "log-prune"~ overrides
 that built-in entry.  Similarly, user timers with IDs
-~logrotate-daily~ or ~log-prune-daily~ in ~supervisor-timers~ override
+~logrotate-daily~ or ~log-prune-daily~ in ~elinit-timers~ override
 the built-in timer schedules.
 
 Seeded unit files are write-once: once created, they are never
-overwritten by supervisor.  This means improvements to default
+overwritten by elinit.  This means improvements to default
 commands will not propagate to already-seeded units.  To pick up
 updated defaults, delete the seeded unit file and call
-~supervisor-daemon-reload~ (or restart supervisor) -- the seeder will
+~elinit-daemon-reload~ (or restart elinit) -- the seeder will
 create a fresh file with current defaults.
 
 Seeding respects runtime overrides: if a maintenance unit is masked
-(via ~supervisorctl mask~) or disabled (via ~supervisorctl disable~),
+(via ~elinitctl mask~) or disabled (via ~elinitctl disable~),
 its unit file will not be re-seeded after deletion.
 
 To disable automatic daily maintenance, either disable the timer
 subsystem entirely:
 
 #+begin_src emacs-lisp
-(supervisor-timer-subsystem-mode -1)
+(elinit-timer-subsystem-mode -1)
 #+end_src
 
 Or override the built-in timer with a disabled one:
 
 #+begin_src emacs-lisp
-(setq supervisor-timers
+(setq elinit-timers
       '((:id "logrotate-daily" :target "logrotate"
          :on-calendar (:hour 3 :minute 0) :enabled nil)
         (:id "log-prune-daily" :target "log-prune"
@@ -2046,10 +2046,10 @@ Relevant customization variables:
 
 | Variable | Default | Purpose |
 |----------+---------+---------|
-| ~supervisor-logd-max-file-size~ | 50 MiB | Per-file size cap before logd rotates locally |
-| ~supervisor-log-prune-max-total-bytes~ | 1 GiB | Hard cap on total log directory size |
-| ~supervisor-logd-prune-min-interval~ | 60 s | Minimum seconds between logd-triggered prune calls |
-| ~supervisor-logrotate-keep-days~ | 14 | Days to keep rotated files (scheduled path) |
+| ~elinit-logd-max-file-size~ | 50 MiB | Per-file size cap before logd rotates locally |
+| ~elinit-log-prune-max-total-bytes~ | 1 GiB | Hard cap on total log directory size |
+| ~elinit-logd-prune-min-interval~ | 60 s | Minimum seconds between logd-triggered prune calls |
+| ~elinit-logrotate-keep-days~ | 14 | Days to keep rotated files (scheduled path) |
 
 *** Structured Logging
 
@@ -2061,7 +2061,7 @@ raw byte passthrough.  Two formats are available:
 - ~binary~ -- compact binary framing with nanosecond timestamps.
 
 Text is the default when ~:log-format~ is set.  Binary requires the gate
-variable ~supervisor-log-format-binary-enable~ to be non-nil; units
+variable ~elinit-log-format-binary-enable~ to be non-nil; units
 requesting ~:log-format binary~ without the gate enabled are rejected
 during validation.
 
@@ -2123,17 +2123,17 @@ The Elisp decoder handles truncated trailing records gracefully: it
 returns all valid records parsed before the truncation point and includes
 a warning.  Unknown version or event values are rejected as hard errors.
 
-**** ~supervisorctl journal~ Command
+**** ~elinitctl journal~ Command
 
 The ~journal~ command reads and displays structured log records:
 
 #+begin_example
-supervisorctl journal -u my-service
-supervisorctl journal -u my-service -n 20
-supervisorctl journal -u my-service -p err
-supervisorctl journal -u my-service --since 1708098896 --until 1708099000
-supervisorctl journal -fu my-service
-supervisorctl journal --json -u my-service
+elinitctl journal -u my-service
+elinitctl journal -u my-service -n 20
+elinitctl journal -u my-service -p err
+elinitctl journal -u my-service --since 1708098896 --until 1708099000
+elinitctl journal -fu my-service
+elinitctl journal --json -u my-service
 #+end_example
 
 Flags:
@@ -2161,7 +2161,7 @@ determine the format (~SLG1~ magic for binary, ~ts=~ prefix for text,
 otherwise legacy raw lines).  Legacy files are wrapped as unstructured
 output records.
 
-The dashboard (~supervisor-dashboard-view-log~) also auto-detects binary
+The dashboard (~elinit-dashboard-view-log~) also auto-detects binary
 format and decodes records for display instead of showing raw binary
 data.
 
@@ -2191,36 +2191,36 @@ Both scripts handle ~.log.tar.gz~ files in their rotated-file patterns.
 Example vacuum-style invocation:
 
 #+begin_example
-sbin/supervisor-log-prune --log-dir /path/to/logs --vacuum --vacuum-max-total-bytes 1073741824
+sbin/elinit-log-prune --log-dir /path/to/logs --vacuum --vacuum-max-total-bytes 1073741824
 #+end_example
 
 Equivalent canonical invocation:
 
 #+begin_example
-sbin/supervisor-log-prune --log-dir /path/to/logs --max-total-bytes 1073741824
+sbin/elinit-log-prune --log-dir /path/to/logs --max-total-bytes 1073741824
 #+end_example
 
 ** Logging Semantics
 
-~supervisor--log~ emits levels:
+~elinit--log~ emits levels:
 
 - ~error~ and ~warning~ are always shown in minibuffer/log output.
-- ~info~ is shown when ~supervisor-verbose~ is non-nil.
-- When ~supervisor-log-to-file~ is non-nil, all levels are written to
-  ~supervisor.log~ regardless of ~supervisor-verbose~.
+- ~info~ is shown when ~elinit-verbose~ is non-nil.
+- When ~elinit-log-to-file~ is non-nil, all levels are written to
+  ~elinit.log~ regardless of ~elinit-verbose~.
 
 ** Overrides File
 
-- Path: ~supervisor-overrides-file~
-- Default: ~${XDG_CONFIG_HOME}/supervisor/overrides.eld~ if ~XDG_CONFIG_HOME~
-  is set, otherwise =~/.config/supervisor/overrides.eld=
+- Path: ~elinit-overrides-file~
+- Default: ~${XDG_CONFIG_HOME}/elinit/overrides.eld~ if ~XDG_CONFIG_HOME~
+  is set, otherwise =~/.config/elinit/overrides.eld=
 - Format: schema-versioned Elisp data
 
 ** Timer State File
 
-- Path: ~supervisor-timer-state-file~
-- Default: ~${XDG_STATE_HOME}/supervisor/timer-state.eld~ if ~XDG_STATE_HOME~ is
-  set, otherwise =~/.local/state/supervisor/timer-state.eld=
+- Path: ~elinit-timer-state-file~
+- Default: ~${XDG_STATE_HOME}/elinit/timer-state.eld~ if ~XDG_STATE_HOME~ is
+  set, otherwise =~/.local/state/elinit/timer-state.eld=
 - Active only when timer subsystem is active
 
 * Customization Reference
@@ -2233,64 +2233,64 @@ All user options (defcustom) are listed below.
 ** Core Options
 
 | Variable | Default | Purpose |
-| ~supervisor-timers~ | ~nil~ | Timer definition list |
-| ~supervisor-log-directory~ | ~(expand-file-name "supervisor" user-emacs-directory)~ | Log directory |
-| ~supervisor-restart-delay~ | ~2~ | Restart delay (seconds) |
-| ~supervisor-max-restarts~ | ~3~ | Crash-loop threshold |
-| ~supervisor-restart-window~ | ~60~ | Crash-loop time window (seconds) |
-| ~supervisor-shutdown-timeout~ | ~3~ | Graceful shutdown timeout |
-| ~supervisor-oneshot-default-blocking~ | ~t~ | Default oneshot blocking behavior |
-| ~supervisor-oneshot-timeout~ | ~30~ | Default oneshot timeout |
-| ~supervisor-startup-timeout~ | ~nil~ | Startup timeout before force-complete (~nil~ means disabled) |
-| ~supervisor-max-concurrent-starts~ | ~nil~ | Max concurrent startup spawn attempts |
-| ~supervisor-default-target~ | ~"default.target"~ | Startup target to activate |
-| ~supervisor-default-target-link~ | ~"graphical.target"~ | Alias target that ~default.target~ resolves to |
-| ~supervisor-verbose~ | ~nil~ | Show info-level messages |
-| ~supervisor-log-to-file~ | ~nil~ | Write supervisor events to file |
-| ~supervisor-watch-config~ | ~nil~ | Config file watch and auto-reload |
-| ~supervisor-overrides-file~ | ~(XDG_CONFIG_HOME or ~/.config)/supervisor/overrides.eld~ | Override persistence path |
-| ~supervisor-logd-command~ | ~libexec/supervisor-logd~ (relative to package) | Per-service log writer helper path |
-| ~supervisor-logrotate-command~ | ~sbin/supervisor-logrotate~ (relative to package) | Log rotation script path |
-| ~supervisor-log-prune-command~ | ~sbin/supervisor-log-prune~ (relative to package) | Global log prune script path |
-| ~supervisor-logrotate-keep-days~ | ~14~ | Days to keep rotated log files |
-| ~supervisor-logd-max-file-size~ | ~52428800~ (50 MiB) | Per-file size cap for log writer |
-| ~supervisor-log-prune-max-total-bytes~ | ~1073741824~ (1 GiB) | Total log directory size cap |
-| ~supervisor-logd-prune-min-interval~ | ~60~ | Throttle interval for logd-triggered prune (seconds) |
-| ~supervisor-log-follow-interval~ | ~1.0~ | Seconds between journal follow poll cycles |
-| ~supervisor-log-default-max-bytes~ | ~(* 5 1024 1024)~ (5 MiB) | Default tail byte cap when log decoding has no explicit record count |
-| ~supervisor-logd-pid-directory~ | ~nil~ (falls back to effective log directory) | Writer PID file directory |
-| ~supervisor-libexec-build-on-startup~ | ~prompt~ | Build bundled helper binaries on startup (~prompt/automatic/never~) |
-| ~supervisor-libexec-compiler-candidates~ | ~("cc" "clang" "gcc")~ | Candidate compiler commands, checked in order |
-| ~supervisor-libexec-cflags~ | ~("-Wall" "-Wextra" "-Werror" "-pedantic" "-std=c99" "-O2")~ | C flags used when building bundled helpers |
-| ~supervisor-sandbox-allow-raw-bwrap~ | ~nil~ | Enable raw bwrap arguments (~:sandbox-raw-args~) |
-| ~supervisor-log-format-binary-enable~ | ~nil~ | Gate variable: allow ~:log-format binary~ in unit files |
+| ~elinit-timers~ | ~nil~ | Timer definition list |
+| ~elinit-log-directory~ | ~(expand-file-name "elinit" user-emacs-directory)~ | Log directory |
+| ~elinit-restart-delay~ | ~2~ | Restart delay (seconds) |
+| ~elinit-max-restarts~ | ~3~ | Crash-loop threshold |
+| ~elinit-restart-window~ | ~60~ | Crash-loop time window (seconds) |
+| ~elinit-shutdown-timeout~ | ~3~ | Graceful shutdown timeout |
+| ~elinit-oneshot-default-blocking~ | ~t~ | Default oneshot blocking behavior |
+| ~elinit-oneshot-timeout~ | ~30~ | Default oneshot timeout |
+| ~elinit-startup-timeout~ | ~nil~ | Startup timeout before force-complete (~nil~ means disabled) |
+| ~elinit-max-concurrent-starts~ | ~nil~ | Max concurrent startup spawn attempts |
+| ~elinit-default-target~ | ~"default.target"~ | Startup target to activate |
+| ~elinit-default-target-link~ | ~"graphical.target"~ | Alias target that ~default.target~ resolves to |
+| ~elinit-verbose~ | ~nil~ | Show info-level messages |
+| ~elinit-log-to-file~ | ~nil~ | Write elinit events to file |
+| ~elinit-watch-config~ | ~nil~ | Config file watch and auto-reload |
+| ~elinit-overrides-file~ | ~(XDG_CONFIG_HOME or ~/.config)/elinit/overrides.eld~ | Override persistence path |
+| ~elinit-logd-command~ | ~libexec/elinit-logd~ (relative to package) | Per-service log writer helper path |
+| ~elinit-logrotate-command~ | ~sbin/elinit-logrotate~ (relative to package) | Log rotation script path |
+| ~elinit-log-prune-command~ | ~sbin/elinit-log-prune~ (relative to package) | Global log prune script path |
+| ~elinit-logrotate-keep-days~ | ~14~ | Days to keep rotated log files |
+| ~elinit-logd-max-file-size~ | ~52428800~ (50 MiB) | Per-file size cap for log writer |
+| ~elinit-log-prune-max-total-bytes~ | ~1073741824~ (1 GiB) | Total log directory size cap |
+| ~elinit-logd-prune-min-interval~ | ~60~ | Throttle interval for logd-triggered prune (seconds) |
+| ~elinit-log-follow-interval~ | ~1.0~ | Seconds between journal follow poll cycles |
+| ~elinit-log-default-max-bytes~ | ~(* 5 1024 1024)~ (5 MiB) | Default tail byte cap when log decoding has no explicit record count |
+| ~elinit-logd-pid-directory~ | ~nil~ (falls back to effective log directory) | Writer PID file directory |
+| ~elinit-libexec-build-on-startup~ | ~prompt~ | Build bundled helper binaries on startup (~prompt/automatic/never~) |
+| ~elinit-libexec-compiler-candidates~ | ~("cc" "clang" "gcc")~ | Candidate compiler commands, checked in order |
+| ~elinit-libexec-cflags~ | ~("-Wall" "-Wextra" "-Werror" "-pedantic" "-std=c99" "-O2")~ | C flags used when building bundled helpers |
+| ~elinit-sandbox-allow-raw-bwrap~ | ~nil~ | Enable raw bwrap arguments (~:sandbox-raw-args~) |
+| ~elinit-log-format-binary-enable~ | ~nil~ | Gate variable: allow ~:log-format binary~ in unit files |
 
 ** Unit-File Options
 
 | Variable | Default | Purpose |
-| ~supervisor-unit-authority-path~ | ~'("/usr/lib/supervisor.el/" "/etc/supervisor.el/" "~/.config/supervisor.el/")~ | Authority roots (low to high precedence) |
-| ~supervisor-unit-directory~ | ~(XDG_CONFIG_HOME or ~/.config)/supervisor/units/~ | Legacy unit directory (deprecated; use ~supervisor-unit-authority-path~) |
-| ~supervisor-seed-default-maintenance-units~ | ~t~ | Auto-seed default ~logrotate~ / ~log-prune~ unit files when missing |
+| ~elinit-unit-authority-path~ | ~'("/usr/lib/elinit/" "/etc/elinit/" "~/.config/elinit/")~ | Authority roots (low to high precedence) |
+| ~elinit-unit-directory~ | ~(XDG_CONFIG_HOME or ~/.config)/elinit/units/~ | Legacy unit directory (deprecated; use ~elinit-unit-authority-path~) |
+| ~elinit-seed-default-maintenance-units~ | ~t~ | Auto-seed default ~logrotate~ / ~log-prune~ unit files when missing |
 
 ** Timer Options
 
 | Variable | Default | Purpose |
-| ~supervisor-timer-state-file~ | ~(XDG_STATE_HOME or ~/.local/state)/supervisor/timer-state.eld~ | Timer state persistence path |
-| ~supervisor-timer-retry-intervals~ | ~'(30 120 600)~ | Retry schedule |
-| ~supervisor-timer-catch-up-limit~ | ~(* 24 60 60)~ | Catch-up lookback window |
+| ~elinit-timer-state-file~ | ~(XDG_STATE_HOME or ~/.local/state)/elinit/timer-state.eld~ | Timer state persistence path |
+| ~elinit-timer-retry-intervals~ | ~'(30 120 600)~ | Retry schedule |
+| ~elinit-timer-catch-up-limit~ | ~(* 24 60 60)~ | Catch-up lookback window |
 
 ** Dashboard Options
 
 | Variable | Default | Purpose |
-| ~supervisor-dashboard-show-header-hints~ | ~nil~ | Reserved compatibility option (currently no effect); use ~h~ for key help |
-| ~supervisor-dashboard-show-timers~ | ~t~ | Show timer section |
-| ~supervisor-dashboard-log-view-record-limit~ | ~1000~ | Maximum decoded records shown by ~supervisor-dashboard-view-log~ |
-| ~supervisor-auto-refresh-interval~ | ~2~ | Auto-refresh cadence |
+| ~elinit-dashboard-show-header-hints~ | ~nil~ | Reserved compatibility option (currently no effect); use ~h~ for key help |
+| ~elinit-dashboard-show-timers~ | ~t~ | Show timer section |
+| ~elinit-dashboard-log-view-record-limit~ | ~1000~ | Maximum decoded records shown by ~elinit-dashboard-view-log~ |
+| ~elinit-auto-refresh-interval~ | ~2~ | Auto-refresh cadence |
 
 ** CLI Options
 
 | Variable | Default | Purpose |
-| ~supervisor-cli-follow-max-age~ | ~3600~ | Seconds before orphaned journal follow sessions are cleaned up |
+| ~elinit-cli-follow-max-age~ | ~3600~ | Seconds before orphaned journal follow sessions are cleaned up |
 
 * Command Reference
 :PROPERTIES:
@@ -2300,74 +2300,74 @@ All user options (defcustom) are listed below.
 ** Interactive Emacs Commands
 
 | Command | Purpose |
-| ~M-x supervisor-mode~ | Global supervisor mode (start/stop + file watch) |
-| ~M-x supervisor-timer-subsystem-mode~ | Toggle timer subsystem gate |
-| ~M-x supervisor-start~ | Build plan and start target-closure DAG scheduler |
-| ~M-x supervisor-stop~ | Async graceful stop |
-| ~M-x supervisor-stop-now~ | Sync hard stop |
-| ~M-x supervisor-daemon-reload~ | Reload unit definitions from disk into memory without runtime changes |
-| ~M-x supervisor-run-log-maintenance~ | Run rotate, reopen, and prune immediately |
-| ~M-x supervisor-build-libexec-helpers~ | Compile missing/stale bundled libexec helpers |
-| ~M-x supervisor-verify~ | Verify config without start |
-| ~M-x supervisor-dry-run~ | Show execution plan without start |
-| ~M-x supervisor-migrate-config~ | Emit canonical schema v1 config |
-| ~M-x supervisor-overrides-load~ | Load overrides from disk |
-| ~M-x supervisor-overrides-save~ | Save overrides to disk |
-| ~M-x supervisor-overrides-clear~ | Clear overrides in memory + file |
-| ~M-x supervisor~ | Open dashboard |
-| ~M-x supervisor-handbook~ | Open README.org handbook (read-only) |
+| ~M-x elinit-mode~ | Global elinit mode (start/stop + file watch) |
+| ~M-x elinit-timer-subsystem-mode~ | Toggle timer subsystem gate |
+| ~M-x elinit-start~ | Build plan and start target-closure DAG scheduler |
+| ~M-x elinit-stop~ | Async graceful stop |
+| ~M-x elinit-stop-now~ | Sync hard stop |
+| ~M-x elinit-daemon-reload~ | Reload unit definitions from disk into memory without runtime changes |
+| ~M-x elinit-run-log-maintenance~ | Run rotate, reopen, and prune immediately |
+| ~M-x elinit-build-libexec-helpers~ | Compile missing/stale bundled libexec helpers |
+| ~M-x elinit-verify~ | Verify config without start |
+| ~M-x elinit-dry-run~ | Show execution plan without start |
+| ~M-x elinit-migrate-config~ | Emit canonical schema v1 config |
+| ~M-x elinit-overrides-load~ | Load overrides from disk |
+| ~M-x elinit-overrides-save~ | Save overrides to disk |
+| ~M-x elinit-overrides-clear~ | Clear overrides in memory + file |
+| ~M-x elinit~ | Open dashboard |
+| ~M-x elinit-handbook~ | Open README.org handbook (read-only) |
 
 ** Dashboard Interactive Commands
 
 | Command | Purpose |
-| ~M-x supervisor-dashboard-lifecycle~ | Open lifecycle submenu |
-| ~M-x supervisor-dashboard-policy~ | Open policy submenu |
-| ~M-x supervisor-dashboard-inspect~ | Open inspect submenu |
-| ~M-x supervisor-dashboard-refresh~ | Refresh dashboard buffer |
-| ~M-x supervisor-dashboard-cycle-filter~ | Cycle target filter |
-| ~M-x supervisor-dashboard-cycle-tag-filter~ | Cycle tag filter |
-| ~M-x supervisor-dashboard-toggle-targets~ | Toggle visibility of target entries |
-| ~M-x supervisor-dashboard-toggle-init-targets~ | Toggle visibility of init-transition targets (rescue/shutdown/etc) |
-| ~M-x supervisor-dashboard-toggle-auto-refresh~ | Toggle auto-refresh |
-| ~M-x supervisor-dashboard-toggle-proced-auto-update~ | Toggle Proced auto-update mode |
-| ~M-x supervisor-dashboard-quit~ | Quit dashboard |
-| ~M-x supervisor-dashboard-start~ | Start selected service |
-| ~M-x supervisor-dashboard-stop~ | Stop selected service (graceful, suppresses restart) |
-| ~M-x supervisor-dashboard-restart~ | Restart selected service (stop + start) |
-| ~M-x supervisor-dashboard-kill~ | Kill selected service (send signal, restart unchanged) |
-| ~M-x supervisor-dashboard-kill-force~ | Kill selected service (no confirm) |
-| ~M-x supervisor-dashboard-reset-failed~ | Reset failed state |
-| ~M-x supervisor-dashboard-reload-unit~ | Hot-reload unit at point |
-| ~M-x supervisor-dashboard-daemon-reload~ | Reload all unit definitions from disk and refresh dashboard |
-| ~M-x supervisor-dashboard-enable~ | Enable entry (explicit) |
-| ~M-x supervisor-dashboard-disable~ | Disable entry (explicit) |
-| ~M-x supervisor-dashboard-mask~ | Mask entry (always disabled) |
-| ~M-x supervisor-dashboard-unmask~ | Unmask entry |
-| ~M-x supervisor-dashboard-set-restart-policy~ | Set restart policy (selection) |
-| ~M-x supervisor-dashboard-set-logging~ | Set logging (selection) |
-| ~M-x supervisor-dashboard-describe-entry~ | Describe selected row |
-| ~M-x supervisor-dashboard-show-deps~ | Show selected service deps |
-| ~M-x supervisor-dashboard-show-graph~ | Show full dependency graph |
-| ~M-x supervisor-dashboard-blame~ | Show startup timing view |
-| ~M-x supervisor-dashboard-target-members~ | Show required/wanted members for target at point |
-| ~M-x supervisor-dashboard-view-log~ | Open selected service log |
-| ~M-x supervisor-dashboard-cat~ | View unit file (read-only) |
-| ~M-x supervisor-dashboard-edit~ | Edit unit file (scaffold if missing) |
-| ~M-x supervisor-dashboard-timer-actions~ | Open timer submenu |
-| ~M-x supervisor-dashboard-timer-trigger~ | Trigger selected timer now |
-| ~M-x supervisor-dashboard-timer-info~ | Show selected timer details |
-| ~M-x supervisor-dashboard-timer-jump~ | Jump to selected timer target service |
-| ~M-x supervisor-dashboard-timer-reset~ | Reset selected timer runtime state |
-| ~M-x supervisor-dashboard-timer-refresh~ | Refresh timer section |
-| ~M-x supervisor-dashboard-help~ | Open dashboard help |
-| ~M-x supervisor-dashboard-menu-open~ | Open transient menu |
+| ~M-x elinit-dashboard-lifecycle~ | Open lifecycle submenu |
+| ~M-x elinit-dashboard-policy~ | Open policy submenu |
+| ~M-x elinit-dashboard-inspect~ | Open inspect submenu |
+| ~M-x elinit-dashboard-refresh~ | Refresh dashboard buffer |
+| ~M-x elinit-dashboard-cycle-filter~ | Cycle target filter |
+| ~M-x elinit-dashboard-cycle-tag-filter~ | Cycle tag filter |
+| ~M-x elinit-dashboard-toggle-targets~ | Toggle visibility of target entries |
+| ~M-x elinit-dashboard-toggle-init-targets~ | Toggle visibility of init-transition targets (rescue/shutdown/etc) |
+| ~M-x elinit-dashboard-toggle-auto-refresh~ | Toggle auto-refresh |
+| ~M-x elinit-dashboard-toggle-proced-auto-update~ | Toggle Proced auto-update mode |
+| ~M-x elinit-dashboard-quit~ | Quit dashboard |
+| ~M-x elinit-dashboard-start~ | Start selected service |
+| ~M-x elinit-dashboard-stop~ | Stop selected service (graceful, suppresses restart) |
+| ~M-x elinit-dashboard-restart~ | Restart selected service (stop + start) |
+| ~M-x elinit-dashboard-kill~ | Kill selected service (send signal, restart unchanged) |
+| ~M-x elinit-dashboard-kill-force~ | Kill selected service (no confirm) |
+| ~M-x elinit-dashboard-reset-failed~ | Reset failed state |
+| ~M-x elinit-dashboard-reload-unit~ | Hot-reload unit at point |
+| ~M-x elinit-dashboard-daemon-reload~ | Reload all unit definitions from disk and refresh dashboard |
+| ~M-x elinit-dashboard-enable~ | Enable entry (explicit) |
+| ~M-x elinit-dashboard-disable~ | Disable entry (explicit) |
+| ~M-x elinit-dashboard-mask~ | Mask entry (always disabled) |
+| ~M-x elinit-dashboard-unmask~ | Unmask entry |
+| ~M-x elinit-dashboard-set-restart-policy~ | Set restart policy (selection) |
+| ~M-x elinit-dashboard-set-logging~ | Set logging (selection) |
+| ~M-x elinit-dashboard-describe-entry~ | Describe selected row |
+| ~M-x elinit-dashboard-show-deps~ | Show selected service deps |
+| ~M-x elinit-dashboard-show-graph~ | Show full dependency graph |
+| ~M-x elinit-dashboard-blame~ | Show startup timing view |
+| ~M-x elinit-dashboard-target-members~ | Show required/wanted members for target at point |
+| ~M-x elinit-dashboard-view-log~ | Open selected service log |
+| ~M-x elinit-dashboard-cat~ | View unit file (read-only) |
+| ~M-x elinit-dashboard-edit~ | Edit unit file (scaffold if missing) |
+| ~M-x elinit-dashboard-timer-actions~ | Open timer submenu |
+| ~M-x elinit-dashboard-timer-trigger~ | Trigger selected timer now |
+| ~M-x elinit-dashboard-timer-info~ | Show selected timer details |
+| ~M-x elinit-dashboard-timer-jump~ | Jump to selected timer target service |
+| ~M-x elinit-dashboard-timer-reset~ | Reset selected timer runtime state |
+| ~M-x elinit-dashboard-timer-refresh~ | Refresh timer section |
+| ~M-x elinit-dashboard-help~ | Open dashboard help |
+| ~M-x elinit-dashboard-menu-open~ | Open transient menu |
 
 ** Unit Edit Buffer Commands
 
 | Command | Purpose |
-| ~M-x supervisor-edit-mode~ | Unit edit minor mode (normally enabled automatically by ~supervisor-dashboard-edit~) |
-| ~M-x supervisor-edit-finish~ | Save unit file and return to dashboard |
-| ~M-x supervisor-edit-quit~ | Prompt-save if modified and return to dashboard |
+| ~M-x elinit-edit-mode~ | Unit edit minor mode (normally enabled automatically by ~elinit-dashboard-edit~) |
+| ~M-x elinit-edit-finish~ | Save unit file and return to dashboard |
+| ~M-x elinit-edit-quit~ | Prompt-save if modified and return to dashboard |
 
 * Indexes
 :PROPERTIES:
@@ -2383,50 +2383,50 @@ This is a topical index for targeted lookup of less-obvious behavior.
 
 - Async oneshots (~:oneshot-async~, ~:oneshot-blocking~): [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
 - Cat unit file (~cat~, ~i c~ in dashboard): [[#unit-files-modular-configuration][Unit Files]]
-- Blocking oneshot timeout (~:oneshot-timeout~, ~supervisor-oneshot-timeout~): [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Blocking oneshot timeout (~:oneshot-timeout~, ~elinit-oneshot-timeout~): [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Command parsing (no implicit shell, use ~sh -c~ when needed): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Config file watch and debounce (~supervisor-watch-config~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
-- Crash-loop detection (~supervisor-max-restarts~, ~supervisor-restart-window~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Config file watch and debounce (~elinit-watch-config~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
+- Crash-loop detection (~elinit-max-restarts~, ~elinit-restart-window~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Cycle fallback behavior for dependencies: [[#service-definition][Service Definition]], [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Dashboard filtering (target/tag): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Dashboard filtering (target/tag): [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
 - Disabled unit manual start (session-only, systemctl model): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
-- Dashboard live updates (~supervisor-auto-refresh-interval~): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]], [[#customization-reference][Customization Reference]]
-- Dashboard mode/filter state (buffer-local target/tag/auto-refresh): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
-- Dashboard visual customization (status/type/separator faces): [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Dashboard live updates (~elinit-auto-refresh-interval~): [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]], [[#customization-reference][Customization Reference]]
+- Dashboard mode/filter state (buffer-local target/tag/auto-refresh): [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
+- Dashboard visual customization (status/type/separator faces): [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
 - Dependency semantics split (~:after~ vs ~:requires~): [[#service-definition][Service Definition]]
 - Edit unit file (~edit~, ~i e~ in dashboard, scaffold template): [[#unit-files-modular-configuration][Unit Files]]
-- Event API (~supervisor-event-hook~ and event types): [[#events-and-hooks][Events and Hooks]]
+- Event API (~elinit-event-hook~ and event types): [[#events-and-hooks][Events and Hooks]]
 - Exit code semantics for oneshots (signals stored negative): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Graceful vs hard stop (~supervisor-stop~ vs ~supervisor-stop-now~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#command-reference][Command Reference]]
-- Hyphen-prefixed IDs in CLI (use ~--~ separator): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
-- JSON contracts (status/verify/list-timers + error shape): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
+- Graceful vs hard stop (~elinit-stop~ vs ~elinit-stop-now~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#command-reference][Command Reference]]
+- Hyphen-prefixed IDs in CLI (use ~--~ separator): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]]
+- JSON contracts (status/verify/list-timers + error shape): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]]
 - Log rotation and log file paths: [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
-- Logging pipeline (~supervisor--log~, ~supervisor-verbose~, ~supervisor-log-to-file~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
-- Structured log formats (~:log-format text|binary~, ~supervisor-log-format-binary-enable~): [[#service-definition][Service Definition]], [[#persistence-and-files][Persistence and Files]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Logging pipeline (~elinit--log~, ~elinit-verbose~, ~elinit-log-to-file~): [[#persistence-and-files][Persistence and Files]], [[#customization-reference][Customization Reference]]
+- Structured log formats (~:log-format text|binary~, ~elinit-log-format-binary-enable~): [[#service-definition][Service Definition]], [[#persistence-and-files][Persistence and Files]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
 - Manual stop behavior and restart suppression: [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Mask/unmask (~mask~, ~unmask~, ~m~ in dashboard): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
-- Max concurrent startup spawn attempts (~supervisor-max-concurrent-starts~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Max concurrent startup spawn attempts (~elinit-max-concurrent-starts~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Adding a new service (~edit~, scaffold template): [[#unit-files-modular-configuration][Unit Files]]
 - Override precedence (runtime override vs config default): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
-- Override persistence (~supervisor-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
-- Reload unit (~reload~, ~u~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
-- Reset failed state (~reset-failed~, ~F~ in dashboard): [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
+- Override persistence (~elinit-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
+- Reload unit (~reload~, ~u~ in dashboard): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]]
+- Reset failed state (~reset-failed~, ~F~ in dashboard): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
 - Manager targeting (caller identity, ~emacsclient~ discovery): [[#security][Security]]
 - Bubblewrap sandboxing (~:sandbox-profile~, ~:sandbox-network~, bind mounts, raw mode): [[#sandbox][Process Sandbox (bubblewrap)]], [[#service-definition][Service Definition]]
 - Run service as another user/group (~:user~, ~:group~, trust gate): [[#security][Security]], [[#service-definition][Service Definition]]
 - Privilege-drop troubleshooting (identity errors, trust gate failures): [[#privilege-drop-troubleshooting][Privilege-Drop Troubleshooting]]
 - Security boundary (~emacsclient --eval~, server socket trust): [[#security][Security]]
-- Wrapper help vs no-command usage text: [[#cli-handbook-sbinsupervisorctl][CLI (~sbin/supervisorctl~)]]
-- Startup timeout force-complete (~supervisor-startup-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
+- Wrapper help vs no-command usage text: [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]]
+- Startup timeout force-complete (~elinit-startup-timeout~): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]], [[#customization-reference][Customization Reference]]
 - Mutator inventory and classification (explicit verb / unit-definition): [[#service-management-systems-comparison][Service Management Systems Comparison]]
-- Systemd example conversions (unit file to supervisor config): [[#service-management-systems-comparison][Service Management Systems Comparison]]
+- Systemd example conversions (unit file to elinit config): [[#service-management-systems-comparison][Service Management Systems Comparison]]
 - Systemd feature support matrix: [[#service-management-systems-comparison][Service Management Systems Comparison]]
 - Systemd oneshot comparison (~:oneshot-blocking~, ~:oneshot-timeout~ mapping): [[#startup-and-lifecycle-model][Startup and Lifecycle Model]]
-- Timer catch-up window (~supervisor-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
-- Timer disabled/gated behavior (~supervisor-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook][Timer Subsystem]], [[#command-reference][Command Reference]]
-- Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~, ~masked-target~, ~target-not-found~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#dashboard-handbook-m-x-supervisor][Dashboard (~M-x supervisor~)]]
-- Timer retry policy (~supervisor-timer-retry-intervals~, signal non-retry): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
-- Timer state persistence and schema compatibility (~supervisor-timer-state-file~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#persistence-and-files][Persistence and Files]]
+- Timer catch-up window (~elinit-timer-catch-up-limit~, ~:persistent~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
+- Timer disabled/gated behavior (~elinit-timer-subsystem-mode~ + parent mode): [[#timer-subsystem-handbook][Timer Subsystem]], [[#command-reference][Command Reference]]
+- Timer miss reasons (~overlap~, ~disabled~, ~disabled-target~, ~masked-target~, ~target-not-found~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
+- Timer retry policy (~elinit-timer-retry-intervals~, signal non-retry): [[#timer-subsystem-handbook][Timer Subsystem]], [[#customization-reference][Customization Reference]]
+- Timer state persistence and schema compatibility (~elinit-timer-state-file~): [[#timer-subsystem-handbook][Timer Subsystem]], [[#persistence-and-files][Persistence and Files]]
 - Unit file scaffold template (created by ~edit~ on missing file): [[#unit-files-modular-configuration][Unit Files]]
 - Unit file validate-on-save (after-save-hook in edited buffers): [[#unit-files-modular-configuration][Unit Files]]
 
@@ -2437,21 +2437,21 @@ This is a topical index for targeted lookup of less-obvious behavior.
 
 ** Manager Targeting
 
-~supervisorctl~ uses ~emacsclient --eval~.  Which manager instance it reaches
+~elinitctl~ uses ~emacsclient --eval~.  Which manager instance it reaches
 is determined entirely by the standard ~emacsclient~ server-discovery
 mechanism, which in turn depends on the caller's OS identity:
 
 - Each user's Emacs server listens on a socket in that user's runtime
   directory (e.g., ~/run/user/UID/emacs~).
 - ~emacsclient~ finds the socket belonging to the *caller's* uid.
-- There is no supervisor-level routing: manager selection = caller identity.
+- There is no elinit-level routing: manager selection = caller identity.
 
 Operational patterns:
 
 | Goal | Invocation |
-| Manage your own services | ~supervisorctl status~ |
-| Manage a root-owned manager | ~sudo supervisorctl status~ |
-| Manage another user's manager | ~sudo -u alice supervisorctl status~ |
+| Manage your own services | ~elinitctl status~ |
+| Manage a root-owned manager | ~sudo elinitctl status~ |
+| Manage another user's manager | ~sudo -u alice elinitctl status~ |
 
 The ~--socket~ and ~--server-file~ wrapper options override discovery when
 multiple servers coexist under one uid.
@@ -2465,7 +2465,7 @@ for manager selection.
 
 ** Transport Security
 
-~supervisorctl~ uses ~emacsclient --eval~.  Any principal that can connect to
+~elinitctl~ uses ~emacsclient --eval~.  Any principal that can connect to
 your Emacs server can execute code as your Emacs user.
 
 Security boundary: your Emacs server socket/server-file access controls.
@@ -2502,7 +2502,7 @@ unprivileged users from escalating through writable unit files.
 :CUSTOM_ID: sandbox
 :END:
 
-supervisor.el provides optional process sandboxing via [[https://github.com/containers/bubblewrap][bubblewrap]] (=bwrap=).
+elinit provides optional process sandboxing via [[https://github.com/containers/bubblewrap][bubblewrap]] (=bwrap=).
 Sandboxing is Linux-only, opt-in, and disabled by default.
 
 *** Overview
@@ -2559,7 +2559,7 @@ Path validation rules:
 rejected at validation time unless the global gate is enabled:
 
 #+begin_src emacs-lisp
-(setq supervisor-sandbox-allow-raw-bwrap t)
+(setq elinit-sandbox-allow-raw-bwrap t)
 #+end_src
 
 When enabled, the raw arguments are appended after profile and knob arguments.
@@ -2594,7 +2594,7 @@ When identity drop (~:user~ / ~:group~), sandbox, and resource limits are
 configured, the launch wrapper ordering is fixed:
 
 #+begin_example
-supervisor-rlimits -> supervisor-runas -> bwrap -> service executable
+elinit-rlimits -> elinit-runas -> bwrap -> service executable
 #+end_example
 
 The rlimits helper applies resource limits first (outermost), then runas drops
@@ -2605,7 +2605,7 @@ omitted.
 *** Unit File Example
 
 #+begin_src emacs-lisp
-;; ~/.config/supervisor/units/myapp.el
+;; ~/.config/elinit/units/myapp.el
 (:id "myapp"
  :command "/usr/bin/myapp --serve"
  :sandbox-profile service
@@ -2620,7 +2620,7 @@ omitted.
   namespaces.  Non-Linux hosts cannot use sandbox features.
 - *"sandbox requires bwrap (bubblewrap) but bwrap is not found in PATH"* --
   Install bubblewrap (e.g., =apt install bubblewrap=).
-- *":sandbox-raw-args requires supervisor-sandbox-allow-raw-bwrap"* -- Set
+- *":sandbox-raw-args requires elinit-sandbox-allow-raw-bwrap"* -- Set
   the global gate variable before loading units.
 
 ** Resource Limits
@@ -2632,7 +2632,7 @@ omitted.
 
 Per-service resource limits (ulimit-style) allow restricting how many file
 descriptors, processes, or how much memory a managed service may use.  Limits
-are applied via a small C helper (~supervisor-rlimits~) that calls
+are applied via a small C helper (~elinit-rlimits~) that calls
 ~setrlimit(2)~ before exec-ing the service command.  Linux and other POSIX
 systems with ~setrlimit~ are supported.
 
@@ -2660,7 +2660,7 @@ Each limit key accepts one of three forms:
 
 *** Status Surfaces
 
-- CLI ~supervisorctl show ID~ includes a "Resource limits" section listing
+- CLI ~elinitctl show ID~ includes a "Resource limits" section listing
   each non-nil limit.
 - CLI JSON output (~--json~) includes ~limit_nofile~, ~limit_nproc~,
   ~limit_core~, ~limit_fsize~, ~limit_as~ fields.
@@ -2670,7 +2670,7 @@ Each limit key accepts one of three forms:
 *** Unit File Example
 
 #+begin_src emacs-lisp
-;; ~/.config/supervisor/units/mydb.el
+;; ~/.config/elinit/units/mydb.el
 (:id "mydb"
  :command "/usr/bin/mydb --datadir /var/lib/mydb"
  :limit-nofile 65536
@@ -2681,7 +2681,7 @@ Each limit key accepts one of three forms:
 
 *** Portability
 
-- The ~supervisor-rlimits~ C helper is compiled as part of
+- The ~elinit-rlimits~ C helper is compiled as part of
   ~make -C libexec check~.  If the helper binary is missing at launch time
   (e.g., compilation failed on an exotic platform), the service fails to
   start with an "executable not found" error rather than a validation error.
@@ -2700,7 +2700,7 @@ Each limit key accepts one of three forms:
 
 Where behavior diverges across systems, parenthetical notes explain.
 
-| Feature | systemd | runit | s6 | supervisor |
+| Feature | systemd | runit | s6 | elinit |
 |---------+---------+-------+----+------------|
 | *Init System (PID 1)* | | | | |
 | Can run as PID 1 | yes (systemd is PID 1) | yes (runit-init, 3-stage boot) | yes (s6-linux-init, separate package) | no (needs sinit-style shim as PID 1, may run as PID 2+) |
@@ -2708,7 +2708,7 @@ Where behavior diverges across systems, parenthetical notes explain.
 | Restart crashed daemons | yes | yes | yes | yes |
 | Restart policies (always/on-failure/on-success/no) | yes (6 modes) | no (always or never) | no (always or never) | yes (4 modes) |
 | Restart backoff / graduated delay | yes (v254 RestartSteps) | no | no | yes (restart-sec per unit) |
-| Crash-loop detection | yes (StartLimitBurst) | no | no | yes (supervisor--failed) |
+| Crash-loop detection | yes (StartLimitBurst) | no | no | yes (elinit--failed) |
 | Configurable kill signal | yes (KillSignal) | yes (control/ scripts) | yes (down-signal file) | yes (kill-signal) |
 | Kill mode (cgroup/process/mixed) | yes (KillMode) | no (process only) | no (process only) | yes (kill-mode, process/mixed) |
 | Exec-stop custom shutdown | yes (ExecStop) | yes (finish script) | yes (finish script) | yes (exec-stop) |
@@ -2738,10 +2738,10 @@ Where behavior diverges across systems, parenthetical notes explain.
 | D-Bus activation | yes | no | no | no |
 | Device activation | yes (.device from udev) | no | no | no |
 | *Logging* | | | | |
-| Integrated logging daemon | yes (journald, structured binary) | yes (svlogd, plain text) | yes (s6-log, plain text) | yes (supervisor-logd, text or binary) |
+| Integrated logging daemon | yes (journald, structured binary) | yes (svlogd, plain text) | yes (s6-log, plain text) | yes (elinit-logd, text or binary) |
 | Per-service log capture | yes (journal tags by unit) | yes (service/log/run pipe) | yes (servicedir/log pipe) | yes (per-id log files) |
-| Log rotation | yes (journal size/time) | yes (svlogd built-in) | yes (s6-log built-in) | yes (supervisor-logrotate) |
-| Log pruning | yes (journald vacuum) | no (manual) | no (manual) | yes (supervisor-log-prune) |
+| Log rotation | yes (journal size/time) | yes (svlogd built-in) | yes (s6-log built-in) | yes (elinit-logrotate) |
+| Log pruning | yes (journald vacuum) | no (manual) | no (manual) | yes (elinit-log-prune) |
 | Structured/indexed log queries | yes (journalctl field filtering) | no | no | no |
 | Network log shipping | yes (journal-remote/upload) | partial (svlogd UDP) | no | no |
 | *Resource Control* | | | | |
@@ -2775,9 +2775,9 @@ Where behavior diverges across systems, parenthetical notes explain.
 | Service heartbeat watchdog | yes (WatchdogSec, sd_notify WATCHDOG=1) | no | no | no |
 | Hardware watchdog | yes (RuntimeWatchdogSec) | no | no | no |
 | *UI and Observability* | | | | |
-| Interactive dashboard | no (third-party cockpit) | no | no | yes (supervisor-dashboard-mode) |
-| CLI status/control | yes (systemctl) | yes (sv) | yes (s6-rc, s6-svc) | yes (supervisorctl) |
-| JSON output mode | yes (systemctl --output=json) | no | no | yes (supervisorctl --json) |
+| Interactive dashboard | no (third-party cockpit) | no | no | yes (elinit-dashboard-mode) |
+| CLI status/control | yes (systemctl) | yes (sv) | yes (s6-rc, s6-svc) | yes (elinitctl) |
+| JSON output mode | yes (systemctl --output=json) | no | no | yes (elinitctl --json) |
 | *Boot Loader* | | | | |
 | UEFI boot manager | yes (systemd-boot) | no | no | no |
 | Unified Kernel Images | yes (ukify, sd-stub) | no | no | no |
@@ -2819,27 +2819,27 @@ Where behavior diverges across systems, parenthetical notes explain.
 | Config override delta view | yes (systemd-delta) | no | no | no |
 | Unit file validation | yes (systemd-analyze verify) | no | no | yes (entry whitelist validation) |
 
-** Example Conversions: systemd to supervisor
+** Example Conversions: systemd to elinit
 :PROPERTIES:
-:CUSTOM_ID: example-conversions-systemd-to-supervisor
+:CUSTOM_ID: example-conversions-systemd-to-elinit
 :END:
 
 The examples below are strict do-the-same-thing translations.
-Each supervisor unit includes ~:command~ in the plist, because unit files
+Each elinit unit includes ~:command~ in the plist, because unit files
 in these examples are non-target units (where ~:command~ is required).
 
 *** Translation Rules Used in Examples
 
-| systemd directive | supervisor key | Notes |
+| systemd directive | elinit key | Notes |
 |-------------------+----------------+-------|
 | ~Description=~ | ~:description~ | Same intent |
 | ~Type=simple~ | ~:type simple~ | Same process model |
 | ~Type=oneshot~ | ~:type oneshot~ | Same run-to-completion model |
-| ~ExecStart=...~ | ~:command \"...\"~ | Required in supervisor unit files |
+| ~ExecStart=...~ | ~:command \"...\"~ | Required in elinit unit files |
 | ~Restart=...~ | ~:restart ...~ | Same policy names for supported values |
 | ~RestartSec=...~ | ~:restart-sec ...~ | Restart delay |
 | ~WorkingDirectory=...~ | ~:working-directory ...~ | Same intent |
-| ~After=...~ | ~:after (...)~ | Use supervisor IDs (for example, ~database~ not ~database.service~) |
+| ~After=...~ | ~:after (...)~ | Use elinit IDs (for example, ~database~ not ~database.service~) |
 | ~Requires=...~ | ~:requires (...)~ | Hard dependency + ordering |
 | ~Environment=K=V~ | ~:environment ((\"K\" . \"V\"))~ | Alist form |
 | ~ExecStop=...~ | ~:exec-stop \"...\"~ | Stop command |
@@ -2868,7 +2868,7 @@ WorkingDirectory=/var/lib/my-daemon
 WantedBy=multi-user.target
 #+end_example
 
-supervisor unit file (~my-daemon.el~):
+elinit unit file (~my-daemon.el~):
 
 #+begin_src emacs-lisp
 (:id "my-daemon"
@@ -2899,7 +2899,7 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 #+end_example
 
-supervisor unit file (~setup-dirs.el~):
+elinit unit file (~setup-dirs.el~):
 
 #+begin_src emacs-lisp
 (:id "setup-dirs"
@@ -2933,7 +2933,7 @@ KillSignal=SIGTERM
 WantedBy=multi-user.target
 #+end_example
 
-supervisor unit file (~webapp.el~):
+elinit unit file (~webapp.el~):
 
 #+begin_src emacs-lisp
 (:id "webapp"
@@ -2969,7 +2969,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 #+end_example
 
-supervisor unit file (~nginx.el~), placed in a root-owned unit directory:
+elinit unit file (~nginx.el~), placed in a root-owned unit directory:
 
 #+begin_src emacs-lisp
 (:id "nginx"
@@ -2985,23 +2985,23 @@ supervisor unit file (~nginx.el~), placed in a root-owned unit directory:
 Requirements: the Emacs manager must run as root, and the unit file must be
 owned by root and not world-writable.
 
-** Automated Import (~sbin/supervisor-import~)
+** Automated Import (~sbin/elinit-import~)
 :PROPERTIES:
-:CUSTOM_ID: supervisor-import
+:CUSTOM_ID: elinit-import
 :END:
 
-The ~sbin/supervisor-import~ script automates the translation shown above.
-It reads a systemd ~.service~ file and prints the equivalent supervisor
+The ~sbin/elinit-import~ script automates the translation shown above.
+It reads a systemd ~.service~ file and prints the equivalent elinit
 plist to stdout.
 
 #+begin_example
-sbin/supervisor-import /etc/systemd/system/foo.service
+sbin/elinit-import /etc/systemd/system/foo.service
 #+end_example
 
 Redirect to save as a unit file:
 
 #+begin_example
-sbin/supervisor-import /etc/systemd/system/foo.service > ~/.config/supervisor/units/foo.el
+sbin/elinit-import /etc/systemd/system/foo.service > ~/.config/elinit/units/foo.el
 #+end_example
 
 *** Options
@@ -3014,7 +3014,7 @@ sbin/supervisor-import /etc/systemd/system/foo.service > ~/.config/supervisor/un
 
 *** Supported Directives
 
-All directives from the [[#example-conversions-systemd-to-supervisor][translation table]] are supported: ~Description~,
+All directives from the [[#example-conversions-systemd-to-elinit][translation table]] are supported: ~Description~,
 ~Type~ (simple, oneshot), ~ExecStart~, ~Restart~, ~RestartSec~,
 ~WorkingDirectory~, ~After~, ~Requires~, ~Wants~, ~Before~,
 ~Environment~, ~EnvironmentFile~, ~ExecStop~, ~ExecReload~,
@@ -3061,7 +3061,7 @@ WantedBy=multi-user.target
 Running:
 
 #+begin_example
-$ sbin/supervisor-import /etc/systemd/system/webapp.service
+$ sbin/elinit-import /etc/systemd/system/webapp.service
 #+end_example
 
 Produces on stdout:
@@ -3087,12 +3087,12 @@ And on stderr:
 #+begin_example
 Warning: unknown directive: LimitNOFILE=65536
 
-;; Skipped directives (no supervisor equivalent):
-  LimitNOFILE=65536 -- no supervisor equivalent
+;; Skipped directives (no elinit equivalent):
+  LimitNOFILE=65536 -- no elinit equivalent
 #+end_example
 
 The skipped-directive summary at the end lists every line that had no
-supervisor equivalent, so you can review what was dropped.
+elinit equivalent, so you can review what was dropped.
 
 *** Exit Codes
 
@@ -3110,7 +3110,7 @@ supervisor equivalent, so you can review what was dropped.
 *** "identity change requires root (user=... group=...)"
 
 The manager is not running as root.  ~:user~ and ~:group~ require the Emacs
-process to have euid 0 so that the ~supervisor-runas~ helper can call
+process to have euid 0 so that the ~elinit-runas~ helper can call
 ~setuid/setgid~.
 
 Resolution: start Emacs (and its server) as root, or remove the ~:user~ /
@@ -3122,16 +3122,16 @@ The manager is root but the unit file failed the trust gate.  Common causes:
 
 - The unit file is not owned by root.  Fix: ~sudo chown root:root unit.el~.
 - The unit file is world-writable.  Fix: ~sudo chmod o-w unit.el~.
-- The unit was defined inline in ~supervisor-programs~ rather than in a unit
+- The unit was defined inline in ~elinit-programs~ rather than in a unit
   file.  Inline definitions have no verifiable file ownership; move the
   definition to a root-owned unit file.
 
 *** "executable not found"
 
 When ~:user~ or ~:group~ is set, the command is launched through the
-~supervisor-runas~ helper (at ~libexec/supervisor-runas~).  This error means
+~elinit-runas~ helper (at ~libexec/elinit-runas~).  This error means
 either the helper itself or the target executable could not be found.  Verify
-that ~supervisor-runas-command~ points to the compiled helper and that the
+that ~elinit-runas-command~ points to the compiled helper and that the
 target program path is absolute (the helper uses ~execv~ without PATH search).
 
 ** Mutator Inventory and Classification
@@ -3155,87 +3155,87 @@ No toggle/cycle mutators for service policy remain.  Legacy toggle
 commands (~toggle-restart~, ~toggle-enabled~, ~toggle-mask~,
 ~toggle-logging~) were removed in favour of explicit verb replacements.
 
-*** Core Engine (~supervisor-core.el~)
+*** Core Engine (~elinit-core.el~)
 
 Public entry points that change runtime state:
 
 | Function | Category | State mutated |
 |----------+----------+---------------|
-| ~supervisor-start~ | Explicit verb | Clears all runtime state, loads overrides, builds plan, starts target-closure DAG scheduler |
-| ~supervisor-stop~ | Explicit verb | Sends graceful stop to all processes (async) |
-| ~supervisor-stop-now~ | Explicit verb | Sends hard stop to all processes (sync, for ~kill-emacs-hook~) |
-| ~supervisor-daemon-reload~ | Unit-definition mutation | Re-reads unit files, refreshes invalid hash |
-| ~supervisor-overrides-load~ | Explicit verb | Reads override hash tables from ~supervisor-overrides-file~ |
-| ~supervisor-overrides-save~ | Explicit verb | Writes override hash tables to ~supervisor-overrides-file~ |
-| ~supervisor-overrides-clear~ | Explicit verb | Clears all override hash tables and deletes file |
+| ~elinit-start~ | Explicit verb | Clears all runtime state, loads overrides, builds plan, starts target-closure DAG scheduler |
+| ~elinit-stop~ | Explicit verb | Sends graceful stop to all processes (async) |
+| ~elinit-stop-now~ | Explicit verb | Sends hard stop to all processes (sync, for ~kill-emacs-hook~) |
+| ~elinit-daemon-reload~ | Unit-definition mutation | Re-reads unit files, refreshes invalid hash |
+| ~elinit-overrides-load~ | Explicit verb | Reads override hash tables from ~elinit-overrides-file~ |
+| ~elinit-overrides-save~ | Explicit verb | Writes override hash tables to ~elinit-overrides-file~ |
+| ~elinit-overrides-clear~ | Explicit verb | Clears all override hash tables and deletes file |
 
 Private helpers called by CLI and dashboard (not direct entry points):
 
 | Function | Category | State mutated |
 |----------+----------+---------------|
-| ~supervisor--manual-start~ | Explicit verb | Clears failed/stopped flags, spawns process, records ~manually-started~ |
-| ~supervisor--manual-stop~ | Explicit verb | Stops process, records ~manually-stopped~, clears ~remain-active~ latch |
-| ~supervisor--manual-kill~ | Explicit verb | Sends signal to process, restart policy unchanged |
-| ~supervisor--reset-failed~ | Explicit verb | Clears ~failed~, ~oneshot-completed~, ~restart-times~ for target |
-| ~supervisor--reload-unit~ | Unit-definition mutation | Re-reads unit file, stops/starts if running, clears stale state |
-| ~supervisor--policy-enable~ | Explicit verb | Sets/clears ~enabled-override~ with config normalization |
-| ~supervisor--policy-disable~ | Explicit verb | Sets/clears ~enabled-override~ with config normalization |
-| ~supervisor--policy-mask~ | Explicit verb | Sets ~mask-override~ |
-| ~supervisor--policy-unmask~ | Explicit verb | Clears ~mask-override~ |
-| ~supervisor--policy-set-restart~ | Explicit verb | Sets/clears ~restart-override~ with config normalization, cancels timer on ~no~ |
-| ~supervisor--policy-set-logging~ | Explicit verb | Sets/clears ~logging~ with config normalization |
-| ~supervisor--save-overrides~ | Implicit (scheduler) | Writes override hash tables to ~supervisor-overrides-file~ (called by policy commands) |
-| ~supervisor--check-crash-loop~ | Implicit (sentinel) | Records restart timestamp; marks ~failed~ if threshold exceeded |
-| ~supervisor--make-process-sentinel~ | Implicit (sentinel) | On exit: removes from ~processes~, records ~last-exit-info~, handles oneshot completion, schedules restart |
-| ~supervisor--start-process~ | Implicit (scheduler) | Inserts into ~processes~, clears ~manually-stopped~, records ~start-times~ |
-| ~supervisor--handle-oneshot-exit~ | Implicit (sentinel) | Records ~oneshot-completed~ exit code, sets ~remain-active~ latch |
-| ~supervisor--transition-state~ | Implicit (scheduler) | Updates ~entry-state~ FSM |
-| ~supervisor--reconcile~ | Implicit (daemon-reload) | Diffs running vs desired state, stops/starts as needed |
+| ~elinit--manual-start~ | Explicit verb | Clears failed/stopped flags, spawns process, records ~manually-started~ |
+| ~elinit--manual-stop~ | Explicit verb | Stops process, records ~manually-stopped~, clears ~remain-active~ latch |
+| ~elinit--manual-kill~ | Explicit verb | Sends signal to process, restart policy unchanged |
+| ~elinit--reset-failed~ | Explicit verb | Clears ~failed~, ~oneshot-completed~, ~restart-times~ for target |
+| ~elinit--reload-unit~ | Unit-definition mutation | Re-reads unit file, stops/starts if running, clears stale state |
+| ~elinit--policy-enable~ | Explicit verb | Sets/clears ~enabled-override~ with config normalization |
+| ~elinit--policy-disable~ | Explicit verb | Sets/clears ~enabled-override~ with config normalization |
+| ~elinit--policy-mask~ | Explicit verb | Sets ~mask-override~ |
+| ~elinit--policy-unmask~ | Explicit verb | Clears ~mask-override~ |
+| ~elinit--policy-set-restart~ | Explicit verb | Sets/clears ~restart-override~ with config normalization, cancels timer on ~no~ |
+| ~elinit--policy-set-logging~ | Explicit verb | Sets/clears ~logging~ with config normalization |
+| ~elinit--save-overrides~ | Implicit (scheduler) | Writes override hash tables to ~elinit-overrides-file~ (called by policy commands) |
+| ~elinit--check-crash-loop~ | Implicit (sentinel) | Records restart timestamp; marks ~failed~ if threshold exceeded |
+| ~elinit--make-process-sentinel~ | Implicit (sentinel) | On exit: removes from ~processes~, records ~last-exit-info~, handles oneshot completion, schedules restart |
+| ~elinit--start-process~ | Implicit (scheduler) | Inserts into ~processes~, clears ~manually-stopped~, records ~start-times~ |
+| ~elinit--handle-oneshot-exit~ | Implicit (sentinel) | Records ~oneshot-completed~ exit code, sets ~remain-active~ latch |
+| ~elinit--transition-state~ | Implicit (scheduler) | Updates ~entry-state~ FSM |
+| ~elinit--reconcile~ | Implicit (daemon-reload) | Diffs running vs desired state, stops/starts as needed |
 
-*** CLI (~supervisor-cli.el~)
+*** CLI (~elinit-cli.el~)
 
 All CLI subcommand handlers.  Each dispatches to a core helper.
 
 | Subcommand | Function | Category | Core call | Persists |
 |------------+----------+----------+-----------+----------|
-| ~start~ | ~supervisor--cli-cmd-start~ | Explicit verb | ~supervisor--manual-start~ | No |
-| ~stop~ | ~supervisor--cli-cmd-stop~ | Explicit verb | ~supervisor--manual-stop~ / ~supervisor-stop~ | No |
-| ~restart~ | ~supervisor--cli-cmd-restart~ | Explicit verb | ~supervisor--manual-stop~ + ~supervisor--manual-start~ | No |
-| ~kill~ | ~supervisor--cli-cmd-kill~ | Explicit verb | ~supervisor--manual-kill~ | No |
-| ~enable~ | ~supervisor--cli-cmd-enable~ | Explicit verb | ~supervisor--policy-enable~ + ~save-overrides~ | Yes |
-| ~disable~ | ~supervisor--cli-cmd-disable~ | Explicit verb | ~supervisor--policy-disable~ + ~save-overrides~ | Yes |
-| ~mask~ | ~supervisor--cli-cmd-mask~ | Explicit verb | ~supervisor--policy-mask~ + ~save-overrides~ | Yes |
-| ~unmask~ | ~supervisor--cli-cmd-unmask~ | Explicit verb | ~supervisor--policy-unmask~ + ~save-overrides~ | Yes |
-| ~restart-policy~ | ~supervisor--cli-cmd-restart-policy~ | Explicit verb | ~supervisor--policy-set-restart~ + ~save-overrides~ | Yes |
-| ~logging~ | ~supervisor--cli-cmd-logging~ | Explicit verb | ~supervisor--policy-set-logging~ + ~save-overrides~ | Yes |
-| ~reset-failed~ | ~supervisor--cli-cmd-reset-failed~ | Explicit verb | ~supervisor--reset-failed~ | No |
-| ~reload~ | ~supervisor--cli-cmd-reload~ | Unit-definition mutation | ~supervisor--reload-unit~ | No |
-| ~daemon-reload~ | ~supervisor--cli-cmd-daemon-reload~ | Unit-definition mutation | ~supervisor-daemon-reload~ | No |
+| ~start~ | ~elinit--cli-cmd-start~ | Explicit verb | ~elinit--manual-start~ | No |
+| ~stop~ | ~elinit--cli-cmd-stop~ | Explicit verb | ~elinit--manual-stop~ / ~elinit-stop~ | No |
+| ~restart~ | ~elinit--cli-cmd-restart~ | Explicit verb | ~elinit--manual-stop~ + ~elinit--manual-start~ | No |
+| ~kill~ | ~elinit--cli-cmd-kill~ | Explicit verb | ~elinit--manual-kill~ | No |
+| ~enable~ | ~elinit--cli-cmd-enable~ | Explicit verb | ~elinit--policy-enable~ + ~save-overrides~ | Yes |
+| ~disable~ | ~elinit--cli-cmd-disable~ | Explicit verb | ~elinit--policy-disable~ + ~save-overrides~ | Yes |
+| ~mask~ | ~elinit--cli-cmd-mask~ | Explicit verb | ~elinit--policy-mask~ + ~save-overrides~ | Yes |
+| ~unmask~ | ~elinit--cli-cmd-unmask~ | Explicit verb | ~elinit--policy-unmask~ + ~save-overrides~ | Yes |
+| ~restart-policy~ | ~elinit--cli-cmd-restart-policy~ | Explicit verb | ~elinit--policy-set-restart~ + ~save-overrides~ | Yes |
+| ~logging~ | ~elinit--cli-cmd-logging~ | Explicit verb | ~elinit--policy-set-logging~ + ~save-overrides~ | Yes |
+| ~reset-failed~ | ~elinit--cli-cmd-reset-failed~ | Explicit verb | ~elinit--reset-failed~ | No |
+| ~reload~ | ~elinit--cli-cmd-reload~ | Unit-definition mutation | ~elinit--reload-unit~ | No |
+| ~daemon-reload~ | ~elinit--cli-cmd-daemon-reload~ | Unit-definition mutation | ~elinit-daemon-reload~ | No |
 
-*** Dashboard (~supervisor-dashboard.el~)
+*** Dashboard (~elinit-dashboard.el~)
 
 All interactive dashboard commands that change state.
 
 | Command | Category | Core call | Persists |
 |---------+----------+-----------+----------|
-| ~supervisor-dashboard-start~ | Explicit verb | ~supervisor--manual-start~ | No |
-| ~supervisor-dashboard-stop~ | Explicit verb | ~supervisor--manual-stop~ | No |
-| ~supervisor-dashboard-restart~ | Explicit verb | ~supervisor--manual-stop~ + ~supervisor--manual-start~ | No |
-| ~supervisor-dashboard-kill~ | Explicit verb | ~supervisor--manual-kill~ | No |
-| ~supervisor-dashboard-kill-force~ | Explicit verb | ~supervisor--manual-kill~ (no confirm) | No |
-| ~supervisor-dashboard-reset-failed~ | Explicit verb | ~supervisor--reset-failed~ | No |
-| ~supervisor-dashboard-enable~ | Explicit verb | ~supervisor--policy-enable~ + ~save-overrides~ | Yes |
-| ~supervisor-dashboard-disable~ | Explicit verb | ~supervisor--policy-disable~ + ~save-overrides~ | Yes |
-| ~supervisor-dashboard-mask~ | Explicit verb | ~supervisor--policy-mask~ + ~save-overrides~ | Yes |
-| ~supervisor-dashboard-unmask~ | Explicit verb | ~supervisor--policy-unmask~ + ~save-overrides~ | Yes |
-| ~supervisor-dashboard-set-restart-policy~ | Explicit verb | ~supervisor--policy-set-restart~ + ~save-overrides~ | Yes |
-| ~supervisor-dashboard-set-logging~ | Explicit verb | ~supervisor--policy-set-logging~ + ~save-overrides~ | Yes |
-| ~supervisor-dashboard-reload-unit~ | Unit-definition mutation | ~supervisor--reload-unit~ | No |
-| ~supervisor-dashboard-daemon-reload~ | Unit-definition mutation | ~supervisor-daemon-reload~ | No |
-| ~supervisor-dashboard-cycle-filter~ | UI-local state | Sets buffer-local ~supervisor--dashboard-target-filter~ | No |
-| ~supervisor-dashboard-cycle-tag-filter~ | UI-local state | Sets buffer-local ~supervisor--dashboard-tag-filter~ | No |
-| ~supervisor-dashboard-toggle-auto-refresh~ | UI-local state | Creates/cancels buffer-local auto-refresh timer | No |
-| ~supervisor-dashboard-toggle-proced-auto-update~ | UI-local state | Toggles ~proced-auto-update-flag~ | No |
+| ~elinit-dashboard-start~ | Explicit verb | ~elinit--manual-start~ | No |
+| ~elinit-dashboard-stop~ | Explicit verb | ~elinit--manual-stop~ | No |
+| ~elinit-dashboard-restart~ | Explicit verb | ~elinit--manual-stop~ + ~elinit--manual-start~ | No |
+| ~elinit-dashboard-kill~ | Explicit verb | ~elinit--manual-kill~ | No |
+| ~elinit-dashboard-kill-force~ | Explicit verb | ~elinit--manual-kill~ (no confirm) | No |
+| ~elinit-dashboard-reset-failed~ | Explicit verb | ~elinit--reset-failed~ | No |
+| ~elinit-dashboard-enable~ | Explicit verb | ~elinit--policy-enable~ + ~save-overrides~ | Yes |
+| ~elinit-dashboard-disable~ | Explicit verb | ~elinit--policy-disable~ + ~save-overrides~ | Yes |
+| ~elinit-dashboard-mask~ | Explicit verb | ~elinit--policy-mask~ + ~save-overrides~ | Yes |
+| ~elinit-dashboard-unmask~ | Explicit verb | ~elinit--policy-unmask~ + ~save-overrides~ | Yes |
+| ~elinit-dashboard-set-restart-policy~ | Explicit verb | ~elinit--policy-set-restart~ + ~save-overrides~ | Yes |
+| ~elinit-dashboard-set-logging~ | Explicit verb | ~elinit--policy-set-logging~ + ~save-overrides~ | Yes |
+| ~elinit-dashboard-reload-unit~ | Unit-definition mutation | ~elinit--reload-unit~ | No |
+| ~elinit-dashboard-daemon-reload~ | Unit-definition mutation | ~elinit-daemon-reload~ | No |
+| ~elinit-dashboard-cycle-filter~ | UI-local state | Sets buffer-local ~elinit--dashboard-target-filter~ | No |
+| ~elinit-dashboard-cycle-tag-filter~ | UI-local state | Sets buffer-local ~elinit--dashboard-tag-filter~ | No |
+| ~elinit-dashboard-toggle-auto-refresh~ | UI-local state | Creates/cancels buffer-local auto-refresh timer | No |
+| ~elinit-dashboard-toggle-proced-auto-update~ | UI-local state | Toggles ~proced-auto-update-flag~ | No |
 
 *** CLI / Dashboard Parity
 
@@ -3243,25 +3243,25 @@ Every CLI mutator has a dashboard counterpart with identical semantics.
 
 | Operation | CLI | Dashboard | Same core path |
 |-----------+-----+-----------+----------------|
-| Start | ~start ID~ | ~l s~ | ~supervisor--manual-start~ |
-| Stop | ~stop ID~ | ~l t~ | ~supervisor--manual-stop~ |
+| Start | ~start ID~ | ~l s~ | ~elinit--manual-start~ |
+| Stop | ~stop ID~ | ~l t~ | ~elinit--manual-stop~ |
 | Restart | ~restart ID~ | ~l r~ | stop + start |
-| Kill | ~kill ID~ | ~l k~ | ~supervisor--manual-kill~ |
-| Reset failed | ~reset-failed ID~ | ~l f~ | ~supervisor--reset-failed~ |
-| Enable | ~enable ID~ | ~p e~ | ~supervisor--policy-enable~ |
-| Disable | ~disable ID~ | ~p d~ | ~supervisor--policy-disable~ |
-| Mask | ~mask ID~ | ~p m~ | ~supervisor--policy-mask~ |
-| Unmask | ~unmask ID~ | ~p u~ | ~supervisor--policy-unmask~ |
-| Restart policy | ~restart-policy ID POLICY~ | ~p r~ | ~supervisor--policy-set-restart~ |
-| Logging | ~logging ID on\vert{}off~ | ~p l~ | ~supervisor--policy-set-logging~ |
-| Reload unit | ~reload ID~ | ~l u~ | ~supervisor--reload-unit~ |
-| Daemon reload | ~daemon-reload~ | ~X~ (transient) | ~supervisor-daemon-reload~ |
+| Kill | ~kill ID~ | ~l k~ | ~elinit--manual-kill~ |
+| Reset failed | ~reset-failed ID~ | ~l f~ | ~elinit--reset-failed~ |
+| Enable | ~enable ID~ | ~p e~ | ~elinit--policy-enable~ |
+| Disable | ~disable ID~ | ~p d~ | ~elinit--policy-disable~ |
+| Mask | ~mask ID~ | ~p m~ | ~elinit--policy-mask~ |
+| Unmask | ~unmask ID~ | ~p u~ | ~elinit--policy-unmask~ |
+| Restart policy | ~restart-policy ID POLICY~ | ~p r~ | ~elinit--policy-set-restart~ |
+| Logging | ~logging ID on\vert{}off~ | ~p l~ | ~elinit--policy-set-logging~ |
+| Reload unit | ~reload ID~ | ~l u~ | ~elinit--reload-unit~ |
+| Daemon reload | ~daemon-reload~ | ~X~ (transient) | ~elinit-daemon-reload~ |
 
 All policy mutations (enable/disable/mask/unmask/restart-policy/logging)
-route through shared core policy mutators (~supervisor--policy-*~) that
+route through shared core policy mutators (~elinit--policy-*~) that
 validate entry existence, reject invalid entries, normalize overrides
 against config defaults, and return a status plist.  Both CLI and
-dashboard call ~supervisor--save-overrides~ after the core mutator
+dashboard call ~elinit--save-overrides~ after the core mutator
 applies the change.
 
 * Development
@@ -3273,13 +3273,13 @@ applies the change.
 make check
 make lint
 make test
-make test-one TEST=supervisor-test-parse-string-entry
+make test-one TEST=elinit-test-parse-string-entry
 #+end_src
 
 Interactive load:
 
 #+begin_src bash
-emacs -Q -l supervisor.el
+emacs -Q -l elinit.el
 #+end_src
 
 * License

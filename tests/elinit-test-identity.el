@@ -202,7 +202,7 @@
 ;;
 ;; These tests exercise the helper binary's error paths.
 ;; Full privilege-drop tests require root and are gated by
-;; SUPERVISOR_TEST_ROOT env var (not run in normal CI).
+;; ELINIT_TEST_ROOT env var (not run in normal CI).
 
 
 (ert-deftest elinit-test-runas-missing-command ()
@@ -267,7 +267,7 @@
   ;; on non-root.  On non-root this still fails at setgid, but if we are root
   ;; (CI lane) it reaches execv.  Use skip-unless to gate on root.
   (skip-unless (= (user-uid) 0))
-  (skip-unless (getenv "SUPERVISOR_TEST_ROOT"))
+  (skip-unless (getenv "ELINIT_TEST_ROOT"))
   (with-temp-buffer
     (let ((code (call-process elinit-test-runas-binary nil t nil
                               "--user" (number-to-string (user-uid))
@@ -280,7 +280,7 @@
   "Helper runs command as target user when invoked by root."
   (skip-unless (file-executable-p elinit-test-runas-binary))
   (skip-unless (= (user-uid) 0))
-  (skip-unless (getenv "SUPERVISOR_TEST_ROOT"))
+  (skip-unless (getenv "ELINIT_TEST_ROOT"))
   (with-temp-buffer
     (let ((code (call-process elinit-test-runas-binary nil t nil
                               "--user" "nobody"
@@ -542,7 +542,7 @@
 (ert-deftest elinit-test-identity-trust-world-writable ()
   "Trust check rejects world-writable unit file even if root-owned."
   (skip-unless (= (user-uid) 0))
-  (skip-unless (getenv "SUPERVISOR_TEST_ROOT"))
+  (skip-unless (getenv "ELINIT_TEST_ROOT"))
   (let ((temp-file (make-temp-file "trust-test-" nil ".el")))
     (unwind-protect
         (progn
@@ -558,7 +558,7 @@
 (ert-deftest elinit-test-identity-trust-root-owned-ok ()
   "Trust check accepts root-owned, non-world-writable unit file."
   (skip-unless (= (user-uid) 0))
-  (skip-unless (getenv "SUPERVISOR_TEST_ROOT"))
+  (skip-unless (getenv "ELINIT_TEST_ROOT"))
   (let ((temp-file (make-temp-file "trust-test-" nil ".el")))
     (unwind-protect
         (progn

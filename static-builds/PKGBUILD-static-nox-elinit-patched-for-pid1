@@ -1,18 +1,18 @@
 # Maintainer: Static Emacs Project
-# Full-featured static emacs-nox with PID1 patches and baked-in supervisor.el
+# Full-featured static emacs-nox with PID1 patches and baked-in elinit
 #
 # This variant extends PKGBUILD-static-nox with:
 #   1. PID1 Emacs patches (--pid1 flag, signal handling, child reaping, hooks)
-#   2. Bundled supervisor.el (process supervisor) in site-lisp
-#   3. Prebuilt C helpers (supervisor-logd, supervisor-runas, supervisor-rlimits)
-#   4. Autostart bootstrap: supervisor hooks into pid1-boot-hook when --pid1 is used
+#   2. Bundled elinit (process supervisor) in site-lisp
+#   3. Prebuilt C helpers (elinit-logd, elinit-runas, elinit-rlimits)
+#   4. Autostart bootstrap: elinit hooks into pid1-boot-hook when --pid1 is used
 #
 # The -patched-for-pid1 suffix is a CAPABILITY marker: the binary supports
 # --pid1 mode but does NOT activate it unless --pid1 is explicitly passed.
 # Normal Emacs usage (without --pid1) is completely unchanged.
 #
-# Disable gate: set EMACS_SUPERVISOR_DISABLE=1 to suppress autostart even
-# with --pid1. Or set supervisor-pid1-autostart-disabled to t in early-init.el.
+# Disable gate: set EMACS_ELINIT_DISABLE=1 to suppress autostart even
+# with --pid1. Or set elinit-pid1-autostart-disabled to t in early-init.el.
 #
 # Feature set (same as PKGBUILD-static-nox):
 #   GMP, GnuTLS, libxml2, tree-sitter, modules, threads, zlib, pdumper,
@@ -22,10 +22,10 @@
 #   pid1-reboot-hook, automatic child reaping, signal handling
 #   (SIGTERM/SIGUSR1→poweroff, SIGINT/SIGUSR2→reboot, SIGHUP→ignored)
 
-pkgname=emacs-nox-static-supervisor-patched-for-pid1
+pkgname=emacs-nox-static-elinit-patched-for-pid1
 pkgver=30.2
 pkgrel=1
-pkgdesc='GNU Emacs (nox) — static, full-featured, PID1 patched, with supervisor.el'
+pkgdesc='GNU Emacs (nox) — static, full-featured, PID1 patched, with elinit'
 arch=('x86_64')
 url='https://www.gnu.org/software/emacs/emacs.html'
 license=('GPL3')
@@ -55,8 +55,8 @@ source=(
 )
 sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
-# ── Location of supervisor.el repo (relative to PKGBUILD) ──
-_supervisor_root="${startdir}/.."
+# ── Location of elinit repo (relative to PKGBUILD) ──
+_elinit_root="${startdir}/.."
 
 prepare() {
   _static_prefix="${srcdir}/static-libs"
@@ -181,10 +181,10 @@ build() {
 
   make -j$(nproc)
 
-  # ── Build supervisor C helpers ──
-  msg2 "Building supervisor C helpers..."
-  make -C "${_supervisor_root}/libexec" clean
-  make -C "${_supervisor_root}/libexec" all \
+  # ── Build elinit C helpers ──
+  msg2 "Building elinit C helpers..."
+  make -C "${_elinit_root}/libexec" clean
+  make -C "${_elinit_root}/libexec" all \
     CC="gcc" CFLAGS="-Wall -Wextra -Werror -pedantic -std=c99 -O2"
 }
 
@@ -222,17 +222,17 @@ check() {
        (kill-emacs 1))' 2>&1
   echo "PASS: PID1 hooks are defined"
 
-  echo "=== Supervisor load path verification ==="
-  local supervisor_dir="${_supervisor_root}"
+  echo "=== Elinit load path verification ==="
+  local elinit_dir="${_elinit_root}"
   ./src/emacs --batch \
-    --eval "(add-to-list 'load-path \"${supervisor_dir}\")" \
-    --eval '(require (quote supervisor))' \
-    --eval '(message "supervisor loaded: %s" (featurep (quote supervisor)))' 2>&1
-  echo "PASS: supervisor.el loads successfully"
+    --eval "(add-to-list 'load-path \"${elinit_dir}\")" \
+    --eval '(require (quote elinit))' \
+    --eval '(message "elinit loaded: %s" (featurep (quote elinit)))' 2>&1
+  echo "PASS: elinit loads successfully"
 
   echo "=== C helper binary verification ==="
-  for helper in supervisor-logd supervisor-runas supervisor-rlimits; do
-    local hpath="${_supervisor_root}/libexec/${helper}"
+  for helper in elinit-logd elinit-runas elinit-rlimits; do
+    local hpath="${_elinit_root}/libexec/${helper}"
     test -x "$hpath" || { echo "FAIL: ${helper} not executable"; return 1; }
     echo "PASS: ${helper} is executable"
   done
@@ -252,56 +252,56 @@ package() {
     mv "${pkgdir}"/usr/share/man/man1/{ctags.1,ctags.emacs.1}
   fi
 
-  # ── Install supervisor.el runtime files ──
-  local _sup_dest="${pkgdir}/usr/share/emacs/site-lisp/supervisor"
+  # ── Install elinit runtime files ──
+  local _sup_dest="${pkgdir}/usr/share/emacs/site-lisp/elinit"
   install -d "${_sup_dest}"
-  install -m 644 "${_supervisor_root}"/supervisor.el "${_sup_dest}/"
-  install -m 644 "${_supervisor_root}"/supervisor-core.el "${_sup_dest}/"
-  install -m 644 "${_supervisor_root}"/supervisor-log.el "${_sup_dest}/"
-  install -m 644 "${_supervisor_root}"/supervisor-overrides.el "${_sup_dest}/"
-  install -m 644 "${_supervisor_root}"/supervisor-sandbox.el "${_sup_dest}/"
-  install -m 644 "${_supervisor_root}"/supervisor-libexec.el "${_sup_dest}/"
-  install -m 644 "${_supervisor_root}"/supervisor-units.el "${_sup_dest}/"
-  install -m 644 "${_supervisor_root}"/supervisor-timer.el "${_sup_dest}/"
-  install -m 644 "${_supervisor_root}"/supervisor-dashboard.el "${_sup_dest}/"
-  install -m 644 "${_supervisor_root}"/supervisor-cli.el "${_sup_dest}/"
+  install -m 644 "${_elinit_root}"/elinit "${_sup_dest}/"
+  install -m 644 "${_elinit_root}"/elinit-core.el "${_sup_dest}/"
+  install -m 644 "${_elinit_root}"/elinit-log.el "${_sup_dest}/"
+  install -m 644 "${_elinit_root}"/elinit-overrides.el "${_sup_dest}/"
+  install -m 644 "${_elinit_root}"/elinit-sandbox.el "${_sup_dest}/"
+  install -m 644 "${_elinit_root}"/elinit-libexec.el "${_sup_dest}/"
+  install -m 644 "${_elinit_root}"/elinit-units.el "${_sup_dest}/"
+  install -m 644 "${_elinit_root}"/elinit-timer.el "${_sup_dest}/"
+  install -m 644 "${_elinit_root}"/elinit-dashboard.el "${_sup_dest}/"
+  install -m 644 "${_elinit_root}"/elinit-cli.el "${_sup_dest}/"
 
   # ── Install prebuilt C helper binaries ──
   local _libexec_dest="${_sup_dest}/libexec"
   install -d "${_libexec_dest}"
-  install -m 755 "${_supervisor_root}"/libexec/supervisor-logd "${_libexec_dest}/"
-  install -m 755 "${_supervisor_root}"/libexec/supervisor-runas "${_libexec_dest}/"
-  install -m 755 "${_supervisor_root}"/libexec/supervisor-rlimits "${_libexec_dest}/"
+  install -m 755 "${_elinit_root}"/libexec/elinit-logd "${_libexec_dest}/"
+  install -m 755 "${_elinit_root}"/libexec/elinit-runas "${_libexec_dest}/"
+  install -m 755 "${_elinit_root}"/libexec/elinit-rlimits "${_libexec_dest}/"
 
   # ── Install autostart bootstrap ──
   # This file is loaded by Emacs during startup via site-lisp.
-  # It wires supervisor.el into PID1 mode autostart.
+  # It wires elinit into PID1 mode autostart.
   cat > "${pkgdir}/usr/share/emacs/site-lisp/site-start.el" <<'SITE_START_EOF'
-;;; site-start.el --- Supervisor PID1 autostart bootstrap  -*- lexical-binding: t -*-
+;;; site-start.el --- Elinit PID1 autostart bootstrap  -*- lexical-binding: t -*-
 
-;; Installed by emacs-nox-static-supervisor-patched-for-pid1.
-;; This file auto-loads supervisor.el when Emacs is started with --pid1.
+;; Installed by emacs-nox-static-elinit-patched-for-pid1.
+;; This file auto-loads elinit when Emacs is started with --pid1.
 
-;; Always add supervisor to load-path (available for manual use too)
-(add-to-list 'load-path "/usr/share/emacs/site-lisp/supervisor")
+;; Always add elinit to load-path (available for manual use too)
+(add-to-list 'load-path "/usr/share/emacs/site-lisp/elinit")
 
-;; Autostart supervisor in PID1 mode (unless explicitly disabled)
+;; Autostart elinit in PID1 mode (unless explicitly disabled)
 (when (and (bound-and-true-p pid1-mode)
-           (not (getenv "EMACS_SUPERVISOR_DISABLE"))
-           (not (bound-and-true-p supervisor-pid1-autostart-disabled)))
-  (require 'supervisor)
+           (not (getenv "EMACS_ELINIT_DISABLE"))
+           (not (bound-and-true-p elinit-pid1-autostart-disabled)))
+  (require 'elinit)
   ;; Helpers are prebuilt — never attempt to compile on startup
-  (setq supervisor-libexec-build-on-startup 'never)
-  (add-hook 'pid1-boot-hook #'supervisor-start))
+  (setq elinit-libexec-build-on-startup 'never)
+  (add-hook 'pid1-boot-hook #'elinit-start))
 
 ;;; site-start.el ends here
 SITE_START_EOF
 
   # ── Install sbin scripts ──
   local _sbin_dest="${pkgdir}/usr/bin"
-  for script in supervisorctl supervisor-import supervisor-log-prune supervisor-logrotate; do
-    if [ -f "${_supervisor_root}/sbin/${script}" ]; then
-      install -m 755 "${_supervisor_root}/sbin/${script}" "${_sbin_dest}/"
+  for script in elinitctl elinit-import elinit-log-prune elinit-logrotate; do
+    if [ -f "${_elinit_root}/sbin/${script}" ]; then
+      install -m 755 "${_elinit_root}/sbin/${script}" "${_sbin_dest}/"
     fi
   done
 }

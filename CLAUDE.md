@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-supervisor.el is an Emacs Lisp package for managing background processes. It provides staged startup with dependency ordering, crash recovery, and a dashboard UI.
+elinit is an Emacs Lisp package for managing background processes. It provides staged startup with dependency ordering, crash recovery, and a dashboard UI.
 
 ## Module Structure
 
@@ -12,29 +12,29 @@ The package is split into focused modules:
 
 | File | Purpose |
 |------|---------|
-| `supervisor-core.el` | Engine, parsing, scheduling, process lifecycle, state management |
-| `supervisor-log.el` | Log framing, encode/decode, record filtering/formatting, writer lifecycle |
-| `supervisor-overrides.el` | Overrides persistence, effective state getters, policy mutators |
-| `supervisor-libexec.el` | Libexec build targets, compiler selection, build invocation |
-| `supervisor-sandbox.el` | Sandbox profile argument construction and bwrap argv wrapping |
-| `supervisor-units.el` | Unit-file loading, validation, merge with legacy config |
-| `supervisor-timer.el` | Timer subsystem for scheduled and calendar-based triggers |
-| `supervisor-dashboard.el` | UI rendering, keymaps, interactive commands |
-| `supervisor-cli.el` | CLI dispatcher, formatters, command handlers |
-| `supervisor.el` | Entry point that loads all modules and provides the `supervisor` feature |
+| `elinit-core.el` | Engine, parsing, scheduling, process lifecycle, state management |
+| `elinit-log.el` | Log framing, encode/decode, record filtering/formatting, writer lifecycle |
+| `elinit-overrides.el` | Overrides persistence, effective state getters, policy mutators |
+| `elinit-libexec.el` | Libexec build targets, compiler selection, build invocation |
+| `elinit-sandbox.el` | Sandbox profile argument construction and bwrap argv wrapping |
+| `elinit-units.el` | Unit-file loading, validation, merge with legacy config |
+| `elinit-timer.el` | Timer subsystem for scheduled and calendar-based triggers |
+| `elinit-dashboard.el` | UI rendering, keymaps, interactive commands |
+| `elinit-cli.el` | CLI dispatcher, formatters, command handlers |
+| `elinit.el` | Entry point that loads all modules and provides the `elinit` feature |
 
 **Load order:** core (requires log, overrides, libexec, sandbox) then units, timer, dashboard, cli (loaded by entry point).
 
 **Dependency rules:**
-- `supervisor-core.el` requires `supervisor-log`, `supervisor-overrides`, `supervisor-libexec`, and `supervisor-sandbox` (these are extracted subsystems, not optional)
-- `supervisor-log.el` uses `declare-function` for core's `supervisor--log` (no hard require back to core)
-- `supervisor-overrides.el` uses `declare-function` for core entry accessors and helpers (no hard require back to core)
-- `supervisor-libexec.el` uses `declare-function` for core's `supervisor--log` (no hard require back to core)
-- `supervisor-sandbox.el` uses `declare-function` for core entry accessors (no hard require back to core)
-- `supervisor-units.el` uses `declare-function` for core (no hard require)
-- `supervisor-dashboard.el` requires only `supervisor-core`
-- `supervisor-cli.el` requires only `supervisor-core`
-- `supervisor.el` requires all modules
+- `elinit-core.el` requires `elinit-log`, `elinit-overrides`, `elinit-libexec`, and `elinit-sandbox` (these are extracted subsystems, not optional)
+- `elinit-log.el` uses `declare-function` for core's `elinit--log` (no hard require back to core)
+- `elinit-overrides.el` uses `declare-function` for core entry accessors and helpers (no hard require back to core)
+- `elinit-libexec.el` uses `declare-function` for core's `elinit--log` (no hard require back to core)
+- `elinit-sandbox.el` uses `declare-function` for core entry accessors (no hard require back to core)
+- `elinit-units.el` uses `declare-function` for core (no hard require)
+- `elinit-dashboard.el` requires only `elinit-core`
+- `elinit-cli.el` requires only `elinit-core`
+- `elinit.el` requires all modules
 
 Cross-module calls use `declare-function` for proper byte-compilation. The extracted subsystem modules (log, overrides, libexec, sandbox) use `defvar` forward declarations for variables defined in core.
 
@@ -72,7 +72,7 @@ Rules:
 The README test-count badge is powered by a GitHub Gist + shields.io endpoint.
 
 - **Gist:** `e686727a6d88c17c557003e73a9c020c` (secret gist, user `cypherpunk2001`)
-- **Filename inside gist:** `supervisor-el-tests.json`
+- **Filename inside gist:** `elinit-tests.json`
 - **Secret:** `GIST_TOKEN` in repo Actions secrets -- a classic GitHub token with `gist` scope
 - **Updated by:** `.github/workflows/ci.yml`, `elisp` job, `snapshot` matrix run only, on push to master
 
@@ -90,8 +90,8 @@ repo Settings -> Secrets and variables -> Actions.
 make check          # Run all CI checks (Elisp + C + shell)
 make lint           # Run byte-compile, checkdoc, package-lint only
 make test           # Run ERT tests only
-make test-one TEST=supervisor-test-parse-string-entry  # Run single test
-make libexec-check  # Build and test C helpers (supervisor-logd, supervisor-runas, supervisor-rlimits)
+make test-one TEST=elinit-test-parse-string-entry  # Run single test
+make libexec-check  # Build and test C helpers (elinit-logd, elinit-runas, elinit-rlimits)
 make sbin-check     # Run shellcheck + shell tests for sbin/ scripts
 
 # Subsystem checks in isolation
@@ -101,7 +101,7 @@ make -C sbin test           # shell tests only (skip shellcheck)
 make -C sbin lint           # shellcheck only
 
 # Load and test interactively
-emacs -Q -l supervisor.el
+emacs -Q -l elinit.el
 ```
 
 ## Emacs as a Reference Tool
@@ -145,7 +145,7 @@ See PLAN-INIT-followups.md for the authoritative spec. Key requirements:
 
 ### Async Scheduling
 - No polling loops -- use sentinels and timers only
-  - Exception: `supervisor-stop-now` uses a brief polling loop (max 0.5s) for synchronous
+  - Exception: `elinit-stop-now` uses a brief polling loop (max 0.5s) for synchronous
     shutdown in `kill-emacs-hook`, where async completion is not possible
 - Cycle detection must fall back to list order and clear `:after` edges
 - Disabled entries are immediately ready
@@ -172,9 +172,9 @@ Shell scripts in `sbin/` have their own test suite under `sbin/tests/`.
 `run_tests "$(basename "${0}")"` at the end.
 
 **Test files:**
-- `sbin/tests/test-logrotate.sh` -- tests for `supervisor-logrotate`
-- `sbin/tests/test-log-prune.sh` -- tests for `supervisor-log-prune`
-- `sbin/tests/test-supervisorctl.sh` -- tests for `supervisorctl`
+- `sbin/tests/test-elinit-logrotate.sh` -- tests for `elinit-logrotate`
+- `sbin/tests/test-elinit-log-prune.sh` -- tests for `elinit-log-prune`
+- `sbin/tests/test-elinitctl.sh` -- tests for `elinitctl`
 
 **Writing new tests:**
 - First test in every file must be `test_shellcheck` (runs shellcheck on the script under test).
@@ -183,8 +183,8 @@ Shell scripts in `sbin/` have their own test suite under `sbin/tests/`.
 - Assertions: `assert_eq`, `assert_ne`, `assert_contains`, `assert_not_contains`,
   `assert_status`, `assert_file_exists`, `assert_file_not_exists`, `assert_match`.
 - Keep tests hermetic: never depend on global state or real services.
-- For `supervisorctl` tests, stub `emacsclient` via PATH manipulation (write args
-  to a temp file, not stderr, because supervisorctl captures stderr with `2>&1`).
+- For `elinitctl` tests, stub `emacsclient` via PATH manipulation (write args
+  to a temp file, not stderr, because elinitctl captures stderr with `2>&1`).
 - Prefer `--dry-run` for testing output contracts without side effects.
 
 **What to test for each script:**
@@ -201,7 +201,7 @@ Shell scripts in `sbin/` have their own test suite under `sbin/tests/`.
 
 ### Testing (C -- libexec/)
 
-C helpers in `libexec/` (`supervisor-logd`, `supervisor-runas`, `supervisor-rlimits`)
+C helpers in `libexec/` (`elinit-logd`, `elinit-runas`, `elinit-rlimits`)
 have a test suite under `libexec/tests/`.
 
 **Framework:** [acutest](https://github.com/mity/acutest) -- a single-header C
@@ -209,9 +209,9 @@ test framework vendored at `libexec/tests/vendor/acutest.h`.  No external
 dependencies.
 
 **Test files:**
-- `libexec/tests/test_supervisor_logd.c` -- tests for `supervisor-logd`
-- `libexec/tests/test_supervisor_runas.c` -- tests for `supervisor-runas`
-- `libexec/tests/test_supervisor_rlimits.c` -- tests for `supervisor-rlimits`
+- `libexec/tests/test_elinit_logd.c` -- tests for `elinit-logd`
+- `libexec/tests/test_elinit_runas.c` -- tests for `elinit-runas`
+- `libexec/tests/test_elinit_rlimits.c` -- tests for `elinit-rlimits`
 
 **Shared helpers** (`test_helpers.h` / `test_helpers.c`):
 - `run_cmd(argv, stdin_data, stdin_len, result)` -- fork/exec the binary,
@@ -259,7 +259,7 @@ always exec the freshly-built binary from the same build tree.
 
 **Root-gated tests:** Tests requiring privilege operations (setuid/setgid)
 check `getuid() == 0` at runtime and skip otherwise.  Set
-`SUPERVISOR_TEST_ROOT=1` to run root-only tests.
+`ELINIT_TEST_ROOT=1` to run root-only tests.
 
 **Pitfalls:**
 - Use `msleep(ms)` (via `nanosleep`) instead of `usleep()` -- `usleep` is
@@ -311,15 +311,15 @@ make check   # Must pass before commits (runs lint + test)
 - Use `#'function` syntax (not `'function`) for function references
 - Decompose long functions into smaller documented functions
 - All public functions and variables need docstrings
-- Follow Emacs Lisp naming conventions (`supervisor-` public, `supervisor--` private)
+- Follow Emacs Lisp naming conventions (`elinit-` public, `elinit--` private)
 
 ### Package Structure
 - Lexical binding required in all module files
 - Standard headers: Author, Version, Package-Requires, Keywords, URL (in entry point)
 - GPL-compatible license with boilerplate above `;;; Commentary:`
 - Must include LICENSE file
-- Main feature provided by entry point: `(provide 'supervisor)`
-- Each module provides its own feature: `supervisor-core`, `supervisor-log`, `supervisor-overrides`, `supervisor-libexec`, `supervisor-sandbox`, `supervisor-units`, `supervisor-timer`, `supervisor-dashboard`, `supervisor-cli`
+- Main feature provided by entry point: `(provide 'elinit)`
+- Each module provides its own feature: `elinit-core`, `elinit-log`, `elinit-overrides`, `elinit-libexec`, `elinit-sandbox`, `elinit-units`, `elinit-timer`, `elinit-dashboard`, `elinit-cli`
 
 **CRITICAL: All code must follow the GNU Coding Standards and Emacs Lisp conventions.**
 
@@ -329,7 +329,7 @@ Full references:
 
 ### Naming Conventions
 
-- All global symbols use the package prefix `supervisor-` (public) or `supervisor--` (private)
+- All global symbols use the package prefix `elinit-` (public) or `elinit--` (private)
 - Predicates: one-word names end in `p` (e.g., `framep`), multi-word in `-p` (e.g., `frame-live-p`)
 - Boolean variables: use `-flag` suffix or `is-foo`, not `-p` (unless bound to a predicate function)
 - Function-storing variables: end in `-function`; hook variables: follow hook naming conventions

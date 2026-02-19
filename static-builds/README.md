@@ -20,23 +20,23 @@ gates live in plan files:
 
 1. I just want a vanilla portable glibc-compiled static Emacs.
 2. I want static Emacs with `--pid1` reaping support plus baked-in
-   supervisor.el, and I handle early boot in initramfs.
+   elinit, and I handle early boot in initramfs.
 3. I want static Emacs with `--pid1` reaping support plus baked-in
-   supervisor.el, and I handle early boot in Emacs Lisp (`rc.boot.el` /
+   elinit, and I handle early boot in Emacs Lisp (`rc.boot.el` /
    `rc.shutdown.el`).
 
 ## Variant matrix
 
-| Variant | Type | PID1 | Supervisor | Size |
+| Variant | Type | PID1 | Elinit | Size |
 |---------|------|------|------------|------|
 | `PKGBUILD-static-nox-minimal` | Arch | no | no | ~10MB |
 | `PKGBUILD-static-nox` | Arch | no | no | ~14MB |
 | `PKGBUILD-static-nox-nativecomp` | Arch | no | no | ~376MB |
-| `PKGBUILD-static-nox-supervisor-patched-for-pid1` | Arch | yes | yes | ~14MB |
+| `PKGBUILD-static-nox-elinit-patched-for-pid1` | Arch | yes | yes | ~14MB |
 | `emacs-static-nox-minimal.nix` | Nix | no | no | ~10MB |
 | `emacs-static-nox.nix` | Nix | no | no | ~14MB |
 | `emacs-static-nox-nativecomp.nix` | Nix | no | no | ~376MB |
-| `emacs-static-nox-supervisor-patched-for-pid1.nix` | Nix | yes | yes | ~14MB |
+| `emacs-static-nox-elinit-patched-for-pid1.nix` | Nix | yes | yes | ~14MB |
 
 PID1 patches: `patches/emacs-0001-*.patch` through `emacs-0003-*.patch`
 (see `patches/README.md` for details).
@@ -47,7 +47,7 @@ See `PLAN-pid1-emacs-patch-support.md` for the Emacs patch spec.
 ## Path 1 -- vanilla portable static Emacs
 
 Use the existing vanilla files above. These variants do not assume PID1 mode
-and do not require baked supervisor startup.
+and do not require baked elinit startup.
 
 Example Nix commands:
 
@@ -71,51 +71,51 @@ Swap `PKGBUILD-static-nox` for `-minimal` or `-nativecomp` as needed.
 Nix:
 
 ```bash
-nix-build static-builds/emacs-static-nox-supervisor-patched-for-pid1.nix
+nix-build static-builds/emacs-static-nox-elinit-patched-for-pid1.nix
 ```
 
 Arch PKGBUILD:
 
 ```bash
 cd static-builds
-makepkg -p PKGBUILD-static-nox-supervisor-patched-for-pid1
-sudo pacman -U emacs-nox-static-supervisor-patched-for-pid1-*.pkg.tar.zst
+makepkg -p PKGBUILD-static-nox-elinit-patched-for-pid1
+sudo pacman -U emacs-nox-static-elinit-patched-for-pid1-*.pkg.tar.zst
 ```
 
 The resulting binary includes:
 - All features of `PKGBUILD-static-nox` / `emacs-static-nox.nix`
 - `--pid1` flag for PID1 init process mode
-- Bundled supervisor.el with autostart (when `--pid1` is used)
+- Bundled elinit with autostart (when `--pid1` is used)
 - Prebuilt C helpers (no compiler needed at runtime)
 
 ### Disable gate
 
-The supervisor autostart can be suppressed even when `--pid1` is active:
+The elinit autostart can be suppressed even when `--pid1` is active:
 
 ```bash
 # Environment variable
-EMACS_SUPERVISOR_DISABLE=1 emacs --pid1
+EMACS_ELINIT_DISABLE=1 emacs --pid1
 
 # Or in early-init.el
-(setq supervisor-pid1-autostart-disabled t)
+(setq elinit-pid1-autostart-disabled t)
 ```
 
 ## Paths 2 and 3 -- common requirements
 
 These two paths share the same base mechanics:
 
-1. Build/install the `*-supervisor-patched-for-pid1` variant.
+1. Build/install the `*-elinit-patched-for-pid1` variant.
 2. Install Emacs at a stable absolute path, typically `/usr/bin/emacs`.
 3. Configure bootloader kernel cmdline to hand off PID1 to Emacs:
    `init=/usr/bin/emacs`
-4. Place system unit files under `/etc/supervisor.el/`.
+4. Place system unit files under `/etc/elinit/`.
 5. Set unit enablement in unit files (`:enabled t`) plus target membership
    (`:wanted-by (...)` or `:required-by (...)`) before first boot.
-6. Keep helper binaries (`supervisor-logd`, `supervisor-runas`) installed and
+6. Keep helper binaries (`elinit-logd`, `elinit-runas`) installed and
    executable in `libexec` for runtime operation.
 
-Build with `PKGBUILD-static-nox-supervisor-patched-for-pid1` (Arch) or
-`emacs-static-nox-supervisor-patched-for-pid1.nix` (Nix).
+Build with `PKGBUILD-static-nox-elinit-patched-for-pid1` (Arch) or
+`emacs-static-nox-elinit-patched-for-pid1.nix` (Nix).
 
 ### C helper binary policy for admins
 
@@ -124,7 +124,7 @@ For patched+baked variants, the expected process is:
 1. Ship prebuilt helper binaries in the package output.
 2. Do not require a compiler at runtime.
 3. If you choose to manage helpers yourself, either:
-   - point `supervisor-logd-command` / `supervisor-runas-command` at your
+   - point `elinit-logd-command` / `elinit-runas-command` at your
      managed binaries, or
    - rebuild helpers in an admin/dev environment.
 
@@ -134,7 +134,7 @@ Use these canonical system paths:
 
 | Purpose | Path |
 | --- | --- |
-| Supervisor unit files (system admin tier) | `/etc/supervisor.el/*.el` |
+| Elinit unit files (system admin tier) | `/etc/elinit/*.el` |
 | Optional rc boot script | `/lib/init/rc.boot.el` |
 | Optional rc shutdown script | `/lib/init/rc.shutdown.el` |
 | Optional local boot extension | `/etc/rc.0.local.el` |
@@ -155,10 +155,10 @@ Recommended workflow:
 Example:
 
 ```bash
-install -d /mnt/etc/supervisor.el
+install -d /mnt/etc/elinit
 install -d /mnt/lib/init
 
-cat > /mnt/etc/supervisor.el/sshd.el <<'EOF'
+cat > /mnt/etc/elinit/sshd.el <<'EOF'
 (:id "sshd"
  :command "/usr/sbin/sshd -D -e"
  :type simple
@@ -173,7 +173,7 @@ cp static-builds/scripts/rc.shutdown.el.example /mnt/lib/init/rc.shutdown.el
 chmod 755 /mnt/lib/init/rc.boot.el /mnt/lib/init/rc.shutdown.el
 ```
 
-This is enough to seed first boot behavior without running `supervisorctl` in
+This is enough to seed first boot behavior without running `elinitctl` in
 the chroot.
 
 ## Path 2 specifics -- initramfs handles early boot
@@ -182,7 +182,7 @@ Use this when mount/dev/fsck/network setup is already done before PID1 handoff.
 
 1. Do not rely on rc Lisp scripts for core early init.
 2. Keep `/lib/init/rc.boot.el` optional or absent.
-3. Focus on supervisor unit set under `/etc/supervisor.el/`.
+3. Focus on elinit unit set under `/etc/elinit/`.
 
 ## Path 3 specifics -- Emacs Lisp handles early boot
 
@@ -199,8 +199,8 @@ Use this when you want sinit-style boot/shutdown logic in Lisp.
 After first boot:
 
 1. Verify PID1 handoff worked (`ps -p 1 -o comm,args`).
-2. Verify supervisor came up (`supervisorctl status`).
-3. Verify configured units are loaded (`supervisorctl list-units`).
+2. Verify elinit came up (`elinitctl status`).
+3. Verify configured units are loaded (`elinitctl list-units`).
 4. Verify no stale helper rebuild is required at startup.
 
 ## Notes
