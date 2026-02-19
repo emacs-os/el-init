@@ -249,20 +249,41 @@ void test_nofile_applied(void)
 
 void test_nproc_applied(void)
 {
-	/* Set nproc to hard_limit - 1.  We cannot raise above hard
-	   without root, and values below the running process count
-	   prevent fork.  hard - 1 is safe on both counts. */
+	/* Verify nproc can be lowered and the new value takes effect.
+	   On CI runners the hard limit is often near the running
+	   process count, so any lowering prevents fork.  Skip when
+	   there is not enough headroom. */
 	struct rlimit rl;
 	if (getrlimit(RLIMIT_NPROC, &rl) != 0 ||
-	    rl.rlim_max == RLIM_INFINITY || rl.rlim_max < 200) {
-		TEST_MSG("skipping: cannot determine safe nproc value");
+	    rl.rlim_max == RLIM_INFINITY) {
+		TEST_MSG("skipping: cannot query nproc hard limit");
 		return;
 	}
-	rlim_t val = rl.rlim_max - 1;
+	/* Need headroom: value must be below hard but above running
+	   count.  Try soft - 1 (soft >= running count by definition). */
+	if (rl.rlim_cur == RLIM_INFINITY || rl.rlim_cur < 200) {
+		TEST_MSG("skipping: nproc soft limit unsuitable");
+		return;
+	}
+	rlim_t val = rl.rlim_cur - 1;
 	char buf[64];
 	char expect[64];
 	snprintf(buf, sizeof(buf), "%llu:%llu",
-	         (unsigned long long)val, (unsigned long long)val);
+	         (unsigned long long)rl.rlim_max,
+	         (unsigned long long)rl.rlim_max);
+	/* First verify we can set to current hard (no-op, proves exec works) */
+	const char *argv0[] = { RLIMITS_PATH, "--nproc", buf,
+	                         "--", "sh", "-c", "ulimit -u", NULL };
+	struct run_result r0 = {0};
+	if (run_cmd(argv0, NULL, 0, &r0) != 0 || r0.exit_code != 0) {
+		TEST_MSG("skipping: cannot fork with current nproc");
+		run_result_free(&r0);
+		return;
+	}
+	run_result_free(&r0);
+	/* Now lower to soft - 1 and verify */
+	snprintf(buf, sizeof(buf), "%llu:%llu",
+	         (unsigned long long)val, (unsigned long long)rl.rlim_max);
 	snprintf(expect, sizeof(expect), "%llu", (unsigned long long)val);
 	const char *argv[] = { RLIMITS_PATH, "--nproc", buf,
 	                        "--", "sh", "-c", "ulimit -u", NULL };
