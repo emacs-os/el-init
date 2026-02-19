@@ -85,7 +85,9 @@ sudo pacman -U emacs-nox-static-elinit-patched-for-pid1-*.pkg.tar.zst
 The resulting binary includes:
 - All features of `PKGBUILD-static-nox` / `emacs-static-nox.nix`
 - `--pid1` flag for PID1 init process mode
-- Bundled elinit with autostart (when `--pid1` is used)
+- Bundled elinit with autostart (when `--pid1` is used) -- no user init
+  files or `~/.emacs` configuration required; the packaged `site-start.el`
+  bootstrap handles loading and startup automatically
 - Prebuilt C helpers (no compiler needed at runtime)
 
 ### Disable gate
