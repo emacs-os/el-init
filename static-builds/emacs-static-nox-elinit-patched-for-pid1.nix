@@ -269,8 +269,8 @@ in stdenv.mkDerivation {
     for el_file in \
       elinit.el elinit-core.el elinit-log.el \
       elinit-overrides.el elinit-sandbox.el elinit-libexec.el \
-      elinit-units.el elinit-timer.el elinit-dashboard.el \
-      elinit-cli.el; do
+      elinit-units.el elinit-timer.el elinit-pid1.el \
+      elinit-dashboard.el elinit-cli.el; do
       cp "${elinitSrc}/$el_file" "$sup_dest/"
     done
 
@@ -302,8 +302,7 @@ in stdenv.mkDerivation {
            (not (bound-and-true-p elinit-pid1-autostart-disabled)))
   (require 'elinit)
   ;; Helpers are prebuilt — never attempt to compile on startup
-  (setq elinit-libexec-build-on-startup 'never)
-  (add-hook 'pid1-boot-hook #'elinit-start))
+  (setq elinit-libexec-build-on-startup 'never))
 
 ;;; site-start.el ends here
 SITE_START_EOF
@@ -384,9 +383,9 @@ SITE_START_EOF
       --eval "(add-to-list 'load-path \"$sup_dest\")" \
       --eval "(load \"$site_lisp/site-start\" nil t)" \
       --eval '(unless (featurep (quote elinit)) (kill-emacs 1))' \
-      --eval '(unless (member (function elinit-start) pid1-boot-hook) (kill-emacs 1))' \
+      --eval '(unless (member (function elinit--pid1-boot) pid1-boot-hook) (kill-emacs 1))' \
       --eval '(run-hooks (quote pid1-boot-hook))' 2>&1
-    echo "PASS: elinit-start registered on pid1-boot-hook and executes successfully"
+    echo "PASS: elinit--pid1-boot registered on pid1-boot-hook and executes successfully"
     # Verify no-rebuild setting
     $out/bin/emacs --pid1 --batch \
       --eval "(add-to-list 'load-path \"$sup_dest\")" \

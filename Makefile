@@ -2,7 +2,7 @@ EMACS ?= emacs
 BATCH = $(EMACS) -Q --batch -L . -L $(TEST_DIR)
 
 EL_MAIN = elinit.el
-EL_MODULES = elinit-core.el elinit-log.el elinit-overrides.el elinit-libexec.el elinit-sandbox.el elinit-units.el elinit-timer.el elinit-dashboard.el elinit-cli.el
+EL_MODULES = elinit-core.el elinit-log.el elinit-overrides.el elinit-libexec.el elinit-sandbox.el elinit-units.el elinit-timer.el elinit-pid1.el elinit-dashboard.el elinit-cli.el
 EL_ALL = $(EL_MODULES) $(EL_MAIN)
 TEST_DIR = tests
 TEST_HELPERS = $(TEST_DIR)/elinit-test-helpers.el

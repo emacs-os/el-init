@@ -37,6 +37,7 @@
 (require 'elinit-libexec)
 (require 'elinit-units)
 (require 'elinit-timer)
+(require 'elinit-pid1)
 (require 'elinit-dashboard)
 (require 'elinit-cli)
 

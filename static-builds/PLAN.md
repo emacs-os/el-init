@@ -201,6 +201,11 @@ Acceptance:
 
 1. Patch design documents signal-safety and reaping semantics.
 2. Default behavior remains unchanged when PID1 mode is disabled.
+   CI-enforced by ERT tests in `tests/elinit-test-pid1.el`:
+   `elinit-test-pid1-mode-enabled-default-nil`,
+   `elinit-test-pid1-no-hooks-at-load-without-pid1-mode`,
+   `elinit-test-pid1-no-process-side-effects-when-disabled`,
+   `elinit-test-pid1-detect-mode-unbound-pid1-mode`.
 
 ### Phase B2: Elinit PID1 Lisp interface
 Deliverables:
@@ -219,7 +224,10 @@ Deliverables:
 Acceptance:
 
 1. Variables are documented and default to safe non-invasive values.
-2. PID1 mode disabled means no reaping/script side effects.
+2. `elinit-pid1-mode-enabled` set to nil means no Lisp-side script
+   loading or service lifecycle calls (`elinit-start`, `elinit-stop-now`).
+   C-level reaping and signal handling are controlled by the `--pid1`
+   flag (B1 scope) and are outside this Lisp variable's authority.
 
 ### Phase B3: rc.boot/rc.shutdown execution model
 Deliverables:
@@ -241,6 +249,11 @@ Deliverables:
 1. Add test harness for PID1 behavior in isolated namespace/container.
 2. Verify child reaping and signal forwarding logic.
 3. Verify boot/shutdown policy behavior.
+
+Note: C-level reaping and signal tests are covered at the patch level
+(see `patches/README-pid1-validation.md` tests 8-13).  The ERT test
+suite (`tests/elinit-test-pid1.el`) covers Lisp-side policy dispatch,
+auto-detection, boot/shutdown function behavior, and hook registration.
 
 Acceptance:
 

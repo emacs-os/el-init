@@ -19,11 +19,12 @@ The package is split into focused modules:
 | `elinit-sandbox.el` | Sandbox profile argument construction and bwrap argv wrapping |
 | `elinit-units.el` | Unit-file loading, validation, merge with legacy config |
 | `elinit-timer.el` | Timer subsystem for scheduled and calendar-based triggers |
+| `elinit-pid1.el` | PID1 integration: auto-detection, boot/shutdown policy, hook wiring |
 | `elinit-dashboard.el` | UI rendering, keymaps, interactive commands |
 | `elinit-cli.el` | CLI dispatcher, formatters, command handlers |
 | `elinit.el` | Entry point that loads all modules and provides the `elinit` feature |
 
-**Load order:** core (requires log, overrides, libexec, sandbox) then units, timer, dashboard, cli (loaded by entry point).
+**Load order:** core (requires log, overrides, libexec, sandbox) then units, timer, pid1, dashboard, cli (loaded by entry point).
 
 **Dependency rules:**
 - `elinit-core.el` requires `elinit-log`, `elinit-overrides`, `elinit-libexec`, and `elinit-sandbox` (these are extracted subsystems, not optional)
@@ -32,6 +33,7 @@ The package is split into focused modules:
 - `elinit-libexec.el` uses `declare-function` for core's `elinit--log` (no hard require back to core)
 - `elinit-sandbox.el` uses `declare-function` for core entry accessors (no hard require back to core)
 - `elinit-units.el` uses `declare-function` for core (no hard require)
+- `elinit-pid1.el` uses `declare-function` for core (no hard require)
 - `elinit-dashboard.el` requires only `elinit-core`
 - `elinit-cli.el` requires only `elinit-core`
 - `elinit.el` requires all modules
@@ -321,7 +323,7 @@ make check   # Must pass before commits (runs lint + test)
 - GPL-compatible license with boilerplate above `;;; Commentary:`
 - Must include LICENSE file
 - Main feature provided by entry point: `(provide 'elinit)`
-- Each module provides its own feature: `elinit-core`, `elinit-log`, `elinit-overrides`, `elinit-libexec`, `elinit-sandbox`, `elinit-units`, `elinit-timer`, `elinit-dashboard`, `elinit-cli`
+- Each module provides its own feature: `elinit-core`, `elinit-log`, `elinit-overrides`, `elinit-libexec`, `elinit-sandbox`, `elinit-units`, `elinit-timer`, `elinit-pid1`, `elinit-dashboard`, `elinit-cli`
 
 **CRITICAL: All code must follow the GNU Coding Standards and Emacs Lisp conventions.**
 

@@ -2395,6 +2395,25 @@ All user options (defcustom) are listed below.
 | ~elinit-dashboard-log-view-record-limit~ | ~1000~ | Maximum decoded records shown by ~elinit-dashboard-view-log~ |
 | ~elinit-auto-refresh-interval~ | ~2~ | Auto-refresh cadence |
 
+** PID1 Options
+
+| Variable | Default | Purpose |
+| ~elinit-pid1-mode-enabled~ | auto-detected | Non-nil means PID1 integration is active (auto-detected from ~pid1-mode~ and PID) |
+| ~elinit-pid1-boot-script~ | ~"/lib/init/rc.boot.el"~ | File name of the boot script loaded during PID1 startup |
+| ~elinit-pid1-shutdown-script~ | ~"/lib/init/rc.shutdown.el"~ | File name of the shutdown script loaded during PID1 shutdown |
+| ~elinit-pid1-boot-policy~ | ~if-present~ | Policy for loading the boot script (~never~, ~if-present~, ~require~) |
+| ~elinit-pid1-shutdown-policy~ | ~if-present~ | Policy for loading the shutdown script (~never~, ~if-present~, ~require~) |
+
+~elinit-pid1-mode-enabled~ defaults to non-nil only when Emacs was started
+with ~--pid1~ and the process is actually PID 1.  In all other contexts it
+defaults to nil and the PID1 module is inert.
+
+Script policies control how ~rc.boot.el~ and ~rc.shutdown.el~ are handled:
+
+- ~never~ -- skip the script unconditionally.
+- ~if-present~ -- load the script when it is a readable regular file, silently skip otherwise (including directories and non-existent paths).
+- ~require~ -- load the script and signal an error if missing or unreadable.
+
 ** CLI Options
 
 | Variable | Default | Purpose |
@@ -2750,7 +2769,7 @@ Where behavior diverges across systems, parenthetical notes explain.
 | Feature | systemd | runit | s6 | elinit |
 |---------+---------+-------+----+------------|
 | *Init System (PID 1)* | | | | |
-| Can run as PID 1 | yes (systemd is PID 1) | yes (runit-init, 3-stage boot) | yes (s6-linux-init, separate package) | no (needs sinit-style shim as PID 1, may run as PID 2+) |
+| Can run as PID 1 | yes (systemd is PID 1) | yes (runit-init, 3-stage boot) | yes (s6-linux-init, separate package) | yes (with ~--pid1~ patched Emacs; also runs as PID 2+) |
 | *Process Supervision* | | | | |
 | Restart crashed daemons | yes | yes | yes | yes |
 | Restart policies (always/on-failure/on-success/no) | yes (6 modes) | no (always or never) | no (always or never) | yes (4 modes) |

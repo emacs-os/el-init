@@ -13,7 +13,7 @@ gates live in plan files:
 1. `PLAN-pid1-emacs-patch-support.md` defines the Emacs patch prerequisite.
    Status: **complete** — patches in `patches/`.
 2. `PLAN.md` defines the packaging/integration plan.
-   Status: **Track A in progress** -- 6 vanilla variants available, 2 baked variants under review.
+   Status: **Track A complete, Track B in progress** -- 6 vanilla variants available, 2 baked variants with PID1 support.
 3. This `README.md` is the administrator handbook.
 
 ## Pick your path
@@ -23,7 +23,7 @@ gates live in plan files:
    elinit, and I handle early boot in initramfs.
 3. I want static Emacs with `--pid1` reaping support plus baked-in
    elinit, and I handle early boot in Emacs Lisp (`rc.boot.el` /
-   `rc.shutdown.el`). **(Planned -- Track B, not yet implemented.)**
+   `rc.shutdown.el`).
 
 ## Variant matrix
 
@@ -188,13 +188,9 @@ Use this when mount/dev/fsck/network setup is already done before PID1 handoff.
 
 ## Path 3 specifics -- Emacs Lisp handles early boot
 
-**Status: planned (Track B) -- not yet implemented in elinit.**
-The PID1 Emacs patches (hooks, signals, reaping) are complete, but the
-elinit-side PID1 variables and rc script loading logic described below are
-Track B deliverables that have not been implemented yet. See `PLAN.md`
-phases B2/B3.
-
 Use this when you want sinit-style boot/shutdown logic in Lisp.
+The `elinit-pid1` module (`elinit-pid1.el`) provides the PID1 variables,
+script loading policies, and hook wiring described below.
 
 1. Place `rc.boot.el` at `/lib/init/rc.boot.el`.
 2. Place `rc.shutdown.el` at `/lib/init/rc.shutdown.el`.

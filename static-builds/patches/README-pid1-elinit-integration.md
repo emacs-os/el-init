@@ -57,18 +57,15 @@ signal received (e.g. SIGTERM)
 
 ## Elinit-side integration
 
-**Note:** This section describes the planned Track B design. The elinit-side
-PID1 variables and rc script loading logic below have not been implemented
-yet. The Emacs C-level hooks are complete and available.
+Elinit adds its PID1 integration via these hooks through the
+`elinit-pid1` module (`elinit-pid1.el`).  The elinit-side Lisp
+variables control behavior:
 
-Elinit adds its PID1 integration via these hooks. The elinit-side
-Lisp variables control behavior:
-
-### Variables (planned for elinit Track B -- not yet implemented)
+### Variables
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `elinit-pid1-mode-enabled` | boolean | auto-detect | Gates all PID1 behavior |
+| `elinit-pid1-mode-enabled` | boolean | auto-detect | Gates boot/shutdown script loading and service lifecycle calls |
 | `elinit-pid1-boot-script` | string | `/lib/init/rc.boot.el` | Boot script path |
 | `elinit-pid1-shutdown-script` | string | `/lib/init/rc.shutdown.el` | Shutdown script path |
 | `elinit-pid1-boot-policy` | symbol | `if-present` | Boot script policy |
@@ -79,8 +76,8 @@ Lisp variables control behavior:
 | Policy | Behavior |
 |--------|----------|
 | `never` | Never load the script, even if present |
-| `if-present` | Load if the file exists, silently skip if not |
-| `require` | Load the script; signal error if missing |
+| `if-present` | Load if the file is a readable regular file, silently skip otherwise |
+| `require` | Load the script; signal error if missing or unreadable |
 
 ### Mapping hooks to elinit behavior
 
@@ -92,7 +89,7 @@ Lisp variables control behavior:
   "Initialize elinit PID1 mode."
   (when elinit-pid1-mode-enabled
     ;; Load boot script per policy
-    (elinit--load-script elinit-pid1-boot-script
+    (elinit--pid1-load-script elinit-pid1-boot-script
                               elinit-pid1-boot-policy)
     ;; Start service management
     (elinit-start)))
@@ -105,17 +102,17 @@ Lisp variables control behavior:
   "Clean shutdown of all managed services."
   (when elinit-pid1-mode-enabled
     ;; Load shutdown script per policy
-    (elinit--load-script elinit-pid1-shutdown-script
+    (elinit--pid1-load-script elinit-pid1-shutdown-script
                               elinit-pid1-shutdown-policy)
-    ;; Stop all services (with timeout)
-    (elinit-stop-all)))
+    ;; Stop all services synchronously
+    (elinit-stop-now)))
 ```
 
 ### How `elinit-pid1-mode-enabled` is auto-detected
 
 ```elisp
-(defun elinit--detect-pid1-mode ()
-  "Auto-detect PID1 mode from Emacs state."
+(defun elinit--pid1-detect-mode ()
+  "Return non-nil when running as PID 1 with pid1-mode enabled."
   (and (bound-and-true-p pid1-mode)     ; --pid1 flag was passed
        (= (emacs-pid) 1)))              ; actually running as PID 1
 ```
@@ -123,6 +120,20 @@ Lisp variables control behavior:
 The double-check (`pid1-mode` AND PID 1) allows testing with `--pid1` on
 non-PID1 processes while ensuring real PID1 behavior only activates when
 actually running as the init process.
+
+### Gating architecture
+
+PID1 behavior has three independent gates at different levels:
+
+| Gate | What it controls | Where |
+|------|-----------------|-------|
+| `pid1-mode` (C-level) | Hook registration at module load time | `elinit-pid1.el` load-time `when` block |
+| `elinit-pid1-mode-enabled` (Lisp) | Boot/shutdown script loading and `elinit-start`/`elinit-stop-now` calls | `elinit--pid1-boot`, `elinit--pid1-shutdown` |
+| C signal handlers (C-level) | Child reaping (SIGCHLD), shutdown signals (SIGTERM, etc.) | Emacs C code, outside Lisp control |
+
+Setting `elinit-pid1-mode-enabled` to nil disables the Lisp-side service
+lifecycle actions but does not affect C-level reaping or signal handling,
+which are controlled entirely by the `--pid1` flag at the Emacs C level.
 
 ## Integration flow
 
