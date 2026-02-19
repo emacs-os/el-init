@@ -215,7 +215,8 @@ xhost            oneshot  graphical.target     yes      done       n/a      yes 
 nm-applet        simple   graphical.target     yes      running    always   yes   1396    -
 #+end_example
 
-~M-x elinit~ opens an interactive dashboard for managing services.
+~M-x elinit~ opens an interactive dashboard for managing services.  In the
+following example, services and oneshots for setting up an EXWM environment.
 
 [[file:assets/elinit-dashboard-exwm.png]]
 
