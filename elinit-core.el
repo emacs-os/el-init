@@ -1574,6 +1574,11 @@ Used for event-driven oneshot completion notification.")
 (defvar elinit--restart-timers (make-hash-table :test 'equal)
   "Hash table mapping IDs to pending restart timers.")
 
+(defvar elinit--conflict-suppressed (make-hash-table :test 'equal)
+  "Hash table of entry IDs suppressed by conflict.
+Maps ID to the conflict-requester ID that caused the suppression.
+Suppressed entries do not auto-restart until explicitly reactivated.")
+
 (defvar elinit--shutting-down nil
   "Non-nil when elinit is shutting down (prevents restarts).")
 
@@ -2529,6 +2534,7 @@ status queries, and reconciliation without direct global access."
   mask-override    ; hash: id -> 'masked or nil
   manually-started ; hash: id -> t if manually started (for reconcile)
   manually-stopped ; hash: id -> t if manually stopped
+  conflict-suppressed ; hash: id -> requester ID if conflict-suppressed
   remain-active    ; hash: id -> t if oneshot latched active (remain-after-exit)
   last-exit-info   ; hash: id -> plist (:status :code :timestamp)
   timestamp)       ; float-time when snapshot was taken
@@ -2558,6 +2564,7 @@ completion status, and overrides.  Safe to call at any time."
      :mask-override (copy-hash-table elinit--mask-override)
      :manually-started (copy-hash-table elinit--manually-started)
      :manually-stopped (copy-hash-table elinit--manually-stopped)
+     :conflict-suppressed (copy-hash-table elinit--conflict-suppressed)
      :remain-active (copy-hash-table elinit--remain-active)
      :last-exit-info (copy-hash-table elinit--last-exit-info)
      :timestamp (float-time))))
@@ -5031,6 +5038,49 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
                 (elinit--emit-event 'process-ready id (list :type type))
                 (when callback (funcall callback t))))))))))
 
+;;; Conflict Transaction Primitives
+
+(defvar elinit--current-plan nil
+  "The most recent plan struct for conflict lookups.
+Set during `elinit-start', `elinit--reconcile', and isolate.")
+
+(defun elinit--conflict-preflight (id plan)
+  "Stop active units that conflict with ID according to PLAN.
+Look up both forward conflicts (ID declares :conflicts) and reverse
+conflicts (other units declare :conflicts listing ID).  For each
+active conflicting unit, stop it and mark it conflict-suppressed.
+Return the list of stopped IDs."
+  (let ((stopped nil))
+    (when plan
+      (let* ((forward (gethash id (elinit-plan-conflicts-deps plan)))
+             (reverse (gethash id (elinit-plan-conflict-reverse plan)))
+             (all-conflicts (elinit--deduplicate-stable
+                             (append forward reverse))))
+        (dolist (cid all-conflicts)
+          (unless (equal cid id)
+            (let ((proc (gethash cid elinit--processes)))
+              (when (and proc (process-live-p proc))
+                ;; Cancel any pending restart timer
+                (let ((timer (gethash cid elinit--restart-timers)))
+                  (when (and timer (timerp timer))
+                    (cancel-timer timer)
+                    (remhash cid elinit--restart-timers)))
+                ;; Mark as conflict-suppressed and manually-stopped
+                (puthash cid id elinit--conflict-suppressed)
+                (puthash cid t elinit--manually-stopped)
+                ;; Stop the process
+                (let ((kill-signal (elinit--kill-signal-for-id cid)))
+                  (signal-process proc kill-signal))
+                (elinit--log 'info
+                  "conflict: stopping %s (conflicts with %s)" cid id)
+                (push cid stopped)))))))
+    stopped))
+
+(defun elinit--conflict-clear-suppression (id)
+  "Clear conflict suppression for ID.
+Called when a unit is explicitly started (manual start, reconcile)."
+  (remhash id elinit--conflict-suppressed))
+
 (defun elinit--manual-start (id)
   "Attempt to manually start entry with ID.
 Returns a plist with :status and :reason.
@@ -5486,6 +5536,7 @@ Ready semantics (when dependents are unblocked):
   (clrhash elinit--mask-override)
   (clrhash elinit--manually-stopped)
   (clrhash elinit--manually-started)
+  (clrhash elinit--conflict-suppressed)
   (clrhash elinit--failed)
   (clrhash elinit--invalid)
   (when (boundp 'elinit--invalid-timers)

@@ -635,5 +635,102 @@ Only auto-started (not manually-started) disabled units are stopped."
       (should (null (gethash "a" elinit--computed-deps))))))
 
 
+;;;; Conflict primitive tests
+
+(ert-deftest elinit-test-conflict-preflight-stops-active ()
+  "Conflict preflight stops an active conflicting process."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (signals-sent nil))
+    ;; Mock a running process for "b"
+    (let ((fake-proc (start-process "b" nil "sleep" "300")))
+      (puthash "b" fake-proc elinit--processes)
+      ;; Build a plan with a conflicts b
+      (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
+                         ("sleep 2" :id "b")))
+             (plan (elinit--build-plan programs))
+             (stopped (elinit--conflict-preflight "a" plan)))
+        ;; b should be in stopped list
+        (should (member "b" stopped))
+        ;; b should be conflict-suppressed
+        (should (equal (gethash "b" elinit--conflict-suppressed) "a"))
+        ;; b should be manually stopped
+        (should (gethash "b" elinit--manually-stopped)))
+      ;; Clean up
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+(ert-deftest elinit-test-conflict-preflight-skips-inactive ()
+  "Conflict preflight does not stop inactive units."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal)))
+    ;; No process for "b" - not running
+    (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
+                       ("sleep 2" :id "b")))
+           (plan (elinit--build-plan programs))
+           (stopped (elinit--conflict-preflight "a" plan)))
+      ;; Nothing should be stopped
+      (should (null stopped))
+      ;; No suppression set
+      (should (null (gethash "b" elinit--conflict-suppressed))))))
+
+(ert-deftest elinit-test-conflict-preflight-cancels-restart-timer ()
+  "Conflict preflight cancels pending restart timer."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (timer (run-at-time 999 nil #'ignore)))
+    ;; Set up a pending restart timer for "b"
+    (puthash "b" timer elinit--restart-timers)
+    ;; Mock a running process for "b"
+    (let ((fake-proc (start-process "b" nil "sleep" "300")))
+      (puthash "b" fake-proc elinit--processes)
+      (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
+                         ("sleep 2" :id "b")))
+             (plan (elinit--build-plan programs)))
+        (elinit--conflict-preflight "a" plan)
+        ;; Restart timer should be cancelled and removed
+        (should (null (gethash "b" elinit--restart-timers))))
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+(ert-deftest elinit-test-conflict-clear-suppression ()
+  "Clear-suppression removes entry from conflict-suppressed."
+  (let ((elinit--conflict-suppressed (make-hash-table :test 'equal)))
+    (puthash "b" "a" elinit--conflict-suppressed)
+    (elinit--conflict-clear-suppression "b")
+    (should (null (gethash "b" elinit--conflict-suppressed)))))
+
+(ert-deftest elinit-test-conflict-preflight-nil-plan ()
+  "Conflict preflight with nil plan does nothing."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal)))
+    (should (null (elinit--conflict-preflight "a" nil)))))
+
+(ert-deftest elinit-test-conflict-preflight-symmetric ()
+  "Conflict preflight sees reverse conflicts too."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal)))
+    ;; b declares conflict with a, but we start a
+    (let ((fake-proc (start-process "b" nil "sleep" "300")))
+      (puthash "b" fake-proc elinit--processes)
+      (let* ((programs '(("sleep 1" :id "a")
+                         ("sleep 2" :id "b" :conflicts "a")))
+             (plan (elinit--build-plan programs))
+             (stopped (elinit--conflict-preflight "a" plan)))
+        ;; b should be stopped via reverse conflict
+        (should (member "b" stopped)))
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
 (provide 'elinit-test-dag)
 ;;; elinit-test-dag.el ends here
