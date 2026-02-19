@@ -4,9 +4,7 @@
 
 * el-init
 
-A statically compiled Emacs init (PID 1) patchset, Emacs Lisp-based service supervisor and core component of Emacs-OS.
-
-[[file:assets/elinit-branding-logo-small.png]]
+A statically compiled Emacs init (PID 1) patchset, Emacs Lisp-based service supervisor and core component of *[[https://github.com/emacs-os][Emacs-OS]]*.
 
 *el-init* is an Emacs Lisp-based, systemd-inspired init and
 service-management solution.  Whether you are building a full-send Emacs-OS, or
@@ -3652,3 +3650,5 @@ This is a topical index for targeted lookup of less-obvious behavior.
 :END:
 
 GPL-3.0-or-later. See ~LICENSE~.
+
+[[file:assets/elinit-branding-logo-small.png]]
