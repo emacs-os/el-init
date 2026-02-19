@@ -390,17 +390,19 @@ SITE_START_EOF
       --eval "(load \"$site_lisp/site-start\" nil t)" \
       --eval '(when (featurep (quote elinit)) (kill-emacs 1))' 2>&1
     echo "PASS: EMACS_ELINIT_DISABLE=1 prevents autostart"
-    # A2 acceptance #4: elinit-pid1-autostart-disabled Lisp gate (via early-init)
+    # A2 acceptance #4: elinit-pid1-autostart-disabled Lisp gate
+    # Simulates early-init load order: variable set before site-start runs.
+    # (--batch does not load early-init.el, so we use -l to replicate ordering.)
     local gate_tmpdir
     gate_tmpdir=$(mktemp -d)
-    printf '(setq elinit-pid1-autostart-disabled t)\n' > "$gate_tmpdir/early-init.el"
+    printf '(setq elinit-pid1-autostart-disabled t)\n' > "$gate_tmpdir/gate.el"
     $out/bin/emacs --pid1 --batch \
-      --init-directory "$gate_tmpdir" \
+      -l "$gate_tmpdir/gate.el" \
       --eval "(add-to-list 'load-path \"$sup_dest\")" \
       --eval "(load \"$site_lisp/site-start\" nil t)" \
       --eval '(when (featurep (quote elinit)) (kill-emacs 1))' 2>&1
     rm -rf "$gate_tmpdir"
-    echo "PASS: elinit-pid1-autostart-disabled (early-init) prevents autostart"
+    echo "PASS: elinit-pid1-autostart-disabled prevents autostart"
 
     echo "=== All checks passed ==="
 
