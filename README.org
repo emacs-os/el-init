@@ -217,6 +217,21 @@ nm-applet        simple   graphical.target     yes      running    always   yes 
 
 ~M-x elinit~ opens an interactive dashboard for managing services.
 
+[[file:assets/elinit-dashboard-exwm.png]]
+
+Press ~?~ to open the options menu.
+
+[[file:assets/elinit-dashboard-options.png]]
+
+Three transient submenus -- magit-style -- expose additional options for
+managing service lifecycle, policies, and inspecting state.
+
+[[file:assets/elinit-dashboard-lifecycle-options.png]]
+
+[[file:assets/elinit-dashboard-policy-options.png]]
+
+[[file:assets/elinit-dashboard-inspect-options.png]]
+
 Each service gets its own ~.el~ file in an authority root.  See
 [[#unit-files-modular-configuration][Unit Files]] for the full authority-root model, precedence rules, and
 all available keywords.
