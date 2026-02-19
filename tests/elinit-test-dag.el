@@ -906,11 +906,99 @@ The process must be dead when preflight returns."
         ;; Let the timer fire
         (sit-for 0.1)
         ;; Start should NOT have been called
-        (should-not start-called)))
-    ;; Clean up timer if still pending
-    (let ((timer (gethash "svc" elinit--restart-timers)))
-      (when (and timer (timerp timer))
-        (cancel-timer timer)))))
+        (should-not start-called)
+        ;; Timer hash entry must be cleaned up by the callback itself
+        (should-not (gethash "svc" elinit--restart-timers))))))
+
+;;;; Integration: manual-start conflict preflight
+
+(ert-deftest elinit-test-manual-start-stops-conflicting-unit ()
+  "Manual start of A stops running conflicting unit B."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--manually-started (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--oneshot-completed (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal))
+        (elinit--invalid (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--restart-times (make-hash-table :test 'equal))
+        (elinit--mask-override (make-hash-table :test 'equal))
+        (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+        (elinit--programs-cache
+         (list '("sleep 1" :id "a" :conflicts "b")
+               '("sleep 2" :id "b")))
+        (elinit--current-plan nil)
+        (a-started nil))
+    ;; Build a plan so conflicts are resolved
+    (setq elinit--current-plan
+          (elinit--build-plan elinit--programs-cache))
+    ;; Start a real process for B
+    (let ((b-proc (start-process "b" nil "sleep" "300")))
+      (puthash "b" b-proc elinit--processes)
+      (cl-letf (((symbol-function 'elinit--start-process)
+                 (lambda (id &rest _args)
+                   (when (equal id "a")
+                     (setq a-started t))
+                   (start-process "mock-a" nil "true")))
+                ((symbol-function 'elinit--unit-file-directory-for-id)
+                 (lambda (_) nil))
+                ((symbol-function 'executable-find) (lambda (_) t)))
+        (let ((result (elinit--manual-start "a")))
+          ;; A should have started
+          (should (eq 'started (plist-get result :status)))
+          (should a-started)
+          ;; B should be conflict-suppressed by A
+          (should (equal "a" (gethash "b" elinit--conflict-suppressed)))
+          ;; B process should be dead (synchronous wait)
+          (should-not (process-live-p b-proc))))
+      ;; Defensive cleanup
+      (when (process-live-p b-proc)
+        (delete-process b-proc)))))
+
+;;;; Integration: reconcile conflict preflight
+
+(ert-deftest elinit-test-reconcile-stops-conflicting-unit ()
+  "Reconcile starting A stops running conflicting unit B."
+  (elinit-test-with-unit-files
+      '(("sleep 1" :id "a" :type simple :conflicts "b")
+        ("sleep 2" :id "b" :type simple))
+    (let ((elinit--processes (make-hash-table :test 'equal))
+          (elinit--restart-timers (make-hash-table :test 'equal))
+          (elinit--conflict-suppressed (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--dag-delay-timers (make-hash-table :test 'equal))
+          (elinit--enabled-override (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--restart-override (make-hash-table :test 'equal))
+          (elinit--logging (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--current-plan nil)
+          (started-ids nil))
+      ;; B is already running
+      (let ((b-proc (start-process "b" nil "sleep" "300")))
+        (puthash "b" b-proc elinit--processes)
+        (cl-letf (((symbol-function 'elinit--start-process)
+                   (lambda (id _cmd _log _type _restart &rest _args)
+                     (push id started-ids)
+                     t))
+                  ((symbol-function 'elinit--refresh-dashboard) #'ignore)
+                  ((symbol-function 'executable-find) (lambda (_) t)))
+          (elinit--reconcile)
+          ;; A should have been started by reconcile
+          (should (member "a" started-ids))
+          ;; B should be conflict-suppressed by A
+          (should (equal "a" (gethash "b" elinit--conflict-suppressed)))
+          ;; B process should be dead (synchronous wait)
+          (should-not (process-live-p b-proc)))
+        ;; Defensive cleanup
+        (when (process-live-p b-proc)
+          (delete-process b-proc))))))
 
 (provide 'elinit-test-dag)
 ;;; elinit-test-dag.el ends here

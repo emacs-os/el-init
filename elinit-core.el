@@ -4356,6 +4356,9 @@ LIMITS-ENTRY, when non-nil, is the parsed entry tuple for resource limits."
     (puthash id
              (run-at-time delay nil
                           (lambda ()
+                            ;; Timer has fired; clear the hash entry so
+                            ;; telemetry does not report a phantom ETA.
+                            (remhash id elinit--restart-timers)
                             ;; Guard: skip if suppressed between schedule and fire
                             (unless (gethash id elinit--conflict-suppressed)
                               ;; Stop conflicting units before restarting
