@@ -19,7 +19,7 @@ CLI:
 - `elinitctl status`
 - `elinitctl start foo.service`
 - `elinitctl restart default.target`
-- `elinitctl logs foo.service --follow`
+- `elinitctl journal -u foo.service -f`
 - `elinitctl --json status`
 
 ## Goal
@@ -245,8 +245,11 @@ Deliverable:
 Code:
 - Rename `sbin/supervisorctl` to `sbin/elinitctl`.
 - Rename related sbin tools (`import`, `logrotate`, `log-prune`) to `elinit-*`.
-- Update CLI usage text, help output, error text, and docs to `elinitctl`.
-- Ensure command examples in help match final naming contract.
+- Update CLI usage text, help output, and error text within sbin scripts to `elinitctl`.
+- Update sbin/Makefile and sbin test SCRIPT paths.
+- Update Elisp defcustom defaults for logrotate-command and log-prune-command.
+- Ensure command examples in script help match final naming contract.
+- README.org and CLAUDE.md doc updates deferred to Phase 6.
 
 Deliverable:
 - `elinitctl` supports all existing command paths.
