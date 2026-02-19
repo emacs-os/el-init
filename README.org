@@ -3,7 +3,7 @@
 
 * elinit
 
-[[file:el-init-branding_small.png]]
+[[file:elinit-branding-logo-small.png]]
 
 *A proper service manager with a systemd-inspired dependency model.*
 
@@ -58,6 +58,8 @@ dashboard, or ~elinitctl~ from the terminal.
   process isolation (Linux only).
 - *systemd import* -- ~sbin/elinit-import~ converts systemd ~.service~
   files to elinit unit plists.
+- *Comprehensive test suite* -- ~33,000 lines of tests across Elisp ERT,
+  C (acutest), and POSIX shell frameworks.
 
 ** Requirements
 
@@ -142,7 +144,7 @@ nm-applet        simple   graphical.target     yes      running    always   yes 
 ~M-x elinit~ opens an interactive dashboard for managing services:
 
 #+CAPTION: Elinit dashboard
-[[file:doc/dashboard.png]]
+[[file:elinit-dashboard-default.png]]
 
 Each service gets its own ~.el~ file in an authority root.  See
 [[#unit-files-modular-configuration][Unit Files]] for the full authority-root model, precedence rules, and
@@ -159,7 +161,7 @@ and you might wonder if something is broken.  It is not -- this is how the
 target system works.
 
 #+CAPTION: Default dashboard view after graphical boot
-[[file:dashboard-default.png]]
+[[file:elinit-dashboard-default.png]]
 
 *** Why some targets are "reached"
 
