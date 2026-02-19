@@ -225,22 +225,7 @@ check() {
        (kill-emacs 1))' 2>&1
   echo "PASS: PID1 hooks are defined"
 
-  echo "=== Elinit load path verification ==="
-  local elinit_dir="${_elinit_root}"
-  ./src/emacs --batch \
-    --eval "(add-to-list 'load-path \"${elinit_dir}\")" \
-    --eval '(require (quote elinit))' \
-    --eval '(message "elinit loaded: %s" (featurep (quote elinit)))' 2>&1
-  echo "PASS: elinit loads successfully"
-
-  echo "=== C helper binary verification ==="
-  for helper in elinit-logd elinit-runas elinit-rlimits; do
-    local hpath="${_elinit_root}/libexec/${helper}"
-    test -x "$hpath" || { echo "FAIL: ${helper} not executable"; return 1; }
-    echo "PASS: ${helper} is executable"
-  done
-
-  echo "PASS: All checks passed (A2 autostart checks run in package phase)"
+  echo "PASS: All checks passed (A3 package-payload checks run in package phase)"
 }
 
 package() {
@@ -308,15 +293,34 @@ SITE_START_EOF
     fi
   done
 
-  # ── A2 autostart verification (must run after site-start.el is installed) ──
+  # ── A2/A3 package-payload verification ──
+  # All checks run against packaged paths, not source tree.
   local _site_lisp="${pkgdir}/usr/share/emacs/site-lisp"
-  echo "=== A2 autostart verification ==="
-  # A2 acceptance #1: --pid1 runtime autostarts elinit (verify feature loaded)
+
+  echo "=== A3 elinit load-path verification (packaged layout) ==="
+  ./src/emacs --batch \
+    --eval "(add-to-list 'load-path \"${_sup_dest}\")" \
+    --eval '(require (quote elinit))' \
+    --eval '(unless (featurep (quote elinit)) (kill-emacs 1))' 2>&1
+  echo "PASS: elinit loads from packaged site-lisp path"
+
+  echo "=== A3 C helper binary verification (packaged payload) ==="
+  for helper in elinit-logd elinit-runas elinit-rlimits; do
+    test -x "${_sup_dest}/libexec/${helper}" || { echo "FAIL: ${helper} not executable in package"; return 1; }
+    echo "PASS: ${helper} is executable in package payload"
+  done
+
+  echo "=== A2/A3 autostart verification ==="
+  # A2 acceptance #1 / A3 acceptance #3: --pid1 bootstrap loads elinit and
+  # running pid1-boot-hook executes elinit-start without error.
+  # After site-start loads, elinit-start is on the hook and elinit is required.
+  # run-hooks proves the full chain: hook -> elinit-start -> no error.
   ./src/emacs --pid1 --batch \
     --eval "(add-to-list 'load-path \"${_sup_dest}\")" \
     --eval "(load \"${_site_lisp}/site-start\" nil t)" \
-    --eval '(unless (featurep (quote elinit)) (kill-emacs 1))' 2>&1
-  echo "PASS: --pid1 bootstrap loads elinit feature"
+    --eval '(unless (featurep (quote elinit)) (kill-emacs 1))' \
+    --eval '(run-hooks (quote pid1-boot-hook))' 2>&1
+  echo "PASS: pid1-boot-hook executes elinit-start successfully"
   # Verify no-rebuild setting
   ./src/emacs --pid1 --batch \
     --eval "(add-to-list 'load-path \"${_sup_dest}\")" \
@@ -348,5 +352,5 @@ SITE_START_EOF
     --eval '(when (featurep (quote elinit)) (kill-emacs 1))' 2>&1
   rm -rf "${_gate_tmpdir}"
   echo "PASS: elinit-pid1-autostart-disabled prevents autostart"
-  echo "PASS: All A2 checks passed"
+  echo "PASS: All A2/A3 checks passed"
 }

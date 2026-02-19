@@ -363,15 +363,17 @@ SITE_START_EOF
       echo "PASS: $helper is executable"
     done
 
-    # A2 autostart verification (site-start.el is already installed above)
+    # A2/A3 autostart verification (site-start.el is already installed above)
     local site_lisp=$out/share/emacs/site-lisp
-    echo "=== A2 autostart verification ==="
-    # A2 acceptance #1: --pid1 runtime autostarts elinit (verify feature loaded)
+    echo "=== A2/A3 autostart verification ==="
+    # A2 acceptance #1 / A3 acceptance #3: --pid1 bootstrap loads elinit and
+    # running pid1-boot-hook executes elinit-start without error.
     $out/bin/emacs --pid1 --batch \
       --eval "(add-to-list 'load-path \"$sup_dest\")" \
       --eval "(load \"$site_lisp/site-start\" nil t)" \
-      --eval '(unless (featurep (quote elinit)) (kill-emacs 1))' 2>&1
-    echo "PASS: --pid1 bootstrap loads elinit feature"
+      --eval '(unless (featurep (quote elinit)) (kill-emacs 1))' \
+      --eval '(run-hooks (quote pid1-boot-hook))' 2>&1
+    echo "PASS: pid1-boot-hook executes elinit-start successfully"
     # Verify no-rebuild setting
     $out/bin/emacs --pid1 --batch \
       --eval "(add-to-list 'load-path \"$sup_dest\")" \
