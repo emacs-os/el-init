@@ -523,5 +523,75 @@ Exercises the actual sentinel restart guard, not just hash entries."
         (when (process-live-p proc-b)
           (delete-process proc-b))))))
 
+(ert-deftest elinit-test-conflict-stopped-oneshot-reason ()
+  "Conflict-stopped oneshot shows reason even after signal exit records completion.
+When a live oneshot is killed by conflict preflight, the sentinel
+records the exit in `elinit--oneshot-completed'.  The reason function
+must still report conflict-stopped rather than nil."
+  (let ((elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--mask-override (make-hash-table :test 'equal))
+        (elinit--processes (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--oneshot-completed (make-hash-table :test 'equal))
+        (elinit--entry-state (make-hash-table :test 'equal))
+        (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--target-convergence-reasons nil))
+    ;; Simulate: preflight suppressed b, then sentinel recorded signal exit
+    (puthash "b" "a" elinit--conflict-suppressed)
+    (puthash "b" -15 elinit--oneshot-completed)  ; signal 15 = SIGTERM
+    (let ((reason (elinit--compute-entry-reason "b" 'oneshot)))
+      (should (stringp reason))
+      (should (string-match-p "conflict-stopped" reason))
+      (should (string-match-p "by a" reason)))))
+
+(ert-deftest elinit-test-suppressed-exit-skips-crash-loop ()
+  "Conflict-suppressed exit does not mutate crash-loop state.
+The sentinel guard checks suppression before crash-loop accounting,
+so suppressed exits must not push timestamps into `elinit--restart-times'
+or mark the unit as failed."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--oneshot-completed (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--restart-times (make-hash-table :test 'equal))
+        (elinit--entry-state (make-hash-table :test 'equal))
+        (elinit--enabled-override (make-hash-table :test 'equal))
+        (elinit--last-exit-info (make-hash-table :test 'equal))
+        (elinit--current-plan nil)
+        (elinit--shutting-down nil)
+        (restart-scheduled nil))
+    (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
+                       ("sleep 2" :id "b")))
+           (plan (elinit--build-plan programs)))
+      (setq elinit--current-plan plan)
+      ;; Start a real process for b, then conflict-stop it
+      (let ((b-proc (start-process "b" nil "sleep" "300")))
+        (puthash "b" b-proc elinit--processes)
+        (elinit--conflict-preflight "a" plan)
+        ;; b is now dead and suppressed
+        (should (gethash "b" elinit--conflict-suppressed))
+        ;; Simulate sentinel firing for the dead process
+        (cl-letf (((symbol-function 'elinit--schedule-restart)
+                   (lambda (&rest _) (setq restart-scheduled t)))
+                  ((symbol-function 'elinit--maybe-refresh-dashboard) #'ignore)
+                  ((symbol-function 'elinit--emit-event) #'ignore)
+                  ((symbol-function 'elinit--stop-writer-if-same) #'ignore))
+          (let ((sentinel (elinit--make-process-sentinel
+                           "b" "sleep 300" nil 'simple 'always)))
+            (funcall sentinel b-proc "killed: 15\n")))
+        ;; Crash-loop state must NOT have been mutated
+        (should-not (gethash "b" elinit--restart-times))
+        (should-not (gethash "b" elinit--failed))
+        ;; Restart should NOT have been scheduled
+        (should-not restart-scheduled)
+        ;; Defensive cleanup
+        (when (process-live-p b-proc)
+          (delete-process b-proc))))))
+
 (provide 'elinit-test-restart)
 ;;; elinit-test-restart.el ends here

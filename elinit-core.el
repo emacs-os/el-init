@@ -2376,13 +2376,15 @@ If SNAPSHOT is provided, read from it; otherwise read from globals."
         (when reasons
           (mapconcat #'identity reasons "; "))))
      (alive nil)
-     ((and oneshot-p oneshot-done) nil)
-     ;; Conflict-stopped (not alive, suppressed by another unit)
+     ;; Conflict-stopped (not alive, suppressed by another unit).
+     ;; Checked before oneshot-done so that a oneshot killed by
+     ;; conflict signal reports "conflict-stopped" rather than nil.
      ((let ((by (gethash id (if snapshot
                                 (or (elinit-snapshot-conflict-suppressed snapshot)
                                     (make-hash-table :test 'equal))
                               elinit--conflict-suppressed))))
         (when by (format "conflict-stopped (by %s)" by))))
+     ((and oneshot-p oneshot-done) nil)
      ((eq entry-state 'disabled) "disabled")
      ((eq entry-state 'delayed) "delayed")
      ((eq entry-state 'waiting-on-deps) "waiting-on-deps")
