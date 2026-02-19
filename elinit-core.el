@@ -4189,6 +4189,8 @@ LOG-FORMAT, and LIMITS-ENTRY are passed through to
   (puthash id t elinit--dag-started)
   (puthash id (float-time) elinit--start-times)
   (cl-incf elinit--dag-active-starts)
+  ;; Stop any conflicting active units before starting
+  (elinit--conflict-preflight id elinit--current-plan)
   (let ((args (elinit--build-launch-command cmd user group
                                                 sandbox-entry
                                                 limits-entry)))
@@ -4348,15 +4350,19 @@ LIMITS-ENTRY, when non-nil, is the parsed entry tuple for resource limits."
   (let ((delay (or restart-sec elinit-restart-delay)))
     (puthash id
              (run-at-time delay nil
-                          #'elinit--start-process
-                          id cmd default-logging type config-restart t
-                          working-directory environment
-                          environment-file restart-sec
-                          unit-file-directory
-                          user group
-                          stdout-log-file stderr-log-file
-                          sandbox-entry log-format
-                          limits-entry)
+                          (lambda ()
+                            ;; Stop conflicting units before restarting
+                            (elinit--conflict-preflight
+                             id elinit--current-plan)
+                            (elinit--start-process
+                             id cmd default-logging type config-restart t
+                             working-directory environment
+                             environment-file restart-sec
+                             unit-file-directory
+                             user group
+                             stdout-log-file stderr-log-file
+                             sandbox-entry log-format
+                             limits-entry)))
              elinit--restart-timers)))
 
 (defun elinit--make-process-sentinel (id cmd default-logging type config-restart
@@ -5163,6 +5169,9 @@ are blocked.  Manually started disabled units are tracked in
             (remhash id elinit--spawn-failure-reason)
             ;; Clear manually-stopped so restart works again
             (remhash id elinit--manually-stopped)
+            ;; Clear conflict suppression and stop conflicting units
+            (elinit--conflict-clear-suppression id)
+            (elinit--conflict-preflight id elinit--current-plan)
             (let ((proc (elinit--start-process
                          id cmd logging-p type restart-policy nil
                          working-directory environment
@@ -5905,6 +5914,9 @@ Returns a plist with :stopped and :started counts."
                                           id (car args))
                          (elinit--emit-event 'process-failed id nil))
                      (elinit--log 'info "reconcile: starting %s entry %s" reason id)
+                     ;; Clear conflict suppression and stop conflicting units
+                     (elinit--conflict-clear-suppression id)
+                     (elinit--conflict-preflight id plan)
                      (let ((proc (elinit--start-process
                                   id cmd logging-p type restart-policy nil
                                   working-directory environment
