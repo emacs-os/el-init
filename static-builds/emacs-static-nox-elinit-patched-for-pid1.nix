@@ -349,13 +349,20 @@ SITE_START_EOF
     echo "PASS: pid1-mode is t with --pid1"
     $out/bin/emacs --help 2>&1 | grep -q "\-\-pid1" || { echo "FAIL: --help missing --pid1"; exit 1; }
     echo "PASS: --help shows --pid1"
+    # Hooks are defined (parity with PKGBUILD check)
+    $out/bin/emacs --pid1 --batch --eval \
+      '(unless (and (boundp (quote pid1-boot-hook))
+                    (boundp (quote pid1-poweroff-hook))
+                    (boundp (quote pid1-reboot-hook)))
+         (kill-emacs 1))' 2>&1
+    echo "PASS: PID1 hooks are defined"
 
     # Elinit load-path verification
     $out/bin/emacs --batch \
       --eval "(add-to-list 'load-path \"$sup_dest\")" \
       --eval '(require (quote elinit))' \
-      --eval '(message "elinit loaded: %s" (featurep (quote elinit)))' 2>&1
-    echo "PASS: elinit loads successfully"
+      --eval '(unless (featurep (quote elinit)) (kill-emacs 1))' 2>&1
+    echo "PASS: elinit loads from packaged site-lisp path"
 
     # C helper binary verification
     for helper in elinit-logd elinit-runas elinit-rlimits; do
