@@ -7,11 +7,11 @@
 
 *A statically compiled Emacs init (PID 1) patchset, Emacs Lisp-based service supervisor and core component of Emacs-OS.*
 
-~elinit~ is an Emacs Lisp-based, systemd-inspired init and
+*el-init* is an Emacs Lisp-based, systemd-inspired init and
 service-management solution.  Whether you are building a full-send Emacs-OS, or
 simply want to orchestrate your desktop session services from within EXWM,
 or keep project daemons running while you work,
-elinit has you covered.  Use ~M-x elinit~ for the interactive
+el-init has you covered.  Use ~M-x elinit~ for the interactive
 dashboard, or ~elinitctl~ from the terminal.
 
 ** Features
