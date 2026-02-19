@@ -5052,56 +5052,58 @@ CALLBACK is called with t on success, nil on error.  CALLBACK may be nil."
 
 ;;; Conflict Transaction Primitives
 
+(defun elinit--conflict-targets (id plan)
+  "Return the deduplicated list of IDs that conflict with ID per PLAN.
+This is a pure lookup: no side effects, no process state reads.
+Return nil when PLAN is nil or ID has no conflicts."
+  (when plan
+    (let* ((forward (gethash id (elinit-plan-conflicts-deps plan)))
+           (reverse (gethash id (elinit-plan-conflict-reverse plan))))
+      (cl-remove id
+                 (elinit--deduplicate-stable (append forward reverse))
+                 :test #'equal))))
+
 (defun elinit--conflict-preflight (id plan)
   "Stop active units that conflict with ID according to PLAN.
-Look up both forward conflicts (ID declares :conflicts) and reverse
-conflicts (other units declare :conflicts listing ID).  For each
-active conflicting unit -- whether a live process or a latched
-remain-after-exit oneshot -- stop or deactivate it and mark it
-conflict-suppressed.  Also cancel any pending delay or restart
-timers for conflicting units regardless of process state.
+Use `elinit--conflict-targets' for pure conflict discovery, then
+for each conflicting unit cancel timers, stop live processes, and
+deactivate latched remain-after-exit oneshots.
 Return the list of stopped or deactivated IDs."
   (let ((stopped nil))
-    (when plan
-      (let* ((forward (gethash id (elinit-plan-conflicts-deps plan)))
-             (reverse (gethash id (elinit-plan-conflict-reverse plan)))
-             (all-conflicts (elinit--deduplicate-stable
-                             (append forward reverse))))
-        (dolist (cid all-conflicts)
-          (unless (equal cid id)
-            (let ((proc (gethash cid elinit--processes))
-                  (alive (let ((p (gethash cid elinit--processes)))
-                           (and p (process-live-p p))))
-                  (latched (gethash cid elinit--remain-active)))
-              ;; Cancel pending restart timer unconditionally
-              (let ((timer (gethash cid elinit--restart-timers)))
-                (when (and timer (timerp timer))
-                  (cancel-timer timer)
-                  (remhash cid elinit--restart-timers)))
-              ;; Cancel pending delay timer unconditionally
-              (when (hash-table-p elinit--dag-delay-timers)
-                (let ((timer (gethash cid elinit--dag-delay-timers)))
-                  (when (and timer (timerp timer))
-                    (cancel-timer timer)
-                    (remhash cid elinit--dag-delay-timers))))
-              ;; Handle live process
-              (when alive
-                (puthash cid id elinit--conflict-suppressed)
-                (puthash cid t elinit--manually-stopped)
-                (let ((kill-signal (elinit--kill-signal-for-id cid)))
-                  (signal-process proc kill-signal))
-                (elinit--log 'info
-                  "conflict: stopping %s (conflicts with %s)" cid id)
-                (push cid stopped))
-              ;; Handle latched remain-after-exit oneshot (not alive but active)
-              (when (and latched (not alive))
-                (remhash cid elinit--remain-active)
-                (puthash cid id elinit--conflict-suppressed)
-                (puthash cid t elinit--manually-stopped)
-                (elinit--log 'info
-                  "conflict: deactivating latched %s (conflicts with %s)"
-                  cid id)
-                (push cid stopped)))))))
+    (dolist (cid (elinit--conflict-targets id plan))
+      (let ((proc (gethash cid elinit--processes))
+            (alive (let ((p (gethash cid elinit--processes)))
+                     (and p (process-live-p p))))
+            (latched (gethash cid elinit--remain-active)))
+        ;; Cancel pending restart timer unconditionally
+        (let ((timer (gethash cid elinit--restart-timers)))
+          (when (and timer (timerp timer))
+            (cancel-timer timer)
+            (remhash cid elinit--restart-timers)))
+        ;; Cancel pending delay timer unconditionally
+        (when (hash-table-p elinit--dag-delay-timers)
+          (let ((timer (gethash cid elinit--dag-delay-timers)))
+            (when (and timer (timerp timer))
+              (cancel-timer timer)
+              (remhash cid elinit--dag-delay-timers))))
+        ;; Handle live process
+        (when alive
+          (puthash cid id elinit--conflict-suppressed)
+          (puthash cid t elinit--manually-stopped)
+          (let ((kill-signal (elinit--kill-signal-for-id cid)))
+            (signal-process proc kill-signal))
+          (elinit--log 'info
+            "conflict: stopping %s (conflicts with %s)" cid id)
+          (push cid stopped))
+        ;; Handle latched remain-after-exit oneshot (not alive but active)
+        (when (and latched (not alive))
+          (remhash cid elinit--remain-active)
+          (puthash cid id elinit--conflict-suppressed)
+          (puthash cid t elinit--manually-stopped)
+          (elinit--log 'info
+            "conflict: deactivating latched %s (conflicts with %s)"
+            cid id)
+          (push cid stopped))))
     stopped))
 
 (defun elinit--conflict-clear-suppression (id)
@@ -6106,6 +6108,7 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
             (remhash id elinit--failed)
             (remhash id elinit--restart-times)
             (remhash id elinit--manually-stopped)
+            (elinit--conflict-clear-suppression id)
             (let* ((cmd (elinit-entry-command entry))
                    (logging-p (elinit-entry-logging-p entry))
                    (stdout-log-file (elinit-entry-stdout-log-file entry))
@@ -6128,6 +6131,7 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
                                                               limits-entry))))
               (if (not (executable-find exe))
                   (list :id id :action "error: executable not found")
+                (elinit--conflict-preflight id elinit--current-plan)
                 (let ((new-proc (elinit--start-process
                                  id cmd logging-p type restart-policy nil
                                  working-directory environment
@@ -6151,6 +6155,7 @@ Returns a plist (:id ID :action ACTION) where ACTION is one of:
             (remhash id elinit--restart-times)
             (remhash id elinit--oneshot-completed)
             (remhash id elinit--remain-active)
+            (elinit--conflict-clear-suppression id)
             (list :id id :action "updated"))))))))))
 
 ;;;###autoload

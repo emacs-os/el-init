@@ -637,6 +637,19 @@ Only auto-started (not manually-started) disabled units are stopped."
 
 ;;;; Conflict primitive tests
 
+(ert-deftest elinit-test-conflict-targets-pure ()
+  "Pure conflict-targets returns deduplicated symmetric conflicts."
+  (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
+                     ("sleep 2" :id "b" :conflicts "a")
+                     ("sleep 3" :id "c")))
+         (plan (elinit--build-plan programs)))
+    ;; Forward + reverse for a -> ("b") deduped
+    (should (equal (elinit--conflict-targets "a" plan) '("b")))
+    ;; c has no conflicts
+    (should (null (elinit--conflict-targets "c" plan)))
+    ;; nil plan returns nil
+    (should (null (elinit--conflict-targets "a" nil)))))
+
 (ert-deftest elinit-test-conflict-preflight-stops-active ()
   "Conflict preflight stops an active conflicting process."
   (let ((elinit--processes (make-hash-table :test 'equal))
