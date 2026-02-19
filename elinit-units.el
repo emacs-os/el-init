@@ -234,7 +234,8 @@ Return a plist with keys:
     :sandbox-profile :sandbox-network :sandbox-ro-bind :sandbox-rw-bind
     :sandbox-tmpfs :sandbox-raw-args
     :log-format
-    :limit-nofile :limit-nproc :limit-core :limit-fsize :limit-as)
+    :limit-nofile :limit-nproc :limit-core :limit-fsize :limit-as
+    :conflicts)
   "Valid keywords in a unit-file plist.
 Includes `:command' which is unit-file specific.")
 

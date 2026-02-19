@@ -18,7 +18,7 @@
   "Parse entry extracts sandbox-profile as symbol."
   (let ((entry (elinit--parse-entry
                 '("sleep 300" :id "svc" :sandbox-profile strict))))
-    (should (= (length entry) 44))
+    (should (= (length entry) 45))
     (should (eq (elinit-entry-sandbox-profile entry) 'strict))))
 
 (ert-deftest elinit-test-sandbox-parse-profile-string ()
@@ -665,7 +665,7 @@ even when both identity wrapper and sandbox wrapper are active."
                :sandbox-tmpfs '("/tmp/work")
                :sandbox-raw-args '("--cap-add" "CAP_NET_RAW")))
          (entry (elinit-service-to-entry svc)))
-    (should (= (length entry) 44))
+    (should (= (length entry) 45))
     (should (eq (elinit-entry-sandbox-profile entry) 'strict))
     (should (eq (elinit-entry-sandbox-network entry) 'isolated))
     (should (equal (elinit-entry-sandbox-ro-bind entry) '("/opt")))

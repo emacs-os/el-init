@@ -17,7 +17,7 @@
 (ert-deftest elinit-test-parse-entry-new-fields-defaults ()
   "Parsed entry has nil defaults for P2 and PT3 fields."
   (let ((entry (elinit--parse-entry "echo hello")))
-    (should (= (length entry) 44))
+    (should (= (length entry) 45))
     (should-not (elinit-entry-working-directory entry))
     (should-not (elinit-entry-environment entry))
     (should-not (elinit-entry-environment-file entry))
@@ -33,7 +33,8 @@
     (should-not (elinit-entry-remain-after-exit entry))
     (should-not (elinit-entry-success-exit-status entry))
     (should-not (elinit-entry-wanted-by entry))
-    (should-not (elinit-entry-required-by entry))))
+    (should-not (elinit-entry-required-by entry))
+    (should-not (elinit-entry-conflicts entry))))
 
 (ert-deftest elinit-test-parse-entry-working-directory ()
   "Parsed entry extracts :working-directory."
@@ -366,7 +367,7 @@
                :kill-signal 'SIGTERM
                :kill-mode 'mixed))
          (entry (elinit-service-to-entry svc)))
-    (should (= (length entry) 44))
+    (should (= (length entry) 45))
     (should (equal (elinit-entry-working-directory entry) "/opt"))
     (should (equal (elinit-entry-environment entry) '(("K" . "V"))))
     (should (equal (elinit-entry-environment-file entry) '("/etc/env")))
@@ -401,7 +402,7 @@
          (entries (elinit-plan-entries plan)))
     ;; Both entries must be full parsed tuples.
     (dolist (entry entries)
-      (should (= (length entry) 44)))
+      (should (= (length entry) 45)))
     ;; svc-a new fields preserved
     (let ((a (cl-find "svc-a" entries :key #'car :test #'equal)))
       (should (equal (elinit-entry-working-directory a) "/opt"))
@@ -1379,9 +1380,9 @@
     (should-not (elinit-entry-success-exit-status entry))))
 
 (ert-deftest elinit-test-parse-entry-33-elements ()
-  "Parse entry returns 44 elements."
+  "Parse entry returns 45 elements."
   (let ((entry (elinit--parse-entry "sleep 300")))
-    (should (= (length entry) 44))))
+    (should (= (length entry) 45))))
 
 ;; Validation tests for PT3 keys
 
@@ -2799,6 +2800,87 @@ No warning is emitted when there are simply no child processes."
         (should (eq t (alist-get 'active parsed)))
         (should (equal "active" (alist-get 'status parsed)))))))
 
+
+;;;; Conflicts keyword
+
+(ert-deftest elinit-test-parse-entry-conflicts-string ()
+  "Parse entry with :conflicts as string."
+  (let ((entry (elinit--parse-entry '("cmd" :conflicts "foo"))))
+    (should (equal (elinit-entry-conflicts entry) '("foo")))))
+
+(ert-deftest elinit-test-parse-entry-conflicts-list ()
+  "Parse entry with :conflicts as list."
+  (let ((entry (elinit--parse-entry '("cmd" :conflicts ("a" "b")))))
+    (should (equal (elinit-entry-conflicts entry) '("a" "b")))))
+
+(ert-deftest elinit-test-parse-entry-conflicts-nil ()
+  "Parse entry with no :conflicts returns nil."
+  (let ((entry (elinit--parse-entry '("cmd"))))
+    (should-not (elinit-entry-conflicts entry))))
+
+(ert-deftest elinit-test-parse-entry-conflicts-dedup ()
+  "Parse entry with duplicate :conflicts deduplicates."
+  (let ((entry (elinit--parse-entry '("cmd" :conflicts ("a" "b" "a")))))
+    (should (equal (elinit-entry-conflicts entry) '("a" "b")))))
+
+(ert-deftest elinit-test-entry-service-roundtrip-conflicts ()
+  "Round-trip entry->service->entry preserves conflicts."
+  (let* ((entry (elinit--parse-entry '("cmd" :conflicts ("x" "y"))))
+         (service (elinit-entry-to-service entry))
+         (roundtripped (elinit-service-to-entry service)))
+    (should (equal (elinit-entry-conflicts roundtripped) '("x" "y")))))
+
+(ert-deftest elinit-test-entry-service-roundtrip-conflicts-nil ()
+  "Round-trip preserves nil conflicts."
+  (let* ((entry (elinit--parse-entry '("cmd")))
+         (service (elinit-entry-to-service entry))
+         (roundtripped (elinit-service-to-entry service)))
+    (should-not (elinit-entry-conflicts roundtripped))))
+
+(ert-deftest elinit-test-valid-keywords-conflicts ()
+  "Valid keywords include :conflicts."
+  (should (memq :conflicts elinit--valid-keywords)))
+
+(ert-deftest elinit-test-unit-file-keywords-conflicts ()
+  "Unit-file keywords include :conflicts."
+  (should (memq :conflicts elinit--unit-file-keywords)))
+
+(ert-deftest elinit-test-target-invalid-keywords-no-conflicts ()
+  "Target-invalid keywords do not include :conflicts."
+  (should-not (memq :conflicts elinit--target-invalid-keywords)))
+
+(ert-deftest elinit-test-parse-entry-length-45 ()
+  "Parsed entry has 45 elements with conflicts support."
+  (let ((entry (elinit--parse-entry "echo hello")))
+    (should (= (length entry) 45))))
+
+(ert-deftest elinit-test-validate-conflicts-valid-string ()
+  "Validation accepts :conflicts as string."
+  (let ((result (elinit--validate-entry '("cmd" :conflicts "foo"))))
+    (should (null result))))
+
+(ert-deftest elinit-test-validate-conflicts-valid-list ()
+  "Validation accepts :conflicts as list of strings."
+  (let ((result (elinit--validate-entry '("cmd" :conflicts ("a" "b")))))
+    (should (null result))))
+
+(ert-deftest elinit-test-validate-conflicts-invalid ()
+  "Validation rejects :conflicts with invalid type."
+  (let ((result (elinit--validate-entry '("cmd" :conflicts 42))))
+    (should (stringp result))
+    (should (string-match-p ":conflicts" result))))
+
+(ert-deftest elinit-test-validate-conflicts-empty-string ()
+  "Validation rejects empty string in :conflicts."
+  (let ((result (elinit--validate-entry '("cmd" :id "svc" :conflicts ("" "b")))))
+    (should (stringp result))
+    (should (string-match-p ":conflicts.*empty" result))))
+
+(ert-deftest elinit-test-validate-conflicts-self-reference ()
+  "Validation rejects self-reference in :conflicts."
+  (let ((result (elinit--validate-entry '("cmd" :id "svc" :conflicts "svc"))))
+    (should (stringp result))
+    (should (string-match-p ":conflicts.*own ID" result))))
 
 (provide 'elinit-test-keywords)
 ;;; elinit-test-keywords.el ends here

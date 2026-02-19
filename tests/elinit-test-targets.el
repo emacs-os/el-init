@@ -863,14 +863,14 @@ stderr through the stdout writer for correct stream=2 tagging."
     (should (equal (elinit-entry-id entry) "multi.target"))
     (should (null (elinit-entry-command entry)))
     (should (eq (elinit-entry-type entry) 'target))
-    (should (= (length entry) 44)))
+    (should (= (length entry) 45)))
   ;; Nil car form
   (let ((entry (elinit--parse-entry
                 '(nil :type target :id "multi.target"))))
     (should (equal (elinit-entry-id entry) "multi.target"))
     (should (null (elinit-entry-command entry)))
     (should (eq (elinit-entry-type entry) 'target))
-    (should (= (length entry) 44))))
+    (should (= (length entry) 45))))
 
 (ert-deftest elinit-test-wanted-by-shape-string-valid ()
   ":wanted-by as a string passes validation."
@@ -1434,7 +1434,7 @@ They are inert fallback definitions activated only by timers."
     (should (member "basic.target" (elinit-entry-requires multi-entry)))
     (should (member "svc-a" (elinit-entry-requires multi-entry)))
     ;; Tuple length unchanged
-    (should (= 44 (length multi-entry)))))
+    (should (= 45 (length multi-entry)))))
 
 (ert-deftest elinit-test-target-auto-ordering-wants-implies-after ()
   "Target :wants automatically implies :after ordering edge."
@@ -1456,7 +1456,7 @@ They are inert fallback definitions activated only by timers."
     (should (member "basic.target" (elinit-entry-wants multi-entry)))
     (should (member "svc-opt" (elinit-entry-wants multi-entry)))
     ;; Tuple length unchanged
-    (should (= 44 (length multi-entry)))))
+    (should (= 45 (length multi-entry)))))
 
 (ert-deftest elinit-test-service-requires-no-auto-after ()
   "Service :requires does NOT auto-inject :after (only targets do)."
@@ -1472,7 +1472,7 @@ They are inert fallback definitions activated only by timers."
     ;; Structural integrity: :type and :requires preserved
     (should (eq 'simple (elinit-entry-type svc-b)))
     (should (equal '("svc-a") (elinit-entry-requires svc-b)))
-    (should (= 44 (length svc-b)))))
+    (should (= 45 (length svc-b)))))
 
 (ert-deftest elinit-test-builtin-targets-no-redundant-after ()
   "Built-in targets rely on auto-ordering, no explicit :after."
@@ -1546,7 +1546,7 @@ They are inert fallback definitions activated only by timers."
          (svc-b (cl-find "svc-b" (elinit-plan-by-target plan)
                          :key #'elinit-entry-id :test #'equal)))
     ;; After invalid dep removal, entry must retain correct structure
-    (should (= 44 (length svc-b)))
+    (should (= 45 (length svc-b)))
     (should (equal "svc-b" (elinit-entry-id svc-b)))
     (should (equal "true" (elinit-entry-command svc-b)))
     (should (eq 'simple (elinit-entry-type svc-b)))
@@ -1571,7 +1571,7 @@ They are inert fallback definitions activated only by timers."
     (should (eq 'target (elinit-entry-type upper)))
     (should (member "base.target" (elinit-entry-after upper)))
     (should (equal '("base.target") (elinit-entry-requires upper)))
-    (should (= 44 (length upper)))))
+    (should (= 45 (length upper)))))
 
 (ert-deftest elinit-test-mixed-target-service-cycle-fallback ()
   "Cycle involving both target and service entries triggers fallback."

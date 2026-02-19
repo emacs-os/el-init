@@ -96,7 +96,7 @@
 (ert-deftest elinit-test-rlimits-parse-defaults-nil ()
   "Parsed entry without limits has nil for all limit fields."
   (let ((entry (elinit--parse-entry '("svc" :type simple))))
-    (should (= (length entry) 44))
+    (should (= (length entry) 45))
     (should (null (elinit-entry-limit-nofile entry)))
     (should (null (elinit-entry-limit-nproc entry)))
     (should (null (elinit-entry-limit-core entry)))
@@ -106,7 +106,7 @@
 (ert-deftest elinit-test-rlimits-parse-string-entry-nil ()
   "String entry has nil for all limit fields and correct length."
   (let ((entry (elinit--parse-entry "echo hello")))
-    (should (= (length entry) 44))
+    (should (= (length entry) 45))
     (should (null (elinit-entry-limit-nofile entry)))
     (should (null (elinit-entry-limit-as entry)))))
 

@@ -479,7 +479,8 @@ Scan PLIST and collect any key that appears more than once."
     :sandbox-profile :sandbox-network :sandbox-ro-bind :sandbox-rw-bind
     :sandbox-tmpfs :sandbox-raw-args
     :log-format
-    :limit-nofile :limit-nproc :limit-core :limit-fsize :limit-as)
+    :limit-nofile :limit-nproc :limit-core :limit-fsize :limit-as
+    :conflicts)
   "List of valid keywords for entry plists.")
 
 (defconst elinit--valid-types '(simple oneshot target)
@@ -996,6 +997,14 @@ Return nil if valid, or a reason string if invalid."
                       (and (proper-list-p val)
                            (cl-every #'stringp val)))
             (push ":wants must be a string or list of strings" errors))))
+      ;; Check :conflicts is string or list of strings
+      (when (plist-member plist :conflicts)
+        (let ((val (plist-get plist :conflicts)))
+          (unless (or (null val)
+                      (stringp val)
+                      (and (proper-list-p val)
+                           (cl-every #'stringp val)))
+            (push ":conflicts must be a string or list of strings" errors))))
       ;; Check dependency lists for empty strings and self-references
       (let ((effective-id (if (plist-member plist :id)
                               (plist-get plist :id)
@@ -1005,7 +1014,8 @@ Return nil if valid, or a reason string if invalid."
                             (:before . ":before")
                             (:wants . ":wants")
                             (:wanted-by . ":wanted-by")
-                            (:required-by . ":required-by")))
+                            (:required-by . ":required-by")
+                            (:conflicts . ":conflicts")))
           (when (plist-member plist (car dep-spec))
             (let* ((val (plist-get plist (car dep-spec)))
                    (items (cond ((null val) nil)
@@ -1929,7 +1939,8 @@ Field documentation:
   (limit-nproc nil :documentation "NPROC resource limit")
   (limit-core nil :documentation "CORE resource limit")
   (limit-fsize nil :documentation "FSIZE resource limit")
-  (limit-as nil :documentation "AS (address space) resource limit"))
+  (limit-as nil :documentation "AS (address space) resource limit")
+  (conflicts nil :type list :documentation "Conflicting service IDs"))
 
 (defconst elinit-service-required-fields '(id command)
   "List of required fields in a service record.")
@@ -1976,7 +1987,8 @@ Field documentation:
     (limit-nproc . nil)
     (limit-core . nil)
     (limit-fsize . nil)
-    (limit-as . nil))
+    (limit-as . nil)
+    (conflicts . nil))
   "Alist of optional fields with their default values.
 A value of :defer means the default is resolved at runtime.")
 
@@ -1997,7 +2009,8 @@ A value of :defer means the default is resolved at runtime.")
 ;;    sandbox-profile sandbox-network sandbox-ro-bind sandbox-rw-bind
 ;;    sandbox-tmpfs sandbox-raw-args
 ;;    log-format
-;;    limit-nofile limit-nproc limit-core limit-fsize limit-as)
+;;    limit-nofile limit-nproc limit-core limit-fsize limit-as
+;;    conflicts)
 
 (defun elinit-entry-id (entry)
   "Return the ID of parsed ENTRY."
@@ -2181,6 +2194,10 @@ Value is one of `always', `no', `on-success', or `on-failure'."
 (defun elinit-entry-limit-as (entry)
   "Return the AS (address space) resource limit of parsed ENTRY, or nil."
   (and (>= (length entry) 44) (nth 43 entry)))
+
+(defun elinit-entry-conflicts (entry)
+  "Return the conflicts list of parsed ENTRY."
+  (and (>= (length entry) 45) (nth 44 entry)))
 
 (defun elinit--limits-requesting-p (entry)
   "Return non-nil if parsed ENTRY has any resource limit set."
@@ -3127,7 +3144,7 @@ or nil if VAL is nil."
 
 (defun elinit--parse-entry (entry)
   "Parse ENTRY into a normalized list of entry properties.
-Return a 44-element list: (id cmd delay enabled-p restart-policy
+Return a 45-element list: (id cmd delay enabled-p restart-policy
 logging-p stdout-log-file stderr-log-file type after
 oneshot-blocking oneshot-timeout tags requires working-directory
 environment environment-file exec-stop exec-reload restart-sec
@@ -3135,7 +3152,8 @@ description documentation before wants kill-signal kill-mode
 remain-after-exit success-exit-status user group wanted-by
 required-by sandbox-profile sandbox-network sandbox-ro-bind
 sandbox-rw-bind sandbox-tmpfs sandbox-raw-args log-format
-limit-nofile limit-nproc limit-core limit-fsize limit-as).
+limit-nofile limit-nproc limit-core limit-fsize limit-as
+conflicts).
 
 Indices (schema v1):
   0  id                  - unique identifier string
@@ -3182,6 +3200,7 @@ Indices (schema v1):
   41 limit-core          - CORE resource limit or nil
   42 limit-fsize         - FSIZE resource limit or nil
   43 limit-as            - AS (address space) resource limit or nil
+  44 conflicts           - list of conflicting unit IDs or nil
 
 ENTRY can be a command string or a list (COMMAND . PLIST).
 Use accessor functions instead of direct indexing for new code."
@@ -3197,7 +3216,8 @@ Use accessor functions instead of direct indexing for new code."
               nil nil nil nil
               nil nil nil nil nil nil
               nil
-              nil nil nil nil nil))
+              nil nil nil nil nil
+              nil))
     (let* ((cmd (car entry))
            (plist (cdr entry))
            (type-raw (plist-get plist :type))
@@ -3331,7 +3351,11 @@ Use accessor functions instead of direct indexing for new code."
            (limit-nproc (plist-get plist :limit-nproc))
            (limit-core (plist-get plist :limit-core))
            (limit-fsize (plist-get plist :limit-fsize))
-           (limit-as (plist-get plist :limit-as)))
+           (limit-as (plist-get plist :limit-as))
+           ;; Conflict field (index 44)
+           (conflicts
+            (elinit--deduplicate-stable
+             (elinit--normalize-after (plist-get plist :conflicts)))))
       (list id cmd delay enabled restart logging
             stdout-log-file stderr-log-file
             type after
@@ -3344,7 +3368,8 @@ Use accessor functions instead of direct indexing for new code."
             sandbox-profile sandbox-network sandbox-ro-bind sandbox-rw-bind
             sandbox-tmpfs sandbox-raw-args
             log-format
-            limit-nofile limit-nproc limit-core limit-fsize limit-as))))
+            limit-nofile limit-nproc limit-core limit-fsize limit-as
+            conflicts))))
 
 ;;; Entry/Service Conversion Functions
 
@@ -3394,7 +3419,8 @@ Use accessor functions instead of direct indexing for new code."
    :limit-nproc (elinit-entry-limit-nproc entry)
    :limit-core (elinit-entry-limit-core entry)
    :limit-fsize (elinit-entry-limit-fsize entry)
-   :limit-as (elinit-entry-limit-as entry)))
+   :limit-as (elinit-entry-limit-as entry)
+   :conflicts (elinit-entry-conflicts entry)))
 
 (defun elinit-service-to-entry (service)
   "Convert SERVICE struct to a parsed entry tuple."
@@ -3441,7 +3467,8 @@ Use accessor functions instead of direct indexing for new code."
         (elinit-service-limit-nproc service)
         (elinit-service-limit-core service)
         (elinit-service-limit-fsize service)
-        (elinit-service-limit-as service)))
+        (elinit-service-limit-as service)
+        (elinit-service-conflicts service)))
 
 (defun elinit--check-crash-loop (id)
   "Check if ID is crash-looping.  Return t if should NOT restart."
