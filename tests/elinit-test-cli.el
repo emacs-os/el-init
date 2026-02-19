@@ -340,10 +340,10 @@
                            (elinit--compute-entry-reason "svc" 'simple))))
         (delete-process proc)))))
 
-(ert-deftest elinit-test-dashboard-mask-keybinding ()
-  "Dashboard keymap binds `T' to proced auto-update."
-  (should (eq #'elinit-dashboard-toggle-proced-auto-update
-              (lookup-key elinit-dashboard-mode-map "T"))))
+(ert-deftest elinit-test-dashboard-proced-keybinding ()
+  "Dashboard keymap binds `P' to proced."
+  (should (eq #'proced
+              (lookup-key elinit-dashboard-mode-map "P"))))
 
 (ert-deftest elinit-test-cli-restart-policy-always ()
   "Restart-policy always sets override."

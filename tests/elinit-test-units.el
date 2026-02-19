@@ -1319,9 +1319,9 @@ conflicting ID, proving precedence derives from list position."
                 (elinit-cli-result-exitcode result)))))
 
 (ert-deftest elinit-test-dashboard-cat-keybinding ()
-  "Dashboard keymap binds `t' to proced."
+  "Dashboard keymap binds `P' to proced."
   (should (eq #'proced
-              (lookup-key elinit-dashboard-mode-map "t"))))
+              (lookup-key elinit-dashboard-mode-map "P"))))
 
 (ert-deftest elinit-test-dashboard-edit-keybinding ()
   "Dashboard keymap binds `F' to tag filter."

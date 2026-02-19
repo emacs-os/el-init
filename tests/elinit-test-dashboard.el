@@ -948,23 +948,19 @@ configured timers must be visible for analysis."
     (should (commandp 'elinit-dashboard-timer-jump))
     (should (commandp 'elinit-dashboard-timer-reset))
     (should (commandp 'elinit-dashboard-timer-refresh))
-    ;; Verify transient layout has Timers group with correct key bindings.
+    ;; Verify transient layout has Timers group with submenu entry.
     ;; Serialize the layout and search for key strings to avoid depending
     ;; on internal transient layout structure which varies across versions.
     (let* ((layout (get 'elinit-dashboard-menu 'transient--layout))
            (repr (format "%S" layout)))
-      (should (string-match-p ":key \"y t\"" repr))
-      (should (string-match-p ":key \"y i\"" repr))
-      (should (string-match-p ":key \"y j\"" repr))
-      (should (string-match-p ":key \"y r\"" repr))
-      (should (string-match-p ":key \"y g\"" repr))
+      (should (string-match-p ":key \"t\"" repr))
       (should (string-match-p "Timers" repr)))))
 
 (ert-deftest elinit-test-timer-actions-dispatcher-key ()
-  "Timer actions dispatcher is bound to y in dashboard keymap."
+  "Timer actions dispatcher is bound to t in dashboard keymap."
   (with-temp-buffer
     (elinit-dashboard-mode)
-    (should (eq (key-binding "y") #'elinit-dashboard-timer-actions))))
+    (should (eq (key-binding "t") #'elinit-dashboard-timer-actions))))
 
 (ert-deftest elinit-test-service-only-reject-on-timer-reload-unit ()
   "Reload-unit rejects timer rows with stable message."
@@ -1300,11 +1296,9 @@ configured timers must be visible for analysis."
                   'elinit-dashboard-cat)))
 
 (ert-deftest elinit-test-dashboard-keymap-proced-moved ()
-  "Dashboard keymap binds proced to t (was p)."
-  (should (eq (lookup-key elinit-dashboard-mode-map "t")
-              'proced))
-  (should (eq (lookup-key elinit-dashboard-mode-map "T")
-              'elinit-dashboard-toggle-proced-auto-update)))
+  "Dashboard keymap binds proced to P."
+  (should (eq (lookup-key elinit-dashboard-mode-map "P")
+              'proced)))
 
 (ert-deftest elinit-test-dashboard-keymap-tag-filter-moved ()
   "Dashboard keymap binds tag filter to F (was t)."

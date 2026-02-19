@@ -34,7 +34,6 @@
 (declare-function elinit-dashboard-menu "elinit-dashboard" ())
 
 ;; Forward declaration for proced function
-(declare-function proced-toggle-auto-update "proced" (arg))
 
 ;; Forward declarations for timer subsystem (defined in elinit-timer.el)
 (declare-function elinit-timer-subsystem-active-p "elinit-timer" ())
@@ -217,13 +216,12 @@ These are hidden by default even when regular targets are shown.")
     (define-key map "g" #'elinit-dashboard-refresh)
     (define-key map "G" #'elinit-dashboard-toggle-auto-refresh)
     ;; System (proced)
-    (define-key map "t" #'proced)
-    (define-key map "T" #'elinit-dashboard-toggle-proced-auto-update)
+    (define-key map "P" #'proced)
     ;; Nested action groups
     (define-key map "l" #'elinit-dashboard-lifecycle)
     (define-key map "p" #'elinit-dashboard-policy)
     (define-key map "i" #'elinit-dashboard-inspect)
-    (define-key map "y" #'elinit-dashboard-timer-actions)
+    (define-key map "t" #'elinit-dashboard-timer-actions)
     ;; Help / quit
     (define-key map "h" #'elinit-dashboard-help)
     (define-key map "?" #'elinit-dashboard-menu-open)
@@ -311,11 +309,7 @@ This is called on first use to avoid loading transient at package load time."
           ("p" "Policy..." elinit-dashboard-policy)
           ("i" "Inspect..." elinit-dashboard-inspect)]
          ["Timers"
-          ("y t" "Trigger" elinit-dashboard-timer-trigger)
-          ("y i" "Info" elinit-dashboard-timer-info)
-          ("y j" "Jump to target" elinit-dashboard-timer-jump)
-          ("y r" "Reset state" elinit-dashboard-timer-reset)
-          ("y g" "Refresh timers" elinit-dashboard-timer-refresh)]
+          ("t" "Timers..." elinit-dashboard-timer-actions)]
          ["Navigation"
           ("f" "Target filter" elinit-dashboard-cycle-filter)
           ("F" "Tag filter" elinit-dashboard-cycle-tag-filter)
@@ -324,8 +318,7 @@ This is called on first use to avoid loading transient at package load time."
           ("g" "Refresh" elinit-dashboard-refresh)
           ("G" "Auto-refresh" elinit-dashboard-toggle-auto-refresh)]
          ["System"
-          ("t" "Proced" proced)
-          ("T" "Proced auto" elinit-dashboard-toggle-proced-auto-update)
+          ("P" "Proced" proced)
           ("X" "Daemon-reload" elinit-dashboard-daemon-reload)]
          ["Help"
           ("h" "Full help" elinit-dashboard-help)
@@ -480,7 +473,7 @@ For symbol IDs (separators), return nil."
     (cdr id)))
 
 (defconst elinit--timer-row-rejection
-  "Not available for timer rows: use timer actions (y or ? -> Timers)"
+  "Not available for timer rows: use timer actions (t or ? -> Timers)"
   "Stable error message for service-only commands on timer rows.")
 
 (defun elinit--require-service-row ()
@@ -934,8 +927,8 @@ If PROGRAMS is provided, use it instead of calling
             " inv")))
 
 (defvar elinit--help-text
-  (concat "[f]ilter [v]targets [g]refresh [G]live [t]proced [T]auto "
-          "[l]ifecycle [p]olicy [i]nspect [y]timers [?]menu [h]elp [q]uit")
+  (concat "[f]ilter [v]targets [g]refresh [G]live [P]roced "
+          "[l]ifecycle [p]olicy [i]nspect [t]imers [?]menu [h]elp [q]uit")
   "Key hints displayed in dashboard header.")
 
 (defun elinit--dashboard-column-header ()
@@ -1364,12 +1357,11 @@ With prefix argument, show status legend instead."
     (princ "  V     Toggle init-transition targets (rescue/shutdown/poweroff/reboot/rl0/1/6)\n")
     (princ "  g     Refresh dashboard\n")
     (princ "  G     Toggle auto-refresh (live monitoring)\n")
-    (princ "  t     Open proced (system process list)\n")
-    (princ "  T     Toggle proced auto-update mode\n")
+    (princ "  P     Open proced (system process list)\n")
     (princ "  l     Lifecycle submenu (service rows only)\n")
     (princ "  p     Policy submenu (service rows only)\n")
     (princ "  i     Inspect submenu (service rows only)\n")
-    (princ "  y     Timer actions submenu (timer rows only)\n")
+    (princ "  t     Timer actions submenu (timer rows only)\n")
     (princ "  ?     Open action menu (transient)\n")
     (princ "  h     Show this help\n")
     (princ "  q     Quit dashboard\n\n")
@@ -1399,7 +1391,7 @@ With prefix argument, show status legend instead."
     (princ "  c     View unit file (read-only)\n")
     (princ "  e     Edit unit file (create scaffold if missing)\n")
     (princ "  m     Show target members (target rows only)\n\n")
-    (princ "TIMERS (y) - timer rows only\n")
+    (princ "TIMERS (t) - timer rows only\n")
     (princ "----------------------------\n")
     (princ "  t     Trigger timer now (manual)\n")
     (princ "  i     Show timer details\n")
@@ -1409,7 +1401,7 @@ With prefix argument, show status legend instead."
     (princ "TIMER LIMITATIONS\n")
     (princ "-----------------\n")
     (princ "Timer rows are not unit files.  Lifecycle, policy, cat, and edit\n")
-    (princ "commands are not available for timer rows.  Use `y' for timer\n")
+    (princ "commands are not available for timer rows.  Use `t' for timer\n")
     (princ "actions or `?' -> Timers in the transient menu.\n\n")
     (princ "STATUS VALUES\n")
     (princ "-------------\n")
@@ -1775,27 +1767,6 @@ Intended as `kill-buffer-hook' for edited unit files."
     (when (buffer-live-p buf)
       (pop-to-buffer buf))))
 
-(defvar proced-auto-update-flag)  ; from proced.el
-
-(defun elinit-dashboard-toggle-proced-auto-update ()
-  "Toggle proced auto-update in the Proced buffer, or globally if no buffer."
-  (interactive)
-  (require 'proced)
-  (if-let* ((proced-buf (get-buffer "*Proced*")))
-      (with-current-buffer proced-buf
-        (call-interactively #'proced-toggle-auto-update)
-        (message "Proced auto-update: %s"
-                 (pcase proced-auto-update-flag
-                   ('nil "off") ('visible "visible") (_ "on"))))
-    ;; No proced buffer, cycle global default: nil -> visible -> t -> nil
-    (setq proced-auto-update-flag
-          (pcase proced-auto-update-flag
-            ('nil 'visible)
-            ('visible t)
-            (_ nil)))
-    (message "Proced auto-update (global): %s"
-             (pcase proced-auto-update-flag
-               ('nil "off") ('visible "visible") (_ "on")))))
 
 (defun elinit-dashboard-reload-unit ()
   "Hot-reload the unit at point.
