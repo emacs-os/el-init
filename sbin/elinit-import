@@ -124,6 +124,27 @@ record_skipped() {
   ${_directive} -- ${_reason}" || skipped_directives="  ${_directive} -- ${_reason}"
 }
 
+# Format a systemd limit value for elinit output.
+# Pure integer -> bare number, "infinity" -> bare symbol, SOFT:HARD -> quoted string.
+format_limit() {
+    _lval="${1}"
+    case "${_lval}" in
+        infinity)
+            printf '%s' "infinity"
+            ;;
+        *:*)
+            # SOFT:HARD form -- emit as quoted string
+            _soft="${_lval%%:*}"
+            _hard="${_lval#*:}"
+            printf '"%s:%s"' "${_soft}" "${_hard}"
+            ;;
+        *)
+            # Bare integer
+            printf '%s' "${_lval}"
+            ;;
+    esac
+}
+
 # --- Option parsing ---
 output_dir=""
 dry_run=0
@@ -193,6 +214,11 @@ remain_after_exit=""
 success_exit_status=""
 svc_user=""
 svc_group=""
+limit_nofile=""
+limit_nproc=""
+limit_core=""
+limit_fsize=""
+limit_as=""
 wanted_by=""
 required_by=""
 
@@ -355,6 +381,21 @@ ${_env_key}=${_env_val}" || env_pairs="${_env_key}=${_env_val}"
         Group)
             svc_group="${_val}"
             ;;
+        LimitNOFILE)
+            limit_nofile="${_val}"
+            ;;
+        LimitNPROC)
+            limit_nproc="${_val}"
+            ;;
+        LimitCORE)
+            limit_core="${_val}"
+            ;;
+        LimitFSIZE)
+            limit_fsize="${_val}"
+            ;;
+        LimitAS)
+            limit_as="${_val}"
+            ;;
         WantedBy)
             _normalized=""
             for _w in ${_val}; do
@@ -486,6 +527,12 @@ EOF
     _escaped_group="$(escape_string "${svc_group}")"
     _emit " :group \"${_escaped_group}\""
 }
+
+[ -z "${limit_nofile}" ] || _emit " :limit-nofile $(format_limit "${limit_nofile}")"
+[ -z "${limit_nproc}" ] || _emit " :limit-nproc $(format_limit "${limit_nproc}")"
+[ -z "${limit_core}" ] || _emit " :limit-core $(format_limit "${limit_core}")"
+[ -z "${limit_fsize}" ] || _emit " :limit-fsize $(format_limit "${limit_fsize}")"
+[ -z "${limit_as}" ] || _emit " :limit-as $(format_limit "${limit_as}")"
 
 # Close the plist -- append ) to the last line
 _output="${_output})"

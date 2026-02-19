@@ -51,6 +51,9 @@ dashboard, or ~elinitctl~ from the terminal.
   bounded growth (configurable per-file and total size caps).  Optional
   structured log formats (human-readable text or compact binary with
   nanosecond timestamps) for machine-parseable records.
+- *Resource limits* -- per-service ulimit-style limits (~:limit-nofile~,
+  ~:limit-nproc~, ~:limit-core~, ~:limit-fsize~, ~:limit-as~) via a small C
+  helper that calls ~setrlimit(2)~ before exec.
 - *Sandbox* -- optional bubblewrap integration with curated profiles for
   process isolation (Linux only).
 - *systemd import* -- ~sbin/elinit-import~ converts systemd ~.service~
@@ -2846,6 +2849,11 @@ in these examples are non-target units (where ~:command~ is required).
 | ~KillSignal=...~ | ~:kill-signal ...~ | Signal symbol |
 | ~RemainAfterExit=yes~ | ~:remain-after-exit t~ | Oneshot active latch |
 | ~User=~/~Group=~ | ~:user~ / ~:group~ | Requires root manager + trusted unit file |
+| ~LimitNOFILE=~ | ~:limit-nofile~ | Integer, ~infinity~, or ~"SOFT:HARD"~ |
+| ~LimitNPROC=~ | ~:limit-nproc~ | Integer, ~infinity~, or ~"SOFT:HARD"~ |
+| ~LimitCORE=~ | ~:limit-core~ | Integer, ~infinity~, or ~"SOFT:HARD"~ |
+| ~LimitFSIZE=~ | ~:limit-fsize~ | Integer, ~infinity~, or ~"SOFT:HARD"~ |
+| ~LimitAS=~ | ~:limit-as~ | Integer, ~infinity~, or ~"SOFT:HARD"~ |
 | ~WantedBy=multi-user.target~ | ~:wanted-by (\"multi-user.target\")~ | Target membership |
 
 *** Example 1: Simple Daemon
@@ -3019,13 +3027,14 @@ All directives from the [[#example-conversions-systemd-to-elinit][translation ta
 ~WorkingDirectory~, ~After~, ~Requires~, ~Wants~, ~Before~,
 ~Environment~, ~EnvironmentFile~, ~ExecStop~, ~ExecReload~,
 ~KillSignal~, ~KillMode~, ~RemainAfterExit~, ~SuccessExitStatus~,
-~User~, ~Group~, ~WantedBy~, and ~RequiredBy~.
+~User~, ~Group~, ~LimitNOFILE~, ~LimitNPROC~, ~LimitCORE~,
+~LimitFSIZE~, ~LimitAS~, ~WantedBy~, and ~RequiredBy~.
 
 Dependency IDs are normalized: ~.service~ suffixes are stripped,
 ~.target~ suffixes are preserved, and unsupported unit types
 (~.socket~, ~.timer~, etc.) produce a warning and are skipped.
 
-Unsupported systemd directives (such as ~LimitNOFILE~ or ~CapabilityBoundingSet~)
+Unsupported systemd directives (such as ~CapabilityBoundingSet~ or ~ProtectSystem~)
 produce a warning on stderr and are skipped.  Unsupported ~Type~ values
 (~forking~, ~notify~, ~dbus~, ~idle~) produce a warning and default to ~simple~.
 
@@ -3079,20 +3088,13 @@ Produces on stdout:
  :environment (("NODE_ENV" . "production")
                ("PORT" . "3000"))
  :exec-stop "/usr/bin/pkill -TERM -f /opt/webapp/server.js"
- :kill-signal SIGTERM)
+ :kill-signal SIGTERM
+ :limit-nofile 65536)
 #+end_src
 
-And on stderr:
-
-#+begin_example
-Warning: unknown directive: LimitNOFILE=65536
-
-;; Skipped directives (no elinit equivalent):
-  LimitNOFILE=65536 -- no elinit equivalent
-#+end_example
-
-The skipped-directive summary at the end lists every line that had no
-elinit equivalent, so you can review what was dropped.
+No warnings are produced because all directives have elinit equivalents.
+When unsupported directives are present, the skipped-directive summary
+on stderr lists every line that had no elinit equivalent.
 
 *** Exit Codes
 

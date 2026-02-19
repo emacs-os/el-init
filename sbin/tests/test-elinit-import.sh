@@ -396,11 +396,11 @@ Type=simple")"
 test_unknown_directives_warn() {
     _f="$(make_service "unk" "[Service]
 ExecStart=/bin/true
-LimitNOFILE=65536")"
+CapabilityBoundingSet=CAP_NET_BIND")"
     run_cmd "${SCRIPT}" "${_f}"
     assert_status "0" "${TEST_STATUS}" "still succeeds"
     assert_contains "${TEST_STDERR}" "unknown directive" "warns on unknown"
-    assert_contains "${TEST_STDERR}" "LimitNOFILE" "mentions directive name"
+    assert_contains "${TEST_STDERR}" "CapabilityBoundingSet" "mentions directive name"
 }
 
 test_comments_and_blanks_skipped() {
@@ -541,16 +541,63 @@ Environment=\"FOO=bar baz\"")"
     assert_contains "${TEST_STDOUT}" '"FOO" . "bar baz"' "quoted env value"
 }
 
+test_limit_nofile_integer() {
+    _f="$(make_service "lim" "[Service]
+ExecStart=/bin/true
+LimitNOFILE=65536")"
+    run_cmd "${SCRIPT}" "${_f}"
+    assert_status "0" "${TEST_STATUS}" "exits 0"
+    assert_contains "${TEST_STDOUT}" ':limit-nofile 65536' "nofile integer"
+    assert_not_contains "${TEST_STDERR}" "unknown" "no warning"
+}
+
+test_limit_nofile_infinity() {
+    _f="$(make_service "lim-inf" "[Service]
+ExecStart=/bin/true
+LimitNOFILE=infinity")"
+    run_cmd "${SCRIPT}" "${_f}"
+    assert_status "0" "${TEST_STATUS}" "exits 0"
+    assert_contains "${TEST_STDOUT}" ':limit-nofile infinity' "nofile infinity"
+}
+
+test_limit_soft_hard() {
+    _f="$(make_service "lim-sh" "[Service]
+ExecStart=/bin/true
+LimitNOFILE=1024:65536")"
+    run_cmd "${SCRIPT}" "${_f}"
+    assert_status "0" "${TEST_STATUS}" "exits 0"
+    # shellcheck disable=SC2016
+    assert_contains "${TEST_STDOUT}" ':limit-nofile "1024:65536"' "soft:hard quoted"
+}
+
+test_limit_all_five() {
+    _f="$(make_service "lim-all" "[Service]
+ExecStart=/bin/true
+LimitNOFILE=1024
+LimitNPROC=512
+LimitCORE=0
+LimitFSIZE=infinity
+LimitAS=1073741824:2147483648")"
+    run_cmd "${SCRIPT}" "${_f}"
+    assert_status "0" "${TEST_STATUS}" "exits 0"
+    assert_contains "${TEST_STDOUT}" ':limit-nofile 1024' "nofile"
+    assert_contains "${TEST_STDOUT}" ':limit-nproc 512' "nproc"
+    assert_contains "${TEST_STDOUT}" ':limit-core 0' "core"
+    assert_contains "${TEST_STDOUT}" ':limit-fsize infinity' "fsize"
+    # shellcheck disable=SC2016
+    assert_contains "${TEST_STDOUT}" ':limit-as "1073741824:2147483648"' "as soft:hard"
+}
+
 test_skipped_summary_printed() {
     _f="$(make_service "skip" "[Service]
 ExecStart=/bin/true
-LimitNOFILE=65536
-CapabilityBoundingSet=CAP_NET_BIND")"
+CapabilityBoundingSet=CAP_NET_BIND
+ProtectSystem=strict")"
     run_cmd "${SCRIPT}" "${_f}"
     assert_status "0" "${TEST_STATUS}" "exits 0"
     assert_contains "${TEST_STDERR}" "Skipped directives" "summary header"
-    assert_contains "${TEST_STDERR}" "LimitNOFILE" "mentions skipped directive"
-    assert_contains "${TEST_STDERR}" "CapabilityBoundingSet" "mentions second skipped"
+    assert_contains "${TEST_STDERR}" "CapabilityBoundingSet" "mentions skipped directive"
+    assert_contains "${TEST_STDERR}" "ProtectSystem" "mentions second skipped"
 }
 
 test_no_skipped_summary_when_clean() {
