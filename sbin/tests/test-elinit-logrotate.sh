@@ -108,13 +108,20 @@ test_rotation_creates_timestamped_file() {
 
 test_rotation_collision_suffix() {
     printf 'data' > "${TEST_TMPDIR}/log-svc.log"
-    # Pre-create a file that matches the expected rotated name
-    stamp="$(date +%Y%m%d-%H%M%S)"
-    printf 'old' > "${TEST_TMPDIR}/log-svc.${stamp}.log"
+    # Pre-create files for the current second AND the next second so
+    # the collision is guaranteed regardless of clock tick between our
+    # date call and the script's date call.
+    stamp0="$(date +%Y%m%d-%H%M%S)"
+    stamp1="$(date -d '+1 second' +%Y%m%d-%H%M%S 2>/dev/null)" || \
+        stamp1=""
+    printf 'old' > "${TEST_TMPDIR}/log-svc.${stamp0}.log"
+    [ -n "${stamp1}" ] && printf 'old' > "${TEST_TMPDIR}/log-svc.${stamp1}.log"
     run_cmd "${SCRIPT}" --log-dir "${TEST_TMPDIR}"
     assert_status "0" "${TEST_STATUS}" "collision handled"
-    # Should have created a .1 suffix variant
-    collision="$(find "${TEST_TMPDIR}" -maxdepth 1 -name "log-svc.${stamp}.*.log*" | head -1)"
+    # Should have created a sequence-suffixed variant (.1) for whichever
+    # timestamp the script picked.
+    collision="$(find "${TEST_TMPDIR}" -maxdepth 1 -name 'log-svc.*.*.log*' \
+        | grep -E '\.[0-9]+\.log' | head -1)"
     assert_ne "" "${collision}" "collision file created with sequence suffix"
 }
 
