@@ -363,37 +363,44 @@ SITE_START_EOF
       echo "PASS: $helper is executable"
     done
 
-    # Autostart wiring verification
-    echo "=== Autostart wiring verification ==="
+    # A2 autostart verification (site-start.el is already installed above)
+    local site_lisp=$out/share/emacs/site-lisp
+    echo "=== A2 autostart verification ==="
+    # A2 acceptance #1: --pid1 runtime autostarts elinit (verify feature loaded)
     $out/bin/emacs --pid1 --batch \
       --eval "(add-to-list 'load-path \"$sup_dest\")" \
-      --eval '(load "site-start" nil t)' \
-      --eval '(unless (member (quote elinit-start) pid1-boot-hook) (kill-emacs 1))' 2>&1
-    echo "PASS: autostart wires elinit-start onto pid1-boot-hook"
+      --eval "(load \"$site_lisp/site-start\" nil t)" \
+      --eval '(unless (featurep (quote elinit)) (kill-emacs 1))' 2>&1
+    echo "PASS: --pid1 bootstrap loads elinit feature"
+    # Verify no-rebuild setting
     $out/bin/emacs --pid1 --batch \
       --eval "(add-to-list 'load-path \"$sup_dest\")" \
-      --eval '(load "site-start" nil t)' \
+      --eval "(load \"$site_lisp/site-start\" nil t)" \
       --eval '(unless (eq elinit-libexec-build-on-startup (quote never)) (kill-emacs 1))' 2>&1
     echo "PASS: elinit-libexec-build-on-startup is never (no startup rebuild)"
-    # Verify no autostart without --pid1
+    # A2 acceptance #2: without --pid1, elinit does not autostart
     $out/bin/emacs --batch \
       --eval "(add-to-list 'load-path \"$sup_dest\")" \
-      --eval '(load "site-start" nil t)' \
-      --eval '(when (member (quote elinit-start) pid1-boot-hook) (kill-emacs 1))' 2>&1
+      --eval "(load \"$site_lisp/site-start\" nil t)" \
+      --eval '(when (featurep (quote elinit)) (kill-emacs 1))' 2>&1
     echo "PASS: no autostart without --pid1"
-    # Verify EMACS_ELINIT_DISABLE env var gate
+    # A2 acceptance #3: EMACS_ELINIT_DISABLE env var gate
     EMACS_ELINIT_DISABLE=1 $out/bin/emacs --pid1 --batch \
       --eval "(add-to-list 'load-path \"$sup_dest\")" \
-      --eval '(load "site-start" nil t)' \
-      --eval '(when (member (quote elinit-start) pid1-boot-hook) (kill-emacs 1))' 2>&1
+      --eval "(load \"$site_lisp/site-start\" nil t)" \
+      --eval '(when (featurep (quote elinit)) (kill-emacs 1))' 2>&1
     echo "PASS: EMACS_ELINIT_DISABLE=1 prevents autostart"
-    # Verify elinit-pid1-autostart-disabled Lisp gate
+    # A2 acceptance #4: elinit-pid1-autostart-disabled Lisp gate (via early-init)
+    local gate_tmpdir
+    gate_tmpdir=$(mktemp -d)
+    printf '(setq elinit-pid1-autostart-disabled t)\n' > "$gate_tmpdir/early-init.el"
     $out/bin/emacs --pid1 --batch \
-      --eval '(setq elinit-pid1-autostart-disabled t)' \
+      --init-directory "$gate_tmpdir" \
       --eval "(add-to-list 'load-path \"$sup_dest\")" \
-      --eval '(load "site-start" nil t)' \
-      --eval '(when (member (quote elinit-start) pid1-boot-hook) (kill-emacs 1))' 2>&1
-    echo "PASS: elinit-pid1-autostart-disabled prevents autostart"
+      --eval "(load \"$site_lisp/site-start\" nil t)" \
+      --eval '(when (featurep (quote elinit)) (kill-emacs 1))' 2>&1
+    rm -rf "$gate_tmpdir"
+    echo "PASS: elinit-pid1-autostart-disabled (early-init) prevents autostart"
 
     echo "=== All checks passed ==="
 
