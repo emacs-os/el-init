@@ -1,11 +1,11 @@
 #!/bin/sh
-# test-supervisorctl.sh - tests for sbin/supervisorctl
+# test-elinitctl.sh - tests for sbin/elinitctl
 set -eu
 
 cd "$(dirname "${0}")"
 . ./testlib.sh
 
-SCRIPT="$(cd .. && pwd)/supervisorctl"
+SCRIPT="$(cd .. && pwd)/elinitctl"
 
 # We stub emacsclient and base64 in PATH to avoid needing a live Emacs server.
 # Each test that needs stubs should call setup_stubs.
@@ -36,7 +36,7 @@ STUB
     stub_capture="${TEST_TMPDIR}/stub_capture"
 }
 
-# Run supervisorctl with stubs in PATH
+# Run elinitctl with stubs in PATH
 run_with_stubs() {
     PATH="${stub_dir}:${PATH}" run_cmd "${@}"
 }
@@ -57,7 +57,7 @@ make_elisp_capture_stub() {
 #!/bin/sh
 for arg in "\$@"; do
     case "\${arg}" in
-        "(supervisor"*) printf '%s' "\${arg}" > "${stub_capture}" ;;
+        "(elinit"*) printf '%s' "\${arg}" > "${stub_capture}" ;;
     esac
 done
 printf '"0:"\n'

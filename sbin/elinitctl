@@ -14,12 +14,12 @@
 # - Check external dependencies early with command -v.
 # - For temp files, use mktemp and cleanup with trap.
 # - Use if/then/fi only when required for correctness or clarity.
-# supervisorctl - CLI wrapper for supervisor.el
+# elinitctl - CLI wrapper for elinit
 #
-# This is a minimal transport shim that calls supervisor--cli-dispatch via
+# This is a minimal transport shim that calls elinit--cli-dispatch via
 # emacsclient. All parsing, dispatch, and output formatting happens in Elisp.
 #
-# Usage: supervisorctl [OPTIONS] COMMAND [ARGS...]
+# Usage: elinitctl [OPTIONS] COMMAND [ARGS...]
 #
 # Options:
 #   --json           Output JSON instead of human-readable text
@@ -50,7 +50,7 @@
 #   list-dependencies [ID]      Show dependency graph
 #   list-timers                 Show timer units
 #
-# Supervisor-specific commands:
+# Elinit-specific commands:
 #   verify                      Verify config and show errors
 #   reset-failed [--] [ID...]   Reset failed state for units
 #   restart-policy POLICY ID...   Set restart policy (no|on-success|on-failure|always)
@@ -58,12 +58,12 @@
 #   blame                       Show startup timing info
 #   logs [--tail N] [--] ID     View unit log file
 #   journal -u ID [-n N] [-p err] [-f] [--since TS] [--until TS]  Structured log records
-#   ping                        Check if supervisor is responsive
+#   ping                        Check if elinit is responsive
 #   version                     Show version info
 
 set -eu
 
-# Exit codes (must match supervisor-cli-exit-* constants)
+# Exit codes (must match elinit-cli-exit-* constants)
 exit_failure=1
 exit_invalid_args=2
 exit_server_unavailable=69  # EX_UNAVAILABLE (sysexits.h), avoids systemctl code collision
@@ -194,8 +194,8 @@ set -- emacsclient
 set -- "${@}" -w "${timeout:-${default_timeout}}"
 
 # The Elisp expression to evaluate
-# supervisor--cli-dispatch-for-wrapper returns EXITCODE:BASE64OUTPUT
-elisp_expr="(supervisor--cli-dispatch-for-wrapper (list ${args_list}))"
+# elinit--cli-dispatch-for-wrapper returns EXITCODE:BASE64OUTPUT
+elisp_expr="(elinit--cli-dispatch-for-wrapper (list ${args_list}))"
 set -- "${@}" --eval "${elisp_expr}"
 
 # Run emacsclient and capture output
@@ -237,7 +237,7 @@ case "${stripped}" in
             [ -n "${socket_name}" ] && set -- "${@}" -s "${socket_name}"
             [ -n "${server_file}" ] && set -- "${@}" -f "${server_file}"
             set -- "${@}" --eval \
-                "(supervisor--cli-journal-follow-stop \"${follow_session}\")"
+                "(elinit--cli-journal-follow-stop \"${follow_session}\")"
             "${@}" >/dev/null 2>&1 || true
             if [ -n "${tail_pid-}" ]; then
                 kill "${tail_pid}" 2>/dev/null || true

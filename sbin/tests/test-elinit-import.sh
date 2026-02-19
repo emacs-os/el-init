@@ -1,11 +1,11 @@
 #!/bin/sh
-# test-supervisor-import.sh - tests for sbin/supervisor-import
+# test-elinit-import.sh - tests for sbin/elinit-import
 set -eu
 
 cd "$(dirname "${0}")"
 . ./testlib.sh
 
-SCRIPT="$(cd .. && pwd)/supervisor-import"
+SCRIPT="$(cd .. && pwd)/elinit-import"
 
 # Helper: create a minimal .service file in TEST_TMPDIR
 make_service() {

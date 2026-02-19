@@ -25,14 +25,14 @@
               (default-value 'elinit-libexec-build-on-startup))))
 
 (ert-deftest elinit-test-logrotate-command-path ()
-  "Logrotate script path points to sbin/supervisor-logrotate."
+  "Logrotate script path points to sbin/elinit-logrotate."
   (should (stringp elinit-logrotate-command))
-  (should (string-match "sbin/supervisor-logrotate\\'" elinit-logrotate-command)))
+  (should (string-match "sbin/elinit-logrotate\\'" elinit-logrotate-command)))
 
 (ert-deftest elinit-test-log-prune-command-path ()
-  "Log prune script path points to sbin/supervisor-log-prune."
+  "Log prune script path points to sbin/elinit-log-prune."
   (should (stringp elinit-log-prune-command))
-  (should (string-match "sbin/supervisor-log-prune\\'" elinit-log-prune-command)))
+  (should (string-match "sbin/elinit-log-prune\\'" elinit-log-prune-command)))
 
 (ert-deftest elinit-test-logrotate-keep-days-default ()
   "Logrotate keep-days defaults to 14."
@@ -647,7 +647,7 @@
 (ert-deftest elinit-test-logrotate-help-exits-zero ()
   "The --help flag exits 0 and prints usage."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-logrotate" root)))
+         (script (expand-file-name "sbin/elinit-logrotate" root)))
     (with-temp-buffer
       (let ((exit-code (call-process script nil t nil "--help")))
         (should (= exit-code 0))
@@ -656,7 +656,7 @@
 (ert-deftest elinit-test-logrotate-missing-log-dir-exits-nonzero ()
   "Missing --log-dir exits non-zero with an error message."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-logrotate" root)))
+         (script (expand-file-name "sbin/elinit-logrotate" root)))
     (with-temp-buffer
       (let ((exit-code (call-process script nil t nil)))
         (should-not (= exit-code 0))
@@ -665,7 +665,7 @@
 (ert-deftest elinit-test-logrotate-dry-run-no-modification ()
   "Dry-run mode prints actions without modifying files."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-logrotate" root))
+         (script (expand-file-name "sbin/elinit-logrotate" root))
          (dir (make-temp-file "logrotate-" t)))
     (unwind-protect
         (progn
@@ -686,7 +686,7 @@
 (ert-deftest elinit-test-logrotate-rotation-renames-active-files ()
   "Rotation renames active files with a timestamp suffix."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-logrotate" root))
+         (script (expand-file-name "sbin/elinit-logrotate" root))
          (dir (make-temp-file "logrotate-" t)))
     (unwind-protect
         (progn
@@ -723,7 +723,7 @@
 (ert-deftest elinit-test-logrotate-dotted-id-not-misclassified ()
   "Active log for a dotted ID is rotated, not skipped or pruned."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-logrotate" root))
+         (script (expand-file-name "sbin/elinit-logrotate" root))
          (dir (make-temp-file "logrotate-" t)))
     (unwind-protect
         (progn
@@ -751,7 +751,7 @@
 (ert-deftest elinit-test-logrotate-prune-spares-dotted-id-active ()
   "Prune does not delete active log files for dotted IDs."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-logrotate" root))
+         (script (expand-file-name "sbin/elinit-logrotate" root))
          (dir (make-temp-file "logrotate-" t)))
     (unwind-protect
         (progn
@@ -784,7 +784,7 @@
 (ert-deftest elinit-test-logrotate-prune-removes-old-keeps-recent ()
   "Prune removes old rotated files but keeps active and recent rotated."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-logrotate" root))
+         (script (expand-file-name "sbin/elinit-logrotate" root))
          (dir (make-temp-file "logrotate-" t)))
     (unwind-protect
         (progn
@@ -825,7 +825,7 @@
 (ert-deftest elinit-test-logrotate-signal-reopen-sends-hup ()
   "Signal-reopen sends SIGHUP to PIDs found in pid files."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-logrotate" root))
+         (script (expand-file-name "sbin/elinit-logrotate" root))
          (dir (make-temp-file "logrotate-" t))
          (pid-dir (make-temp-file "logrotate-pid-" t))
          (proc (start-process "logrotate-test-target" nil "sleep" "300"))
@@ -863,7 +863,7 @@
 (ert-deftest elinit-test-log-prune-help-exits-zero ()
   "The --help flag exits 0 and prints usage."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root)))
+         (script (expand-file-name "sbin/elinit-log-prune" root)))
     (with-temp-buffer
       (let ((exit-code (call-process script nil t nil "--help")))
         (should (= exit-code 0))
@@ -872,7 +872,7 @@
 (ert-deftest elinit-test-log-prune-missing-log-dir-exits-nonzero ()
   "Missing --log-dir exits non-zero with an error message."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root)))
+         (script (expand-file-name "sbin/elinit-log-prune" root)))
     (with-temp-buffer
       (let ((exit-code (call-process script nil t nil)))
         (should-not (= exit-code 0))
@@ -881,7 +881,7 @@
 (ert-deftest elinit-test-log-prune-under-cap-no-delete ()
   "When total size is under cap, no files are deleted."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t)))
     (unwind-protect
         (progn
@@ -902,7 +902,7 @@
 (ert-deftest elinit-test-log-prune-over-cap-deletes-oldest-rotated ()
   "Over cap deletes oldest rotated files first, keeping newest."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (oldest (expand-file-name "log-svc1.20250101-120000.log" dir))
          (middle (expand-file-name "log-svc2.20250102-120000.log" dir))
@@ -939,7 +939,7 @@
 (ert-deftest elinit-test-log-prune-active-files-never-deleted ()
   "Active files are preserved even when over cap."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (active1 (expand-file-name "log-svc1.log" dir))
          (active2 (expand-file-name "supervisor.log" dir)))
@@ -960,7 +960,7 @@
 (ert-deftest elinit-test-log-prune-dry-run-no-modification ()
   "Dry-run prints actions without deleting files."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (rotated (expand-file-name "log-svc1.20250101-120000.log" dir)))
     (unwind-protect
@@ -985,7 +985,7 @@
 (ert-deftest elinit-test-log-prune-lock-prevents-concurrent ()
   "A held lock causes prune to exit 0 without deleting."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (lock-file (expand-file-name ".prune.lock" dir))
          (rotated (expand-file-name "log-svc1.20250101-120000.log" dir))
@@ -1017,7 +1017,7 @@
 (ert-deftest elinit-test-log-prune-timestamp-id-not-deleted ()
   "Active log for a timestamp-like ID is protected when it has rotated children."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          ;; Active log for service ID "svc.20250101-120000"
          (active (expand-file-name "log-svc.20250101-120000.log" dir))
@@ -1043,7 +1043,7 @@
 (ert-deftest elinit-test-log-prune-timestamp-id-coexists-with-rotated ()
   "Rotated files are pruned while timestamp-like active logs are kept."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          ;; Active log for service ID "svc.20250101-120000"
          (ts-active (expand-file-name "log-svc.20250101-120000.log" dir))
@@ -1084,7 +1084,7 @@
 Without parent or sibling confirmation, the file could be an active log
 for a service whose ID contains a timestamp pattern."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (orphan (expand-file-name "log-oldsvc.20240101-010101.log" dir)))
     (unwind-protect
@@ -1104,7 +1104,7 @@ for a service whose ID contains a timestamp pattern."
 Multiple rotated files sharing the same parent name confirm each other
 as rotated children of a now-removed service."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (orphan1 (expand-file-name "log-oldsvc.20240101-010101.log" dir))
          (orphan2 (expand-file-name "log-oldsvc.20240201-010101.log" dir)))
@@ -1128,7 +1128,7 @@ as rotated children of a now-removed service."
 (ert-deftest elinit-test-log-prune-protect-id-preserves-file ()
   "The --protect-id flag prevents deletion of a specific service log."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (protected (expand-file-name "log-svc.20250101-120000.log" dir))
          (deletable (expand-file-name "log-other.20240101-010101.log" dir)))
@@ -1155,7 +1155,7 @@ as rotated children of a now-removed service."
 (ert-deftest elinit-test-log-prune-parent-confirms-rotated ()
   "A rotated file whose parent active log exists is confirmed and deleted."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (parent (expand-file-name "log-svc1.log" dir))
          (rotated (expand-file-name "log-svc1.20250101-120000.log" dir)))
@@ -1178,7 +1178,7 @@ as rotated children of a now-removed service."
 Verifies the unconditional parent-exists guard by running with
 PATH set to exclude fuser."
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          ;; Active log for service svc.20250101-120000 — no parent
          ;; log-svc.log exists, so the parent-exists guard preserves it.
@@ -1202,7 +1202,7 @@ PATH set to exclude fuser."
   (skip-unless (= 0 (call-process "sh" nil nil nil
                                    "-c" "command -v fuser")))
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          ;; A timestamp-like active log with no rotated children --
          ;; exactly the case the children guard cannot protect.
@@ -1235,7 +1235,7 @@ PATH set to exclude fuser."
   (skip-unless (= 0 (call-process "sh" nil nil nil
                                    "-c" "command -v fuser")))
   (let* ((root (file-name-directory (locate-library "elinit")))
-         (script (expand-file-name "sbin/supervisor-log-prune" root))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (closed-file (expand-file-name
                        "log-oldsvc.20240101-010101.log" dir)))

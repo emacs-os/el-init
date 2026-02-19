@@ -143,7 +143,7 @@ with append semantics, enforcing a per-file size cap.  See
   :group 'elinit)
 
 (defcustom elinit-logrotate-command
-  (expand-file-name "sbin/supervisor-logrotate"
+  (expand-file-name "sbin/elinit-logrotate"
                     (file-name-directory (or load-file-name
                                              buffer-file-name "")))
   "Path to the log rotation script.
@@ -153,7 +153,7 @@ Rotates active service logs and prunes rotated files older than
   :group 'elinit)
 
 (defcustom elinit-log-prune-command
-  (expand-file-name "sbin/supervisor-log-prune"
+  (expand-file-name "sbin/elinit-log-prune"
                     (file-name-directory (or load-file-name
                                              buffer-file-name "")))
   "Path to the global log prune script.

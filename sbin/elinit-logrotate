@@ -14,12 +14,12 @@
 # - Check external dependencies early with command -v.
 # - For temp files, use mktemp and cleanup with trap.
 # - Use if/then/fi only when required for correctness or clarity.
-# supervisor-logrotate - rotate and prune supervisor.el log files
+# elinit-logrotate - rotate and prune elinit log files
 #
 # Rotates active log files by renaming them with a timestamp suffix,
 # optionally signals logd writers to reopen, and prunes old rotated files.
 #
-# Usage: supervisor-logrotate [OPTIONS]
+# Usage: elinit-logrotate [OPTIONS]
 #
 # Options:
 #   --log-dir DIR       Log directory to operate on (required)

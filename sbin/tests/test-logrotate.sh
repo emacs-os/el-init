@@ -1,11 +1,11 @@
 #!/bin/sh
-# test-logrotate.sh - tests for sbin/supervisor-logrotate
+# test-logrotate.sh - tests for sbin/elinit-logrotate
 set -eu
 
 cd "$(dirname "${0}")"
 . ./testlib.sh
 
-SCRIPT="$(cd .. && pwd)/supervisor-logrotate"
+SCRIPT="$(cd .. && pwd)/elinit-logrotate"
 
 # ===== ShellCheck =====
 

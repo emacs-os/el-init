@@ -1,11 +1,11 @@
 #!/bin/sh
-# test-log-prune.sh - tests for sbin/supervisor-log-prune
+# test-log-prune.sh - tests for sbin/elinit-log-prune
 set -eu
 
 cd "$(dirname "${0}")"
 . ./testlib.sh
 
-SCRIPT="$(cd .. && pwd)/supervisor-log-prune"
+SCRIPT="$(cd .. && pwd)/elinit-log-prune"
 
 # Helper: create a file of approximately N bytes
 make_file() {

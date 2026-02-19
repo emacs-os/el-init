@@ -14,13 +14,13 @@
 # - Check external dependencies early with command -v.
 # - For temp files, use mktemp and cleanup with trap.
 # - Use if/then/fi only when required for correctness or clarity.
-# supervisor-log-prune - enforce a hard cap on total log directory size
+# elinit-log-prune - enforce a hard cap on total log directory size
 #
 # Deletes oldest rotated log files first until the directory is at or
 # below the cap.  Active log files are never deleted.  Uses an exclusive
 # lock file to prevent concurrent prune races.
 #
-# Usage: supervisor-log-prune [OPTIONS]
+# Usage: elinit-log-prune [OPTIONS]
 #
 # Options:
 #   --log-dir DIR          Log directory to operate on (required)
@@ -148,7 +148,7 @@ flock -n 9 || {
 }
 
 # --- Active vs rotated file detection ---
-# Reuse the exact is_rotated() pattern from sbin/supervisor-logrotate.
+# Reuse the exact is_rotated() pattern from sbin/elinit-logrotate.
 is_rotated() {
     case "${1}" in
         # With sequence suffix: base.YYYYMMDD-HHMMSS.N.log[.tar.gz]

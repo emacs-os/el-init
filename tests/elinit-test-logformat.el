@@ -1357,7 +1357,7 @@
 
 (ert-deftest elinit-test-prune-script-accepts-vacuum-flag ()
   "Log-prune script accepts --vacuum flag without error."
-  (let ((script (expand-file-name "sbin/supervisor-log-prune")))
+  (let ((script (expand-file-name "sbin/elinit-log-prune")))
     ;; The script requires --log-dir, so we just test that --vacuum
     ;; is parsed without 'Unknown option' error by checking the help
     ;; text mentions the expected options.
@@ -1365,21 +1365,21 @@
 
 (ert-deftest elinit-test-prune-script-accepts-vacuum-max-total-bytes ()
   "Log-prune script accepts --vacuum-max-total-bytes as alias."
-  (let ((script (expand-file-name "sbin/supervisor-log-prune")))
+  (let ((script (expand-file-name "sbin/elinit-log-prune")))
     (with-temp-buffer
       (insert-file-contents script)
       (should (search-forward "--vacuum-max-total-bytes" nil t)))))
 
 (ert-deftest elinit-test-prune-script-accepts-format-hint ()
   "Log-prune script accepts --format-hint flag."
-  (let ((script (expand-file-name "sbin/supervisor-log-prune")))
+  (let ((script (expand-file-name "sbin/elinit-log-prune")))
     (with-temp-buffer
       (insert-file-contents script)
       (should (search-forward "--format-hint" nil t)))))
 
 (ert-deftest elinit-test-logrotate-prune-finds-tar-gz ()
   "Logrotate prune_rotated find patterns include .tar.gz files."
-  (let ((script (expand-file-name "sbin/supervisor-logrotate")))
+  (let ((script (expand-file-name "sbin/elinit-logrotate")))
     (with-temp-buffer
       (insert-file-contents script)
       (goto-char (point-min))
@@ -1388,7 +1388,7 @@
 
 (ert-deftest elinit-test-logrotate-has-compress-rotated ()
   "Logrotate has compress_rotated function."
-  (let ((script (expand-file-name "sbin/supervisor-logrotate")))
+  (let ((script (expand-file-name "sbin/elinit-logrotate")))
     (with-temp-buffer
       (insert-file-contents script)
       (goto-char (point-min))
@@ -1396,7 +1396,7 @@
 
 (ert-deftest elinit-test-logrotate-calls-compress-after-rotate ()
   "Logrotate calls compress_rotated after successful rotation."
-  (let ((script (expand-file-name "sbin/supervisor-logrotate")))
+  (let ((script (expand-file-name "sbin/elinit-logrotate")))
     (with-temp-buffer
       (insert-file-contents script)
       (goto-char (point-min))
@@ -1405,7 +1405,7 @@
 
 (ert-deftest elinit-test-prune-script-is-rotated-tar-gz ()
   "Log-prune is_rotated matches .tar.gz suffixed files."
-  (let ((script (expand-file-name "sbin/supervisor-log-prune")))
+  (let ((script (expand-file-name "sbin/elinit-log-prune")))
     (with-temp-buffer
       (insert-file-contents script)
       (goto-char (point-min))
@@ -1414,7 +1414,7 @@
 
 (ert-deftest elinit-test-prune-script-rotated-parent-strips-tar-gz ()
   "Log-prune rotated_parent_name strips .tar.gz before timestamp."
-  (let ((script (expand-file-name "sbin/supervisor-log-prune")))
+  (let ((script (expand-file-name "sbin/elinit-log-prune")))
     (with-temp-buffer
       (insert-file-contents script)
       (goto-char (point-min))
@@ -3218,7 +3218,7 @@ identity must be correct regardless of whether log-format is set."
 (ert-deftest elinit-test-logrotate-tar-present-creates-archive ()
   "When tar is available, logrotate compresses rotated files to .tar.gz."
   (let ((log-dir (make-temp-file "lr-tar-" t))
-        (script (expand-file-name "sbin/supervisor-logrotate")))
+        (script (expand-file-name "sbin/elinit-logrotate")))
     (unwind-protect
         (progn
           ;; Create active log files
@@ -3241,7 +3241,7 @@ identity must be correct regardless of whether log-format is set."
   "When tar is absent, logrotate still rotates files without compression."
   (let ((log-dir (make-temp-file "lr-notar-" t))
         (bin-dir (make-temp-file "lr-bin-" t))
-        (script (expand-file-name "sbin/supervisor-logrotate")))
+        (script (expand-file-name "sbin/elinit-logrotate")))
     (unwind-protect
         (progn
           ;; Build a restricted PATH: symlink essential commands, omit tar
@@ -3367,7 +3367,7 @@ identity must be correct regardless of whether log-format is set."
 (ert-deftest elinit-test-prune-format-hint-does-not-alter-order ()
   "Prune deletion order is identical with and without --format-hint."
   (let ((dir (elinit-test--make-prune-fixture))
-        (script (expand-file-name "sbin/supervisor-log-prune")))
+        (script (expand-file-name "sbin/elinit-log-prune")))
     (unwind-protect
         (let (output-plain output-text output-binary)
           ;; Run with tiny cap to force all rotated files to be pruned.
@@ -3400,7 +3400,7 @@ identity must be correct regardless of whether log-format is set."
 (ert-deftest elinit-test-prune-vacuum-alias-matches-regular ()
   "Vacuum alias produces identical prune behavior to regular invocation."
   (let ((dir (elinit-test--make-prune-fixture))
-        (script (expand-file-name "sbin/supervisor-log-prune")))
+        (script (expand-file-name "sbin/elinit-log-prune")))
     (unwind-protect
         (let (output-regular output-vacuum)
           ;; Regular invocation

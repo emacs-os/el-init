@@ -14,12 +14,12 @@
 # - Check external dependencies early with command -v.
 # - For temp files, use mktemp and cleanup with trap.
 # - Use if/then/fi only when required for correctness or clarity.
-# supervisor-import - convert a systemd .service file to a supervisor.el plist
+# elinit-import - convert a systemd .service file to a elinit plist
 #
-# Reads a systemd unit file and prints the equivalent supervisor.el plist
+# Reads a systemd unit file and prints the equivalent elinit plist
 # to stdout (or writes it to a file in --output-dir).
 #
-# Usage: supervisor-import [OPTIONS] FILE
+# Usage: elinit-import [OPTIONS] FILE
 #
 # Options:
 #   --output-dir DIR    Write output to DIR/<id>.el instead of stdout
@@ -46,9 +46,9 @@ die() {
 }
 
 show_help() {
-    printf 'Usage: supervisor-import [OPTIONS] FILE\n'
+    printf 'Usage: elinit-import [OPTIONS] FILE\n'
     printf '\n'
-    printf 'Convert a systemd .service file to a supervisor.el unit plist.\n'
+    printf 'Convert a systemd .service file to a elinit unit plist.\n'
     printf '\n'
     printf 'Options:\n'
     printf '  --output-dir DIR    Write output to DIR/<id>.el instead of stdout\n'
@@ -332,7 +332,7 @@ ${_env_key}=${_env_val}" || env_pairs="${_env_key}=${_env_val}"
                     ;;
                 control-group)
                     warn "KillMode=control-group is not supported; skipping"
-                    record_skipped "KillMode=control-group" "no supervisor equivalent"
+                    record_skipped "KillMode=control-group" "no elinit equivalent"
                     ;;
                 *)
                     warn "unknown KillMode=${_val}; skipping"
@@ -375,7 +375,7 @@ ${_env_key}=${_env_val}" || env_pairs="${_env_key}=${_env_val}"
             ;;
         *)
             warn "unknown directive: ${_key}=${_val}"
-            record_skipped "${_key}=${_val}" "no supervisor equivalent"
+            record_skipped "${_key}=${_val}" "no elinit equivalent"
             ;;
     esac
 done < "${input_file}"
@@ -506,6 +506,6 @@ fi
 
 # --- Print summary of skipped directives ---
 [ -z "${skipped_directives}" ] || {
-    printf '\n;; Skipped directives (no supervisor equivalent):\n' >&2
+    printf '\n;; Skipped directives (no elinit equivalent):\n' >&2
     printf '%s\n' "${skipped_directives}" >&2
 }
