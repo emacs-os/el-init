@@ -1,11 +1,11 @@
 [[https://github.com/emacs-os/el-init/actions/workflows/ci.yml][https://github.com/emacs-os/el-init/actions/workflows/ci.yml/badge.svg]]
 [[https://gist.github.com/cypherpunk2001/e686727a6d88c17c557003e73a9c020c][https://img.shields.io/endpoint.svg?url=https://gist.githubusercontent.com/cypherpunk2001/e686727a6d88c17c557003e73a9c020c/raw/elinit-tests.json]]
 
-* elinit
+* el-init
 
 [[file:assets/elinit-branding-logo-small.png]]
 
-*A proper service manager with a systemd-inspired dependency model.*
+*A statically compiled Emacs init (PID 1) patchset, Emacs Lisp-based service supervisor and core component of Emacs-OS.*
 
 ~elinit~ is an Emacs Lisp-based, systemd-inspired init and
 service-management solution.  Whether you are building a full-send Emacs-OS, or
@@ -73,6 +73,7 @@ dashboard, or ~elinitctl~ from the terminal.
 This document is the complete reference. Run ~M-x elinit-handbook~ to open
 it in Emacs at any time.
 
+[[#from-lisp-machines-to-gnu-emacs][From Lisp Machines to GNU Emacs]] provides historical context.
 The [[#quick-start][Quick Start]] below gets you running immediately. The rest of the handbook
 provides detailed reference material:
 
@@ -88,6 +89,79 @@ provides detailed reference material:
 - [[#command-reference][Command Reference]] - every interactive command
 - [[#topical-index][Topical Index]] - targeted lookup for specific behaviors
 - [[#service-management-systems-comparison][Systems Comparison]] - elinit vs systemd vs runit vs s6
+
+* From Lisp Machines to GNU Emacs
+:PROPERTIES:
+:CUSTOM_ID: from-lisp-machines-to-gnu-emacs
+:END:
+
+In 1958 John McCarthy sat down to design a language.  He based it on
+lambda calculus.  He called it Lisp.  The paper came out in 1960.  It
+was called "Recursive Functions of Symbolic Expressions and Their
+Computation by Machine."  The core idea was simple.  Lists were data.
+Lists were also code.  The language could rewrite itself.
+
+FORTRAN crunched numbers.  COBOL kept records.  Lisp did whatever you
+told it to.  Its primitives were so small you could rebuild the whole
+language from seven of them.  McCarthy even wrote a Lisp interpreter
+in Lisp.  He put it in the paper almost as an afterthought.  It was
+the first time a language could run itself.
+
+At the MIT AI Lab in the 1960s and 1970s, people took that idea and
+ran with it.  They did not just write programs in Lisp.  They built
+whole machines out of it.  The Lisp Machine was hardware designed from
+the microcode up to run Lisp natively.  Symbolics built them.  Lisp
+Machines Inc. built them.  Texas Instruments built them.
+
+On a Symbolics 3600, everything was Lisp.  The editor.  The debugger.
+The window system.  The file system.  The operating system itself.  You
+could click on any part of the running machine, read the source, change
+it, and watch the change take effect.  No reboot.  No recompile.  No
+permission needed.  There was no line between using the machine and
+programming it.  That was the whole point.
+
+The hackers at the AI Lab shared everything.  Code lived on the
+machines and anyone could read it.  Anyone could fix it.  If you found
+a bug you just patched it.  People walked down the hall and talked
+about what they changed.  Sometimes they carried tapes.  Later they
+carried floppies.  The code moved freely because nobody thought to
+stop it.
+
+Then the money showed up.  In the early 1980s, Symbolics and LMI spun
+out of the AI Lab and took the code with them.  They locked it up.
+They put lawyers on it.  The shared codebase that had sustained a
+generation of hackers was cut in half and sold.  The community fell
+apart.
+
+Richard Stallman had been at the Lab since 1971.  He watched it
+happen.  He did not build another Lisp Machine.  He wrote a manifesto.
+Software had to be free.  Free to study.  Free to modify.  Free to
+share.  He announced the GNU Project in 1983.  He published the GNU
+Manifesto in 1985.  The first real piece of GNU software was an editor.
+
+GNU Emacs was not the first Emacs.  Stallman and Guy Steele wrote the
+original EMACS at MIT in 1976.  It was macros on top of TECO.  James
+Gosling made Gosmacs for Unix in 1981.  But GNU Emacs was the one that
+mattered.  It had a real Lisp inside it.  Emacs Lisp.  Every buffer
+ran through it.  Every mode.  Every keystroke.  The editor was a Lisp
+runtime that happened to show you text.
+
+That is not a small thing.  A Lisp Machine was an operating system
+built on a Lisp evaluator with direct access to hardware.  GNU Emacs
+is a Lisp evaluator with direct access to an operating system.  It
+spawns processes.  It opens network sockets.  It talks to the
+filesystem.  It renders windows.  It handles signals.
+
+The Lisp Machine ran Lisp on bare metal.  Emacs runs Lisp on a
+portable C core.  That is why it survived.  Four decades.  Every Unix.
+Every window system.  VAXen to Apple Silicon.  The Lisp Machines sit in
+museums now.  GNU Emacs kept going.  It carried the same idea forward.
+The user should be able to take apart every layer of the system and put
+it back together differently.
+
+el-init comes from that tradition.  Emacs already manages your
+windows, your mail, your shell, your version control.  Managing your
+system services is just the next thing on the list.
 
 * Quick Start
 :PROPERTIES:
