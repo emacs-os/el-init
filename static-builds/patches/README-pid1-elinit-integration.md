@@ -90,7 +90,7 @@ Lisp variables control behavior:
     ;; Load boot script per policy
     (elinit--load-script elinit-pid1-boot-script
                               elinit-pid1-boot-policy)
-    ;; Start service supervision
+    ;; Start service management
     (elinit-start)))
 
 ;; Elinit registers on pid1-poweroff-hook and pid1-reboot-hook:
@@ -98,7 +98,7 @@ Lisp variables control behavior:
 (add-hook 'pid1-reboot-hook   #'elinit--pid1-shutdown)
 
 (defun elinit--pid1-shutdown ()
-  "Clean shutdown of all supervised services."
+  "Clean shutdown of all managed services."
   (when elinit-pid1-mode-enabled
     ;; Load shutdown script per policy
     (elinit--load-script elinit-pid1-shutdown-script
@@ -133,7 +133,7 @@ Container start
   → pid1-boot-hook fires
     → elinit--pid1-boot runs
       → loads /lib/init/rc.boot.el (per policy)
-      → starts supervised services
+      → starts managed services
   → Emacs enters command loop (stays running as PID 1)
 
 ... normal operation, elinit managing services ...

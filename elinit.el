@@ -1,4 +1,4 @@
-;;; elinit.el --- Emacs Lisp process supervisor -*- lexical-binding: t -*-
+;;; elinit.el --- Emacs Lisp service manager -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
 ;;
@@ -25,7 +25,7 @@
 
 ;;; Commentary:
 
-;; Emacs Lisp process supervisor.
+;; Emacs Lisp service manager.
 ;; Run M-x elinit-handbook for full documentation.
 
 ;;; Code:

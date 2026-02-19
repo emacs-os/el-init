@@ -1033,7 +1033,7 @@ that invocation only."
          (if json-p 'json 'human)))))))
 
 (defun elinit--cli-stop-all-gracefully ()
-  "Stop all supervised processes and wait for completion.
+  "Stop all managed processes and wait for completion.
 Returns non-nil when graceful shutdown completed before timeout.
 This is used by CLI `stop' and `restart' for systemctl-like stop behavior."
   (let ((deadline (+ (float-time) elinit-shutdown-timeout 1.0)))

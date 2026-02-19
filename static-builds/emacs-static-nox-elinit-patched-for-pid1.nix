@@ -4,7 +4,7 @@
 #
 # This variant extends emacs-static-nox.nix with:
 #   1. PID1 Emacs patches (--pid1 flag, signal handling, child reaping, hooks)
-#   2. Bundled elinit (process supervisor) in site-lisp
+#   2. Bundled elinit (service manager) in site-lisp
 #   3. Prebuilt C helpers (elinit-logd, elinit-runas, elinit-rlimits)
 #   4. Autostart bootstrap: elinit hooks into pid1-boot-hook when --pid1 is used
 #

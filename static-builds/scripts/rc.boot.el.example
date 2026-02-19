@@ -175,12 +175,12 @@
 (progn
   (message "Starting services...")
 
-  ;; supervised
+  ;; managed by runsvdir
   ;; (progn
-  ;;   (message "Starting process supervsor...")
+  ;;   (message "Starting process manager...")
   ;;   (call-process-shell-command "nohup ubase-box respawn runsvdir -P /var/service &" nil nil 0))
 
-  ;; non-supervised
+  ;; standalone
   (call-process-shell-command "nohup syslogd -n &" nil nil 0)
   (call-process-shell-command "nohup dhcpcd -BM &" nil nil 0)
   (call-process-shell-command "nohup /bin/sshd &" nil nil 0))

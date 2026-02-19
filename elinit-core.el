@@ -75,7 +75,7 @@ This allows elinit-core to work standalone without dashboard."
     (elinit--refresh-dashboard)))
 
 (defgroup elinit nil
-  "Emacs Lisp process supervisor."
+  "Emacs Lisp service manager."
   :group 'processes)
 
 (defcustom elinit-timers nil
@@ -1618,7 +1618,7 @@ Returns t if transition succeeded, nil if forced through invalid."
 - `startup-complete': startup finished processing
 - `process-started': process successfully spawned
 - `process-ready': process became ready (simple=spawned, oneshot=exited)
-- `process-exit': supervised process exited
+- `process-exit': managed process exited
 - `process-failed': process failed to spawn
 - `cleanup': cleanup phase beginning
 - `timer-trigger': timer fired its target oneshot
@@ -2455,7 +2455,7 @@ This is the high-level migration function for programmatic use."
 
 (cl-defstruct (elinit-snapshot (:constructor elinit-snapshot--create))
   "Runtime state snapshot for read-only operations.
-Captures current state of all supervised processes for dashboard,
+Captures current state of all managed processes for dashboard,
 status queries, and reconciliation without direct global access."
   process-alive    ; hash: id -> t if process is alive
   process-pids     ; hash: id -> pid (integer) or nil
@@ -5476,7 +5476,7 @@ Ready semantics (when dependents are unblocked):
 
 ;;;###autoload
 (defun elinit-stop-now ()
-  "Stop all supervised processes immediately with SIGKILL.
+  "Stop all managed processes immediately with SIGKILL.
 This is a synchronous function suitable for `kill-emacs-hook'.
 Unlike `elinit-stop', it sends SIGKILL immediately and waits
 briefly for processes to terminate, ensuring a clean exit."
@@ -5516,7 +5516,7 @@ briefly for processes to terminate, ensuring a clean exit."
 
 ;;;###autoload
 (defun elinit-stop (&optional callback)
-  "Stop all supervised processes gracefully (async).
+  "Stop all managed processes gracefully (async).
 First runs `:exec-stop' command chains for applicable simple units,
 then sends each unit's configured `:kill-signal' (default SIGTERM)
 to remaining live processes and returns.  A timer handles the
@@ -6070,10 +6070,10 @@ Returns a plist with :entries and :invalid counts."
 
 ;;;###autoload
 (define-minor-mode elinit-mode
-  "Global minor mode for process supervision.
+  "Global minor mode for service management.
 
 When enabled, starts all configured processes via `elinit-start'.
-When disabled, stops all supervised processes via `elinit-stop'.
+When disabled, stops all managed processes via `elinit-stop'.
 
 This mode is intended for use in your init file to manage session
 processes, particularly when using Emacs as a window manager (EXWM).

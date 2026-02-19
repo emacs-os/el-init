@@ -5,10 +5,10 @@
 
 [[file:el-init-branding.png]]
 
-*A proper process supervisor with a systemd-inspired dependency model.*
+*A proper service manager with a systemd-inspired dependency model.*
 
 ~elinit~ is an Emacs Lisp-based, systemd-inspired init and
-process-supervision solution.  Whether you are building a full-send Emacs-OS, or
+service-management solution.  Whether you are building a full-send Emacs-OS, or
 simply want to orchestrate your desktop session services from within EXWM,
 or keep project daemons running while you work,
 elinit has you covered.  Use ~M-x elinit~ for the interactive
@@ -960,7 +960,7 @@ Per-unit stop (~elinitctl stop ID~, dashboard ~l t~):
 
 ~:kill-mode~:
 
-- ~process~ (default): signal only the main supervised process.
+- ~process~ (default): signal only the main managed process.
 - ~mixed~: send the graceful ~:kill-signal~ to the main process first; on
   timeout, send ~SIGKILL~ to both the main process and its discovered
   descendants.
@@ -1490,7 +1490,7 @@ Limitations in this version:
 - ~elinit-timer-subsystem-mode~ is a global gate for the timer subsystem
   and only becomes active when ~elinit-mode~ is also enabled.
 - ~elinit-dashboard-mode~ is the major mode for ~*elinit*~ and can be
-  opened independently of whether supervision is currently running.
+  opened independently of whether elinit is currently running.
 - Dashboard filters are buffer-local:
   ~elinit--dashboard-target-filter~ and ~elinit--dashboard-tag-filter~.
 - Dashboard auto-refresh timer (~elinit--auto-refresh-timer~) is buffer-local

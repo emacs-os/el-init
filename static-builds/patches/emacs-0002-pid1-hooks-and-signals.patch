@@ -105,7 +105,7 @@ index 00a0a096823..5fec3f3ad0d 100644
 +  DEFVAR_LISP ("pid1-boot-hook", Vpid1_boot_hook,
 +	       doc: /* Hook run after init when Emacs is in PID1 mode.
 +This hook runs after `emacs-startup-hook' when `pid1-mode' is non-nil.
-+Functions on this hook can set up supervisor processes, start services,
++Functions on this hook can set up managed processes, start services,
 +or perform other init-system bootstrap tasks.
 +Not run when `pid1-mode' is nil.  */);
 +  Vpid1_boot_hook = Qnil;
