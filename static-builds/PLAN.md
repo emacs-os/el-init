@@ -255,6 +255,21 @@ Note: C-level reaping and signal tests are covered at the patch level
 suite (`tests/elinit-test-pid1.el`) covers Lisp-side policy dispatch,
 auto-detection, boot/shutdown function behavior, and hook registration.
 
+Implementation: `static-builds/tests/test-pid1-namespace.sh` provides
+an automated, reproducible test harness that runs inside isolated PID
+namespaces via `unshare --user --pid --fork --mount-proc`.  It covers
+11 tests: pre-flight checks (pid1-mode, hooks defined), boot hook
+firing, signal handling (SIGTERM, SIGUSR1, SIGUSR2, SIGHUP), child
+reaping, and backward compatibility (no PID1 hooks without --pid1).
+
+CI job `pid1-tests` exists in `.github/workflows/ci.yml` but requires
+`ELINIT_PID1_EMACS` pointing to a patched binary to activate.  Without
+the env var, all tests skip gracefully (exit 0).
+
+Run locally:
+
+    make pid1-check ELINIT_PID1_EMACS=/path/to/patched/emacs
+
 Acceptance:
 
 1. Tests prove reaping behavior when enabled.

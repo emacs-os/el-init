@@ -135,6 +135,22 @@ jobs:
             /tmp/sh-total.txt
             /tmp/sh-failed.txt
 
+  pid1-tests:
+    name: PID1 namespace
+    runs-on: ubuntu-latest
+    # This job requires ELINIT_PID1_EMACS pointing to a patched Emacs
+    # binary with --pid1 support.  Without it, all tests are skipped.
+    # To enable: build the patched binary in CI and set the env var,
+    # or run locally with:
+    #   make pid1-check ELINIT_PID1_EMACS=/path/to/patched/emacs
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run PID1 namespace tests
+        run: make pid1-check 2>&1 | tee /tmp/pid1-output.txt; exit ${PIPESTATUS[0]}
+
   update-badge:
     name: Update test badge
     needs: [elisp, c-tests, shell-tests]

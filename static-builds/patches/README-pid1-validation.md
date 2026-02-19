@@ -245,6 +245,19 @@ $ kill -TERM $EMACS_PID
 
 PASS: Without `--pid1`, behavior is identical to stock Emacs.
 
+## Automated test harness
+
+Tests 2-3, 5-13 above are automated by
+`static-builds/tests/test-pid1-namespace.sh`, which runs inside
+isolated PID namespaces via `unshare(1)`.  Run with:
+
+```sh
+make pid1-check ELINIT_PID1_EMACS=/path/to/patched/emacs
+```
+
+The harness skips gracefully when prerequisites are unavailable (no
+patched binary, no unshare, no user namespace support).
+
 ## Backward compatibility
 
 All tests confirm that without `--pid1`:

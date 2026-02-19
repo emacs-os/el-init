@@ -10,7 +10,7 @@ TEST_ELS = $(TEST_HELPERS) $(sort $(filter-out $(TEST_HELPERS), \
              $(wildcard $(TEST_DIR)/elinit-test-*.el)))
 
 .PHONY: all check lint test byte-compile checkdoc package-lint \
-       libexec-check sbin-check clean
+       libexec-check sbin-check pid1-check clean
 
 all: check
 
@@ -56,6 +56,9 @@ libexec-check:
 
 sbin-check:
 	@$(MAKE) -C sbin check
+
+pid1-check:
+	@$(MAKE) -C static-builds check
 
 clean:
 	rm -f *.elc tests/*.elc

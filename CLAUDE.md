@@ -203,6 +203,39 @@ Shell scripts in `sbin/` have their own test suite under `sbin/tests/`.
 - All test files and testlib.sh are checked by `make -C sbin lint`.
 - Use `# shellcheck disable=SCXXXX` sparingly and only with justification.
 
+### Testing (PID1 namespace -- static-builds/)
+
+PID1 namespace integration tests live in `static-builds/tests/`.
+
+**Framework:** Reuses `sbin/tests/testlib.sh` via symlink.  Same POSIX-sh
+test framework, same assertion functions, same output format.
+
+**Test file:**
+- `static-builds/tests/test-pid1-namespace.sh` -- PID1 behavior in isolated
+  PID namespaces via `unshare --user --pid --fork --mount-proc`
+
+**Elisp helpers** (loaded by Emacs inside the namespace):
+- `static-builds/tests/pid1-test-hooks.el` -- writes markers when
+  `emacs-startup-hook` and `pid1-boot-hook` fire
+- `static-builds/tests/pid1-test-signals.el` -- writes markers when
+  `pid1-poweroff-hook`, `pid1-reboot-hook`, `kill-emacs-hook` fire
+- `static-builds/tests/pid1-test-reaping.el` -- spawns orphan children,
+  checks `/proc` for zombies
+
+**Running:**
+```bash
+make pid1-check ELINIT_PID1_EMACS=/path/to/patched/emacs
+make -C static-builds check    # equivalent
+```
+
+**Prerequisites (all checked automatically, skip if unavailable):**
+- `ELINIT_PID1_EMACS` env var pointing to a patched Emacs with `--pid1`
+- `unshare(1)` available
+- User PID namespaces enabled (kernel support)
+
+**Important:** `pid1-check` is NOT part of the default `make check` target
+because it requires a patched Emacs binary not available in normal CI.
+
 ### Testing (C -- libexec/)
 
 C helpers in `libexec/` (`elinit-logd`, `elinit-runas`, `elinit-rlimits`)
