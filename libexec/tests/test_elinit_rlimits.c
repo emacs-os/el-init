@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/resource.h>
 
 #ifndef RLIMITS_PATH
 #error "RLIMITS_PATH must be defined at compile time"
@@ -248,12 +249,18 @@ void test_nofile_applied(void)
 
 void test_nproc_applied(void)
 {
-	const char *argv[] = { RLIMITS_PATH, "--nproc", "789:789",
+	/* Use a low value that fits within any CI runner's hard limit */
+	struct rlimit rl;
+	if (getrlimit(RLIMIT_NPROC, &rl) != 0 || rl.rlim_max < 100) {
+		TEST_MSG("skipping: cannot query or insufficient nproc hard limit");
+		return;
+	}
+	const char *argv[] = { RLIMITS_PATH, "--nproc", "100:100",
 	                        "--", "sh", "-c", "ulimit -u", NULL };
 	struct run_result r = {0};
 	TEST_CHECK(run_cmd(argv, NULL, 0, &r) == 0);
 	TEST_CHECK(r.exit_code == 0);
-	TEST_CHECK(strstr(r.out, "789") != NULL);
+	TEST_CHECK(strstr(r.out, "100") != NULL);
 	TEST_MSG("stdout: %s", r.out);
 	run_result_free(&r);
 }
