@@ -2378,6 +2378,12 @@ If SNAPSHOT is provided, read from it; otherwise read from globals."
           (mapconcat #'identity reasons "; "))))
      (alive nil)
      ((and oneshot-p oneshot-done) nil)
+     ;; Conflict-stopped (not alive, suppressed by another unit)
+     ((let ((by (gethash id (if snapshot
+                                (or (elinit-snapshot-conflict-suppressed snapshot)
+                                    (make-hash-table :test 'equal))
+                              elinit--conflict-suppressed))))
+        (when by (format "conflict-stopped (by %s)" by))))
      ((eq entry-state 'disabled) "disabled")
      ((eq entry-state 'delayed) "delayed")
      ((eq entry-state 'waiting-on-deps) "waiting-on-deps")
@@ -4437,6 +4443,7 @@ LIMITS-ENTRY, when non-nil, is the parsed entry tuple for resource limits."
         (unless (or (eq type 'oneshot)
                     elinit--shutting-down
                     (gethash name elinit--manually-stopped)
+                    (gethash name elinit--conflict-suppressed)
                     (eq (gethash name elinit--enabled-override) 'disabled)
                     (not (let ((ses (when-let* ((e (elinit--get-entry-for-id name)))
                                      (elinit-entry-success-exit-status e))))

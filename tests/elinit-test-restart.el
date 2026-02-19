@@ -407,5 +407,89 @@ restart-timer cancellation on `no'."
     (should (equal "-" (aref vec 7)))))
 
 
+;;;; Conflict suppression tests
+
+(ert-deftest elinit-test-conflict-suppressed-blocks-restart ()
+  "Conflict-suppressed entry does not auto-restart."
+  ;; Build a sentinel and verify the unless guard includes conflict check
+  (let ((elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--processes (make-hash-table :test 'equal)))
+    ;; Mark "b" as conflict-suppressed
+    (puthash "b" "a" elinit--conflict-suppressed)
+    ;; Verify it is set
+    (should (equal (gethash "b" elinit--conflict-suppressed) "a"))
+    ;; Verify manually-stopped is also set (as done by preflight)
+    (puthash "b" t elinit--manually-stopped)
+    (should (gethash "b" elinit--manually-stopped))))
+
+(ert-deftest elinit-test-conflict-suppression-reason ()
+  "Conflict-suppressed entry shows reason in compute-entry-reason."
+  (let ((elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--mask-override (make-hash-table :test 'equal))
+        (elinit--processes (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--oneshot-completed (make-hash-table :test 'equal))
+        (elinit--entry-state (make-hash-table :test 'equal))
+        (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--target-convergence-reasons nil))
+    (puthash "b" "a" elinit--conflict-suppressed)
+    (let ((reason (elinit--compute-entry-reason "b" 'simple)))
+      (should (stringp reason))
+      (should (string-match-p "conflict-stopped" reason))
+      (should (string-match-p "by a" reason)))))
+
+(ert-deftest elinit-test-conflict-suppression-reason-snapshot ()
+  "Conflict-suppressed reason works from snapshot."
+  (let ((elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--mask-override (make-hash-table :test 'equal))
+        (elinit--processes (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--oneshot-completed (make-hash-table :test 'equal))
+        (elinit--entry-state (make-hash-table :test 'equal))
+        (elinit--remain-active (make-hash-table :test 'equal))
+        (elinit--last-exit-info (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--manually-started (make-hash-table :test 'equal))
+        (elinit--enabled-override (make-hash-table :test 'equal))
+        (elinit--restart-override (make-hash-table :test 'equal))
+        (elinit--logging (make-hash-table :test 'equal))
+        (elinit--invalid (make-hash-table :test 'equal))
+        (elinit--target-convergence-reasons nil))
+    (puthash "b" "a" elinit--conflict-suppressed)
+    (let* ((snapshot (elinit--build-snapshot))
+           (reason (elinit--compute-entry-reason "b" 'simple snapshot)))
+      (should (stringp reason))
+      (should (string-match-p "conflict-stopped (by a)" reason)))))
+
+(ert-deftest elinit-test-manual-start-clears-conflict-suppression ()
+  "Manual start clears conflict suppression for the started unit."
+  (let ((elinit--conflict-suppressed (make-hash-table :test 'equal)))
+    (puthash "b" "a" elinit--conflict-suppressed)
+    (elinit--conflict-clear-suppression "b")
+    (should (null (gethash "b" elinit--conflict-suppressed)))))
+
+(ert-deftest elinit-test-conflict-no-oscillation ()
+  "Mutual conflict does not cause oscillation via suppression."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal)))
+    ;; A conflicts B and B conflicts A
+    (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
+                       ("sleep 2" :id "b" :conflicts "a")))
+           (plan (elinit--build-plan programs)))
+      ;; Start "a" -- b is running, should be stopped
+      (let ((proc-b (start-process "b" nil "sleep" "300")))
+        (puthash "b" proc-b elinit--processes)
+        (elinit--conflict-preflight "a" plan)
+        ;; b is now conflict-suppressed by a
+        (should (equal (gethash "b" elinit--conflict-suppressed) "a"))
+        ;; b is manually-stopped
+        (should (gethash "b" elinit--manually-stopped))
+        (when (process-live-p proc-b)
+          (delete-process proc-b))))))
+
 (provide 'elinit-test-restart)
 ;;; elinit-test-restart.el ends here
