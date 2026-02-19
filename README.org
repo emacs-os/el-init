@@ -245,7 +245,8 @@ all available keywords.
 When you first run ~M-x elinit~, you will see a mix of target statuses that
 might look surprising.  Some targets show *reached*, others show *unreachable*,
 and you might wonder if something is broken.  It is not -- this is how the
-target system works.
+target system works.  The following image shows an unconfigured elinit running
+as pid2 in an Alpine Linux container.
 
 #+CAPTION: Default dashboard view after graphical boot
 [[file:assets/elinit-dashboard-default.png]]
