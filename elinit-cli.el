@@ -2325,12 +2325,18 @@ Return a list of alists, one per timer."
 (defun elinit--cli-parse-args (argv)
   "Parse ARGV into (command args json-p).
 ARGV is either a string or a list of strings.
+Only strip --json from before the -- separator so that literal
+IDs named --json are preserved after --.
 Returns a list (COMMAND ARGS JSON-P)."
   (let* ((argv (if (stringp argv)
                    (split-string-and-unquote argv)
                  argv))
-         (json-p (member "--json" argv))
-         (argv (cl-remove "--json" argv :test #'equal))
+         (pair (elinit--cli-split-at-separator argv))
+         (before (car pair))
+         (after (cdr pair))
+         (json-p (member "--json" before))
+         (before (cl-remove "--json" before :test #'equal))
+         (argv (if after (append before (cons "--" after)) before))
          (command (car argv))
          (args (cdr argv)))
     (list command args (if json-p t nil))))

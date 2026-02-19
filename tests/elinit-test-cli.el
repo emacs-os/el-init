@@ -1286,6 +1286,20 @@ Target type is resolved from current config."
   (should (equal (elinit--cli-strip-separator '("--" "-svc"))
                  '("-svc"))))
 
+(ert-deftest elinit-test-cli-parse-args-json-after-separator ()
+  "Literal --json after -- is preserved as an ID, not stripped."
+  (let ((result (elinit--cli-parse-args '("enable" "--" "--json"))))
+    (should (equal (car result) "enable"))
+    (should (equal (cadr result) '("--" "--json")))
+    (should-not (cl-caddr result))))
+
+(ert-deftest elinit-test-cli-parse-args-json-before-separator ()
+  "Global --json before -- is stripped and sets json-p."
+  (let ((result (elinit--cli-parse-args '("status" "--json" "--" "svc"))))
+    (should (equal (car result) "status"))
+    (should (equal (cadr result) '("--" "svc")))
+    (should (cl-caddr result))))
+
 (ert-deftest elinit-test-cli-parse-option ()
   "Parse option and value by position, not by value."
   ;; Option with value
