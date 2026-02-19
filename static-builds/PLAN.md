@@ -195,7 +195,7 @@ Deliverables:
 
 1. Add patch design doc under `static-builds/patches/`.
 2. Define optional CLI/runtime gate (`--pid1` and/or explicit variable).
-3. Specify reaping implementation point in main loop.
+3. Specify reaping implementation point (SIGCHLD handler with non-blocking waitpid).
 
 Acceptance:
 
