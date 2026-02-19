@@ -367,8 +367,9 @@ SITE_START_EOF
     local site_lisp=$out/share/emacs/site-lisp
     echo "=== A2/A3 autostart verification ==="
     # A2 acceptance #1 / A3 acceptance #3: validate autostart wiring and execution.
-    # pid1-boot-hook does not fire in --batch mode (fires in normal-top-level),
-    # so we validate: (1) elinit loaded, (2) elinit-start registered on hook,
+    # pid1-boot-hook does not fire in --batch (patch inserts it in normal-top-level
+    # and command-line-1, but neither path runs startup hooks in batch mode).
+    # So we validate: (1) elinit loaded, (2) elinit-start registered on hook,
     # (3) running the hook executes elinit-start without error.
     # Actual startup-path hook timing is validated by patch-level tests
     # (see patches/README-pid1-validation.md test #6).
