@@ -64,9 +64,12 @@ _elinit_root="${startdir}/.."
 prepare() {
   _static_prefix="${srcdir}/static-libs"
 
-  # ── Apply PID1 patches to Emacs source ──
+  # ── Apply PID1 patches to Emacs source (pinned to documented artifacts) ──
   cd "${srcdir}/emacs-${pkgver}"
-  for _patch in "${startdir}/patches/emacs-"*.patch; do
+  for _patch in \
+    "${startdir}/patches/emacs-0001-add-pid1-runtime-mode.patch" \
+    "${startdir}/patches/emacs-0002-pid1-hooks-and-signals.patch" \
+    "${startdir}/patches/emacs-0003-fix-pid1-signal-handler-overrides.patch"; do
     msg2 "Applying $(basename "$_patch")..."
     patch -Np1 < "$_patch"
   done
