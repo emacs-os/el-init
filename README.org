@@ -504,6 +504,27 @@ Planner rules:
 - Missing conflict targets are dropped with warning (same as ~:after~).
 - Targets may declare ~:conflicts~.
 
+Example -- two audio servers that cannot coexist:
+
+#+begin_src emacs-lisp
+;; pipewire.el
+(:id "pipewire"
+ :command "pipewire"
+ :conflicts "pulseaudio"
+ :wanted-by ("graphical.target"))
+
+;; pulseaudio.el
+(:id "pulseaudio"
+ :command "pulseaudio --start"
+ :conflicts "pipewire"
+ :wanted-by ("graphical.target")
+ :disabled t)
+#+end_src
+
+Starting ~pipewire~ stops ~pulseaudio~ if it is running, and vice versa.
+The stopped unit does not auto-restart until explicitly started via the
+dashboard or CLI.
+
 ** Internal Normalized Shape
 
 Valid entries are normalized to schema v1 tuple form:

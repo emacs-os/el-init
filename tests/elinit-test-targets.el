@@ -4988,5 +4988,63 @@ the invalid-hash must not contain the alias ID."
         ;; svc-b should have been stopped (latched but outside closure)
         (should (member "svc-b" stopped))))))
 
+(ert-deftest elinit-test-cli-isolate-dag-conflict-preflight ()
+  "Isolate DAG start path fires conflict preflight against active units.
+When the DAG scheduler starts svc-a, its conflict with svc-b should
+stop svc-b via `elinit--conflict-preflight' in `elinit--dag-do-start'."
+  (elinit-test-with-unit-files
+      '(("sleep 300" :id "svc-a" :conflicts "svc-b"
+         :required-by ("app.target"))
+        ("sleep 300" :id "svc-b" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--restart-timers (make-hash-table :test 'equal))
+          (elinit--conflict-suppressed (make-hash-table :test 'equal))
+          (elinit--dag-delay-timers (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit--start-times (make-hash-table :test 'equal))
+          (elinit-default-target-link "app.target")
+          (elinit--default-target-link-override nil)
+          (a-started nil))
+      ;; svc-b is already running
+      (let ((b-proc (start-process "svc-b" nil "sleep" "300")))
+        (puthash "svc-b" b-proc elinit--processes)
+        (cl-letf (((symbol-function 'elinit--start-process)
+                   (lambda (id &rest _args)
+                     (when (equal id "svc-a")
+                       (setq a-started t))
+                     ;; Return a mock process for spawn success
+                     (start-process (concat "mock-" id) nil "true")))
+                  ((symbol-function 'elinit--manual-stop)
+                   (lambda (_id) (list :status 'stopped :reason nil)))
+                  ((symbol-function 'executable-find) (lambda (_) t))
+                  ((symbol-function 'elinit--maybe-refresh-dashboard) #'ignore)
+                  ((symbol-function 'elinit--refresh-dashboard) #'ignore))
+          (elinit--cli-dispatch '("isolate" "--yes" "app.target"))
+          ;; svc-a should have been started via DAG
+          (should a-started)
+          ;; svc-b should be conflict-suppressed by svc-a
+          (should (equal "svc-a"
+                         (gethash "svc-b" elinit--conflict-suppressed)))
+          ;; svc-b process should be dead (synchronous wait)
+          (should-not (process-live-p b-proc)))
+        ;; Defensive cleanup
+        (when (process-live-p b-proc)
+          (delete-process b-proc))))))
+
 (provide 'elinit-test-targets)
 ;;; elinit-test-targets.el ends here
