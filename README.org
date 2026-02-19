@@ -2870,14 +2870,14 @@ in these examples are non-target units (where ~:command~ is required).
 | ~Description=~ | ~:description~ | Same intent |
 | ~Type=simple~ | ~:type simple~ | Same process model |
 | ~Type=oneshot~ | ~:type oneshot~ | Same run-to-completion model |
-| ~ExecStart=...~ | ~:command \"...\"~ | Required in elinit unit files |
+| ~ExecStart=...~ | ~:command "..."~ | Required in elinit unit files |
 | ~Restart=...~ | ~:restart ...~ | Same policy names for supported values |
 | ~RestartSec=...~ | ~:restart-sec ...~ | Restart delay |
 | ~WorkingDirectory=...~ | ~:working-directory ...~ | Same intent |
 | ~After=...~ | ~:after (...)~ | Use elinit IDs (for example, ~database~ not ~database.service~) |
 | ~Requires=...~ | ~:requires (...)~ | Hard dependency + ordering |
 | ~Environment=K=V~ | ~:environment ((\"K\" . \"V\"))~ | Alist form |
-| ~ExecStop=...~ | ~:exec-stop \"...\"~ | Stop command |
+| ~ExecStop=...~ | ~:exec-stop "..."~ | Stop command |
 | ~KillSignal=...~ | ~:kill-signal ...~ | Signal symbol |
 | ~RemainAfterExit=yes~ | ~:remain-after-exit t~ | Oneshot active latch |
 | ~User=~/~Group=~ | ~:user~ / ~:group~ | Requires root manager + trusted unit file |
@@ -2886,7 +2886,7 @@ in these examples are non-target units (where ~:command~ is required).
 | ~LimitCORE=~ | ~:limit-core~ | Integer, ~infinity~, or ~"SOFT:HARD"~ |
 | ~LimitFSIZE=~ | ~:limit-fsize~ | Integer, ~infinity~, or ~"SOFT:HARD"~ |
 | ~LimitAS=~ | ~:limit-as~ | Integer, ~infinity~, or ~"SOFT:HARD"~ |
-| ~WantedBy=multi-user.target~ | ~:wanted-by (\"multi-user.target\")~ | Target membership |
+| ~WantedBy=multi-user.target~ | ~:wanted-by ("multi-user.target")~ | Target membership |
 
 *** Example 1: Simple Daemon
 
