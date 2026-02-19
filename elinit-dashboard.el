@@ -307,8 +307,7 @@ This is called on first use to avoid loading transient at package load time."
          ["Service Actions"
           ("l" "Lifecycle..." elinit-dashboard-lifecycle)
           ("p" "Policy..." elinit-dashboard-policy)
-          ("i" "Inspect..." elinit-dashboard-inspect)]
-         ["Timers"
+          ("i" "Inspect..." elinit-dashboard-inspect)
           ("t" "Timers..." elinit-dashboard-timer-actions)]
          ["Navigation"
           ("f" "Target filter" elinit-dashboard-cycle-filter)
