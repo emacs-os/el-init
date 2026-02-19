@@ -2971,11 +2971,8 @@ The plan includes:
                 (when (gethash id cycle-fallback-ids)
                   (puthash id nil deps)
                   (puthash id nil requires-deps))))
-            ;; Filter valid-entries to exclude entries invalidated in phase 2
-            (let ((final-entries (cl-remove-if
-                                  (lambda (entry)
-                                    (gethash (elinit-entry-id entry) invalid))
-                                  valid-entries))
+            ;; Use validated-entries (normalized deps/conflicts) for plan.entries
+            (let ((final-entries validated-entries)
                   ;; Build conflicts maps from validated entries
                   (conflicts-deps (make-hash-table :test 'equal))
                   (conflict-reverse (make-hash-table :test 'equal)))

@@ -1187,5 +1187,32 @@ Regression test: stderr pipe processes used to pollute the process list."
     (should (member "b" (gethash "a" (elinit-plan-conflict-reverse plan))))
     (should (member "a" (gethash "b" (elinit-plan-conflict-reverse plan))))))
 
+(ert-deftest elinit-test-plan-entries-conflicts-normalized ()
+  "Plan entries have normalized conflicts matching conflicts-deps.
+Dropped missing targets must not appear in plan.entries conflicts."
+  (let* ((programs '(("sleep 1" :id "a" :conflicts ("b" "ghost"))
+                     ("sleep 2" :id "b")))
+         (plan (elinit--build-plan programs))
+         (entry-a (cl-find "a" (elinit-plan-entries plan)
+                           :key #'elinit-entry-id :test #'equal)))
+    ;; Entry in plan.entries should have normalized conflicts (ghost dropped)
+    (should (equal (elinit-entry-conflicts entry-a) '("b")))
+    ;; Must match what conflicts-deps reports
+    (should (equal (elinit-entry-conflicts entry-a)
+                   (gethash "a" (elinit-plan-conflicts-deps plan))))))
+
+(ert-deftest elinit-test-plan-cycle-fallback-preserves-conflicts ()
+  "Cycle fallback clears dep edges but preserves conflict metadata."
+  (let* ((programs '(("sleep 1" :id "a" :after "b" :conflicts "c")
+                     ("sleep 2" :id "b" :after "a")
+                     ("sleep 3" :id "c")))
+         (plan (elinit--build-plan programs)))
+    ;; a and b form a cycle; deps are cleared
+    (should (gethash "a" (elinit-plan-cycle-fallback-ids plan)))
+    ;; Conflicts metadata should still be intact
+    (should (equal (gethash "a" (elinit-plan-conflicts-deps plan))
+                   '("c")))
+    (should (member "a" (gethash "c" (elinit-plan-conflict-reverse plan))))))
+
 (provide 'elinit-test-plan)
 ;;; elinit-test-plan.el ends here

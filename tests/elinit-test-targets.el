@@ -4909,5 +4909,44 @@ the invalid-hash must not contain the alias ID."
                               (elinit-cli-result-output result)))))))
 
 
+(ert-deftest elinit-test-cli-isolate-publishes-conflicts-metadata ()
+  "Isolate publishes plan with conflicts metadata."
+  (elinit-test-with-unit-files
+      '(("sleep 300" :id "svc-a" :conflicts "svc-b"
+         :required-by ("app.target"))
+        ("sleep 300" :id "svc-b" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit-default-target-link "app.target")
+          (elinit--default-target-link-override nil))
+      (cl-letf (((symbol-function 'elinit--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'elinit--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        (elinit--cli-dispatch '("isolate" "--yes" "app.target"))
+        ;; Plan should be published with conflicts metadata
+        (should (elinit-plan-p elinit--current-plan))
+        (should (hash-table-p
+                 (elinit-plan-conflicts-deps elinit--current-plan)))
+        (should (equal (gethash "svc-a"
+                                (elinit-plan-conflicts-deps
+                                 elinit--current-plan))
+                       '("svc-b")))))))
+
 (provide 'elinit-test-targets)
 ;;; elinit-test-targets.el ends here
