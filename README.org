@@ -16,6 +16,9 @@ dashboard, or ~elinitctl~ from the terminal.
 
 ** Features
 
+- *Optional PID1 patchset* -- static build instruction files (Arch
+  PKGBUILD and Nix) and Emacs patches adding zombie reaping support and
+  support for Emacs Lisp init scripts (~static-builds/~).
 - *DAG-based startup ordering* -- topological sort with ~:after~, ~:requires~,
   ~:wants~, ~:before~ dependency edges.  Targets (~default.target~,
   ~multi-user.target~, ~graphical.target~) group services into activation
@@ -91,6 +94,7 @@ provides detailed reference material:
 - [[#command-reference][Command Reference]] - interactive and dashboard command map
 - [[#security][Security]] - manager targeting, transport boundary, trust gate, sandbox, rlimits
 - [[#service-management-systems-comparison][Service Management Systems Comparison]] - matrix, conversions, import tooling
+- [[#running-as-pid-1][Running as PID 1]] - optional static builds and Emacs patches for full Emacs-OS
 - [[#development][Development]] - test/lint workflows
 - [[#topical-index][Topical Index]] - exhaustive cross-reference
 
@@ -3350,6 +3354,185 @@ against config defaults, and return a status plist.  Both CLI and
 dashboard call ~elinit--save-overrides~ after the core mutator
 applies the change.
 
+* Running as PID 1
+:PROPERTIES:
+:CUSTOM_ID: running-as-pid-1
+:END:
+
+For a full-send ~emacs --pid1~ Emacs-OS setup, the ~static-builds/~
+directory contains everything needed to build a statically linked Emacs
+binary that can run as PID 1.
+
+The directory provides:
+
+- *Build instruction files* -- Arch Linux PKGBUILDs and Nix derivations for
+  eight build variants (three vanilla static, one PID1-patched, each in both
+  Arch and Nix).
+- *Emacs patches* (~static-builds/patches/~) -- three patches against Emacs
+  30.2 that add a ~--pid1~ command-line flag, zombie reaping via non-blocking
+  ~waitpid(2)~ on ~SIGCHLD~, signal-driven shutdown hooks
+  (~pid1-poweroff-hook~, ~pid1-reboot-hook~), and support for Emacs Lisp
+  init scripts (~rc.boot.el~, ~rc.shutdown.el~) that handle early-boot
+  mounts, device setup, and clean shutdown -- all in Lisp.
+- *Example init scripts* (~static-builds/scripts/~) -- ready-to-adapt
+  ~rc.boot.el~ and ~rc.shutdown.el~ templates covering /proc, /sys, /dev
+  mounts, filesystem checks, udev, networking, and getty spawning.
+
+The PID1-patched variants bundle elinit and its prebuilt C helpers directly
+into the package, so the resulting binary needs no compiler, no user
+init files, and no =~/.emacs= -- the packaged ~site-start.el~ bootstrap
+wires elinit into ~pid1-boot-hook~ automatically when ~--pid1~ is passed.
+
+See ~static-builds/README.md~ for the full administrator guide, including
+build commands, file placement, first-boot validation, and disable gates.
+
+** Getting Started
+
+Start with a minimal source-based distribution such as [[https://kisslinux.org][KISS Linux]], Void
+Linux (musl), or Alpine Linux -- anything where you control the kernel,
+bootloader, and ~/etc~.  The steps below assume you are preparing a KISS
+Linux target root from a working Arch system via chroot.  Adapt paths
+if your host or target differ.
+
+*** Prerequisites
+
+On your Arch host, make sure you have:
+
+- A partitioned and formatted target disk mounted at ~/mnt~
+- A KISS Linux (or similar) base installed in ~/mnt~
+- A static kernel built and installed at ~/mnt/boot/vmlinuz~
+- GRUB installed to the target disk
+
+*** 1. Build the PID1-patched Emacs (on the host)
+
+Build the static binary on your Arch host and copy it into the target
+root.  The binary is statically linked so it has no runtime dependencies
+on the target.
+
+#+begin_src bash
+cd static-builds
+makepkg -p PKGBUILD-static-nox-elinit-patched-for-pid1
+#+end_src
+
+Or with Nix:
+
+#+begin_src bash
+nix-build static-builds/emacs-static-nox-elinit-patched-for-pid1.nix
+#+end_src
+
+Install into the target:
+
+#+begin_src bash
+install -Dm755 emacs-nox-static-elinit-patched-for-pid1-*/usr/bin/emacs \
+  /mnt/usr/bin/emacs
+#+end_src
+
+Verify:
+
+#+begin_src bash
+file /mnt/usr/bin/emacs   # should say "statically linked"
+#+end_src
+
+*** 2. Install init scripts (in the chroot)
+
+Enter the target chroot and place the boot and shutdown scripts:
+
+#+begin_src bash
+arch-chroot /mnt
+
+install -d /lib/init
+#+end_src
+
+Copy the example templates from the el-init source tree (accessible from
+the host or pre-copied into the chroot):
+
+#+begin_src bash
+cp static-builds/scripts/rc.boot.el.example     /lib/init/rc.boot.el
+cp static-builds/scripts/rc.shutdown.el.example  /lib/init/rc.shutdown.el
+chmod 644 /lib/init/rc.boot.el /lib/init/rc.shutdown.el
+#+end_src
+
+Edit ~/lib/init/rc.boot.el~ to match your hardware and preferences -- the
+example template handles /proc, /sys, /dev, /run, devpts, shm, filesystem
+checks, hostname, sysctl, udev, and getty spawning.  Remove or adjust
+sections you do not need.
+
+*** 3. Seed your service units
+
+Create the system unit directory and drop in unit files for the services
+you want elinit to manage at boot:
+
+#+begin_src bash
+install -d /etc/elinit.el
+
+cat > /etc/elinit.el/sshd.el <<'EOF'
+(:id "sshd"
+ :command "/usr/sbin/sshd -D -e"
+ :type simple
+ :enabled t
+ :wanted-by ("multi-user.target")
+ :restart on-failure
+ :logging t)
+EOF
+
+cat > /etc/elinit.el/dhcpcd.el <<'EOF'
+(:id "dhcpcd"
+ :command "/usr/sbin/dhcpcd -BM"
+ :type simple
+ :enabled t
+ :wanted-by ("multi-user.target")
+ :restart on-failure
+ :logging t)
+EOF
+#+end_src
+
+*** 4. Point GRUB at Emacs
+
+Still inside the chroot, configure the bootloader to hand PID 1 to
+Emacs.  Add ~init=/usr/bin/emacs~ to the kernel command line and pass
+~--pid1~ after the ~--~ separator (everything after ~--~ goes to the
+init process, not the kernel):
+
+#+begin_src bash
+# /etc/default/grub
+GRUB_CMDLINE_LINUX="init=/usr/bin/emacs"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet -- --pid1"
+#+end_src
+
+Regenerate the GRUB configuration:
+
+#+begin_src bash
+grub-mkconfig -o /boot/grub/grub.cfg
+#+end_src
+
+Exit the chroot:
+
+#+begin_src bash
+exit
+#+end_src
+
+*** 5. Unmount and reboot
+
+#+begin_src bash
+umount -R /mnt
+reboot
+#+end_src
+
+Select the target disk in GRUB.  The kernel hands PID 1 to Emacs.  The
+~--pid1~ flag enables zombie reaping, signal-driven shutdown hooks, and
+the ~pid1-boot-hook~ that loads ~rc.boot.el~ and starts elinit.  Verify
+after login:
+
+#+begin_src bash
+ps -p 1 -o comm,args       # should show emacs --pid1
+elinitctl status            # should show running services
+elinitctl list-units        # should list your unit files
+#+end_src
+
+SIGTERM or ~reboot(8)~ triggers ~pid1-poweroff-hook~ /
+~pid1-reboot-hook~, which loads ~rc.shutdown.el~, stops all services,
+unmounts filesystems, and halts or reboots cleanly.
+
 * Development
 :PROPERTIES:
 :CUSTOM_ID: development
@@ -3421,6 +3604,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Mutator inventory and classification (explicit verb vs unit-definition): [[#service-management-systems-comparison][Service Management Systems Comparison]]
 - Override precedence (runtime overrides vs unit defaults): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Override persistence (~elinit-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
+- PID1 mode, static builds, Emacs patches, init scripts: [[#running-as-pid-1][Running as PID 1]], [[#customization-reference][Customization Reference]]
 - Privilege-drop trust gate for ~:user~ / ~:group~: [[#security][Security]], [[#service-definition][Service Definition]]
 - Privilege-drop troubleshooting (identity errors, trust gate failures): [[#privilege-drop-troubleshooting][Privilege-Drop Troubleshooting]]
 - Reload unit (~reload~, dashboard ~u~): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]
