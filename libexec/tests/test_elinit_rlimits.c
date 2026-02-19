@@ -249,16 +249,16 @@ void test_nofile_applied(void)
 
 void test_nproc_applied(void)
 {
-	/* Query current hard limit and set to half of it.  We cannot
-	   raise nproc above the hard limit without root, and values
-	   below the running process count prevent fork. */
+	/* Set nproc to hard_limit - 1.  We cannot raise above hard
+	   without root, and values below the running process count
+	   prevent fork.  hard - 1 is safe on both counts. */
 	struct rlimit rl;
 	if (getrlimit(RLIMIT_NPROC, &rl) != 0 ||
 	    rl.rlim_max == RLIM_INFINITY || rl.rlim_max < 200) {
 		TEST_MSG("skipping: cannot determine safe nproc value");
 		return;
 	}
-	rlim_t val = rl.rlim_max / 2;
+	rlim_t val = rl.rlim_max - 1;
 	char buf[64];
 	char expect[64];
 	snprintf(buf, sizeof(buf), "%llu:%llu",
