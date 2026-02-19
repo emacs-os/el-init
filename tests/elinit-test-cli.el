@@ -2450,5 +2450,71 @@ could incorrectly preserve a non-running disabled unit."
           (should-not (gethash "svc1" elinit--manually-started)))))))
 
 
+;;;; Conflicts CLI tests
+
+(ert-deftest elinit-test-cli-entry-info-conflicts ()
+  "CLI entry info includes conflicts field."
+  (let* ((elinit--processes (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (entry (elinit--parse-entry '("cmd" :id "svc" :conflicts ("x" "y"))))
+         (info (elinit--cli-entry-info entry)))
+    (should (equal (alist-get 'conflicts info) '("x" "y")))))
+
+(ert-deftest elinit-test-cli-entry-info-conflicts-nil ()
+  "CLI entry info has nil conflicts when none declared."
+  (let* ((elinit--processes (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (entry (elinit--parse-entry '("cmd" :id "svc")))
+         (info (elinit--cli-entry-info entry)))
+    (should (null (alist-get 'conflicts info)))))
+
+(ert-deftest elinit-test-cli-describe-human-conflicts ()
+  "CLI human describe includes Conflicts line."
+  (let* ((elinit--processes (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (entry (elinit--parse-entry '("cmd" :id "svc" :conflicts ("a" "b"))))
+         (info (elinit--cli-entry-info entry))
+         (output (elinit--cli-describe-human info)))
+    (should (string-match-p "Conflicts: a, b" output))))
+
+(ert-deftest elinit-test-cli-describe-human-conflicts-none ()
+  "CLI human describe shows Conflicts: none when none declared."
+  (let* ((elinit--processes (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (entry (elinit--parse-entry '("cmd" :id "svc")))
+         (info (elinit--cli-entry-info entry))
+         (output (elinit--cli-describe-human info)))
+    (should (string-match-p "Conflicts: none" output))))
+
+(ert-deftest elinit-test-cli-json-conflicts ()
+  "CLI JSON output includes conflicts array."
+  (let* ((elinit--processes (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (entry (elinit--parse-entry '("cmd" :id "svc" :conflicts ("x"))))
+         (info (elinit--cli-entry-info entry))
+         (json-obj (elinit--cli-entry-to-json-obj info)))
+    (should (equal (alist-get 'conflicts json-obj) '("x")))))
+
+(ert-deftest elinit-test-cli-json-conflicts-empty ()
+  "CLI JSON output has empty array when no conflicts."
+  (let* ((elinit--processes (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (entry (elinit--parse-entry '("cmd" :id "svc")))
+         (info (elinit--cli-entry-info entry))
+         (json-obj (elinit--cli-entry-to-json-obj info)))
+    (should (equal (alist-get 'conflicts json-obj) []))))
+
 (provide 'elinit-test-cli)
 ;;; elinit-test-cli.el ends here
