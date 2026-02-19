@@ -319,11 +319,18 @@ test_sighup_ignored() {
         _fail_test "timed out waiting for ready marker"
         return 1
     fi
+    # Capture Emacs PID before sending HUP, to check liveness after.
+    _hup_emacs_pid="$(find_emacs_pid)" || _hup_emacs_pid=""
+    if [ -z "${_hup_emacs_pid}" ]; then
+        cleanup_pid1
+        _fail_test "could not find Emacs PID for SIGHUP test"
+        return 1
+    fi
     send_signal_to_pid1 HUP
-    # Wait a moment, then verify Emacs is still alive.
+    # Wait a moment, then verify Emacs itself is still alive.
     sleep 1
-    if [ -n "${_PID1_UNSHARE_PID}" ] && kill -0 "${_PID1_UNSHARE_PID}" 2>/dev/null; then
-        # Process still alive -- PASS.
+    if kill -0 "${_hup_emacs_pid}" 2>/dev/null; then
+        # Emacs still alive -- PASS.
         assert_file_not_exists "${marker_dir}/kill-emacs-hook" \
             "SIGHUP should not trigger kill-emacs-hook"
     else
