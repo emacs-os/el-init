@@ -19,8 +19,15 @@ dashboard, or ~elinitctl~ from the terminal.
 - *Optional PID1 patchset* -- static build instruction files (Arch
   PKGBUILD and Nix) and Emacs patches adding zombie reaping support and
   support for Emacs Lisp init scripts (~static-builds/~).
-- *DAG-based startup ordering* -- topological sort with ~:after~, ~:requires~,
-  ~:wants~, ~:before~ dependency edges.  Targets (~default.target~,
+- *Dependency graph* -- five relationship keywords give fine-grained control
+  over startup order and runtime interaction:
+  - ~:after~ / ~:before~ -- pure ordering (start A after B, or B before A).
+  - ~:requires~ -- ordering plus hard dependency (if the required unit fails,
+    the dependent is not started).
+  - ~:wants~ -- ordering plus soft dependency (best-effort, failure tolerated).
+  - ~:conflicts~ -- mutual exclusion (starting one unit stops the other, and
+    vice versa).
+  Topological sort with cycle detection.  Targets (~default.target~,
   ~multi-user.target~, ~graphical.target~) group services into activation
   stages, just like systemd.
 - *Event-driven process monitoring* -- uses Emacs's built-in
