@@ -672,8 +672,10 @@ Only auto-started (not manually-started) disabled units are stopped."
         ;; b should be conflict-suppressed
         (should (equal (gethash "b" elinit--conflict-suppressed) "a"))
         ;; b should be manually stopped
-        (should (gethash "b" elinit--manually-stopped)))
-      ;; Clean up
+        (should (gethash "b" elinit--manually-stopped))
+        ;; b must be dead after preflight returns (synchronous wait)
+        (should-not (process-live-p fake-proc)))
+      ;; Defensive cleanup
       (when (process-live-p fake-proc)
         (delete-process fake-proc)))))
 
@@ -848,7 +850,8 @@ conflict-stopped rather than done."
         (should (elinit-plan-p elinit--current-plan))))))
 
 (ert-deftest elinit-test-conflict-preflight-sigkill-escalation ()
-  "Conflict preflight sets up SIGKILL escalation timer for stubborn processes."
+  "Conflict preflight escalates to SIGKILL for SIGTERM-resistant processes.
+The process must be dead when preflight returns."
   (let ((elinit--processes (make-hash-table :test 'equal))
         (elinit--restart-timers (make-hash-table :test 'equal))
         (elinit--conflict-suppressed (make-hash-table :test 'equal))
@@ -856,26 +859,23 @@ conflict-stopped rather than done."
         (elinit--remain-active (make-hash-table :test 'equal))
         (elinit--oneshot-completed (make-hash-table :test 'equal))
         (elinit--dag-delay-timers (make-hash-table :test 'equal))
-        (escalation-fired nil))
-    ;; Mock a running process for "b"
-    (let ((fake-proc (start-process "b" nil "sleep" "300")))
+        ;; Short timeout so the test runs quickly
+        (elinit-shutdown-timeout 0.2))
+    ;; Start a SIGTERM-resistant process for "b"
+    (let ((fake-proc (start-process "b" nil "sh" "-c"
+                                    "trap '' TERM; sleep 300")))
+      ;; Give the shell a moment to install the trap
+      (sleep-for 0.1)
       (puthash "b" fake-proc elinit--processes)
       (let* ((programs '(("sleep 1" :id "a" :conflicts "b")
                          ("sleep 2" :id "b")))
-             (plan (elinit--build-plan programs)))
-        ;; Mock run-at-time to capture escalation timer setup
-        (let ((original-run-at-time (symbol-function 'run-at-time)))
-          (cl-letf (((symbol-function 'run-at-time)
-                     (lambda (secs repeat fn &rest args)
-                       ;; Detect the escalation timer (non-nil secs, nil repeat)
-                       (when (and (numberp secs) (null repeat)
-                                  (> secs 0))
-                         (setq escalation-fired t))
-                       ;; Don't actually schedule
-                       nil)))
-            (elinit--conflict-preflight "a" plan))))
-      ;; SIGKILL escalation timer should have been set up
-      (should escalation-fired)
+             (plan (elinit--build-plan programs))
+             (stopped (elinit--conflict-preflight "a" plan)))
+        ;; b should be in the stopped list
+        (should (member "b" stopped))
+        ;; b must be dead after preflight returns (synchronous wait)
+        (should-not (process-live-p fake-proc)))
+      ;; Defensive cleanup
       (when (process-live-p fake-proc)
         (delete-process fake-proc)))))
 

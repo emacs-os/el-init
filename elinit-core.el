@@ -5070,8 +5070,15 @@ Return nil when PLAN is nil or ID has no conflicts."
 Use `elinit--conflict-targets' for pure conflict discovery, then
 for each conflicting unit cancel timers, stop live processes, and
 deactivate latched remain-after-exit oneshots.
+
+Synchronously wait for signaled processes to exit before returning.
+After sending each unit's configured kill-signal (default SIGTERM),
+poll up to `elinit-shutdown-timeout' seconds.  If any process
+survives, escalate with SIGKILL and poll briefly (max 0.5 s).
+
 Return the list of stopped or deactivated IDs."
-  (let ((stopped nil))
+  (let ((stopped nil)
+        (signaled-procs nil))
     (dolist (cid (elinit--conflict-targets id plan))
       (let ((proc (gethash cid elinit--processes))
             (alive (let ((p (gethash cid elinit--processes)))
@@ -5088,21 +5095,12 @@ Return the list of stopped or deactivated IDs."
             (when (and timer (timerp timer))
               (cancel-timer timer)
               (remhash cid elinit--dag-delay-timers))))
-        ;; Handle live process
+        ;; Handle live process -- send configured kill-signal
         (when alive
           (puthash cid id elinit--conflict-suppressed)
           (puthash cid t elinit--manually-stopped)
-          (let ((kill-signal (elinit--kill-signal-for-id cid))
-                (kill-mode (elinit--kill-mode-for-id cid))
-                (p proc))
-            (signal-process p kill-signal)
-            ;; SIGKILL escalation timer (same as manual-stop)
-            (run-at-time elinit-shutdown-timeout nil
-                         (lambda ()
-                           (when (process-live-p p)
-                             (if (eq kill-mode 'mixed)
-                                 (elinit--kill-with-descendants p)
-                               (signal-process p 'SIGKILL))))))
+          (signal-process proc (elinit--kill-signal-for-id cid))
+          (push (cons cid proc) signaled-procs)
           (elinit--log 'info
             "conflict: stopping %s (conflicts with %s)" cid id)
           (push cid stopped))
@@ -5116,6 +5114,32 @@ Return the list of stopped or deactivated IDs."
             "conflict: deactivating latched %s (conflicts with %s)"
             cid id)
           (push cid stopped))))
+    ;; Synchronously wait for signaled processes to die
+    (when signaled-procs
+      (let ((deadline (+ (float-time) elinit-shutdown-timeout)))
+        (while (and (< (float-time) deadline)
+                    (cl-some (lambda (pair)
+                               (process-live-p (cdr pair)))
+                             signaled-procs))
+          (sleep-for 0.05)))
+      ;; SIGKILL escalation for survivors
+      (let ((survivors (cl-remove-if-not
+                        (lambda (pair) (process-live-p (cdr pair)))
+                        signaled-procs)))
+        (when survivors
+          (dolist (pair survivors)
+            (let ((cid (car pair))
+                  (proc (cdr pair)))
+              (if (eq (elinit--kill-mode-for-id cid) 'mixed)
+                  (elinit--kill-with-descendants proc)
+                (signal-process proc 'SIGKILL))))
+          ;; Brief wait after SIGKILL (max 0.5 s)
+          (let ((deadline (+ (float-time) 0.5)))
+            (while (and (< (float-time) deadline)
+                        (cl-some (lambda (pair)
+                                   (process-live-p (cdr pair)))
+                                 survivors))
+              (sleep-for 0.05))))))
     stopped))
 
 (defun elinit--conflict-clear-suppression (id)
