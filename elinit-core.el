@@ -5098,6 +5098,7 @@ Return the list of stopped or deactivated IDs."
         ;; Handle latched remain-after-exit oneshot (not alive but active)
         (when (and latched (not alive))
           (remhash cid elinit--remain-active)
+          (remhash cid elinit--oneshot-completed)
           (puthash cid id elinit--conflict-suppressed)
           (puthash cid t elinit--manually-stopped)
           (elinit--log 'info

@@ -410,18 +410,48 @@ restart-timer cancellation on `no'."
 ;;;; Conflict suppression tests
 
 (ert-deftest elinit-test-conflict-suppressed-blocks-restart ()
-  "Conflict-suppressed entry does not auto-restart."
-  ;; Build a sentinel and verify the unless guard includes conflict check
-  (let ((elinit--conflict-suppressed (make-hash-table :test 'equal))
+  "Conflict-suppressed entry does not auto-restart via sentinel.
+Exercises the actual sentinel restart guard, not just hash entries."
+  (let ((elinit--processes (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--conflict-suppressed (make-hash-table :test 'equal))
         (elinit--manually-stopped (make-hash-table :test 'equal))
-        (elinit--processes (make-hash-table :test 'equal)))
-    ;; Mark "b" as conflict-suppressed
-    (puthash "b" "a" elinit--conflict-suppressed)
-    ;; Verify it is set
-    (should (equal (gethash "b" elinit--conflict-suppressed) "a"))
-    ;; Verify manually-stopped is also set (as done by preflight)
-    (puthash "b" t elinit--manually-stopped)
-    (should (gethash "b" elinit--manually-stopped))))
+        (elinit--enabled-override (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--logging (make-hash-table :test 'equal))
+        (elinit--writers (make-hash-table :test 'equal))
+        (elinit--stderr-writers (make-hash-table :test 'equal))
+        (elinit--oneshot-completed (make-hash-table :test 'equal))
+        (elinit--oneshot-callbacks (make-hash-table :test 'equal))
+        (elinit--crash-log (make-hash-table :test 'equal))
+        (elinit--last-exit-info (make-hash-table :test 'equal))
+        (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+        (elinit--shutting-down nil)
+        (restart-scheduled nil))
+    ;; Mark as conflict-suppressed (as preflight would do)
+    (puthash "svc" "other" elinit--conflict-suppressed)
+    (puthash "svc" t elinit--manually-stopped)
+    ;; Create a sentinel for a restartable simple service
+    (let ((fake-proc (start-process "svc" nil "true")))
+      (puthash "svc" fake-proc elinit--processes)
+      (unwind-protect
+          (cl-letf (((symbol-function 'elinit--schedule-restart)
+                     (lambda (&rest _args)
+                       (setq restart-scheduled t)))
+                    ((symbol-function 'elinit--stop-writer-if-same) #'ignore)
+                    ((symbol-function 'elinit--emit-event) #'ignore)
+                    ((symbol-function 'elinit--maybe-refresh-dashboard) #'ignore)
+                    ((symbol-function 'elinit--should-restart-p)
+                     (lambda (&rest _) t)))
+            (let ((sentinel (elinit--make-process-sentinel
+                             "svc" '("sleep" "300") t 'simple 'always)))
+              ;; Wait for process to die
+              (while (process-live-p fake-proc) (sit-for 0.05))
+              (funcall sentinel fake-proc "finished\n")
+              ;; Restart should NOT have been scheduled due to suppression
+              (should-not restart-scheduled)))
+        (when (process-live-p fake-proc)
+          (delete-process fake-proc))))))
 
 (ert-deftest elinit-test-conflict-suppression-reason ()
   "Conflict-suppressed entry shows reason in compute-entry-reason."

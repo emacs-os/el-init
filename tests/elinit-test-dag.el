@@ -756,15 +756,24 @@ Only auto-started (not manually-started) disabled units are stopped."
         (delete-process fake-proc)))))
 
 (ert-deftest elinit-test-conflict-preflight-latched-oneshot ()
-  "Conflict preflight deactivates latched remain-after-exit oneshot."
+  "Conflict preflight deactivates latched remain-after-exit oneshot.
+Clears remain-active and oneshot-completed so status shows
+conflict-stopped rather than done."
   (let ((elinit--processes (make-hash-table :test 'equal))
         (elinit--restart-timers (make-hash-table :test 'equal))
         (elinit--conflict-suppressed (make-hash-table :test 'equal))
         (elinit--manually-stopped (make-hash-table :test 'equal))
         (elinit--remain-active (make-hash-table :test 'equal))
-        (elinit--dag-delay-timers (make-hash-table :test 'equal)))
-    ;; b is a latched oneshot (not alive, but remain-active)
+        (elinit--oneshot-completed (make-hash-table :test 'equal))
+        (elinit--dag-delay-timers (make-hash-table :test 'equal))
+        (elinit--mask-override (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--entry-state (make-hash-table :test 'equal))
+        (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+        (elinit--target-convergence-reasons nil))
+    ;; b is a latched oneshot (not alive, but remain-active + completed)
     (puthash "b" t elinit--remain-active)
+    (puthash "b" 0 elinit--oneshot-completed)
     (let* ((programs '(("true" :id "a" :conflicts "b")
                        ("true" :id "b" :type oneshot :remain-after-exit t)))
            (plan (elinit--build-plan programs))
@@ -774,7 +783,13 @@ Only auto-started (not manually-started) disabled units are stopped."
       ;; b should be conflict-suppressed
       (should (equal (gethash "b" elinit--conflict-suppressed) "a"))
       ;; remain-active should be cleared
-      (should (null (gethash "b" elinit--remain-active))))))
+      (should (null (gethash "b" elinit--remain-active)))
+      ;; oneshot-completed should be cleared so status is not "done"
+      (should (null (gethash "b" elinit--oneshot-completed)))
+      ;; Reason should be conflict-stopped, not nil
+      (let ((reason (elinit--compute-entry-reason "b" 'oneshot)))
+        (should (stringp reason))
+        (should (string-match-p "conflict-stopped" reason))))))
 
 (ert-deftest elinit-test-conflict-preflight-cancels-delay-timer ()
   "Conflict preflight cancels pending delay timer."
