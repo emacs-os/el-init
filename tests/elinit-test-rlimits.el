@@ -263,6 +263,12 @@
   (should (null (elinit--validate-limit-value :limit-nofile "100:200")))
   (should (null (elinit--validate-limit-value :limit-nofile "infinity:infinity")))
   (should (null (elinit--validate-limit-value :limit-nofile "0:infinity")))
+  ;; Valid: soft equals hard
+  (should (null (elinit--validate-limit-value :limit-nofile "200:200")))
+  ;; Valid: soft < hard
+  (should (null (elinit--validate-limit-value :limit-nofile "1:999")))
+  ;; Valid: hard is infinity, soft is finite
+  (should (null (elinit--validate-limit-value :limit-nofile "1024:infinity")))
   ;; Invalid
   (should (elinit--validate-limit-value :limit-nofile -1))
   (should (elinit--validate-limit-value :limit-nofile "bad"))
@@ -270,7 +276,17 @@
   (should (elinit--validate-limit-value :limit-nofile ":100"))
   (should (elinit--validate-limit-value :limit-nofile "100:"))
   (should (elinit--validate-limit-value :limit-nofile 1.5))
-  (should (elinit--validate-limit-value :limit-nofile '(1 2))))
+  (should (elinit--validate-limit-value :limit-nofile '(1 2)))
+  ;; Invalid: soft > hard (kernel rejects this)
+  (should (elinit--validate-limit-value :limit-nofile "9999:1"))
+  (should (elinit--validate-limit-value :limit-nofile "200:100"))
+  ;; Invalid: infinity soft with finite hard
+  (should (elinit--validate-limit-value :limit-nofile "infinity:100"))
+  ;; Invalid: value too large for C helper (>= 2^64-1)
+  (should (elinit--validate-limit-value
+           :limit-nofile (expt 2 64)))
+  (should (elinit--validate-limit-value
+           :limit-nofile "999999999999999999999999999999:1")))
 
 ;;; Integration tests (plan-level invalid plumbing)
 
@@ -304,6 +320,15 @@
     ;; Entry should appear in valid entries list
     (should (cl-find "svc" (elinit-plan-entries plan)
                      :key #'elinit-entry-id :test #'equal))))
+
+(ert-deftest elinit-test-rlimits-plan-invalid-soft-exceeds-hard ()
+  "Build-plan marks entry with soft > hard limit as invalid."
+  (let* ((elinit--authority-snapshot nil)
+         (programs '(("sleep 300" :id "bad-svc" :limit-nofile "9999:1")))
+         (plan (elinit--build-plan programs)))
+    (should (gethash "bad-svc" (elinit-plan-invalid plan)))
+    (should (string-match "soft limit.*exceeds hard"
+                          (gethash "bad-svc" (elinit-plan-invalid plan))))))
 
 (ert-deftest elinit-test-rlimits-plan-invalid-float ()
   "Build-plan marks entry with float limit as invalid."

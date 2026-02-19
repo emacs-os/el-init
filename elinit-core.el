@@ -613,32 +613,61 @@ Cycles through `no' -> `on-success' -> `on-failure' -> `always' -> `no'."
     ('always 'no)
     (_ 'no)))
 
+(defconst elinit--rlimit-max (1- (expt 2 64))
+  "Maximum value representable by the C rlimits helper.
+The helper uses unsigned long long, which maxes at 2^64-1.
+Values equal to this sentinel are rejected by the helper, so the
+effective maximum is 2^64-2.")
+
+(defun elinit--limit-component-valid-p (s)
+  "Return non-nil if string S is a valid limit component.
+Valid components are \"infinity\" or a non-negative integer that
+fits in the C helper's unsigned long long range."
+  (or (string= s "infinity")
+      (and (string-match-p "\\`[0-9]+\\'" s)
+           (let ((n (string-to-number s)))
+             (and (integerp n)
+                  (>= n 0)
+                  (< n elinit--rlimit-max))))))
+
 (defun elinit--validate-limit-value (key val)
   "Validate resource limit VAL for keyword KEY.
 Return nil if valid, or an error string if invalid.
 Accepted forms: non-negative integer, symbol `infinity',
 string \"SOFT:HARD\" where SOFT and HARD are non-negative
-integers or the word \"infinity\"."
+integers or the word \"infinity\".  When both SOFT and HARD
+are numeric, SOFT must not exceed HARD."
   (cond
    ((eq val 'infinity) nil)
    ((integerp val)
-    (if (< val 0)
-        (format "%s must be non-negative integer, got: %d" key val)
-      nil))
+    (cond
+     ((< val 0)
+      (format "%s must be non-negative integer, got: %d" key val))
+     ((>= val elinit--rlimit-max)
+      (format "%s value too large for runtime helper, got: %d" key val))
+     (t nil)))
    ((stringp val)
     (let ((parts (split-string val ":")))
       (if (not (= (length parts) 2))
           (format "%s string must be \"SOFT:HARD\", got: %S" key val)
         (let ((soft (car parts))
               (hard (cadr parts)))
-          (unless (and (or (string= soft "infinity")
-                           (and (string-match-p "\\`[0-9]+\\'" soft)
-                                (>= (string-to-number soft) 0)))
-                       (or (string= hard "infinity")
-                           (and (string-match-p "\\`[0-9]+\\'" hard)
-                                (>= (string-to-number hard) 0))))
+          (cond
+           ((not (and (elinit--limit-component-valid-p soft)
+                      (elinit--limit-component-valid-p hard)))
             (format "%s components must be non-negative integers or \"infinity\", got: %S"
-                    key val))))))
+                    key val))
+           ;; infinity soft with finite hard is always soft > hard
+           ((and (string= soft "infinity") (not (string= hard "infinity")))
+            (format "%s soft limit (infinity) exceeds hard limit (%s)"
+                    key hard))
+           ;; Both finite: soft must not exceed hard
+           ((and (not (string= soft "infinity"))
+                 (not (string= hard "infinity"))
+                 (> (string-to-number soft) (string-to-number hard)))
+            (format "%s soft limit (%s) exceeds hard limit (%s)"
+                    key soft hard))
+           (t nil))))))
    (t (format "%s must be integer, \"SOFT:HARD\" string, or symbol `infinity', got: %S"
               key val))))
 
