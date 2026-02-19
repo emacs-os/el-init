@@ -39,8 +39,8 @@ dashboard, or ~elinitctl~ from the terminal.
   run-once ~oneshot~ tasks with configurable blocking and timeout.
 - *Graceful shutdown* -- SIGTERM with configurable timeout, then SIGKILL.
   Sentinel-driven completion tracking (no polling).
-- *3-tier authority model* -- ~/usr/lib/elinit/~ (vendor),
-  ~/etc/elinit/~ (admin), =~/.config/elinit/= (user).
+- *3-tier authority model* -- ~/usr/lib/elinit.el/~ (vendor),
+  ~/etc/elinit.el/~ (admin), =~/.config/elinit.el/= (user).
   Higher tiers override lower tiers completely.  Daemon-reload support.
 - *Persistent overrides* -- enable/disable, mask/unmask, restart-policy, and
   logging overrides persist across restarts.
@@ -187,10 +187,10 @@ it back together differently.
 #+end_src
 
 Services are defined as individual unit files in your authority roots (default
-=~/.config/elinit/=).  For example:
+=~/.config/elinit.el/=).  For example:
 
 #+begin_src emacs-lisp
-;; ~/.config/elinit/xhost.el
+;; ~/.config/elinit.el/xhost.el
 (:id "xhost"
  :command "xhost +SI:localuser:$USER"
  :type oneshot
@@ -199,7 +199,7 @@ Services are defined as individual unit files in your authority roots (default
 #+end_src
 
 #+begin_src emacs-lisp
-;; ~/.config/elinit/nm-applet.el
+;; ~/.config/elinit.el/nm-applet.el
 (:id "nm-applet"
  :command "nm-applet"
  :type simple
@@ -586,9 +586,9 @@ merge).  Non-existent roots are silently skipped.
 
 #+begin_src emacs-lisp
 (setq elinit-unit-authority-path
-      '("/usr/lib/elinit/"    ; Tier 1: vendor (lowest precedence)
-        "/etc/elinit/"        ; Tier 2: system admin
-        "~/.config/elinit/")) ; Tier 3: user (highest precedence)
+      '("/usr/lib/elinit.el/"    ; Tier 1: vendor (lowest precedence)
+        "/etc/elinit.el/"        ; Tier 2: system admin
+        "~/.config/elinit.el/")) ; Tier 3: user (highest precedence)
 #+end_src
 
 The default three-tier layout mirrors systemd's resolution order.  You can add,
@@ -602,7 +602,7 @@ precedence rules described below.
 Each file contains a single plist:
 
 #+begin_src emacs-lisp
-;; ~/.config/elinit/nm-applet.el
+;; ~/.config/elinit.el/nm-applet.el
 (:id "nm-applet"
  :command "nm-applet"
  :type simple
@@ -688,7 +688,7 @@ highest-precedence root wins completely -- no per-key merge is performed.
 A vendor root provides a default service:
 
 #+begin_src emacs-lisp
-;; /usr/lib/elinit/polkit.el  (Tier 1, vendor)
+;; /usr/lib/elinit.el/polkit.el  (Tier 1, vendor)
 (:id "polkit"
  :command "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
  :type simple
@@ -698,7 +698,7 @@ A vendor root provides a default service:
 A user root overrides it with different target membership and logging:
 
 #+begin_src emacs-lisp
-;; ~/.config/elinit/polkit.el  (Tier 3, user)
+;; ~/.config/elinit.el/polkit.el  (Tier 3, user)
 (:id "polkit"
  :command "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
  :type simple
@@ -716,8 +716,8 @@ misconfigured path does not cause an error -- it simply contributes no units:
 #+begin_src emacs-lisp
 (setq elinit-unit-authority-path
       '("/nonexistent/root/"          ; Silently skipped (does not exist)
-        "/etc/elinit/"         ; Active if exists
-        "~/.config/elinit/"))  ; Active if exists
+        "/etc/elinit.el/"      ; Active if exists
+        "~/.config/elinit.el/")) ; Active if exists
 #+end_src
 
 *** Invalid Winner Blocks Fallback Example
@@ -727,7 +727,7 @@ valid lower-tier unit for the same ID.  This prevents surprising behavior where
 a broken override silently reverts to the vendor default:
 
 #+begin_src emacs-lisp
-;; /usr/lib/elinit/backup.el  (Tier 1, vendor -- valid)
+;; /usr/lib/elinit.el/backup.el  (Tier 1, vendor -- valid)
 (:id "backup"
  :command "/usr/bin/backup-agent"
  :type simple
@@ -735,7 +735,7 @@ a broken override silently reverts to the vendor default:
 #+end_src
 
 #+begin_src emacs-lisp
-;; ~/.config/elinit/backup.el  (Tier 3, user -- INVALID: missing :command)
+;; ~/.config/elinit.el/backup.el  (Tier 3, user -- INVALID: missing :command)
 (:id "backup"
  :type simple)
 #+end_src
@@ -798,11 +798,11 @@ exist.  With ~--json~, returns ~{"path": "...", "content": "..."}~.
 *** Step 1: Create the unit file
 
 Create a file in your highest-precedence authority root (default
-=~/.config/elinit/=).  The filename should be ~ID.el~ (e.g.,
+=~/.config/elinit.el/=).  The filename should be ~ID.el~ (e.g.,
 ~nm-applet.el~):
 
 #+begin_src emacs-lisp
-;; ~/.config/elinit/nm-applet.el
+;; ~/.config/elinit.el/nm-applet.el
 (:id "nm-applet"
  :command "nm-applet"
  :type simple
@@ -2401,8 +2401,8 @@ All user options (defcustom) are listed below.
 ** Unit-File Options
 
 | Variable | Default | Purpose |
-| ~elinit-unit-authority-path~ | ~'("/usr/lib/elinit/" "/etc/elinit/" "~/.config/elinit/")~ | Authority roots (low to high precedence) |
-| ~elinit-unit-directory~ | ~(XDG_CONFIG_HOME or ~/.config)/elinit/units/~ | Legacy unit directory (deprecated; use ~elinit-unit-authority-path~) |
+| ~elinit-unit-authority-path~ | ='("/usr/lib/elinit.el/" "/etc/elinit.el/" "~/.config/elinit.el/")= | Authority roots (low to high precedence) |
+| ~elinit-unit-directory~ | =(XDG_CONFIG_HOME or ~/.config)/elinit/units/= | Legacy unit directory (deprecated; use ~elinit-unit-authority-path~) |
 | ~elinit-seed-default-maintenance-units~ | ~t~ | Auto-seed default ~logrotate~ / ~log-prune~ unit files when missing |
 
 ** Timer Options
@@ -2696,7 +2696,7 @@ omitted.
 *** Unit File Example
 
 #+begin_src emacs-lisp
-;; ~/.config/elinit/units/myapp.el
+;; ~/.config/elinit.el/myapp.el
 (:id "myapp"
  :command "/usr/bin/myapp --serve"
  :sandbox-profile service
@@ -2761,7 +2761,7 @@ Each limit key accepts one of three forms:
 *** Unit File Example
 
 #+begin_src emacs-lisp
-;; ~/.config/elinit/units/mydb.el
+;; ~/.config/elinit.el/mydb.el
 (:id "mydb"
  :command "/usr/bin/mydb --datadir /var/lib/mydb"
  :limit-nofile 65536
@@ -3097,7 +3097,7 @@ sbin/elinit-import /etc/systemd/system/foo.service
 Redirect to save as a unit file:
 
 #+begin_example
-sbin/elinit-import /etc/systemd/system/foo.service > ~/.config/elinit/units/foo.el
+sbin/elinit-import /etc/systemd/system/foo.service > ~/.config/elinit.el/foo.el
 #+end_example
 
 *** Options
@@ -3377,6 +3377,10 @@ The directory provides:
 - *Example init scripts* (~static-builds/scripts/~) -- ready-to-adapt
   ~rc.boot.el~ and ~rc.shutdown.el~ templates covering /proc, /sys, /dev
   mounts, filesystem checks, udev, networking, and getty spawning.
+- *PID namespace harness* (~static-builds/tests/test-pid1-namespace.sh~) --
+  optional runtime validation for ~--pid1~ behavior (boot hook timing,
+  signal handling, child reaping, and non-~--pid1~ compatibility) via
+  ~unshare --user --pid --fork --mount-proc~.
 
 The PID1-patched variants bundle elinit and its prebuilt C helpers directly
 into the package, so the resulting binary needs no compiler, no user
@@ -3543,7 +3547,11 @@ make check
 make lint
 make test
 make test-one TEST=elinit-test-parse-string-entry
+make pid1-check ELINIT_PID1_EMACS=/path/to/patched/emacs
 #+end_src
+
+~pid1-check~ is optional and skips when prerequisites are unavailable
+(patched Emacs binary with ~--pid1~, ~unshare~, user namespaces).
 
 Interactive load:
 
