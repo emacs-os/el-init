@@ -44,9 +44,14 @@ if ! command -v timeout >/dev/null 2>&1; then
     skip_all "timeout not found"
 fi
 
-# Test that user namespaces + PID namespaces work.
-if ! unshare --user --pid --fork true 2>/dev/null; then
-    skip_all "unshare --user --pid --fork not supported (user namespaces disabled?)"
+if ! command -v pgrep >/dev/null 2>&1; then
+    skip_all "pgrep not found"
+fi
+
+# Test that user namespaces + PID namespaces + mount-proc all work.
+# This matches the exact flags used by run_pid1_daemon.
+if ! unshare --user --pid --fork --mount-proc true 2>/dev/null; then
+    skip_all "unshare --user --pid --fork --mount-proc not supported"
 fi
 
 # Test that the binary supports --pid1.
@@ -127,32 +132,54 @@ cleanup_pid1() {
     fi
 }
 
-# send_signal_to_pid1 SIGNAL
-#   Send a signal to the Emacs process inside the namespace.
-#   We find the child of the unshare process (which is PID 1 inside
-#   the namespace but has a real PID outside).
-send_signal_to_pid1() {
-    _ss_signal="${1}"
+# find_emacs_pid
+#   Locate the Emacs process inside the namespace.
+#   The process tree from the outside is:
+#     timeout ($!) -> unshare -> emacs (PID 1 inside ns)
+#   We traverse two levels with pgrep -P to reach Emacs.
+find_emacs_pid() {
     if [ -z "${_PID1_UNSHARE_PID}" ]; then
         return 1
     fi
-    # The unshare forks; its direct child is the namespace init.
-    # pgrep -P finds children of the unshare process.
-    _ss_child=""
-    _ss_tries=0
-    while [ -z "${_ss_child}" ] && [ "${_ss_tries}" -lt 25 ]; do
-        _ss_child="$(pgrep -P "${_PID1_UNSHARE_PID}" 2>/dev/null | head -1)" || true
-        if [ -z "${_ss_child}" ]; then
+    # Level 1: find child of timeout (this is unshare).
+    _fe_unshare=""
+    _fe_tries=0
+    while [ -z "${_fe_unshare}" ] && [ "${_fe_tries}" -lt 25 ]; do
+        _fe_unshare="$(pgrep -P "${_PID1_UNSHARE_PID}" 2>/dev/null | head -1)" || true
+        if [ -z "${_fe_unshare}" ]; then
             sleep 0.2
-            _ss_tries=$((_ss_tries + 1))
+            _fe_tries=$((_fe_tries + 1))
         fi
     done
-    if [ -z "${_ss_child}" ]; then
-        printf '  WARN: could not find child of unshare PID %s\n' \
+    if [ -z "${_fe_unshare}" ]; then
+        printf '  WARN: could not find child of timeout PID %s\n' \
             "${_PID1_UNSHARE_PID}" >&2
         return 1
     fi
-    kill "-${_ss_signal}" "${_ss_child}"
+    # Level 2: find child of unshare (this is Emacs).
+    _fe_emacs=""
+    _fe_tries=0
+    while [ -z "${_fe_emacs}" ] && [ "${_fe_tries}" -lt 25 ]; do
+        _fe_emacs="$(pgrep -P "${_fe_unshare}" 2>/dev/null | head -1)" || true
+        if [ -z "${_fe_emacs}" ]; then
+            sleep 0.2
+            _fe_tries=$((_fe_tries + 1))
+        fi
+    done
+    if [ -z "${_fe_emacs}" ]; then
+        printf '  WARN: could not find child of unshare PID %s\n' \
+            "${_fe_unshare}" >&2
+        return 1
+    fi
+    printf '%s' "${_fe_emacs}"
+}
+
+# send_signal_to_pid1 SIGNAL
+#   Send a signal to the Emacs process inside the namespace.
+send_signal_to_pid1() {
+    _ss_signal="${1}"
+    _ss_emacs_pid="$(find_emacs_pid)" || return 1
+    kill "-${_ss_signal}" "${_ss_emacs_pid}"
 }
 
 # ===== Pre-flight tests (--batch, no namespace needed) =====
@@ -328,13 +355,20 @@ test_normal_emacs_no_pid1_hooks() {
     mkdir -p "${marker_dir}"
     run_pid1_daemon_no_pid1 "${marker_dir}" "${TESTS_DIR}/pid1-test-signals.el"
     # Without --pid1, pid1-boot-hook does not fire, so "ready" is never
-    # written by pid1-test-signals.el.  Wait for startup-hook via a short
-    # timer-based ready signal instead.  We just wait a few seconds for
-    # the daemon to be up.
+    # written by pid1-test-signals.el.  Wait a few seconds for the daemon
+    # to be up.
     sleep 3
+    # Capture Emacs PID before sending signal, to verify it exits.
+    _nep_emacs_pid="$(find_emacs_pid)" || true
     send_signal_to_pid1 TERM || true
     # Wait for the process to exit.
     sleep 2
+    # Verify SIGTERM actually killed the process (standard fatal behavior).
+    if [ -n "${_nep_emacs_pid}" ] && kill -0 "${_nep_emacs_pid}" 2>/dev/null; then
+        cleanup_pid1
+        _fail_test "Emacs should have died from SIGTERM without --pid1"
+        return 1
+    fi
     cleanup_pid1
     assert_file_not_exists "${marker_dir}/pid1-poweroff-hook" \
         "without --pid1, pid1-poweroff-hook should NOT fire"
