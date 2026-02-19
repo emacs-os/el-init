@@ -1,3 +1,4 @@
+[[file:LICENSE][https://img.shields.io/badge/License-GPLv3-purple.svg]]
 [[https://github.com/emacs-os/el-init/actions/workflows/ci.yml][https://github.com/emacs-os/el-init/actions/workflows/ci.yml/badge.svg]]
 [[https://gist.github.com/el-sloppo/e686727a6d88c17c557003e73a9c020c][https://img.shields.io/endpoint.svg?url=https://gist.githubusercontent.com/el-sloppo/e686727a6d88c17c557003e73a9c020c/raw/elinit-tests.json]]
 
