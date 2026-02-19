@@ -79,7 +79,7 @@ otherwise.
 or unreadable."
   :type '(choice (const :tag "Never load" never)
                  (const :tag "Load if present" if-present)
-                 (const :tag "Require (error if missing)" require))
+                 (const :tag "Require (error if missing or unreadable)" require))
   :group 'elinit-pid1)
 
 (defcustom elinit-pid1-shutdown-policy 'if-present
@@ -91,7 +91,7 @@ otherwise.
 or unreadable."
   :type '(choice (const :tag "Never load" never)
                  (const :tag "Load if present" if-present)
-                 (const :tag "Require (error if missing)" require))
+                 (const :tag "Require (error if missing or unreadable)" require))
   :group 'elinit-pid1)
 
 ;;;; Script loading
