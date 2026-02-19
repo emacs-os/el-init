@@ -3,7 +3,7 @@
 
 * elinit
 
-[[file:el-init-branding.png]]
+[[file:el-init-branding_small.png]]
 
 *A proper service manager with a systemd-inspired dependency model.*
 
