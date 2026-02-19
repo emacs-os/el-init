@@ -67,7 +67,7 @@ jobs:
           curl -s -X PATCH \
             -H "Authorization: token ${GIST_TOKEN}" \
             -H "Content-Type: application/json" \
-            -d "{\"files\":{\"supervisor-el-tests.json\":{\"content\":\"{\\\"schemaVersion\\\":1,\\\"label\\\":\\\"tests\\\",\\\"message\\\":\\\"${MSG}\\\",\\\"color\\\":\\\"${COLOR}\\\"}\"}}}" \
+            -d "{\"files\":{\"elinit-tests.json\":{\"content\":\"{\\\"schemaVersion\\\":1,\\\"label\\\":\\\"tests\\\",\\\"message\\\":\\\"${MSG}\\\",\\\"color\\\":\\\"${COLOR}\\\"}\"}}}" \
             https://api.github.com/gists/e686727a6d88c17c557003e73a9c020c
 
   c-tests:

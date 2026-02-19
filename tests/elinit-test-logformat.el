@@ -3224,14 +3224,14 @@ identity must be correct regardless of whether log-format is set."
           ;; Create active log files
           (with-temp-file (expand-file-name "log-svc1.log" log-dir)
             (insert "line1\nline2\n"))
-          (with-temp-file (expand-file-name "supervisor.log" log-dir)
+          (with-temp-file (expand-file-name "elinit.log" log-dir)
             (insert "elinit log data\n"))
           ;; Run logrotate (tar should be available on all test hosts)
           (should (zerop (call-process "sh" nil nil nil script
                                        "--log-dir" log-dir)))
           ;; Active files should have been rotated away
           (should-not (file-exists-p (expand-file-name "log-svc1.log" log-dir)))
-          (should-not (file-exists-p (expand-file-name "supervisor.log" log-dir)))
+          (should-not (file-exists-p (expand-file-name "elinit.log" log-dir)))
           ;; .tar.gz archives should exist
           (let ((tar-files (directory-files log-dir nil "\\.tar\\.gz\\'")))
             (should (>= (length tar-files) 2))))

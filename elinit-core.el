@@ -317,7 +317,7 @@ dependency unlocks, and restarts."
 
 (defcustom elinit-log-to-file nil
   "When non-nil, write elinit events to a log file.
-The log file is `supervisor.log' in the effective log directory.
+The log file is `elinit.log' in the effective log directory.
 If `elinit-log-directory' is not writable, elinit falls back
 to the default user-local log directory.
 This is independent of `elinit-verbose' - all events are logged
@@ -390,7 +390,7 @@ invalid hash so they appear in the dashboard and CLI."
 (defun elinit--elinit-log-file ()
   "Return path to the elinit-level log file, or nil."
   (when-let* ((log-directory (elinit--effective-log-directory)))
-    (expand-file-name "supervisor.log" log-directory)))
+    (expand-file-name "elinit.log" log-directory)))
 
 (defun elinit--log (level format-string &rest args)
   "Log a message at LEVEL with FORMAT-STRING and ARGS.

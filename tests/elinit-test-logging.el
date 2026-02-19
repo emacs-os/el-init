@@ -670,7 +670,7 @@
     (unwind-protect
         (progn
           ;; Create active log files
-          (write-region "data" nil (expand-file-name "supervisor.log" dir))
+          (write-region "data" nil (expand-file-name "elinit.log" dir))
           (write-region "data" nil (expand-file-name "log-svc1.log" dir))
           (with-temp-buffer
             (let ((exit-code (call-process script nil t nil
@@ -679,7 +679,7 @@
               (let ((output (buffer-string)))
                 (should (string-match-p "rotate:" output)))))
           ;; Files should still exist (not moved)
-          (should (file-exists-p (expand-file-name "supervisor.log" dir)))
+          (should (file-exists-p (expand-file-name "elinit.log" dir)))
           (should (file-exists-p (expand-file-name "log-svc1.log" dir))))
       (delete-directory dir t))))
 
@@ -690,8 +690,8 @@
          (dir (make-temp-file "logrotate-" t)))
     (unwind-protect
         (progn
-          (write-region "supervisor-data" nil
-                        (expand-file-name "supervisor.log" dir))
+          (write-region "elinit-data" nil
+                        (expand-file-name "elinit.log" dir))
           (write-region "svc-data" nil
                         (expand-file-name "log-myapp.log" dir))
           ;; Also create a rotated file that should NOT be re-rotated
@@ -702,7 +702,7 @@
             (should (= exit-code 0)))
           ;; Active files should be gone
           (should-not (file-exists-p
-                       (expand-file-name "supervisor.log" dir)))
+                       (expand-file-name "elinit.log" dir)))
           (should-not (file-exists-p
                        (expand-file-name "log-myapp.log" dir)))
           ;; The old rotated file should still exist (not re-rotated)
@@ -712,7 +712,7 @@
           ;; When tar is available, rotated files are compressed to
           ;; .log.tar.gz; match both .log and .log.tar.gz suffixes.
           (let ((files (directory-files dir nil
-                                       "^supervisor\\.[0-9].*\\.log")))
+                                       "^elinit\\.[0-9].*\\.log")))
             (should (= (length files) 1)))
           (let ((files (directory-files dir nil
                                        "^log-myapp\\.[0-9].*\\.log")))
@@ -942,7 +942,7 @@
          (script (expand-file-name "sbin/elinit-log-prune" root))
          (dir (make-temp-file "log-prune-" t))
          (active1 (expand-file-name "log-svc1.log" dir))
-         (active2 (expand-file-name "supervisor.log" dir)))
+         (active2 (expand-file-name "elinit.log" dir)))
     (unwind-protect
         (progn
           ;; Create only active files, no rotated files

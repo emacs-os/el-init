@@ -1,5 +1,5 @@
 #!/bin/sh
-# testlib.sh - minimal POSIX shell test framework for supervisor.el sbin tests
+# testlib.sh - minimal POSIX shell test framework for elinit sbin tests
 #
 # Source this file from test scripts.  Define test_ functions and call
 # run_tests at the end.

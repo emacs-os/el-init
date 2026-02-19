@@ -115,9 +115,9 @@ stamp="$(date +%Y%m%d-%H%M%S)"
 info "logrotate: start log_dir=${log_dir} keep_days=${keep_days} signal_reopen=${signal_reopen} dry_run=${dry_run}"
 
 # --- Rotate active files ---
-# Active files: log-<id>.log and supervisor.log.
+# Active files: log-<id>.log and elinit.log.
 # Rotated files have a timestamp suffix: <base>.YYYYMMDD-HHMMSS[.N].log
-# (matching supervisor-logd.c make_rotated_name).  IDs may contain dots
+# (matching elinit-logd.c make_rotated_name).  IDs may contain dots
 # (e.g. svc.1), so we match the specific timestamp pattern, not just
 # "contains a dot".
 # Timestamp regex for rotated detection (8 digits, dash, 6 digits at end):
@@ -181,8 +181,8 @@ rotate_file() {
     esac
 }
 
-# Rotate supervisor.log if it exists
-[ -f "${log_dir}/supervisor.log" ] && rotate_file "${log_dir}/supervisor.log"
+# Rotate elinit.log if it exists
+[ -f "${log_dir}/elinit.log" ] && rotate_file "${log_dir}/elinit.log"
 
 # Rotate log-*.log files (active only: skip rotated files with timestamp)
 for f in "${log_dir}"/log-*.log; do
@@ -226,8 +226,8 @@ esac
 prune_rotated() {
     dir="${1}"
     days="${2}"
-    find "${dir}" -maxdepth 1 \( -name 'supervisor.*.log' -o -name 'log-*.*.log' \
-       -o -name 'supervisor.*.log.tar.gz' -o -name 'log-*.*.log.tar.gz' \) -mtime +"${days}" -type f | while IFS= read -r f; do
+    find "${dir}" -maxdepth 1 \( -name 'elinit.*.log' -o -name 'log-*.*.log' \
+       -o -name 'elinit.*.log.tar.gz' -o -name 'log-*.*.log.tar.gz' \) -mtime +"${days}" -type f | while IFS= read -r f; do
         name="${f##*/}"
         is_rotated "${name}" || continue
         case "${dry_run}" in

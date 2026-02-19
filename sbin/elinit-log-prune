@@ -194,8 +194,8 @@ info "prune: start log_dir=${log_dir} total_bytes=${total} max_total_bytes=${max
 # find -printf '%T@ %p\n' gives epoch.frac path; sort -n gives oldest first.
 rotated_files=""
 rotated_files="$(find "${log_dir}" -maxdepth 1 -type f \
-    \( -name 'supervisor.*.log' -o -name 'log-*.*.log' \
-       -o -name 'supervisor.*.log.tar.gz' -o -name 'log-*.*.log.tar.gz' \) \
+    \( -name 'elinit.*.log' -o -name 'log-*.*.log' \
+       -o -name 'elinit.*.log.tar.gz' -o -name 'log-*.*.log.tar.gz' \) \
     -printf '%T@ %p\n' | sort -n | awk '{ print $2 }')"
 
 [ -n "${rotated_files}" ] || {

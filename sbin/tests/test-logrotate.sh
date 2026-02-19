@@ -72,15 +72,15 @@ test_pid_dir_missing_value_fails() {
 
 test_dry_run_rotates_active_files() {
     # Create active log files
-    printf 'data' > "${TEST_TMPDIR}/supervisor.log"
+    printf 'data' > "${TEST_TMPDIR}/elinit.log"
     printf 'data' > "${TEST_TMPDIR}/log-myapp.log"
     run_cmd "${SCRIPT}" --log-dir "${TEST_TMPDIR}" --dry-run
     assert_status "0" "${TEST_STATUS}" "dry-run exits 0"
     assert_contains "${TEST_STDOUT}" "rotate:" "dry-run prints rotate actions"
-    assert_contains "${TEST_STDOUT}" "supervisor.log" "rotates supervisor.log"
+    assert_contains "${TEST_STDOUT}" "elinit.log" "rotates elinit.log"
     assert_contains "${TEST_STDOUT}" "log-myapp.log" "rotates log-myapp.log"
     # Files should still exist (dry-run)
-    assert_file_exists "${TEST_TMPDIR}/supervisor.log" "supervisor.log still exists"
+    assert_file_exists "${TEST_TMPDIR}/elinit.log" "elinit.log still exists"
     assert_file_exists "${TEST_TMPDIR}/log-myapp.log" "log-myapp.log still exists"
 }
 
