@@ -48,27 +48,23 @@ jobs:
       - name: ERT tests
         run: make test 2>&1 | tee /tmp/ert-output.txt; exit ${PIPESTATUS[0]}
 
-      - name: Update test badge
-        if: always() && github.event_name == 'push' && matrix.emacs-version == 'snapshot'
-        env:
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+      - name: Save ERT count
+        if: always() && matrix.emacs-version == 'snapshot'
         run: |
           LINE=$(grep "^Ran [0-9]" /tmp/ert-output.txt | tail -1)
           TOTAL=$(echo "$LINE" | grep -o '[0-9]* tests' | grep -o '^[0-9]*')
           UNEXPECTED=$(echo "$LINE" | grep -o '[0-9]* unexpected' | grep -o '^[0-9]*')
-          UNEXPECTED=${UNEXPECTED:-0}
-          if [ "$UNEXPECTED" = "0" ]; then
-            COLOR="brightgreen"
-            MSG="${TOTAL} passing"
-          else
-            COLOR="red"
-            MSG="${TOTAL} passing, ${UNEXPECTED} failing"
-          fi
-          curl -s -X PATCH \
-            -H "Authorization: token ${GIST_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"files\":{\"elinit-tests.json\":{\"content\":\"{\\\"schemaVersion\\\":1,\\\"label\\\":\\\"tests\\\",\\\"message\\\":\\\"${MSG}\\\",\\\"color\\\":\\\"${COLOR}\\\"}\"}}}" \
-            https://api.github.com/gists/e686727a6d88c17c557003e73a9c020c
+          echo "${TOTAL:-0}" > /tmp/ert-total.txt
+          echo "${UNEXPECTED:-0}" > /tmp/ert-unexpected.txt
+
+      - name: Upload ERT counts
+        if: always() && matrix.emacs-version == 'snapshot'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ert-counts
+          path: |
+            /tmp/ert-total.txt
+            /tmp/ert-unexpected.txt
 
   c-tests:
     name: C (libexec)
@@ -79,7 +75,30 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build and test
-        run: make libexec-check
+        run: make libexec-check 2>&1 | tee /tmp/c-output.txt; exit ${PIPESTATUS[0]}
+
+      - name: Save C test count
+        if: always()
+        run: |
+          TOTAL=0
+          FAILED=0
+          for line in $(grep "SUCCESS\|FAILED" /tmp/c-output.txt | grep -o '[0-9]* unit' | grep -o '[0-9]*'); do
+            : # parsed below
+          done
+          # Count passed lines from acutest output
+          TOTAL=$(grep -c '\[ OK \]' /tmp/c-output.txt || true)
+          FAILED=$(grep -c '\[ FAILED \]' /tmp/c-output.txt || true)
+          echo "${TOTAL}" > /tmp/c-total.txt
+          echo "${FAILED}" > /tmp/c-failed.txt
+
+      - name: Upload C counts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c-counts
+          path: |
+            /tmp/c-total.txt
+            /tmp/c-failed.txt
 
   shell-tests:
     name: Shell (sbin)
@@ -90,4 +109,66 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Lint and test
-        run: make sbin-check
+        run: make sbin-check 2>&1 | tee /tmp/sh-output.txt; exit ${PIPESTATUS[0]}
+
+      - name: Save shell test count
+        if: always()
+        run: |
+          TOTAL=0
+          FAILED=0
+          # Parse "N tests: N passed, N failed" lines
+          while IFS= read -r line; do
+            T=$(echo "$line" | grep -o '^# [0-9]* tests' | grep -o '[0-9]*')
+            F=$(echo "$line" | grep -o '[0-9]* failed' | grep -o '[0-9]*')
+            TOTAL=$((TOTAL + ${T:-0}))
+            FAILED=$((FAILED + ${F:-0}))
+          done < <(grep "^# [0-9]* tests" /tmp/sh-output.txt)
+          echo "${TOTAL}" > /tmp/sh-total.txt
+          echo "${FAILED}" > /tmp/sh-failed.txt
+
+      - name: Upload shell counts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sh-counts
+          path: |
+            /tmp/sh-total.txt
+            /tmp/sh-failed.txt
+
+  update-badge:
+    name: Update test badge
+    needs: [elisp, c-tests, shell-tests]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all counts
+        uses: actions/download-artifact@v4
+        with:
+          path: counts
+
+      - name: Aggregate and update badge
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          ERT_TOTAL=$(cat counts/ert-counts/ert-total.txt 2>/dev/null || echo 0)
+          ERT_FAIL=$(cat counts/ert-counts/ert-unexpected.txt 2>/dev/null || echo 0)
+          C_TOTAL=$(cat counts/c-counts/c-total.txt 2>/dev/null || echo 0)
+          C_FAIL=$(cat counts/c-counts/c-failed.txt 2>/dev/null || echo 0)
+          SH_TOTAL=$(cat counts/sh-counts/sh-total.txt 2>/dev/null || echo 0)
+          SH_FAIL=$(cat counts/sh-counts/sh-failed.txt 2>/dev/null || echo 0)
+          TOTAL=$((ERT_TOTAL + C_TOTAL + SH_TOTAL))
+          FAILED=$((ERT_FAIL + C_FAIL + SH_FAIL))
+          if [ "$FAILED" = "0" ]; then
+            COLOR="brightgreen"
+            MSG="${TOTAL} passing"
+          else
+            COLOR="red"
+            MSG="${TOTAL} total, ${FAILED} failing"
+          fi
+          echo "Badge: ${MSG} (${COLOR})"
+          curl -s -X PATCH \
+            -H "Authorization: token ${GIST_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"files\":{\"elinit-tests.json\":{\"content\":\"{\\\"schemaVersion\\\":1,\\\"label\\\":\\\"tests\\\",\\\"message\\\":\\\"${MSG}\\\",\\\"color\\\":\\\"${COLOR}\\\"}\"}}}" \
+            https://api.github.com/gists/e686727a6d88c17c557003e73a9c020c

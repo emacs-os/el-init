@@ -74,11 +74,13 @@ The README test-count badge is powered by a GitHub Gist + shields.io endpoint.
 - **Gist:** `e686727a6d88c17c557003e73a9c020c` (secret gist, user `el-sloppo`)
 - **Filename inside gist:** `elinit-tests.json`
 - **Secret:** `GIST_TOKEN` in repo Actions secrets -- a classic GitHub token with `gist` scope
-- **Updated by:** `.github/workflows/ci.yml`, `elisp` job, `snapshot` matrix run only, on push to master
+- **Updated by:** `.github/workflows/ci.yml`, `update-badge` job, on push to master
 
-The workflow captures ERT output, parses the `Ran N tests` summary line, and
-PATCHes the Gist via the GitHub API.  The badge URL in README.org reads from
-that Gist via `https://img.shields.io/endpoint?url=...`.
+The badge aggregates all three test suites (Elisp ERT, C acutest, shell).
+Each job uploads its counts as artifacts.  The `update-badge` job downloads
+them, sums totals and failures, and PATCHes the Gist via the GitHub API.
+The badge URL in README.org reads from that Gist via
+`https://img.shields.io/endpoint?url=...`.
 
 If the token expires, generate a new classic token with `gist` scope at
 https://github.com/settings/tokens and update the `GIST_TOKEN` secret in
