@@ -352,6 +352,7 @@ Each unit file is a single plist expression with ~:id~ required.
 | ~:documentation~ | string or list of strings | ~nil~ | Documentation URIs/paths, metadata only |
 | ~:before~ | string or list of strings | ~nil~ | Inverse ordering, see below |
 | ~:wants~ | string or list of strings | ~nil~ | Soft dependency, see below |
+| ~:conflicts~ | string or list of strings | ~nil~ | Mutual exclusion, see below |
 | ~:kill-signal~ | symbol or string | ~SIGTERM~ | Graceful stop signal for this unit |
 | ~:kill-mode~ | symbol or string | ~process~ | ~process~ or ~mixed~, see Stop Semantics |
 | ~:remain-after-exit~ | boolean | ~nil~ | ~oneshot~ only: latch active on success |
@@ -408,9 +409,9 @@ Validation is performed by unit-file validation
   ~:restart-sec~ (simple-only keys).
 - ~:tags~ must be a symbol, string, or proper list of symbols/strings.  Empty
   strings and ~nil~ elements within the list are rejected.
-- ~:after~, ~:requires~, ~:before~, and ~:wants~ must be string or proper list
-  of strings.  Empty or whitespace-only dependency IDs are rejected.
-  Self-referencing the entry's own ID is rejected.
+- ~:after~, ~:requires~, ~:before~, ~:wants~, and ~:conflicts~ must be string
+  or proper list of strings.  Empty or whitespace-only dependency IDs are
+  rejected.  Self-referencing the entry's own ID is rejected.
 - ~:wanted-by~ and ~:required-by~ must be string or proper list of strings.
   Referenced IDs must exist and be ~:type target~.
 - ~:working-directory~ must be a string or ~nil~.
@@ -493,6 +494,16 @@ Planner rules:
   block the wanting unit.
 - ~:wants~ does not force-start disabled units.
 
+** Conflict Semantics: ~:conflicts~
+
+- ~:conflicts~: mutual exclusion.  Starting a unit stops active conflicting
+  units.
+- Conflicts are symmetric at runtime: if A declares ~:conflicts "B"~, starting
+  A stops B and starting B stops A.
+- Conflict-stopped units do not auto-restart until explicitly started.
+- Missing conflict targets are dropped with warning (same as ~:after~).
+- Targets may declare ~:conflicts~.
+
 ** Internal Normalized Shape
 
 Valid entries are normalized to schema v1 tuple form:
@@ -510,7 +521,8 @@ Valid entries are normalized to schema v1 tuple form:
     sandbox-profile sandbox-network sandbox-ro-bind sandbox-rw-bind
     sandbox-tmpfs sandbox-raw-args
     log-format
-    limit-nofile limit-nproc limit-core limit-fsize limit-as)
+    limit-nofile limit-nproc limit-core limit-fsize limit-as
+    conflicts)
 #+end_src
 
 Accessor functions (~elinit-entry-id~, ~elinit-entry-command~, etc.) are
