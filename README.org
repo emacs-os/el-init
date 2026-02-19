@@ -251,6 +251,9 @@ as pid2 in an Alpine Linux container.
 #+CAPTION: Default dashboard view after graphical boot
 [[file:assets/elinit-dashboard-default.png]]
 
+Pressing ~v~ and ~V~ toggle these ~.target~ views in the Service sections,
+hidden by default to keep the signal-to-noise ratio down.
+
 *** Why some targets are "reached"
 
 At startup, elinit picks a root target (by default ~graphical.target~) and
