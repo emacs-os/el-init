@@ -3,9 +3,9 @@
 
 * el-init
 
-[[file:assets/elinit-branding-logo-small.png]]
+A statically compiled Emacs init (PID 1) patchset, Emacs Lisp-based service supervisor and core component of Emacs-OS.
 
-*A statically compiled Emacs init (PID 1) patchset, Emacs Lisp-based service supervisor and core component of Emacs-OS.*
+[[file:assets/elinit-branding-logo-small.png]]
 
 *el-init* is an Emacs Lisp-based, systemd-inspired init and
 service-management solution.  Whether you are building a full-send Emacs-OS, or
