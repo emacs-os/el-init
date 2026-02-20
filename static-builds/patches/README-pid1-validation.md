@@ -32,6 +32,7 @@ git apply static-builds/patches/emacs-0003-fix-pid1-signal-handler-overrides.pat
   - `--pid1` in `standard_args[]` at priority 98 (between daemon=99 and help=90)
   - `argmatch()` parsing after daemon argument block
   - `--pid1` in `usage_message`
+  - `DEFVAR_BOOL("pid1-mode", ...)` exposing state to Lisp
 
 - **`src/lisp.h`**:
   - `extern bool pid1_mode` declaration
@@ -41,7 +42,6 @@ git apply static-builds/patches/emacs-0003-fix-pid1-signal-handler-overrides.pat
 - **`src/emacs.c`**:
   - `DEFSYMs` for `Qpid1_boot_hook`, `Qpid1_reboot_hook`, `Qpid1_poweroff_hook`
   - `DEFVAR_LISP` for `pid1-boot-hook`, `pid1-reboot-hook`, `pid1-poweroff-hook`
-  - `DEFVAR_BOOL("pid1-mode", ...)` exposing state to Lisp
   - PID1 hook execution in `Fkill_emacs` (before `kill-emacs-hook`)
 
 - **`src/lisp.h`**:
@@ -65,6 +65,8 @@ git apply static-builds/patches/emacs-0003-fix-pid1-signal-handler-overrides.pat
 - **`src/emacs.c`**: Reentrancy guard for PID1 shutdown hooks
 - **`src/keyboard.c`**: `!pid1_mode` guard on SIGINT handler
 - **`src/sysdep.c`**: `!pid1_mode` guard on SIGTERM fatal handler
+- **`src/emacs.c`**: `DEFVAR_BOOL("pid1-mode", pid1_mode1, ...)` fix
+  for the `*_mode1` runtime variable pattern
 
 ## Signal mapping
 
@@ -137,7 +139,8 @@ PASS: `pid1-mode` is t when `--pid1` given.
 
 ```
 $ ./src/emacs --help 2>&1 | grep pid1
---pid1                  run as PID 1 init process
+--pid1                      enable PID1 init-process mode (child reaping,
+                              shutdown signal hooks)
 ```
 
 PASS

@@ -18,7 +18,8 @@ implicit file-path probing in PID1 hooks.
 
 - **When**: Runs once after startup, after `emacs-startup-hook` and all init
   files have been processed.
-- **Where**: In `normal-top-level` unwind-protect cleanup (`lisp/startup.el`).
+- **Where**: In two `lisp/startup.el` startup paths: `normal-top-level` and
+  `command-line-1`.
 - **Purpose**: Start managed services by invoking `elinit-start`.
 - **Batch mode**: Does not fire in `--batch` mode. Fires in interactive and
   daemon modes.
