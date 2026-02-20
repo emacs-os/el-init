@@ -14,7 +14,7 @@ TEST_ELS = $(TEST_HELPERS) $(sort $(filter-out $(TEST_HELPERS), \
 
 all: check
 
-check: lint test libexec-check sbin-check
+check: lint test libexec-check sbin-check pid1-check
 
 lint: byte-compile checkdoc package-lint
 

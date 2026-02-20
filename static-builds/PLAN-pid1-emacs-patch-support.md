@@ -1,7 +1,7 @@
 # PLAN: Emacs --pid1 Patch Support Contract
 
 Date: 2026-02-18
-Status: Draft Locked
+Status: Complete (2026-02-20)
 Authority: This file is the implementation contract for PID1 patch work in
 `~/repos/emacs`.
 
@@ -48,6 +48,13 @@ Admin-facing guidance remains in `static-builds/README.md`.
    - `static-builds/patches/README-pid1-validation.md`
 4. A short integration note mapping Emacs hook points to elinit behavior:
    - `static-builds/patches/README-pid1-elinit-integration.md`
+
+Implementation note:
+
+1. Final artifact set also includes:
+   - `static-builds/patches/emacs-0003-fix-pid1-signal-handler-overrides.patch`
+2. Patch 0003 is a follow-up correctness fix to preserve PID1 signal handlers
+   after later initialization stages.
 
 ## Behavioral Contract
 
@@ -221,6 +228,16 @@ This plan is complete when:
 2. `--pid1` mode, reaping, and hook primitives are implemented and validated.
 3. Elinit-side PID1 Lisp policies can be layered on top without additional
    C changes.
+
+Completion record (2026-02-20):
+
+1. Patch artifacts exported to `static-builds/patches/`:
+   `emacs-0001`, `emacs-0002`, and follow-up fix `emacs-0003`.
+2. Validation and integration docs are present and aligned:
+   `README-pid1-validation.md`, `README-pid1-elinit-integration.md`.
+3. Downstream contract is satisfied:
+   `elinit-pid1.el` provides policy variables and hook-driven behavior without
+   additional C changes.
 
 ## Explicit Non-Goals
 1. No mandatory rc script execution in C.

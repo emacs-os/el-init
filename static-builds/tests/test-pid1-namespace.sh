@@ -89,7 +89,9 @@ run_pid1_daemon() {
     _rp_elisp="${2}"
     shift 2
     _rp_socket_dir="${_rp_marker_dir}/socket"
-    mkdir -p "${_rp_socket_dir}"
+    mkdir -p "${_rp_marker_dir}" "${_rp_socket_dir}"
+    # Emacs daemon requires a private socket directory.
+    chmod 700 "${_rp_marker_dir}" "${_rp_socket_dir}"
     # shellcheck disable=SC2086
     PID1_TEST_MARKER_DIR="${_rp_marker_dir}" \
     timeout 30 \
@@ -109,7 +111,9 @@ run_pid1_daemon_no_pid1() {
     _rp_elisp="${2}"
     shift 2
     _rp_socket_dir="${_rp_marker_dir}/socket"
-    mkdir -p "${_rp_socket_dir}"
+    mkdir -p "${_rp_marker_dir}" "${_rp_socket_dir}"
+    # Emacs daemon requires a private socket directory.
+    chmod 700 "${_rp_marker_dir}" "${_rp_socket_dir}"
     # shellcheck disable=SC2086
     PID1_TEST_MARKER_DIR="${_rp_marker_dir}" \
     timeout 30 \
@@ -141,37 +145,38 @@ find_emacs_pid() {
     if [ -z "${_PID1_UNSHARE_PID}" ]; then
         return 1
     fi
-    # Level 1: find child of timeout (this is unshare).
-    _fe_unshare=""
+    # Process layout can vary (timeout/unshare wrappers, runtime exec chain).
+    # Walk descendants of the background root and pick the Emacs process by comm.
     _fe_tries=0
-    while [ -z "${_fe_unshare}" ] && [ "${_fe_tries}" -lt 25 ]; do
-        _fe_unshare="$(pgrep -P "${_PID1_UNSHARE_PID}" 2>/dev/null | head -1)" || true
-        if [ -z "${_fe_unshare}" ]; then
-            sleep 0.2
-            _fe_tries=$((_fe_tries + 1))
-        fi
+    while [ "${_fe_tries}" -lt 25 ]; do
+        _fe_frontier="${_PID1_UNSHARE_PID}"
+        _fe_desc=""
+        while [ -n "${_fe_frontier}" ]; do
+            _fe_next=""
+            for _fe_pid in ${_fe_frontier}; do
+                _fe_children="$(pgrep -P "${_fe_pid}" 2>/dev/null || true)"
+                for _fe_child in ${_fe_children}; do
+                    _fe_desc="${_fe_desc} ${_fe_child}"
+                    _fe_next="${_fe_next} ${_fe_child}"
+                done
+            done
+            _fe_frontier="${_fe_next# }"
+        done
+        for _fe_pid in ${_fe_desc}; do
+            _fe_comm="$(ps -p "${_fe_pid}" -o comm= 2>/dev/null | tr -d '[:space:]')"
+            case "${_fe_comm}" in
+                emacs|emacs-*)
+                    printf '%s' "${_fe_pid}"
+                    return 0
+                    ;;
+            esac
+        done
+        sleep 0.2
+        _fe_tries=$((_fe_tries + 1))
     done
-    if [ -z "${_fe_unshare}" ]; then
-        printf '  WARN: could not find child of timeout PID %s\n' \
-            "${_PID1_UNSHARE_PID}" >&2
-        return 1
-    fi
-    # Level 2: find child of unshare (this is Emacs).
-    _fe_emacs=""
-    _fe_tries=0
-    while [ -z "${_fe_emacs}" ] && [ "${_fe_tries}" -lt 25 ]; do
-        _fe_emacs="$(pgrep -P "${_fe_unshare}" 2>/dev/null | head -1)" || true
-        if [ -z "${_fe_emacs}" ]; then
-            sleep 0.2
-            _fe_tries=$((_fe_tries + 1))
-        fi
-    done
-    if [ -z "${_fe_emacs}" ]; then
-        printf '  WARN: could not find child of unshare PID %s\n' \
-            "${_fe_unshare}" >&2
-        return 1
-    fi
-    printf '%s' "${_fe_emacs}"
+    printf '  WARN: could not find emacs descendant of PID %s\n' \
+        "${_PID1_UNSHARE_PID}" >&2
+    return 1
 }
 
 # send_signal_to_pid1 SIGNAL

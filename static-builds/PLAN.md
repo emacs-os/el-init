@@ -1,7 +1,7 @@
 # PLAN: static-builds elinit-baked variants and optional PID1 mode
 
 Date: 2026-02-18
-Status: Draft Locked
+Status: Complete (2026-02-20)
 Authority: This file is the implementation contract for static-builds work.
 
 ## Rule of Interpretation
@@ -17,8 +17,8 @@ configuration, while preserving existing static build variants exactly as-is.
 
 This plan has two tracks:
 
-1. Track A (now): add two new build variants only.
-2. Track B (next): optional Emacs PID1 patch and optional rc.boot/rc.shutdown
+1. Track A (implemented): add two new build variants only.
+2. Track B (implemented): optional Emacs PID1 patch and optional rc.boot/rc.shutdown
    integration.
 
 Emacs-side PID1 patch requirements are defined in:
@@ -44,12 +44,12 @@ Emacs-side PID1 patch requirements are defined in:
 ## Scope Freeze
 The following existing files MUST remain unchanged in this plan:
 
-- `static-builds/PKGBUILD-static-nox`
-- `static-builds/PKGBUILD-static-nox-minimal`
-- `static-builds/PKGBUILD-static-nox-nativecomp`
-- `static-builds/emacs-static-nox.nix`
-- `static-builds/emacs-static-nox-minimal.nix`
-- `static-builds/emacs-static-nox-nativecomp.nix`
+- `static-builds/stalimacs/PKGBUILD-static-nox`
+- `static-builds/stalimacs/PKGBUILD-static-nox-minimal`
+- `static-builds/stalimacs/PKGBUILD-static-nox-nativecomp`
+- `static-builds/stalimacs/emacs-static-nox.nix`
+- `static-builds/stalimacs/emacs-static-nox-minimal.nix`
+- `static-builds/stalimacs/emacs-static-nox-nativecomp.nix`
 
 Only two new build files are introduced in Track A:
 
@@ -188,7 +188,7 @@ Acceptance:
 
 ## Track B: Optional PID1 and rc scripts
 
-Track B is planned work after Track A and is optional by design.
+Track B is implemented and remains optional by design.
 
 ### Phase B1: Emacs PID1 patch proposal
 Deliverables:
@@ -276,6 +276,15 @@ Acceptance:
 1. Tests prove reaping behavior when enabled.
 2. Tests prove no behavior change when disabled.
 
+Implementation validation:
+
+1. Enabled-path run completed with a patched Emacs binary:
+   `make pid1-check ELINIT_PID1_EMACS=/home/telecommuter/repos/emacs/build-pid1-test/src/emacs`
+2. Result: `# 12 tests: 12 passed, 0 failed`.
+3. Harness reliability fix included in this repository: daemon socket dirs are
+   created with mode `0700`, and PID lookup walks descendants instead of
+   assuming a fixed two-level process tree.
+
 ## Non-Goals
 This plan does not include:
 
@@ -295,3 +304,10 @@ Track A is complete when:
 
 Track B is complete only after optional PID1 patch and script policy behavior
 are implemented and tested behind explicit opt-in gates.
+
+Completion record (2026-02-20):
+
+1. Track A complete.
+2. Track B complete.
+3. Opt-in nature preserved: all PID1 behavior remains behind explicit `--pid1`
+   and Lisp policy gates.
