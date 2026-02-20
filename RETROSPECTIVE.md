@@ -47,15 +47,22 @@ project did not sign up to be a babysitter for robots.
 It should be admitted that many have tried to produce a static Emacs
 build over the years -- most failing -- and nobody bothered to add
 zombie reaping as a feature flag with `--pid1`.  None of the toy
-projects from the last few decades actually did it.  The difference
-now is that you can throw ambitious assignments at bots and let them
+projects from the last decade actually did it.  The difference
+now is that you can throw mundane assignments at bots and let them
 do the tedious work that no human really wants to do.  There is a
 strong use case for AI as a tool in that regard.  But as for coding
 itself?  Humans still want to do it, and they remain better at
-decision making and judgement calls overall -- they have true
+decision making and judgement calls overall -- as humans have true
 rationality, not a system programmed to emulate it.
 
 The human behind this project wishes to remain anonymous (and does not
-want credit), as this project will likely generate controversy.  It is
+want credit), as this project will likely generate controversy, and the author does
+not feel it appropriate to be recognized as having "done much of anything."  It is
 released under GPL-3.0 -- fitting, given that probably 99% of the
 Emacs Lisp code these models were trained on was also GPL-3.0.
+
+All in all, this software is planned to be released to MELPA because
+there is nothing else quite like it for Emacs as far as service
+supervision goes.  It is actually useful -- for tinkerers, init
+hackers, or regular users who just want to supervise userland
+processes.
