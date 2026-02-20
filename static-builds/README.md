@@ -1,72 +1,13 @@
 # static-builds
 
-Administrator guide for static Emacs build paths.
+Administrator guide for PID1-patched static Emacs builds with baked-in elinit.
+Building with the `-patched-for-pid1` variant produces a PID1-capable binary,
+but PID1 behavior is only active when launched with `--pid1`.
 
-This file is operator-facing guidance. Implementation requirements and delivery
-gates live in plan files:
+*For build instruction files for a static, portable Emacs without the PID1
+patchset, see the `./stalimacs` directory.*
 
-- `static-builds/PLAN-pid1-emacs-patch-support.md` -- Emacs upstream patch prerequisite
-- `static-builds/PLAN.md` -- packaging/integration execution plan
-
-## Dependency chain
-
-1. `PLAN-pid1-emacs-patch-support.md` defines the Emacs patch prerequisite.
-   Status: **complete** — patches in `patches/`.
-2. `PLAN.md` defines the packaging/integration plan.
-   Status: **Track A complete, Track B in progress** -- 6 vanilla variants available, 2 baked variants with PID1 support.
-3. This `README.md` is the administrator handbook.
-
-## Pick your path
-
-1. I just want a vanilla portable glibc-compiled static Emacs.
-2. I want static Emacs with `--pid1` reaping support plus baked-in
-   elinit, and I handle early boot in initramfs.
-3. I want static Emacs with `--pid1` reaping support plus baked-in
-   elinit, and I handle early boot in Emacs Lisp (`rc.boot.el` /
-   `rc.shutdown.el`).
-
-## Variant matrix
-
-| Variant | Type | PID1 | Elinit | Size |
-|---------|------|------|------------|------|
-| `PKGBUILD-static-nox-minimal` | Arch | no | no | ~10MB |
-| `PKGBUILD-static-nox` | Arch | no | no | ~14MB |
-| `PKGBUILD-static-nox-nativecomp` | Arch | no | no | ~376MB |
-| `PKGBUILD-static-nox-elinit-patched-for-pid1` | Arch | yes | yes | ~14MB |
-| `emacs-static-nox-minimal.nix` | Nix | no | no | ~10MB |
-| `emacs-static-nox.nix` | Nix | no | no | ~14MB |
-| `emacs-static-nox-nativecomp.nix` | Nix | no | no | ~376MB |
-| `emacs-static-nox-elinit-patched-for-pid1.nix` | Nix | yes | yes | ~14MB |
-
-PID1 patches: `patches/emacs-0001-*.patch` through `emacs-0003-*.patch`
-(see `patches/README.md` for details).
-
-See `PLAN.md` for the implementation contract.
-See `PLAN-pid1-emacs-patch-support.md` for the Emacs patch spec.
-
-## Path 1 -- vanilla portable static Emacs
-
-Use the existing vanilla files above. These variants do not assume PID1 mode
-and do not require baked elinit startup.
-
-Example Nix commands:
-
-```bash
-nix-build static-builds/emacs-static-nox-minimal.nix
-nix-build static-builds/emacs-static-nox.nix
-nix-build static-builds/emacs-static-nox-nativecomp.nix
-```
-
-Example PKGBUILD workflow:
-
-```bash
-cp static-builds/PKGBUILD-static-nox ./PKGBUILD
-makepkg -f
-```
-
-Swap `PKGBUILD-static-nox` for `-minimal` or `-nativecomp` as needed.
-
-### Building the PID1-patched variant
+## Building the PID1-patched variant
 
 Nix:
 
@@ -83,7 +24,7 @@ sudo pacman -U emacs-nox-static-elinit-patched-for-pid1-*.pkg.tar.zst
 ```
 
 The resulting binary includes:
-- All features of `PKGBUILD-static-nox` / `emacs-static-nox.nix`
+- All features of the vanilla `emacs-static-nox` build (see `./stalimacs`)
 - `--pid1` flag for PID1 init process mode
 - Bundled elinit with autostart (when `--pid1` is used) -- no user init
   files or `~/.emacs` configuration required; the packaged `site-start.el`
@@ -102,9 +43,10 @@ EMACS_ELINIT_DISABLE=1 emacs --pid1
 (setq elinit-pid1-autostart-disabled t)
 ```
 
-## Paths 2 and 3 -- common requirements
+## Common requirements
 
-These two paths share the same base mechanics:
+Both deployment paths (initramfs-based and Lisp-based early boot) share the
+same base mechanics:
 
 1. Build/install the `*-elinit-patched-for-pid1` variant.
 2. Install Emacs at a stable absolute path, typically `/usr/bin/emacs`.
@@ -116,10 +58,7 @@ These two paths share the same base mechanics:
 6. Keep helper binaries (`elinit-logd`, `elinit-runas`) installed and
    executable in `libexec` for runtime operation.
 
-Build with `PKGBUILD-static-nox-elinit-patched-for-pid1` (Arch) or
-`emacs-static-nox-elinit-patched-for-pid1.nix` (Nix).
-
-### C helper binary policy for admins
+## C helper binary policy
 
 For patched+baked variants, the expected process is:
 
@@ -142,7 +81,7 @@ Use these canonical system paths:
 | Optional local boot extension | `/etc/rc.0.local.el` |
 | Optional local post-boot extension | `/etc/rc.1.local.el` |
 
-The rc script path convention above matches `static-builds/scripts/*.example`.
+The rc script path convention above matches `scripts/*.example` in this directory.
 
 ## How to enable units from chroot before first boot
 
@@ -178,19 +117,19 @@ chmod 755 /mnt/lib/init/rc.boot.el /mnt/lib/init/rc.shutdown.el
 This is enough to seed first boot behavior without running `elinitctl` in
 the chroot.
 
-## Path 2 specifics -- initramfs handles early boot
+## Early boot strategies
+
+### Initramfs handles early boot
 
 Use this when mount/dev/fsck/network setup is already done before PID1 handoff.
+Do not rely on rc Lisp scripts for core early init -- keep `/lib/init/rc.boot.el`
+optional or absent and focus on the elinit unit set under `/etc/elinit.el/`.
 
-1. Do not rely on rc Lisp scripts for core early init.
-2. Keep `/lib/init/rc.boot.el` optional or absent.
-3. Focus on elinit unit set under `/etc/elinit.el/`.
-
-## Path 3 specifics -- Emacs Lisp handles early boot
+### Emacs Lisp handles early boot
 
 Use this when you want sinit-style boot/shutdown logic in Lisp.
-The `elinit-pid1` module (`elinit-pid1.el`) provides the PID1 variables,
-script loading policies, and hook wiring described below.
+The `elinit-pid1` module (`elinit-pid1.el`) provides PID1 variables,
+script loading policies, and hook wiring.
 
 1. Place `rc.boot.el` at `/lib/init/rc.boot.el`.
 2. Place `rc.shutdown.el` at `/lib/init/rc.shutdown.el`.
@@ -207,7 +146,3 @@ After first boot:
 3. Verify configured units are loaded (`elinitctl list-units`).
 4. Verify no stale helper rebuild is required at startup.
 
-## Notes
-
-The `-patched-for-pid1` suffix indicates PID1-capable build output. It does not
-mean PID1 behavior is automatically enabled in all contexts.
