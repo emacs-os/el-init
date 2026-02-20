@@ -2,6 +2,8 @@
 
 ![el-sloppo](assets/el-sloppo-small.png)
 
+**This document (and the el-init / Emacs-OS project as a whole) exists to ask questions and spawn conversation.**
+
 This project was built with significant assistance from AI tooling
 using an "agent" driven method.
 Claude Code 4.6 Opus (Anthropic) handles the multi-step code generation
@@ -53,10 +55,26 @@ zombie reaping as a feature flag with `--pid1`.  None of the toy
 projects from the last decade actually did it.  The difference
 now is that you can throw mundane assignments at bots and let them
 do the tedious work that no human really wants to do.  There is a
-strong use case for AI as a tool in that regard.  But as for coding
-itself?  Humans still want to do it, and they remain better at
-decision making and judgement calls overall -- as humans have true
-rationality, not a system programmed to emulate it.
+strong use case for AI as a tool in that regard.  But then it goes
+without saying -- **therefore this software should not exist.  If it
+is not worth a human doing, it is not worth doing at all.**  And so
+it follows that the world is going to be populated with more and more
+of this, none of which is worth a human's time to make, and therefore
+arguably also not worth a human's time to consume.
+
+As for coding itself?  Humans still want to do it, and they remain
+better at decision making and judgement calls overall -- as humans
+have true rationality, not a system programmed to emulate it.
+
+So maybe it is time to ask a final question: maybe it is time to just
+uninstall all these coding agents and go back to making small, simple
+programs that we can reason about by ourselves again.  Maybe we do not
+need el-init or Emacs-OS after all.  What do you say?
+
+And maybe we need to modify our licensing in such a way that forbids
+our code from being used as training data in LLM models.  It does not
+stop the problem, but maybe it is a good start.  And maybe whistle
+blowers could do the rest.
 
 The human behind this project wishes to remain anonymous (and does not
 want credit), as this project will likely generate controversy, and the author does
