@@ -2909,7 +2909,7 @@ Where behavior diverges across systems, parenthetical notes explain.
 | *Process Supervision* | | | | |
 | Restart crashed daemons | yes | yes | yes | yes |
 | Restart policies (always/on-failure/on-success/no) | yes (6 modes) | no (always or never) | no (always or never) | yes (4 modes) |
-| Restart backoff / graduated delay | yes (v254 RestartSteps) | no | no | yes (restart-sec per unit) |
+| Restart backoff / graduated delay | yes (v254 RestartSteps) | no | no | partial (fixed restart-sec delay; no graduated steps) |
 | Crash-loop detection | yes (StartLimitBurst) | no | no | yes (elinit--failed) |
 | Configurable kill signal | yes (KillSignal) | yes (control/ scripts) | yes (down-signal file) | yes (kill-signal) |
 | Kill mode (cgroup/process/mixed) | yes (KillMode) | no (process only) | no (process only) | yes (kill-mode, process/mixed) |
@@ -2928,7 +2928,7 @@ Where behavior diverges across systems, parenthetical notes explain.
 | Ordering declarations | yes (Before/After) | no (manual in run scripts) | yes (s6-rc ordering) | yes (before/after) |
 | Topological sort with cycle detection | yes | no | yes | yes (DAG with cycle fallback) |
 | Parallel startup respecting ordering | yes | yes (all parallel, no ordering) | yes | yes (DAG in-degree scheduling) |
-| Conflict declarations | yes (Conflicts) | no | no | no |
+| Conflict declarations | yes (Conflicts) | no | no | yes (conflicts) |
 | Conditional activation | yes (ConditionXxx) | no | no | no |
 | *Targets / Runlevels* | | | | |
 | Named synchronization barriers | yes (targets) | partial (runlevels as dirs) | yes (s6-rc bundles) | yes (targets) |
@@ -2944,7 +2944,7 @@ Where behavior diverges across systems, parenthetical notes explain.
 | Per-service log capture | yes (journal tags by unit) | yes (service/log/run pipe) | yes (servicedir/log pipe) | yes (per-id log files) |
 | Log rotation | yes (journal size/time) | yes (svlogd built-in) | yes (s6-log built-in) | yes (elinit-logrotate) |
 | Log pruning | yes (journald vacuum) | no (manual) | no (manual) | yes (elinit-log-prune) |
-| Structured/indexed log queries | yes (journalctl field filtering) | no | no | no |
+| Structured/indexed log queries | yes (journalctl field filtering) | no | no | partial (journal command with per-unit filtering; no global index) |
 | Network log shipping | yes (journal-remote/upload) | partial (svlogd UDP) | no | no |
 | *Resource Control* | | | | |
 | Cgroup integration | yes (native, per-unit cgroup) | no | no | no |
@@ -3015,7 +3015,7 @@ Where behavior diverges across systems, parenthetical notes explain.
 | Soft reboot (userspace only) | yes (systemd-soft-reboot) | no | no | no |
 | *Misc* | | | | |
 | Transient units from CLI | yes (systemd-run) | no | no | no |
-| Boot performance analysis | yes (systemd-analyze blame/plot/critical-chain) | no | no | no |
+| Boot performance analysis | yes (systemd-analyze blame/plot/critical-chain) | no | no | yes (elinitctl blame) |
 | Virtualization detection | yes (systemd-detect-virt) | no | no | no |
 | sudo replacement | yes (run0, v256+) | no | no | no |
 | Config override delta view | yes (systemd-delta) | no | no | no |
@@ -3045,7 +3045,9 @@ in these examples are non-target units (where ~:command~ is required).
 | ~Requires=...~ | ~:requires (...)~ | Hard dependency + ordering |
 | ~Environment=K=V~ | ~:environment ((\"K\" . \"V\"))~ | Alist form |
 | ~ExecStop=...~ | ~:exec-stop "..."~ | Stop command |
+| ~ExecReload=...~ | ~:exec-reload "..."~ | Reload command (simple units) |
 | ~KillSignal=...~ | ~:kill-signal ...~ | Signal symbol |
+| ~Conflicts=...~ | ~:conflicts (...)~ | Mutual exclusion set |
 | ~RemainAfterExit=yes~ | ~:remain-after-exit t~ | Oneshot active latch |
 | ~User=~/~Group=~ | ~:user~ / ~:group~ | Requires root manager + trusted unit file |
 | ~LimitNOFILE=~ | ~:limit-nofile~ | Integer, ~infinity~, or ~"SOFT:HARD"~ |
