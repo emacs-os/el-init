@@ -7,6 +7,18 @@ ship PID1 capability only -- the administrator owns all runtime policy
 *For build instruction files for a static, portable Emacs without the PID1
 patchset, see the `./stalimacs` directory.*
 
+**Choosing a base distribution:** if you are seriously considering running
+Emacs as PID1, start with a distribution that already supports multiple
+non-systemd init systems.  Distributions like Artix Linux, KISS Linux, or
+Obarun are designed to work without systemd and will not fight you at every
+turn.  On a systemd-based distribution, countless packages carry hard
+dependencies on systemd libraries, udev rules assume systemd is present,
+and login/session management is tightly coupled to systemd-logind.
+Ripping all of that out is a significant undertaking that has nothing to do
+with elinit itself.  Starting from a systemd-free base lets you focus on
+actually configuring your init system rather than constantly working around
+a deeply entrenched one.
+
 ## Building the PID1-patched variant
 
 Nix:
