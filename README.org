@@ -84,6 +84,8 @@ dashboard, or ~elinitctl~ from the terminal.
 :CUSTOM_ID: ai-dev-disclosure
 :END:
 
+[[file:assets/you-really-should-read-this-small.png]]
+
 This project was built with significant AI assistance.  See
 [[file:RETROSPECTIVE.md][RETROSPECTIVE.md]] for the full disclosure
 and the human author's unfiltered opinions on AI-driven development.
