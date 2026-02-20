@@ -85,7 +85,9 @@ dashboard, or ~elinitctl~ from the terminal.
 :END:
 
 This project was built with significant AI assistance.  See
-[[file:RETROSPECTIVE.md][RETROSPECTIVE.md]] for the full disclosure.
+[[file:RETROSPECTIVE.md][RETROSPECTIVE.md]] for the full disclosure
+and the human author's unfiltered opinions on AI-driven development.
+Some of those opinions may surprise you.
 
 ** Handbook Overview
 
