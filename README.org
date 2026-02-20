@@ -3403,7 +3403,7 @@ This project is built with significant assistance from AI tooling.
 Claude Code 4.6 Opus (Anthropic) handles the multi-step code generation
 process -- Emacs Lisp, C, and POSIX shell -- including tests, documentation,
 and refactoring.  Codex 5.3 Extra High (OpenAI) is used for the review
-process.  Every change goes through the same CI pipeline (~make check~) and
+process and plan generation.  Every change goes through the same CI pipeline (~make check~) and
 is reviewed by the maintainer before merge.  The commit history is
 transparent: AI-assisted commits carry a ~Co-Authored-By: Claude~ trailer.
 
