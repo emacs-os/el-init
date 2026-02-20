@@ -114,6 +114,7 @@ provides detailed reference material:
 - [[#customization-reference][Customization Reference]] - all options and dashboard faces
 - [[#command-reference][Command Reference]] - interactive and dashboard command map
 - [[#security][Security]] - manager targeting, transport boundary, trust gate, sandbox, rlimits
+- [[#pid1-for-the-init-hackers-tinkerers-and-adventurers-among-us][PID1 - for the init hackers, tinkerers and adventurers among us]] - all docs for this crazy idea are in ~./static-builds~
 - [[#service-management-systems-comparison][Service Management Systems Comparison]] - matrix, conversions, import tooling
 - [[#development][Development]] - test/lint workflows
 - [[#topical-index][Topical Index]] - exhaustive cross-reference
@@ -2883,6 +2884,13 @@ Each limit key accepts one of three forms:
   unprivileged user because the kernel caps it at the current hard limit.
 - If ~setrlimit~ fails at runtime, the helper exits with code 112 and the
   service is not started.
+
+* PID1 - for the init hackers, tinkerers and adventurers among us
+:PROPERTIES:
+:CUSTOM_ID: pid1-for-the-init-hackers-tinkerers-and-adventurers-among-us
+:END:
+
+All documentation related to this crazy idea is in [[file:./static-builds][./static-builds]].
 
 * Service Management Systems Comparison
 :PROPERTIES:
