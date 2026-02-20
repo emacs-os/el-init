@@ -76,7 +76,14 @@ Or for unconditional loading (when this Emacs instance is always PID1):
 (add-to-list 'load-path "/usr/share/emacs/site-lisp/elinit")
 (require 'elinit)
 (setq elinit-libexec-build-on-startup 'never)
+(setq elinit-log-directory "/var/log/elinit")
 ```
+
+Note: `elinit-log-directory` defaults to `~/.emacs.d/elinit/`, which is
+appropriate for a desktop user session but not for a system-wide PID1
+deployment.  When Emacs is running as PID1, set it to a system log path
+such as `/var/log/elinit` so that service logs live alongside the rest of
+the system logs.
 
 ## Common requirements
 
