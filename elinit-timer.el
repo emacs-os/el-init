@@ -116,7 +116,7 @@ and `elinit-mode' are enabled."
 (defvar elinit-timers)
 
 (defcustom elinit-timer-state-file
-  (expand-file-name "elinit/timer-state.eld"
+  (expand-file-name "elinit.el/timer-state.eld"
                     (or (getenv "XDG_STATE_HOME")
                         (expand-file-name "~/.local/state")))
   "File path for persisting timer state.

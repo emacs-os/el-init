@@ -56,7 +56,7 @@
 ;;; Persistent Overrides (Schema v1)
 
 (defcustom elinit-overrides-file
-  (expand-file-name "elinit/overrides.eld"
+  (expand-file-name "elinit.el/overrides.eld"
                     (or (getenv "XDG_CONFIG_HOME")
                         (expand-file-name ".config" (getenv "HOME"))))
   "File path for persistent service overrides.

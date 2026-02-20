@@ -316,6 +316,7 @@ restart-timer cancellation on `no'."
 (ert-deftest elinit-test-oneshot-json-restart-na ()
   "Oneshot entries emit restart \"n/a\" in JSON."
   (let* ((elinit-programs '(("true" :type oneshot)))
+         (elinit--programs-cache '(("true" :type oneshot)))
          (elinit--processes (make-hash-table :test 'equal))
          (elinit--restart-override (make-hash-table :test 'equal))
          (elinit--enabled-override (make-hash-table :test 'equal))
@@ -329,7 +330,9 @@ restart-timer cancellation on `no'."
          (elinit--start-times (make-hash-table :test 'equal))
          (elinit--ready-times (make-hash-table :test 'equal))
          (elinit--entry-state (make-hash-table :test 'equal))
-         (elinit-unit-directory "/nonexistent-elinit-test-dir"))
+         (elinit-unit-directory "/nonexistent-elinit-test-dir")
+         (elinit-overrides-file nil)
+         (elinit--overrides-loaded t))
     (let* ((result (elinit--cli-all-entries-info))
            (entries (car result))
            (info (car entries))

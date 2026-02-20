@@ -72,7 +72,7 @@ Default tiers (low to high):
   :group 'elinit)
 
 (defcustom elinit-unit-directory
-  (expand-file-name "elinit/units/"
+  (expand-file-name "elinit.el/units/"
                     (or (getenv "XDG_CONFIG_HOME")
                         (expand-file-name "~/.config")))
   "Directory containing unit files.

@@ -1,0 +1,128 @@
+# Maintainer: Static Emacs Project
+# Absolute minimal static emacs-nox — smallest possible binary
+#
+# This PKGBUILD produces the smallest possible fully static Emacs binary.
+# Only essential features are enabled: GMP (required), ncurses (terminal UI),
+# and pdumper (portable dumper).
+#
+# No source patches required — static linking is achieved entirely through
+# configure flags and building static versions of dependencies.
+#
+# Features vs stock emacs-nox:
+#   DISABLED: GnuTLS, D-Bus, libsystemd, GPM, libxml2, tree-sitter,
+#             native-compilation, dynamic modules, lcms2, zlib, threads,
+#             inotify, ACL, selinux
+#   ENABLED:  GMP (bignum), ncurses (terminal UI), pdumper
+
+pkgname=emacs-nox-static-minimal
+pkgver=30.2
+pkgrel=1
+pkgdesc='GNU Emacs (nox) — minimal fully static build'
+arch=('x86_64')
+url='https://www.gnu.org/software/emacs/emacs.html'
+license=('GPL3')
+depends=()  # none — it's static
+makedepends=(
+  gcc
+  make
+  autoconf
+  automake
+  texinfo
+  glibc      # for libc.a, libm.a, etc.
+)
+source=(
+  "https://ftp.gnu.org/gnu/emacs/emacs-${pkgver}.tar.xz"
+  "https://ftp.gnu.org/pub/gnu/ncurses/ncurses-6.5.tar.gz"
+  "https://ftp.gnu.org/pub/gnu/gmp/gmp-6.3.0.tar.xz"
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+prepare() {
+  _static_prefix="${srcdir}/static-libs"
+
+  # Build static ncurses (wide-char variant)
+  cd "${srcdir}/ncurses-6.5"
+  ./configure --prefix="${_static_prefix}" \
+    --with-normal --without-shared --without-debug \
+    --without-cxx --without-cxx-binding --enable-widec \
+    --without-ada --without-manpages --without-tests
+  make -j$(nproc)
+  make install
+  # Create compatibility symlinks
+  cd "${_static_prefix}/lib"
+  ln -sf libncursesw.a libncurses.a
+  ln -sf libncursesw.a libtinfo.a
+  ln -sf libncursesw.a libtinfow.a
+
+  # Build static GMP (use -std=gnu17 for GCC 15 compat)
+  cd "${srcdir}/gmp-6.3.0"
+  ./configure --prefix="${_static_prefix}" \
+    --enable-static --disable-shared CC="gcc -std=gnu17"
+  make -j$(nproc)
+  make install
+
+  # CRITICAL: Remove spurious config.h from GMP install
+  # GMP's make install creates an empty config.h that shadows Emacs's
+  # own config.h when the prefix is in CPPFLAGS, breaking the entire build.
+  rm -f "${_static_prefix}/include/config.h"
+}
+
+build() {
+  _static_prefix="${srcdir}/static-libs"
+  cd "emacs-${pkgver}"
+
+  # PKG_CONFIG=false prevents detection of libseccomp (no --without-seccomp exists)
+  PKG_CONFIG=false ./configure \
+    --prefix=/usr \
+    --sysconfdir=/etc \
+    --libexecdir=/usr/lib \
+    --localstatedir=/var \
+    --without-all \
+    --without-x \
+    --without-sound \
+    --without-dbus \
+    --without-gnutls \
+    --without-libsystemd \
+    --without-modules \
+    --without-tree-sitter \
+    --without-compress-install \
+    --without-native-compilation \
+    --without-threads \
+    --without-selinux \
+    --without-gpm \
+    --without-lcms2 \
+    --with-pdumper=yes \
+    --with-dumping=pdumper \
+    --with-xml2=no \
+    --with-file-notification=no \
+    CFLAGS="-O2 -std=gnu17 -I${_static_prefix}/include -I${_static_prefix}/include/ncursesw" \
+    LDFLAGS="-static -no-pie -L${_static_prefix}/lib" \
+    CPPFLAGS="-I${_static_prefix}/include -I${_static_prefix}/include/ncursesw"
+
+  make -j$(nproc)
+}
+
+check() {
+  cd "emacs-${pkgver}"
+  local binary="src/emacs"
+
+  echo "=== Static linkage verification ==="
+  file "$binary"
+  ldd "$binary" 2>&1 | grep -q "not a dynamic executable" || { echo "FAIL: not static"; return 1; }
+  readelf -d "$binary" 2>/dev/null | grep -q NEEDED && { echo "FAIL: has NEEDED entries"; return 1; }
+  readelf -l "$binary" 2>/dev/null | grep -q INTERP && { echo "FAIL: has INTERP"; return 1; }
+  ./src/emacs --version
+  echo "PASS: Minimal static emacs binary verified"
+}
+
+package() {
+  cd "emacs-${pkgver}"
+  make DESTDIR="${pkgdir}" install
+  mv "${pkgdir}"/usr/bin/{ctags,ctags.emacs}
+  # Man page may or may not be gzipped depending on --without-compress-install
+  if [ -f "${pkgdir}/usr/share/man/man1/ctags.1.gz" ]; then
+    mv "${pkgdir}"/usr/share/man/man1/{ctags.1.gz,ctags.emacs.1.gz}
+  elif [ -f "${pkgdir}/usr/share/man/man1/ctags.1" ]; then
+    mv "${pkgdir}"/usr/share/man/man1/{ctags.1,ctags.emacs.1}
+  fi
+}
