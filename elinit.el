@@ -1,12 +1,12 @@
 ;;; elinit.el --- Emacs Lisp service manager -*- lexical-binding: t -*-
 
-;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
+;; Copyright (C) 2025-2026 telecommuter <telecommuter@riseup.net>
 ;;
 ;; Author: telecommuter <telecommuter@riseup.net>
 ;; Version: 1.0.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: processes, unix
-;; URL: https://github.com/cypherpunk2001/el-init
+;; URL: https://github.com/emacs-os/el-init
 
 ;; This file is not part of GNU Emacs.
 

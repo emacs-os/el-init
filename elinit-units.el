@@ -1,6 +1,6 @@
 ;;; elinit-units.el --- Unit-file support for elinit.el -*- lexical-binding: t -*-
 
-;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
+;; Copyright (C) 2025-2026 telecommuter <telecommuter@riseup.net>
 
 ;; Author: telecommuter <telecommuter@riseup.net>
 ;; SPDX-License-Identifier: GPL-3.0-or-later
