@@ -1,0 +1,9 @@
+(elinit
+ :fetcher github
+ :repo "emacs-os/el-init"
+ :files (:defaults
+         "libexec/*.c"
+         "sbin/elinitctl"
+         "sbin/elinit-logrotate"
+         "sbin/elinit-log-prune"
+         "sbin/elinit-import"))
