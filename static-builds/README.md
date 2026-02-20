@@ -195,6 +195,8 @@ correctly.
 
 #### Path 2: elinit handles early boot (static kernel, no initramfs)
 
+**Note:** Path 2 is experimental and still needs testing.
+
 When booting a static kernel with no initramfs, the kernel mounts the
 root filesystem directly and executes `init=` immediately.  Emacs becomes
 PID1 on a bare system with nothing set up.  All of the early boot tasks
