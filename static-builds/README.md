@@ -10,8 +10,11 @@ patchset, see the `./stalimacs` directory.*
 **Choosing a base distribution:** if you are seriously considering running
 Emacs as PID1, start with a distribution that already supports multiple
 non-systemd init systems.  Distributions like [Artix Linux](https://artixlinux.org/),
-[KISS Linux](https://kisscommunity.org/), or
-[Oasis Linux](https://github.com/oasislinux/oasis) are designed to work
+[Gentoo Linux](https://www.gentoo.org/),
+[KISS Linux](https://kisscommunity.org/),
+[Oasis Linux](https://github.com/oasislinux/oasis),
+[DeriveLinux](https://derivelinux.org/), or
+[Sabotage Linux](http://sabo.xyz/) are designed to work
 without systemd and will not fight you at every
 turn.  On a systemd-based distribution, countless packages carry hard
 dependencies on systemd libraries, udev rules assume systemd is present,
