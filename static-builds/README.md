@@ -77,13 +77,21 @@ Or for unconditional loading (when this Emacs instance is always PID1):
 (require 'elinit)
 (setq elinit-libexec-build-on-startup 'never)
 (setq elinit-log-directory "/var/log/elinit")
+(setq elinit-unit-authority-path
+      '("/usr/lib/elinit.el/"
+        "/etc/elinit.el/"))
 ```
 
-Note: `elinit-log-directory` defaults to `~/.emacs.d/elinit/`, which is
-appropriate for a desktop user session but not for a system-wide PID1
-deployment.  When Emacs is running as PID1, set it to a system log path
-such as `/var/log/elinit` so that service logs live alongside the rest of
-the system logs.
+Notes on PID1-specific defaults:
+
+- `elinit-log-directory` defaults to `~/.emacs.d/elinit/`, which is
+  appropriate for a desktop user session but not for a system-wide PID1
+  deployment.  Set it to a system log path such as `/var/log/elinit` so
+  that service logs live alongside the rest of the system logs.
+- `elinit-unit-authority-path` defaults to three tiers: vendor
+  (`/usr/lib/elinit.el/`), system admin (`/etc/elinit.el/`), and user
+  (`~/.config/elinit.el/`).  The user tier is meaningless when Emacs is
+  running as root/PID1.  Drop it and keep only vendor and system admin.
 
 ## Common requirements
 
