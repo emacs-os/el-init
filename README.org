@@ -3,6 +3,7 @@
 [[https://gist.github.com/el-sloppo/e686727a6d88c17c557003e73a9c020c][https://img.shields.io/endpoint.svg?url=https://gist.githubusercontent.com/el-sloppo/e686727a6d88c17c557003e73a9c020c/raw/elinit-tests.json]]
 [[https://gitlab.com/telecommuter/el-init][https://img.shields.io/badge/mirror-GitLab-orange.svg]]
 [[https://codeberg.org/telecommuter/el-init][https://img.shields.io/badge/mirror-Codeberg-2185D0.svg]]
+[[https://github.com/melpa/melpa/pull/9847][https://img.shields.io/badge/MELPA-pending-purple.svg]]
 
 * el-init
 
