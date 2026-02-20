@@ -92,6 +92,101 @@ the same base setup:
    `elinit-runas`, `elinit-rlimits`), install them and configure their
    paths (see C helper binary provisioning below).
 
+### Early boot responsibilities
+
+Before elinit can supervise services, the system needs fundamental
+infrastructure in place.  A Linux machine coming out of the bootloader
+has almost nothing set up: no virtual filesystems, no device nodes, an
+unchecked root filesystem mounted read-only, and no networking.  The
+following tasks must happen before any real services can start:
+
+1. **Mount virtual filesystems** -- `/proc`, `/sys`, `/dev` (devtmpfs),
+   `/dev/pts` (devpts), `/dev/shm` (tmpfs), `/run` (tmpfs).
+2. **Create runtime directories** -- `/run/lock`, `/run/log`, `/run/user`,
+   and any other directories expected by services.
+3. **Set permissions** -- correct modes on `/run` (0755), `/dev/pts`
+   (0620, gid=5), `/dev/shm` (1777), etc.
+4. **Seed the random pool** -- write a saved seed into `/dev/urandom`, or
+   gather entropy if no seed file exists.
+5. **Start device management** -- trigger udev (or mdev/eudev) to populate
+   `/dev`, load firmware, and create device symlinks.  Alternatively, udev
+   can run as a supervised elinit unit once the virtual filesystems are
+   mounted (see note below).
+6. **Remount root read-only** -- prepare for filesystem check.
+7. **Check filesystems** -- run `fsck` on all local filesystems.  Drop to
+   an emergency shell or halt on failure.
+8. **Remount root read-write** -- after a clean fsck, remount `/` as rw.
+9. **Mount all local filesystems** -- `mount -a` for everything in fstab
+   that is not a network filesystem.
+10. **Set up loopback networking** -- `ip link set up dev lo`.
+11. **Set the hostname** -- read `/etc/hostname` and write to
+    `/proc/sys/kernel/hostname`.
+12. **Apply sysctl settings** -- `sysctl -p /etc/sysctl.conf`.
+
+After these steps complete, the system is ready for normal service
+supervision (sshd, dhcpcd, getty, syslog, and so on), which elinit
+handles through its unit system.
+
+**These responsibilities must be handled by exactly one of the two paths
+described below.  They cannot be skipped.**
+
+#### Path 1: Initramfs handles early boot (more common)
+
+Most modern Linux systems use an initramfs (initial RAM filesystem) that
+the bootloader loads alongside the kernel.  The initramfs runs its own
+`/init` script before pivoting to the real root filesystem.  When using
+an initramfs, all of the early boot tasks listed above (mounting virtual
+filesystems, fsck, device setup, etc.) are handled inside the initramfs
+before control ever reaches Emacs.
+
+In this deployment, the kernel cmdline `init=` parameter points to Emacs
+on the real root, and the initramfs `switch_root` hands off PID1 to it
+with the system already in a usable state.  Elinit only needs to
+supervise services; it does not need an early boot oneshot unit.
+
+This is the simpler path: the initramfs tools (dracut, mkinitcpio,
+initramfs-tools, or a custom script) already know how to do early boot
+correctly.
+
+#### Path 2: Elinit handles early boot (static kernel, no initramfs)
+
+When booting a static kernel with no initramfs, the kernel mounts the
+root filesystem directly and executes `init=` immediately.  Emacs becomes
+PID1 on a bare system with nothing set up.  All of the early boot tasks
+listed above must be performed by elinit itself, as early as possible.
+
+The recommended approach is a blocking oneshot unit that runs before
+everything else:
+
+```emacs-lisp
+;; /etc/elinit.el/rc-boot.el
+(:id "rc-boot"
+ :command "/usr/bin/emacs --batch -Q -l /usr/local/lib/elinit/rc.boot.el"
+ :type oneshot
+ :oneshot-blocking t
+ :enabled t
+ :required-by ("basic.target"))
+```
+
+The script loaded by this unit (`rc.boot.el`) is responsible for every
+step: mounting proc/sys/dev/run, creating directories, setting
+permissions, seeding the RNG, starting udev, doing the remount-fsck-remount
+cycle, mounting all local filesystems, bringing up loopback, setting the
+hostname, and applying sysctl.  See `static-builds/scripts/rc.boot.el.example`
+for a complete working example that performs all of these tasks.
+
+Because the unit has `:oneshot-blocking t` and `:required-by
+("basic.target")`, no other units will start until it finishes
+successfully.
+
+**Note on udev:** udev can either run inside the early boot script (as a
+one-shot trigger-and-settle sequence) or as a supervised elinit unit.
+Running it inside the boot script is simpler because device nodes are
+guaranteed to exist before any service units start.  Running it as a
+supervised unit allows elinit to restart it on failure, but requires
+careful ordering (`:after ("rc-boot")`) so that `/dev`, `/sys`, and
+`/run` are already mounted.
+
 ## C helper binary provisioning
 
 The PID1 build does not bundle C helper binaries.  When using features
@@ -173,22 +268,13 @@ the chroot.
 
 ## Early boot strategies
 
-### Initramfs handles early boot
+See "Early boot responsibilities" under Common requirements above for
+the full list of tasks and the two deployment paths (initramfs vs.
+elinit-managed early boot).
 
-Use this when mount/dev/fsck/network setup is already done before PID1 handoff.
-Focus on the elinit unit set under `/etc/elinit.el/`.
-
-### Elinit handles early boot
-
-Use explicit early oneshot units for deterministic ordering.
-`elinit-pid1` handles lifecycle (`elinit-start`/`elinit-stop-now`) but does not
-auto-load boot/shutdown script files.
-
-1. Define an early oneshot unit (for example `:required-by ("basic.target")`).
-2. Keep `:oneshot-blocking t` so later units wait deterministically.
-3. If you want pure Elisp boot logic, invoke it from the oneshot command.
-4. `static-builds/scripts/rc.boot.el.example` and
-   `static-builds/scripts/rc.shutdown.el.example` are available to repurpose.
+`elinit-pid1` handles lifecycle (`elinit-start`/`elinit-stop-now`) but
+does not auto-load boot/shutdown script files.  All early boot logic
+must be wired through explicit units.
 
 ## Shutdown and reboot scripting
 
