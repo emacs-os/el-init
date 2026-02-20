@@ -32,6 +32,13 @@ The resulting binary includes:
   reboot, SIGHUP is ignored
 - Automatic orphan child reaping
 
+When running as PID1, the patched Emacs automatically reaps orphaned
+child processes.  On Linux, when a process's parent exits, the orphan is
+re-parented to PID1.  If PID1 never calls `waitpid` on these orphans,
+they accumulate as zombies in the process table.  The PID1 patch installs
+a `SIGCHLD` handler that reaps all finished children, so zombie processes
+cannot build up regardless of how services or their children exit.
+
 The binary does **not** include el-init Lisp files, C helper binaries
 (`elinit-logd`, `elinit-runas`, `elinit-rlimits`), sbin scripts, or any
 `site-start.el` autostart wiring.  The administrator provides all runtime
