@@ -1962,8 +1962,13 @@ are not emitted by runtime paths in this release.
 
 ** Minibuffer Notifications
 
-By default, elinit does not show minibuffer messages for process failures
-or non-zero exits. Use an event hook if you want immediate notification:
+By default, elinit shows warnings and errors in the minibuffer for process
+failures, non-zero oneshot exits, and crash-looping services.  These come from
+the core logger (~elinit--log~), which always displays ~warning~ and ~error~
+level messages.  Only ~info~ level messages are gated behind ~elinit-verbose~.
+
+For more granular control, use ~elinit-event-hook~ to react to structured
+events:
 
 #+begin_src emacs-lisp
 (add-hook 'elinit-event-hook
@@ -1978,7 +1983,7 @@ or non-zero exits. Use an event hook if you want immediate notification:
                             (plist-get event :id) code)))))))
 #+end_src
 
-This is optional. You can also check the dashboard or logs.
+You can also check the dashboard or logs.
 
 * Persistence and Files
 :PROPERTIES:
