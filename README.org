@@ -3392,6 +3392,20 @@ Interactive load:
 emacs -Q -l elinit.el
 #+end_src
 
+* AI Dev Disclosure
+:PROPERTIES:
+:CUSTOM_ID: ai-dev-disclosure
+:END:
+
+[[file:assets/el-sloppo.png]]
+
+This project is built with significant assistance from Claude Code
+(Anthropic).  AI is used for code generation, test writing, documentation,
+and refactoring across all modules -- Emacs Lisp, C, and POSIX shell.
+Every change goes through the same CI pipeline (~make check~) and is
+reviewed by the maintainer before merge.  The commit history is transparent:
+AI-assisted commits carry a ~Co-Authored-By: Claude~ trailer.
+
 * Indexes
 :PROPERTIES:
 :CUSTOM_ID: indexes
