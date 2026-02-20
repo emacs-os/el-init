@@ -177,14 +177,14 @@ before control ever reaches Emacs.
 
 In this deployment, the kernel cmdline `init=` parameter points to Emacs
 on the real root, and the initramfs `switch_root` hands off PID1 to it
-with the system already in a usable state.  Elinit only needs to
+with the system already in a usable state.  elinit only needs to
 supervise services; it does not need an early boot oneshot unit.
 
 This is the simpler path: the initramfs tools (dracut, mkinitcpio,
 initramfs-tools, or a custom script) already know how to do early boot
 correctly.
 
-#### Path 2: Elinit handles early boot (static kernel, no initramfs)
+#### Path 2: elinit handles early boot (static kernel, no initramfs)
 
 When booting a static kernel with no initramfs, the kernel mounts the
 root filesystem directly and executes `init=` immediately.  Emacs becomes
@@ -251,10 +251,10 @@ Use these canonical system paths:
 
 | Purpose | Path |
 | --- | --- |
-| El-init Lisp files | `/usr/share/emacs/site-lisp/elinit/` |
+| elinit Lisp files | `/usr/share/emacs/site-lisp/elinit/` |
 | C helper binaries | `/usr/local/libexec/` or admin-chosen path |
 | Sbin scripts (`elinitctl`, etc.) | `/usr/local/bin/` or anywhere in PATH |
-| Elinit unit files (system admin tier) | `/etc/elinit.el/*.el` |
+| elinit unit files (system admin tier) | `/etc/elinit.el/*.el` |
 | Optional script examples for admin reuse (not auto-loaded) | `/lib/init/rc.boot.el`, `/lib/init/rc.shutdown.el` |
 | Optional local boot extension | `/etc/rc.0.local.el` |
 | Optional local post-boot extension | `/etc/rc.1.local.el` |
@@ -265,7 +265,7 @@ auto-loads these files.  Use explicit units if you want them executed.
 The `rc.boot.el.example` and `rc.shutdown.el.example` scripts under
 `static-builds/scripts/` are provided for reference.  They originate from
 the historical [systemE](https://github.com/emacs-os/systemE) project,
-which first demonstrated Emacs as PID1.  El-init takes that concept all the
+which first demonstrated Emacs as PID1.  elinit takes that concept all the
 way to completion with proper process supervision, dependency ordering, and
 a unit system.
 
