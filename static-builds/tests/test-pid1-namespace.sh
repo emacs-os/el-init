@@ -315,6 +315,26 @@ test_sigusr2_reboot_hook() {
         "SIGUSR2 triggers pid1-reboot-hook"
 }
 
+test_sigint_reboot_hook() {
+    marker_dir="${TEST_TMPDIR}/markers"
+    mkdir -p "${marker_dir}"
+    run_pid1_daemon "${marker_dir}" "${TESTS_DIR}/pid1-test-signals.el"
+    if ! wait_for_file "${marker_dir}/ready" 15; then
+        cleanup_pid1
+        _fail_test "timed out waiting for ready marker"
+        return 1
+    fi
+    send_signal_to_pid1 INT
+    if ! wait_for_file "${marker_dir}/kill-emacs-hook" 10; then
+        cleanup_pid1
+        _fail_test "timed out waiting for kill-emacs-hook after SIGINT"
+        return 1
+    fi
+    cleanup_pid1
+    assert_file_exists "${marker_dir}/pid1-reboot-hook" \
+        "SIGINT triggers pid1-reboot-hook"
+}
+
 test_sighup_ignored() {
     marker_dir="${TEST_TMPDIR}/markers"
     mkdir -p "${marker_dir}"

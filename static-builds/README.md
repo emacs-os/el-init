@@ -1,8 +1,8 @@
 # static-builds
 
-Administrator guide for PID1-patched static Emacs builds with baked-in elinit.
-Building with the `-patched-for-pid1` variant produces a PID1-capable binary,
-but PID1 behavior is only active when launched with `--pid1`.
+Administrator guide for PID1-patched static Emacs builds.  These builds
+ship PID1 capability only -- the administrator owns all runtime policy
+(what to load, what to start, and how to wire el-init).
 
 *For build instruction files for a static, portable Emacs without the PID1
 patchset, see the `./stalimacs` directory.*
@@ -26,48 +26,92 @@ sudo pacman -U emacs-nox-static-elinit-patched-for-pid1-*.pkg.tar.zst
 The resulting binary includes:
 - All features of the vanilla `emacs-static-nox` build (see `./stalimacs`)
 - `--pid1` flag for PID1 init process mode
-- Bundled elinit with autostart (when `--pid1` is used) -- no user init
-  files or `~/.emacs` configuration required; the packaged `site-start.el`
-  bootstrap handles loading and startup automatically
-- Prebuilt C helpers (no compiler needed at runtime)
+- `pid1-mode` Lisp variable (t when `--pid1` is passed, nil otherwise)
+- `pid1-boot-hook`, `pid1-poweroff-hook`, `pid1-reboot-hook`
+- Signal mapping: SIGTERM/SIGUSR1 trigger poweroff, SIGINT/SIGUSR2 trigger
+  reboot, SIGHUP is ignored
+- Automatic orphan child reaping
 
-### Disable gate
+The binary does **not** include el-init Lisp files, C helper binaries
+(`elinit-logd`, `elinit-runas`, `elinit-rlimits`), sbin scripts, or any
+`site-start.el` autostart wiring.  The administrator provides all runtime
+policy.
 
-The elinit autostart can be suppressed even when `--pid1` is active:
+## Administrator startup wiring
 
-```bash
-# Environment variable
-EMACS_ELINIT_DISABLE=1 emacs --pid1
+The PID1-patched binary provides hooks but does not load el-init
+automatically.  Add your own startup wiring in `early-init.el` or
+`init.el`.
 
-# Or in early-init.el
-(setq elinit-pid1-autostart-disabled t)
+Minimal `early-init.el` example (runs before the main init file -- use
+this when el-init must be available before `init.el` loads):
+
+```emacs-lisp
+;; early-init.el
+(when (bound-and-true-p pid1-mode)
+  (add-to-list 'load-path "/usr/share/emacs/site-lisp/elinit")
+  ;; If using prebuilt helpers, skip compile-on-startup
+  (setq elinit-libexec-build-on-startup 'never))
+```
+
+Minimal `init.el` example:
+
+```emacs-lisp
+;; init.el
+(when (bound-and-true-p pid1-mode)
+  (require 'elinit))
+```
+
+Or for unconditional loading (when this Emacs instance is always PID1):
+
+```emacs-lisp
+;; init.el
+(add-to-list 'load-path "/usr/share/emacs/site-lisp/elinit")
+(require 'elinit)
+(setq elinit-libexec-build-on-startup 'never)
 ```
 
 ## Common requirements
 
-Both deployment paths (initramfs-based and Lisp-based early boot) share the
-same base mechanics:
+Both deployment paths (initramfs-based and Lisp-based early boot) share
+the same base setup:
 
-1. Build/install the `*-elinit-patched-for-pid1` variant.
-2. Install Emacs at a stable absolute path, typically `/usr/bin/emacs`.
-3. Configure bootloader kernel cmdline to hand off PID1 to Emacs:
-   `init=/usr/bin/emacs`
-4. Place system unit files under `/etc/elinit.el/`.
-5. Set unit enablement in unit files (`:enabled t`) plus target membership
+1. Build/install the `*-patched-for-pid1` variant.
+2. Install el-init Lisp files where Emacs can find them (e.g.,
+   `/usr/share/emacs/site-lisp/elinit/`).
+3. Add startup wiring in `early-init.el` or `init.el` (see above).
+4. Install Emacs at a stable absolute path, typically `/usr/bin/emacs`.
+5. Configure bootloader kernel cmdline to hand off PID1 to Emacs:
+   `init=/usr/bin/emacs --pid1`
+6. Place system unit files under `/etc/elinit.el/`.
+7. Set unit enablement in unit files (`:enabled t`) plus target membership
    (`:wanted-by (...)` or `:required-by (...)`) before first boot.
-6. Keep helper binaries (`elinit-logd`, `elinit-runas`) installed and
-   executable in `libexec` for runtime operation.
+8. Install sbin scripts (`elinitctl`, `elinit-import`, `elinit-log-prune`,
+   `elinit-logrotate`) from the el-init `sbin/` directory into your PATH.
+9. If using features that depend on C helper binaries (`elinit-logd`,
+   `elinit-runas`, `elinit-rlimits`), install them and configure their
+   paths (see C helper binary provisioning below).
 
-## C helper binary policy
+## C helper binary provisioning
 
-For patched+baked variants, the expected process is:
+The PID1 build does not bundle C helper binaries.  When using features
+that depend on them (structured logging, privilege dropping, resource
+limits), you must provision them yourself:
 
-1. Ship prebuilt helper binaries in the package output.
-2. Do not require a compiler at runtime.
-3. If you choose to manage helpers yourself, either:
-   - point `elinit-logd-command` / `elinit-runas-command` at your
-     managed binaries, or
-   - rebuild helpers in an admin/dev environment.
+1. **Build from source:** compile the helpers from the el-init `libexec/`
+   directory and install them at a known path.
+2. **Package separately:** include the helpers in a separate package or
+   your system image build.
+3. **Point el-init to the binaries:** set the command variables in your
+   init file:
+
+```emacs-lisp
+(setq elinit-logd-command "/usr/local/libexec/elinit-logd")
+(setq elinit-runas-command "/usr/local/libexec/elinit-runas")
+(setq elinit-rlimits-command "/usr/local/libexec/elinit-rlimits")
+```
+
+If not using these features, no helpers are needed.
 
 ## File placement reference
 
@@ -75,6 +119,9 @@ Use these canonical system paths:
 
 | Purpose | Path |
 | --- | --- |
+| El-init Lisp files | `/usr/share/emacs/site-lisp/elinit/` |
+| C helper binaries | `/usr/local/libexec/` or admin-chosen path |
+| Sbin scripts (`elinitctl`, etc.) | `/usr/local/bin/` or anywhere in PATH |
 | Elinit unit files (system admin tier) | `/etc/elinit.el/*.el` |
 | Optional script examples for admin reuse (not auto-loaded) | `/lib/init/rc.boot.el`, `/lib/init/rc.shutdown.el` |
 | Optional local boot extension | `/etc/rc.0.local.el` |
@@ -201,4 +248,4 @@ After first boot:
 1. Verify PID1 handoff worked (`ps -p 1 -o comm,args`).
 2. Verify elinit came up (`elinitctl status`).
 3. Verify configured units are loaded (`elinitctl list-units`).
-4. Verify no stale helper rebuild is required at startup.
+4. Verify C helper binaries are reachable (if using logging/runas/rlimits).

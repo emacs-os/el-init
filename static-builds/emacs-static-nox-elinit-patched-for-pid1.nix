@@ -1,22 +1,21 @@
-# Full-featured static emacs-nox with PID1 patches and baked-in elinit
+# Full-featured static emacs-nox with PID1 patches
 #
 # Usage: nix-build emacs-static-nox-elinit-patched-for-pid1.nix
 #
 # The six original variants (minimal, full, nativecomp x Arch/Nix) are
 # untouched legacy variants; this file is an additive new variant.
 #
-# This variant extends emacs-static-nox.nix with:
-#   1. PID1 Emacs patches (--pid1 flag, signal handling, child reaping, hooks)
-#   2. Bundled elinit (service manager) in site-lisp
-#   3. Prebuilt C helpers (elinit-logd, elinit-runas, elinit-rlimits)
-#   4. Autostart bootstrap: elinit hooks into pid1-boot-hook when --pid1 is used
+# This variant extends emacs-static-nox.nix with PID1 Emacs patches:
+#   --pid1 flag, signal handling, child reaping, pid1-boot-hook,
+#   pid1-poweroff-hook, pid1-reboot-hook
 #
 # The -patched-for-pid1 suffix is a CAPABILITY marker: the binary supports
 # --pid1 mode but does NOT activate it unless --pid1 is explicitly passed.
 # Normal Emacs usage (without --pid1) is completely unchanged.
 #
-# Disable gate: set EMACS_ELINIT_DISABLE=1 env var, or set
-# elinit-pid1-autostart-disabled to t in early-init.el.
+# This package ships PID1 capability only.  It does NOT bundle el-init,
+# C helpers, or autostart wiring.  Administrators must provide their own
+# startup configuration (early-init.el / init.el) and helper binaries.
 #
 # Requirements: Nix with <nixpkgs> channel (any recent nixpkgs)
 # Build time: ~10 minutes on 12 cores
@@ -25,32 +24,6 @@
 
 let
   inherit (pkgs) stdenv fetchurl;
-
-  # ── Elinit source (from local repo) ──
-  # To build from a released version, replace with:
-  #   elinitSrc = fetchFromGitHub { owner = "..."; repo = "elinit"; ... };
-  elinitSrc = builtins.path {
-    path = ./..;
-    name = "elinit-src";
-    filter = path: type:
-      let
-        base = builtins.baseNameOf path;
-        dir = builtins.baseNameOf (builtins.dirOf path);
-      in
-      # Include .el files, libexec C sources, patches, and Makefiles
-      (type == "regular" && (
-        pkgs.lib.hasSuffix ".el" base ||
-        pkgs.lib.hasSuffix ".c" base ||
-        pkgs.lib.hasSuffix ".h" base ||
-        pkgs.lib.hasSuffix ".patch" base ||
-        base == "Makefile"
-      )) ||
-      # Include sbin scripts (extensionless executables)
-      (type == "regular" && dir == "sbin") ||
-      (type == "directory" && builtins.elem base [
-        "libexec" "sbin" "static-builds" "tests"
-      ]);
-  };
 
   # ── PID1 patches (from static-builds/patches/) ──
   pid1Patches = [
@@ -254,59 +227,6 @@ in stdenv.mkDerivation {
 
     make DESTDIR="" install
 
-    # ── Build elinit C helpers ──
-    echo "=== Building elinit C helpers ==="
-    for helper in elinit-logd elinit-runas elinit-rlimits; do
-      echo "Building $helper..."
-      gcc -Wall -Wextra -Werror -pedantic -std=c99 -O2 \
-        -o "''${helper}" "${elinitSrc}/libexec/''${helper}.c"
-    done
-
-    # ── Install elinit runtime files ──
-    local sup_dest=$out/share/emacs/site-lisp/elinit
-    mkdir -p "$sup_dest/libexec"
-
-    for el_file in \
-      elinit.el elinit-core.el elinit-log.el \
-      elinit-overrides.el elinit-sandbox.el elinit-libexec.el \
-      elinit-units.el elinit-timer.el elinit-pid1.el \
-      elinit-dashboard.el elinit-cli.el; do
-      cp "${elinitSrc}/$el_file" "$sup_dest/"
-    done
-
-    # ── Install prebuilt C helpers ──
-    for helper in elinit-logd elinit-runas elinit-rlimits; do
-      install -m 755 "''${helper}" "$sup_dest/libexec/"
-    done
-
-    # ── Install sbin scripts ──
-    for script in elinitctl elinit-import elinit-log-prune elinit-logrotate; do
-      if [ -f "${elinitSrc}/sbin/$script" ]; then
-        install -m 755 "${elinitSrc}/sbin/$script" "$out/bin/"
-      fi
-    done
-
-    # ── Install autostart bootstrap ──
-    cat > "$out/share/emacs/site-lisp/site-start.el" <<SITE_START_EOF
-;;; site-start.el --- Elinit PID1 autostart bootstrap  -*- lexical-binding: t -*-
-
-;; Installed by emacs-static-nox-elinit-patched-for-pid1.
-;; This file auto-loads elinit when Emacs is started with --pid1.
-
-;; Always add elinit to load-path (available for manual use too)
-(add-to-list 'load-path "$sup_dest")
-
-;; Autostart elinit in PID1 mode (unless explicitly disabled)
-(when (and (bound-and-true-p pid1-mode)
-           (not (getenv "EMACS_ELINIT_DISABLE"))
-           (not (bound-and-true-p elinit-pid1-autostart-disabled)))
-  (require 'elinit)
-  ;; Helpers are prebuilt — never attempt to compile on startup
-  (setq elinit-libexec-build-on-startup 'never))
-
-;;; site-start.el ends here
-SITE_START_EOF
-
     # ── Static linkage verification (use emacs-30.2, as emacs is a symlink) ──
     local binary=$out/bin/emacs-30.2
     echo "=== Static linkage verification ==="
@@ -356,67 +276,21 @@ SITE_START_EOF
          (kill-emacs 1))' 2>&1
     echo "PASS: PID1 hooks are defined"
 
-    # Elinit load-path verification
-    $out/bin/emacs --batch \
-      --eval "(add-to-list 'load-path \"$sup_dest\")" \
-      --eval '(require (quote elinit))' \
-      --eval '(unless (featurep (quote elinit)) (kill-emacs 1))' 2>&1
-    echo "PASS: elinit loads from packaged site-lisp path"
-
-    # C helper binary verification
-    for helper in elinit-logd elinit-runas elinit-rlimits; do
-      test -x "$sup_dest/libexec/$helper" || { echo "FAIL: $helper not executable"; exit 1; }
-      echo "PASS: $helper is executable"
-    done
-
-    # A2/A3 autostart verification (site-start.el is already installed above)
-    local site_lisp=$out/share/emacs/site-lisp
-    echo "=== A2/A3 autostart verification ==="
-    # A2 acceptance #1 / A3 acceptance #3: validate autostart wiring and execution.
-    # pid1-boot-hook does not fire in --batch (patch inserts it in normal-top-level
-    # and command-line-1, but neither path runs startup hooks in batch mode).
-    # So we validate: (1) elinit loaded, (2) elinit-start registered on hook,
-    # (3) running the hook executes elinit-start without error.
-    # Actual startup-path hook timing is validated by patch-level tests
-    # (see patches/README-pid1-validation.md test #6).
+    # Neutral startup verification
+    # Confirm no implicit el-init load in PID1 mode.
+    # This catches regressions that reintroduce autostart wiring.
+    echo "=== Neutral startup verification ==="
     $out/bin/emacs --pid1 --batch \
-      --eval "(add-to-list 'load-path \"$sup_dest\")" \
-      --eval "(load \"$site_lisp/site-start\" nil t)" \
-      --eval '(unless (featurep (quote elinit)) (kill-emacs 1))' \
-      --eval '(unless (member (function elinit--pid1-boot) pid1-boot-hook) (kill-emacs 1))' \
-      --eval '(run-hooks (quote pid1-boot-hook))' 2>&1
-    echo "PASS: elinit--pid1-boot registered on pid1-boot-hook and executes successfully"
-    # Verify no-rebuild setting
-    $out/bin/emacs --pid1 --batch \
-      --eval "(add-to-list 'load-path \"$sup_dest\")" \
-      --eval "(load \"$site_lisp/site-start\" nil t)" \
-      --eval '(unless (eq elinit-libexec-build-on-startup (quote never)) (kill-emacs 1))' 2>&1
-    echo "PASS: elinit-libexec-build-on-startup is never (no startup rebuild)"
-    # A2 acceptance #2: without --pid1, elinit does not autostart
-    $out/bin/emacs --batch \
-      --eval "(add-to-list 'load-path \"$sup_dest\")" \
-      --eval "(load \"$site_lisp/site-start\" nil t)" \
       --eval '(when (featurep (quote elinit)) (kill-emacs 1))' 2>&1
-    echo "PASS: no autostart without --pid1"
-    # A2 acceptance #3: EMACS_ELINIT_DISABLE env var gate
-    EMACS_ELINIT_DISABLE=1 $out/bin/emacs --pid1 --batch \
-      --eval "(add-to-list 'load-path \"$sup_dest\")" \
-      --eval "(load \"$site_lisp/site-start\" nil t)" \
-      --eval '(when (featurep (quote elinit)) (kill-emacs 1))' 2>&1
-    echo "PASS: EMACS_ELINIT_DISABLE=1 prevents autostart"
-    # A2 acceptance #4: elinit-pid1-autostart-disabled Lisp gate
-    # Simulates early-init load order: variable set before site-start runs.
-    # (--batch does not load early-init.el, so we use -l to replicate ordering.)
-    local gate_tmpdir
-    gate_tmpdir=$(mktemp -d)
-    printf '(setq elinit-pid1-autostart-disabled t)\n' > "$gate_tmpdir/gate.el"
-    $out/bin/emacs --pid1 --batch \
-      -l "$gate_tmpdir/gate.el" \
-      --eval "(add-to-list 'load-path \"$sup_dest\")" \
-      --eval "(load \"$site_lisp/site-start\" nil t)" \
-      --eval '(when (featurep (quote elinit)) (kill-emacs 1))' 2>&1
-    rm -rf "$gate_tmpdir"
-    echo "PASS: elinit-pid1-autostart-disabled prevents autostart"
+    echo "PASS: elinit is not loaded implicitly with --pid1"
+    if [ -f "$out/share/emacs/site-lisp/site-start.el" ]; then
+      echo "FAIL: site-start.el found in package (implicit autoload risk)"; exit 1
+    fi
+    echo "PASS: no site-start.el in package"
+    if [ -d "$out/share/emacs/site-lisp/elinit" ]; then
+      echo "FAIL: elinit/ directory found in package (bundled payload)"; exit 1
+    fi
+    echo "PASS: no elinit/ directory in package"
 
     echo "=== All checks passed ==="
 
@@ -424,7 +298,7 @@ SITE_START_EOF
   '';
 
   meta = with pkgs.lib; {
-    description = "GNU Emacs (nox) — static, full-featured, PID1 patched, with elinit";
+    description = "GNU Emacs (nox) -- static, full-featured, PID1 patched";
     homepage = "https://www.gnu.org/software/emacs/";
     license = licenses.gpl3Plus;
     platforms = [ "x86_64-linux" ];

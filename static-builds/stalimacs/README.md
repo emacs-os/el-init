@@ -7,4 +7,4 @@ undervalued in 2026. Check them out.
 
 These files are vanilla static Emacs build recipes (Arch PKGBUILDs and Nix
 derivations) without the PID1 patchset. See the parent `static-builds/`
-directory for PID1-patched builds with baked-in elinit.
+directory for PID1-patched builds.
