@@ -65,4 +65,5 @@ All in all, this software is planned to be released to MELPA because
 there is nothing else quite like it for Emacs as far as service
 supervision goes.  It is actually useful -- for tinkerers, init
 hackers, or regular users who just want to supervise userland
-processes.
+processes.  Bugs reported are planned to be hopefully squashed, as
+time permits.
