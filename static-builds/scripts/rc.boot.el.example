@@ -47,9 +47,6 @@
   (make-directory "/run" t)
   (set-file-modes "/run" #o755)
 
-  (make-directory "/run/runit" t)
-  (set-file-modes "/run/runit" #o755)
-
   (make-directory "/run/lvm" t)
   (set-file-modes "/run/lvm" #o755)
 
