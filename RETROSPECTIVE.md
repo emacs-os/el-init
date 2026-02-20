@@ -21,7 +21,10 @@ how far current AI models can go on a non-trivial codebase.  After
 human intervention in testing, troubleshooting, and iteration.  Current
 models cannot one-shot code projects.  The technology has made
 impressive strides, but the gap between "generate plausible code" and
-"ship reliable software" remains wide.
+"ship reliable software" remains wide.  While the technology has made
+impressive advancements, it is becoming apparent that throwing the
+entire internet at LLMs as training data might not be the best
+approach.
 
 To date the most effective method has been:
 

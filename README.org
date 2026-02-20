@@ -84,8 +84,6 @@ dashboard, or ~elinitctl~ from the terminal.
 :CUSTOM_ID: ai-dev-disclosure
 :END:
 
-[[file:assets/el-sloppo-small.png]]
-
 This project was built with significant AI assistance.  See
 [[file:RETROSPECTIVE.md][RETROSPECTIVE.md]] for the full disclosure.
 
