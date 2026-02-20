@@ -172,28 +172,7 @@
   (message "Storing dmesg output to /var/log...")
   (start-process-shell-command "dmesg" nil "dmesg > /var/log/dmesg.log"))
 
-(progn
-  (message "Starting services...")
-
-  ;; managed by runsvdir
-  ;; (progn
-  ;;   (message "Starting process manager...")
-  ;;   (call-process-shell-command "nohup ubase-box respawn runsvdir -P /var/service &" nil nil 0))
-
-  ;; standalone
-  (call-process-shell-command "nohup syslogd -n &" nil nil 0)
-  (call-process-shell-command "nohup dhcpcd -BM &" nil nil 0)
-  (call-process-shell-command "nohup /bin/sshd &" nil nil 0))
-
-(when (file-exists-p "/etc/rc.1.local.el")
-  (load-file "/etc/rc.1.local.el"))
-
-(message "Boot stage complete...")
-
-(shell-command "clear")
-
-(progn
-  (call-process-shell-command "nohup /usr/local/bin/respawn /usr/local/bin/getty /dev/tty1 linux /usr/local/bin/login -p adam &" nil nil 0)
-  (call-process-shell-command "nohup /usr/local/bin/respawn /usr/local/bin/getty /dev/tty2 linux /usr/local/bin/login -p root &" nil nil 0))
+;; Services (syslogd, sshd, dhcpcd, gettys, etc.) are handled by elinit
+;; units -- not by this boot script.
 
 (kill-emacs 0)
