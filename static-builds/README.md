@@ -91,6 +91,8 @@ Or for unconditional loading (when this Emacs instance is always PID1):
 (require 'elinit)
 (setq elinit-libexec-build-on-startup 'never)
 (setq elinit-log-directory "/var/log/elinit")
+(setq elinit-overrides-file "/var/lib/elinit/overrides.eld")
+(setq elinit-timer-state-file "/var/lib/elinit/timer-state.eld")
 (setq elinit-unit-authority-path
       '("/usr/lib/elinit.el/"
         "/etc/elinit.el/"))
@@ -102,6 +104,12 @@ Notes on PID1-specific defaults:
   appropriate for a desktop user session but not for a system-wide PID1
   deployment.  Set it to a system log path such as `/var/log/elinit` so
   that service logs live alongside the rest of the system logs.
+- `elinit-overrides-file` and `elinit-timer-state-file` default to per-user
+  locations under `~/.config` and `~/.local/state`.  For PID1 deployments,
+  set them to a system state directory such as
+  `/var/lib/elinit/overrides.eld` and `/var/lib/elinit/timer-state.eld`.
+  This keeps mutable runtime state out of root's home directory and in the
+  standard system state location.
 - `elinit-unit-authority-path` defaults to three tiers: vendor
   (`/usr/lib/elinit.el/`), system admin (`/etc/elinit.el/`), and user
   (`~/.config/elinit.el/`).  The user tier is meaningless when Emacs is
@@ -255,6 +263,7 @@ Use these canonical system paths:
 | elinit Lisp files | `/usr/share/emacs/site-lisp/elinit/` |
 | C helper binaries | `/usr/local/libexec/` or admin-chosen path |
 | Sbin scripts (`elinitctl`, etc.) | `/usr/local/bin/` or anywhere in PATH |
+| Persistent elinit state (`elinit-overrides-file`, `elinit-timer-state-file`) | `/var/lib/elinit/` |
 | elinit unit files (system admin tier) | `/etc/elinit.el/*.el` |
 | Optional script examples for admin reuse (not auto-loaded) | `/lib/init/rc.boot.el`, `/lib/init/rc.shutdown.el` |
 | Optional local boot extension | `/etc/rc.0.local.el` |
