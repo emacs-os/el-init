@@ -2,6 +2,56 @@
 [[https://github.com/emacs-os/el-init/actions/workflows/ci.yml][https://github.com/emacs-os/el-init/actions/workflows/ci.yml/badge.svg]]
 [[https://gist.github.com/el-sloppo/e686727a6d88c17c557003e73a9c020c][https://img.shields.io/endpoint.svg?url=https://gist.githubusercontent.com/el-sloppo/e686727a6d88c17c557003e73a9c020c/raw/elinit-tests.json]]
 
+* AI Dev Disclosure (Retrospective)
+:PROPERTIES:
+:CUSTOM_ID: ai-dev-disclosure
+:END:
+
+[[file:assets/el-sloppo-small.png]]
+
+This project is built with significant assistance from AI tooling.
+Claude Code 4.6 Opus (Anthropic) handles the multi-step code generation
+process -- Emacs Lisp, C, and POSIX shell -- including tests,
+documentation, and refactoring.  Codex 5.3 Extra High (OpenAI) is used
+for the review process and plan generation.  Every change goes through
+the same CI pipeline (~make check~) and is reviewed by the maintainer
+before merge.  The commit history is transparent: AI-assisted commits
+carry a ~Co-Authored-By: Claude~ trailer.
+
+Significant human effort drives the project direction, engineering
+decisions, and quality control -- the models require constant course
+correction (they will confidently produce incorrect code and claim it
+works).  The project was created for fun, and as an experiment to see
+how far current AI models can go on a non-trivial codebase.  After
+500+ commits the takeaway is clear: every feature required substantial
+human intervention in testing, troubleshooting, and iteration.  Current
+models cannot one-shot code projects.  The technology has made
+impressive strides, but the gap between "generate plausible code" and
+"ship reliable software" remains wide.
+
+To date the most effective method has been:
+
+1. Generate a detailed, multi-phase requirements and specification plan
+   file (~PLAN.md~), leaving no wiggle room or ambiguity.
+2. Have Claude implement the plan.
+3. Have Codex 5.3 Extra High review and audit the codebase against the
+   plan, phase by phase.
+4. Have Claude fix repeatedly until Codex is satisfied.
+5. Maintain a detailed ~CLAUDE.md~ file (as demonstrated in this repo)
+   that encodes project conventions, module structure, and coding
+   standards so the model has persistent context.
+6. Enforce a strong test policy -- syntax checking, compile-time
+   validation, runtime smoke tests, and unit tests -- such that
+   "anything that can be tested should be tested."
+
+Using AI-driven development in this way is less painful, while far
+from divine.
+
+The author wishes to remain anonymous, as this project will likely
+generate controversy.  It is released under GPL-3.0 -- fitting, given
+that probably 99% of the Emacs Lisp code these models were trained on
+was also GPL-3.0.
+
 * el-init
 
 A statically compiled Emacs init (PID 1) patchset, Emacs Lisp-based service supervisor and core component of *[[https://github.com/emacs-os][Emacs-OS]]*.
@@ -3391,33 +3441,6 @@ Interactive load:
 #+begin_src bash
 emacs -Q -l elinit.el
 #+end_src
-
-* AI Dev Disclosure
-:PROPERTIES:
-:CUSTOM_ID: ai-dev-disclosure
-:END:
-
-[[file:assets/el-sloppo-small.png]]
-
-This project is built with significant assistance from AI tooling.
-Claude Code 4.6 Opus (Anthropic) handles the multi-step code generation
-process -- Emacs Lisp, C, and POSIX shell -- including tests,
-documentation, and refactoring.  Codex 5.3 Extra High (OpenAI) is used
-for the review process and plan generation.  Every change goes through
-the same CI pipeline (~make check~) and is reviewed by the maintainer
-before merge.  The commit history is transparent: AI-assisted commits
-carry a ~Co-Authored-By: Claude~ trailer.
-
-Significant human effort drives the project direction, engineering
-decisions, and quality control -- the models require constant course
-correction (they will confidently produce incorrect code and claim it
-works).  The project was created for fun, and as an experiment to see
-how far current AI models can go on a non-trivial codebase.  After
-500+ commits the takeaway is clear: every feature required substantial
-human intervention in testing, troubleshooting, and iteration.  Current
-models cannot one-shot code projects.  The technology has made
-impressive strides, but the gap between "generate plausible code" and
-"ship reliable software" remains wide.
 
 * Indexes
 :PROPERTIES:
