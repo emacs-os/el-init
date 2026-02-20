@@ -209,7 +209,8 @@ step: mounting proc/sys/dev/run, creating directories, setting
 permissions, seeding the RNG, starting udev, doing the remount-fsck-remount
 cycle, mounting all local filesystems, bringing up loopback, setting the
 hostname, and applying sysctl.  See `static-builds/scripts/rc.boot.el.example`
-for a complete working example that performs all of these tasks.
+for an example that covers all of these tasks.  The actual procedure will
+vary from distro to distro.
 
 Because the unit has `:oneshot-blocking t` and `:required-by
 ("basic.target")`, no other units will start until it finishes
