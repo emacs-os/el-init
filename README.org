@@ -1215,6 +1215,9 @@ commands map the numeric runlevel to the corresponding target and
 execute an ~isolate~ transaction (stops entries not in the new target
 closure, starts entries in the closure).
 
+These commands manage elinit target state only.  They do not directly
+issue kernel poweroff or reboot syscalls.
+
 Runlevels 0 and 6 are destructive transitions and require
 confirmation.  In interactive Emacs, a ~y-or-n-p~ prompt is shown.
 In batch mode or JSON output, ~--yes~ is required.
@@ -2472,6 +2475,71 @@ You can still use pure Elisp for those actions: repurpose the example scripts
 in ~static-builds/scripts/rc.boot.el.example~ and
 ~static-builds/scripts/rc.shutdown.el.example~, then invoke your script through
 an explicit oneshot unit command.
+
+When you need an early boot script:
+
+1. You usually do *not* need one if your initramfs already handles core early
+   boot responsibilities before handing off to Emacs PID1 (mount, dev, fsck,
+   networking bootstrap, runtime dirs).
+2. You *do* need one when those responsibilities are not handled before
+   handoff and must be done deterministically before normal services.
+3. In that case, define an explicit early oneshot unit and wire it near the
+   start of the target graph (for example required by ~basic.target~ and
+   blocking).
+
+Minimal early oneshot pattern:
+
+#+begin_src emacs-lisp
+;; /etc/elinit.el/early-boot.el
+(:id "early-boot"
+ :command "/usr/bin/emacs --batch -Q -l /usr/local/lib/elinit/early-boot.el"
+ :type oneshot
+ :oneshot-blocking t
+ :enabled t
+ :required-by ("basic.target"))
+#+end_src
+
+This keeps boot sequencing explicit, testable, and visible through the same
+supervisor model as every other unit.
+
+When you need shutdown or reboot scripts:
+
+1. You usually do *not* need one if stopping managed units is enough.  In PID1
+   mode, signal-driven shutdown/reboot hooks already call ~elinit-stop-now~.
+2. You *do* need one if you require deterministic pre-transition tasks under
+   supervisor control (for example cleanup or state export).
+3. In that case, attach blocking oneshot units to ~shutdown.target~,
+   ~poweroff.target~, and ~reboot.target~, then trigger transition
+   targets explicitly with ~elinitctl init --yes 0~ (poweroff path) or
+   ~elinitctl init --yes 6~ (reboot path).
+
+Minimal shutdown/reboot oneshot pattern:
+
+#+begin_src emacs-lisp
+;; /etc/elinit.el/pre-shutdown.el
+(:id "pre-shutdown"
+ :command "/usr/bin/emacs --batch -Q -l /usr/local/lib/elinit/pre-shutdown.el"
+ :type oneshot
+ :oneshot-blocking t
+ :enabled t
+ :required-by ("shutdown.target"))
+
+;; /etc/elinit.el/pre-poweroff.el
+(:id "pre-poweroff"
+ :command "/usr/bin/emacs --batch -Q -l /usr/local/lib/elinit/pre-poweroff.el"
+ :type oneshot
+ :oneshot-blocking t
+ :enabled t
+ :required-by ("poweroff.target"))
+
+;; /etc/elinit.el/pre-reboot.el
+(:id "pre-reboot"
+ :command "/usr/bin/emacs --batch -Q -l /usr/local/lib/elinit/pre-reboot.el"
+ :type oneshot
+ :oneshot-blocking t
+ :enabled t
+ :required-by ("reboot.target"))
+#+end_src
 
 ** CLI Options
 

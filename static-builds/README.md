@@ -143,6 +143,57 @@ auto-load boot/shutdown script files.
 4. `static-builds/scripts/rc.boot.el.example` and
    `static-builds/scripts/rc.shutdown.el.example` are available to repurpose.
 
+## Shutdown and reboot scripting
+
+PID1 signal handling and service-stop behavior:
+
+- SIGTERM/SIGUSR1 -> `pid1-poweroff-hook` -> `elinit-stop-now`
+- SIGINT/SIGUSR2 -> `pid1-reboot-hook` -> `elinit-stop-now`
+- No implicit `rc.shutdown.el` probing or auto-load
+
+When no extra transition tasks are needed, rely on this default lifecycle stop
+path.
+
+When custom shutdown/reboot tasks are needed, keep them explicit and
+supervisor-managed:
+
+1. Add blocking oneshot units tied to transition targets.
+2. Use `shutdown.target` for common pre-stop work.
+3. Use `poweroff.target` and/or `reboot.target` for mode-specific work.
+4. Trigger transitions explicitly with `elinitctl init --yes 0` (poweroff path)
+   or `elinitctl init --yes 6` (reboot path).
+
+Example unit wiring:
+
+```emacs-lisp
+;; /etc/elinit.el/pre-shutdown.el
+(:id "pre-shutdown"
+ :command "/usr/bin/emacs --batch -Q -l /usr/local/lib/elinit/pre-shutdown.el"
+ :type oneshot
+ :oneshot-blocking t
+ :enabled t
+ :required-by ("shutdown.target"))
+
+;; /etc/elinit.el/pre-poweroff.el
+(:id "pre-poweroff"
+ :command "/usr/bin/emacs --batch -Q -l /usr/local/lib/elinit/pre-poweroff.el"
+ :type oneshot
+ :oneshot-blocking t
+ :enabled t
+ :required-by ("poweroff.target"))
+
+;; /etc/elinit.el/pre-reboot.el
+(:id "pre-reboot"
+ :command "/usr/bin/emacs --batch -Q -l /usr/local/lib/elinit/pre-reboot.el"
+ :type oneshot
+ :oneshot-blocking t
+ :enabled t
+ :required-by ("reboot.target"))
+```
+
+`init 0`/`init 6` are target transitions; they do not directly issue kernel
+poweroff/reboot syscalls.
+
 ## First-boot validation checklist
 
 After first boot:

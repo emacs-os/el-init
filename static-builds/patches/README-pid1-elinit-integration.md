@@ -146,7 +146,7 @@ Container shutdown (docker stop / SIGTERM)
     -> process exits
 ```
 
-## Early boot scripts (admin-owned)
+## Early boot and shutdown scripts (admin-owned)
 
 If initramfs does not provide early setup, use explicit early oneshot units.
 Do not rely on implicit rc script file loading.
@@ -157,6 +157,17 @@ For pure Elisp workflows, repurpose:
 - `static-builds/scripts/rc.shutdown.el.example`
 
 and invoke your script through a deterministic oneshot command.
+
+For shutdown/reboot customization, attach blocking oneshot units to transition
+targets:
+
+- common pre-stop tasks -> `shutdown.target`
+- poweroff-specific tasks -> `poweroff.target`
+- reboot-specific tasks -> `reboot.target`
+
+Trigger target transitions with `elinitctl init --yes 0` (poweroff path) or
+`elinitctl init --yes 6` (reboot path). These commands manage target closure
+only; they do not issue kernel reboot/poweroff syscalls themselves.
 
 ## No additional C changes needed
 
