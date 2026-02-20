@@ -114,7 +114,7 @@ provides detailed reference material:
 - [[#customization-reference][Customization Reference]] - all options and dashboard faces
 - [[#command-reference][Command Reference]] - interactive and dashboard command map
 - [[#security][Security]] - manager targeting, transport boundary, trust gate, sandbox, rlimits
-- [[#pid1-for-the-init-hackers-tinkerers-and-adventurers-among-us][PID1 - for the init hackers, tinkerers and adventurers among us]] - all docs for this crazy idea are in [[file:./static-builds][./static-builds]]
+- [[#pid1---for-the-init-hackers-tinkerers-and-adventurers-among-us][PID1 - for the init hackers, tinkerers and adventurers among us]] - all docs for this crazy idea are in =./static-builds=
 - [[#service-management-systems-comparison][Service Management Systems Comparison]] - matrix, conversions, import tooling
 - [[#development][Development]] - test/lint workflows
 - [[#topical-index][Topical Index]] - exhaustive cross-reference
