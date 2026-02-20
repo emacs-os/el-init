@@ -160,7 +160,7 @@ following tasks must happen before any real services can start:
 12. **Apply sysctl settings** -- `sysctl -p /etc/sysctl.conf`.
 
 After these steps complete, the system is ready for normal service
-supervision (sshd, dhcpcd, getty, and so on), which elinit
+supervision (sshd, dhcpcd, iwd, getty, and so on), which elinit
 handles through its unit system.
 
 **These responsibilities must be handled by exactly one of the two paths
