@@ -76,12 +76,12 @@ Use these canonical system paths:
 | Purpose | Path |
 | --- | --- |
 | Elinit unit files (system admin tier) | `/etc/elinit.el/*.el` |
-| Optional rc boot script | `/lib/init/rc.boot.el` |
-| Optional rc shutdown script | `/lib/init/rc.shutdown.el` |
+| Optional script examples for admin reuse (not auto-loaded) | `/lib/init/rc.boot.el`, `/lib/init/rc.shutdown.el` |
 | Optional local boot extension | `/etc/rc.0.local.el` |
 | Optional local post-boot extension | `/etc/rc.1.local.el` |
 
-The rc script path convention above matches `scripts/*.example` in this directory.
+The script paths above are conventions only. `elinit-pid1` no longer auto-loads
+these files.  Use explicit units if you want them executed.
 
 ## How to enable units from chroot before first boot
 
@@ -90,14 +90,14 @@ Recommended workflow:
 1. Mount target root at `/mnt`.
 2. Create unit root directory in the target.
 3. Write unit files with `:enabled t` and target membership.
-4. Optionally stage `rc.boot.el` / `rc.shutdown.el`.
+4. Optionally stage your own early-boot assets.
 5. Ensure permissions and executable bits are correct.
 
 Example:
 
 ```bash
 install -d /mnt/etc/elinit.el
-install -d /mnt/lib/init
+install -d /mnt/usr/local/lib/elinit
 
 cat > /mnt/etc/elinit.el/sshd.el <<'EOF'
 (:id "sshd"
@@ -109,9 +109,16 @@ cat > /mnt/etc/elinit.el/sshd.el <<'EOF'
  :logging t)
 EOF
 
-cp static-builds/scripts/rc.boot.el.example /mnt/lib/init/rc.boot.el
-cp static-builds/scripts/rc.shutdown.el.example /mnt/lib/init/rc.shutdown.el
-chmod 755 /mnt/lib/init/rc.boot.el /mnt/lib/init/rc.shutdown.el
+cp static-builds/scripts/rc.boot.el.example /mnt/usr/local/lib/elinit/early-boot.el
+
+cat > /mnt/etc/elinit.el/early-boot.el <<'EOF'
+(:id "early-boot"
+ :command "/usr/bin/emacs --batch -Q -l /usr/local/lib/elinit/early-boot.el"
+ :type oneshot
+ :oneshot-blocking t
+ :enabled t
+ :required-by ("basic.target"))
+EOF
 ```
 
 This is enough to seed first boot behavior without running `elinitctl` in
@@ -122,20 +129,19 @@ the chroot.
 ### Initramfs handles early boot
 
 Use this when mount/dev/fsck/network setup is already done before PID1 handoff.
-Do not rely on rc Lisp scripts for core early init -- keep `/lib/init/rc.boot.el`
-optional or absent and focus on the elinit unit set under `/etc/elinit.el/`.
+Focus on the elinit unit set under `/etc/elinit.el/`.
 
-### Emacs Lisp handles early boot
+### Elinit handles early boot
 
-Use this when you want sinit-style boot/shutdown logic in Lisp.
-The `elinit-pid1` module (`elinit-pid1.el`) provides PID1 variables,
-script loading policies, and hook wiring.
+Use explicit early oneshot units for deterministic ordering.
+`elinit-pid1` handles lifecycle (`elinit-start`/`elinit-stop-now`) but does not
+auto-load boot/shutdown script files.
 
-1. Place `rc.boot.el` at `/lib/init/rc.boot.el`.
-2. Place `rc.shutdown.el` at `/lib/init/rc.shutdown.el`.
-3. Keep scripts executable and deterministic.
-4. Keep infrastructure setup in `rc.boot.el` (mounts, `/run`, udev, etc.) only
-   if initramfs does not already handle it.
+1. Define an early oneshot unit (for example `:required-by ("basic.target")`).
+2. Keep `:oneshot-blocking t` so later units wait deterministically.
+3. If you want pure Elisp boot logic, invoke it from the oneshot command.
+4. `static-builds/scripts/rc.boot.el.example` and
+   `static-builds/scripts/rc.shutdown.el.example` are available to repurpose.
 
 ## First-boot validation checklist
 
@@ -145,4 +151,3 @@ After first boot:
 2. Verify elinit came up (`elinitctl status`).
 3. Verify configured units are loaded (`elinitctl list-units`).
 4. Verify no stale helper rebuild is required at startup.
-

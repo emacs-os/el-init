@@ -18,7 +18,7 @@ configuration, while preserving existing static build variants exactly as-is.
 This plan has two tracks:
 
 1. Track A (implemented): add two new build variants only.
-2. Track B (implemented): optional Emacs PID1 patch and optional rc.boot/rc.shutdown
+2. Track B (implemented): optional Emacs PID1 patch and optional PID1 lifecycle
    integration.
 
 Emacs-side PID1 patch requirements are defined in:
@@ -86,7 +86,7 @@ PID1 behavior MUST be optional and explicit. It MUST NOT be forced by default.
 When enabled, PID1 behavior MUST provide:
 
 1. Child reaping for orphaned/exited children.
-2. Optional boot/shutdown Lisp script execution policy.
+2. Boot/shutdown lifecycle hook integration for service manager control.
 3. Signal-safe handling (handlers set flags; main loop performs work).
 
 The `-patched-for-pid1` suffix in variant filenames is a capability marker. It
@@ -186,7 +186,7 @@ Acceptance:
 1. README has runnable commands for PKGBUILD and Nix baked variants.
 2. README clearly distinguishes old variants vs new baked variant.
 
-## Track B: Optional PID1 and rc scripts
+## Track B: Optional PID1 lifecycle integration
 
 Track B is implemented and remains optional by design.
 
@@ -210,45 +210,41 @@ Acceptance:
 ### Phase B2: Elinit PID1 Lisp interface
 Deliverables:
 
-1. Introduce PID1 control variables:
+1. Introduce PID1 control variable:
    - `elinit-pid1-mode-enabled`
-   - `elinit-pid1-boot-script`
-   - `elinit-pid1-shutdown-script`
-   - `elinit-pid1-boot-policy`
-   - `elinit-pid1-shutdown-policy`
-2. Policy set MUST support:
-   - `never`
-   - `if-present`
-   - `require`
+2. Ensure PID1 lifecycle actions are single-path:
+   - boot hook calls `elinit-start`
+   - shutdown hooks call `elinit-stop-now`
+   - no implicit script autoload path in `elinit-pid1`
 
 Acceptance:
 
-1. Variables are documented and default to safe non-invasive values.
-2. `elinit-pid1-mode-enabled` set to nil means no Lisp-side script
-   loading or service lifecycle calls (`elinit-start`, `elinit-stop-now`).
+1. Variable is documented and defaults to safe non-invasive value.
+2. `elinit-pid1-mode-enabled` set to nil means no Lisp-side service lifecycle
+   calls (`elinit-start`, `elinit-stop-now`).
    C-level reaping and signal handling are controlled by the `--pid1`
    flag (B1 scope) and are outside this Lisp variable's authority.
 
-### Phase B3: rc.boot/rc.shutdown execution model
+### Phase B3: Single-path lifecycle execution model
 Deliverables:
 
-1. Define optional script execution flow inspired by sinit lifecycle:
-   - early boot hook
-   - reboot/poweroff hook
-2. Implement all script execution in normal runtime context, not in raw signal
+1. Remove implicit rc script loading from `elinit-pid1`.
+2. Require explicit administrator wiring for any early boot/shutdown scripts
+   through supervisor-managed units.
+3. Keep all lifecycle execution in normal runtime context, not in raw signal
    handlers.
 
 Acceptance:
 
-1. Boot/shutdown scripts run only when policy allows.
-2. Missing scripts are handled per policy (`never/if-present/require`).
+1. PID1 hooks perform lifecycle manager start/stop only.
+2. No automatic file-path probing for rc scripts occurs in PID1 hooks.
 
 ### Phase B4: PID namespace tests
 Deliverables:
 
 1. Add test harness for PID1 behavior in isolated namespace/container.
 2. Verify child reaping and signal forwarding logic.
-3. Verify boot/shutdown policy behavior.
+3. Verify boot/shutdown lifecycle behavior.
 
 Note: C-level reaping and signal tests are covered at the patch level
 (see `patches/README-pid1-validation.md` tests 8-13).  The ERT test
@@ -291,7 +287,7 @@ This plan does not include:
 1. Editing or removing existing six static build variants.
 2. Replacing initramfs responsibilities like mount/fsck/network.
 3. Making PID1 behavior mandatory.
-4. Enforcing rc scripts in environments where initramfs already handles setup.
+4. Enforcing any implicit script auto-execution model.
 
 ## Exit Criteria
 Track A is complete when:

@@ -20,8 +20,8 @@ dashboard, or ~elinitctl~ from the terminal.
 ** Features
 
 - *Optional PID1 patchset* -- static build instruction files (Arch
-  PKGBUILD and Nix) and Emacs patches adding zombie reaping support and
-  support for Emacs Lisp init scripts (~static-builds/~).
+  PKGBUILD and Nix) and Emacs patches adding zombie reaping and
+  PID1 lifecycle hooks (~static-builds/~).
 - *Dependency graph* -- five relationship keywords give fine-grained control
   over startup order and runtime interaction:
   - ~:after~ / ~:before~ -- pure ordering (start A after B, or B before A).
@@ -2453,20 +2453,25 @@ All user options (defcustom) are listed below.
 
 | Variable | Default | Purpose |
 | ~elinit-pid1-mode-enabled~ | auto-detected | Non-nil means PID1 integration is active (auto-detected from ~pid1-mode~ and PID) |
-| ~elinit-pid1-boot-script~ | ~"/lib/init/rc.boot.el"~ | File name of the boot script loaded during PID1 startup |
-| ~elinit-pid1-shutdown-script~ | ~"/lib/init/rc.shutdown.el"~ | File name of the shutdown script loaded during PID1 shutdown |
-| ~elinit-pid1-boot-policy~ | ~if-present~ | Policy for loading the boot script (~never~, ~if-present~, ~require~) |
-| ~elinit-pid1-shutdown-policy~ | ~if-present~ | Policy for loading the shutdown script (~never~, ~if-present~, ~require~) |
 
 ~elinit-pid1-mode-enabled~ defaults to non-nil only when Emacs was started
 with ~--pid1~ and the process is actually PID 1.  In all other contexts it
 defaults to nil and the PID1 module is inert.
 
-Script policies control how ~rc.boot.el~ and ~rc.shutdown.el~ are handled:
+PID1 lifecycle in elinit is single-path:
 
-- ~never~ -- skip the script unconditionally.
-- ~if-present~ -- load the script when it is a readable regular file, silently skip otherwise (including directories and non-existent paths).
-- ~require~ -- load the script and signal an error if missing or unreadable.
+- boot hook calls ~elinit-start~
+- shutdown hooks call ~elinit-stop-now~
+
+Built-in PID1 script autoloading (~rc.boot.el~ / ~rc.shutdown.el~) has been
+removed.  If you need early boot actions when initramfs does not provide them,
+define an explicit early oneshot unit and place it early in the target graph
+(for example ~:required-by ("basic.target")~ with ~:oneshot-blocking t~).
+
+You can still use pure Elisp for those actions: repurpose the example scripts
+in ~static-builds/scripts/rc.boot.el.example~ and
+~static-builds/scripts/rc.shutdown.el.example~, then invoke your script through
+an explicit oneshot unit command.
 
 ** CLI Options
 
@@ -3458,7 +3463,7 @@ This is a topical index for targeted lookup of less-obvious behavior.
 - Mutator inventory and classification (explicit verb vs unit-definition): [[#service-management-systems-comparison][Service Management Systems Comparison]]
 - Override precedence (runtime overrides vs unit defaults): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]]
 - Override persistence (~elinit-overrides-file~): [[#runtime-overrides-and-reconciliation][Runtime Overrides and Reconciliation]], [[#persistence-and-files][Persistence and Files]]
-- PID1 mode, static builds, Emacs patches, init scripts: [[#customization-reference][Customization Reference]]
+- PID1 mode, static builds, Emacs patches, deterministic early boot units: [[#customization-reference][Customization Reference]]
 - Privilege-drop trust gate for ~:user~ / ~:group~: [[#security][Security]], [[#service-definition][Service Definition]]
 - Privilege-drop troubleshooting (identity errors, trust gate failures): [[#privilege-drop-troubleshooting][Privilege-Drop Troubleshooting]]
 - Reload unit (~reload~, dashboard ~u~): [[#cli-handbook-sbinelinitctl][CLI (~sbin/elinitctl~)]], [[#dashboard-handbook-m-x-elinit][Dashboard (~M-x elinit~)]]

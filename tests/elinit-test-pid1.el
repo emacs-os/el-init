@@ -6,8 +6,8 @@
 
 ;;; Commentary:
 
-;; ERT tests for elinit-pid1.el: auto-detection, policy dispatch,
-;; boot/shutdown functions, hook registration, and disabled mode.
+;; ERT tests for elinit-pid1.el: auto-detection, lifecycle dispatch,
+;; hook registration, and disabled mode behavior.
 
 ;;; Code:
 
@@ -40,116 +40,11 @@
     (cl-letf (((symbol-function 'emacs-pid) (lambda () 1)))
       (should (elinit--pid1-detect-mode)))))
 
-;;;; Policy dispatch tests
-
-(ert-deftest elinit-test-pid1-load-script-never ()
-  "Policy `never' skips script unconditionally."
-  (let ((loaded nil))
-    (cl-letf (((symbol-function 'load)
-               (lambda (&rest _) (setq loaded t))))
-      (elinit--pid1-load-script "/nonexistent/script.el" 'never)
-      (should-not loaded))))
-
-(ert-deftest elinit-test-pid1-load-script-if-present-readable ()
-  "Policy `if-present' loads script when file is readable."
-  (let ((tmpfile (make-temp-file "pid1-test-" nil ".el"))
-        (loaded-file nil))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert ";; test script\n"))
-          (cl-letf (((symbol-function 'elinit--log)
-                     (lambda (&rest _))))
-            (cl-letf (((symbol-function 'load)
-                       (lambda (file &rest _)
-                         (setq loaded-file file))))
-              (elinit--pid1-load-script tmpfile 'if-present)
-              (should (equal loaded-file tmpfile)))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-pid1-load-script-if-present-missing ()
-  "Policy `if-present' silently skips when file is missing."
-  (let ((loaded nil))
-    (cl-letf (((symbol-function 'load)
-               (lambda (&rest _) (setq loaded t))))
-      (elinit--pid1-load-script "/nonexistent/missing.el" 'if-present)
-      (should-not loaded))))
-
-(ert-deftest elinit-test-pid1-load-script-require-loads ()
-  "Policy `require' loads the script."
-  (let ((tmpfile (make-temp-file "pid1-test-" nil ".el"))
-        (loaded-file nil))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert ";; test script\n"))
-          (cl-letf (((symbol-function 'elinit--log)
-                     (lambda (&rest _))))
-            (cl-letf (((symbol-function 'load)
-                       (lambda (file &rest _)
-                         (setq loaded-file file))))
-              (elinit--pid1-load-script tmpfile 'require)
-              (should (equal loaded-file tmpfile)))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-pid1-load-script-require-errors ()
-  "Policy `require' signals error when file is missing."
-  (cl-letf (((symbol-function 'elinit--log)
-             (lambda (&rest _))))
-    (should-error
-     (elinit--pid1-load-script "/nonexistent/missing.el" 'require))))
-
-(ert-deftest elinit-test-pid1-load-script-require-unreadable ()
-  "Policy `require' signals error for existing but unreadable file."
-  (let ((tmpfile (make-temp-file "pid1-test-" nil ".el")))
-    (unwind-protect
-        (progn
-          (set-file-modes tmpfile #o000)
-          (cl-letf (((symbol-function 'elinit--log)
-                     (lambda (&rest _))))
-            (should-error
-             (elinit--pid1-load-script tmpfile 'require))))
-      (set-file-modes tmpfile #o644)
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-pid1-load-script-if-present-unreadable ()
-  "Policy `if-present' silently skips existing but unreadable file."
-  (let ((tmpfile (make-temp-file "pid1-test-" nil ".el"))
-        (loaded nil))
-    (unwind-protect
-        (progn
-          (set-file-modes tmpfile #o000)
-          (cl-letf (((symbol-function 'load)
-                     (lambda (&rest _) (setq loaded t))))
-            (elinit--pid1-load-script tmpfile 'if-present)
-            (should-not loaded)))
-      (set-file-modes tmpfile #o644)
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-pid1-load-script-if-present-directory ()
-  "Policy `if-present' silently skips directories."
-  (let ((tmpdir (make-temp-file "pid1-test-" t))
-        (loaded nil))
-    (unwind-protect
-        (cl-letf (((symbol-function 'load)
-                   (lambda (&rest _) (setq loaded t))))
-          (elinit--pid1-load-script tmpdir 'if-present)
-          (should-not loaded))
-      (delete-directory tmpdir))))
-
-(ert-deftest elinit-test-pid1-load-script-unknown-policy ()
-  "Unknown policy signals an error."
-  (should-error
-   (elinit--pid1-load-script "/some/file.el" 'bogus)
-   :type 'error))
-
 ;;;; Boot function tests
 
 (ert-deftest elinit-test-pid1-boot-calls-start ()
   "Boot function calls `elinit-start' when enabled."
   (let ((elinit-pid1-mode-enabled t)
-        (elinit-pid1-boot-script "/nonexistent/boot.el")
-        (elinit-pid1-boot-policy 'never)
         (start-called nil))
     (cl-letf (((symbol-function 'elinit-start)
                (lambda () (setq start-called t))))
@@ -159,49 +54,29 @@
 (ert-deftest elinit-test-pid1-boot-noop-when-disabled ()
   "Boot function is a no-op when disabled."
   (let ((elinit-pid1-mode-enabled nil)
-        (elinit-pid1-boot-script "/nonexistent/boot.el")
-        (elinit-pid1-boot-policy 'never)
         (start-called nil))
     (cl-letf (((symbol-function 'elinit-start)
                (lambda () (setq start-called t))))
       (elinit--pid1-boot)
       (should-not start-called))))
 
-(ert-deftest elinit-test-pid1-boot-loads-script-before-start ()
-  "Boot function loads script before calling `elinit-start'."
+(ert-deftest elinit-test-pid1-boot-does-not-load-script ()
+  "Boot function does not load external script files."
   (let ((elinit-pid1-mode-enabled t)
-        (elinit-pid1-boot-policy 'never)
-        (elinit-pid1-boot-script "/nonexistent/boot.el")
-        (call-order nil))
-    (cl-letf (((symbol-function 'elinit--pid1-load-script)
-               (lambda (&rest _) (push 'load-script call-order)))
-              ((symbol-function 'elinit-start)
-               (lambda () (push 'start call-order))))
-      (elinit--pid1-boot)
-      (should (equal '(start load-script) call-order)))))
-
-(ert-deftest elinit-test-pid1-boot-require-missing-skips-start ()
-  "Boot with `require' policy and missing script errors, skipping start.
-When `elinit--pid1-load-script' signals an error due to a missing
-required script, `elinit-start' must not be called."
-  (let ((elinit-pid1-mode-enabled t)
-        (elinit-pid1-boot-script "/nonexistent/required-boot.el")
-        (elinit-pid1-boot-policy 'require)
         (start-called nil))
-    (cl-letf (((symbol-function 'elinit--log)
-               (lambda (&rest _)))
+    (cl-letf (((symbol-function 'load)
+               (lambda (&rest _)
+                 (error "elinit-test-pid1: boot must not load scripts")))
               ((symbol-function 'elinit-start)
                (lambda () (setq start-called t))))
-      (should-error (elinit--pid1-boot))
-      (should-not start-called))))
+      (elinit--pid1-boot)
+      (should start-called))))
 
 ;;;; Shutdown function tests
 
 (ert-deftest elinit-test-pid1-shutdown-calls-stop ()
   "Shutdown function calls `elinit-stop-now' when enabled."
   (let ((elinit-pid1-mode-enabled t)
-        (elinit-pid1-shutdown-script "/nonexistent/shutdown.el")
-        (elinit-pid1-shutdown-policy 'never)
         (stop-called nil))
     (cl-letf (((symbol-function 'elinit-stop-now)
                (lambda () (setq stop-called t))))
@@ -211,41 +86,23 @@ required script, `elinit-start' must not be called."
 (ert-deftest elinit-test-pid1-shutdown-noop-when-disabled ()
   "Shutdown function is a no-op when disabled."
   (let ((elinit-pid1-mode-enabled nil)
-        (elinit-pid1-shutdown-script "/nonexistent/shutdown.el")
-        (elinit-pid1-shutdown-policy 'never)
         (stop-called nil))
     (cl-letf (((symbol-function 'elinit-stop-now)
                (lambda () (setq stop-called t))))
       (elinit--pid1-shutdown)
       (should-not stop-called))))
 
-(ert-deftest elinit-test-pid1-shutdown-loads-script-before-stop ()
-  "Shutdown function loads script before calling `elinit-stop-now'."
+(ert-deftest elinit-test-pid1-shutdown-does-not-load-script ()
+  "Shutdown function does not load external script files."
   (let ((elinit-pid1-mode-enabled t)
-        (elinit-pid1-shutdown-policy 'never)
-        (elinit-pid1-shutdown-script "/nonexistent/shutdown.el")
-        (call-order nil))
-    (cl-letf (((symbol-function 'elinit--pid1-load-script)
-               (lambda (&rest _) (push 'load-script call-order)))
-              ((symbol-function 'elinit-stop-now)
-               (lambda () (push 'stop call-order))))
-      (elinit--pid1-shutdown)
-      (should (equal '(stop load-script) call-order)))))
-
-(ert-deftest elinit-test-pid1-shutdown-require-missing-skips-stop ()
-  "Shutdown with `require' policy and missing script errors, skipping stop.
-When `elinit--pid1-load-script' signals an error due to a missing
-required script, `elinit-stop-now' must not be called."
-  (let ((elinit-pid1-mode-enabled t)
-        (elinit-pid1-shutdown-script "/nonexistent/required-shutdown.el")
-        (elinit-pid1-shutdown-policy 'require)
         (stop-called nil))
-    (cl-letf (((symbol-function 'elinit--log)
-               (lambda (&rest _)))
+    (cl-letf (((symbol-function 'load)
+               (lambda (&rest _)
+                 (error "elinit-test-pid1: shutdown must not load scripts")))
               ((symbol-function 'elinit-stop-now)
                (lambda () (setq stop-called t))))
-      (should-error (elinit--pid1-shutdown))
-      (should-not stop-called))))
+      (elinit--pid1-shutdown)
+      (should stop-called))))
 
 ;;;; Hook registration tests
 
@@ -311,22 +168,14 @@ no elinit functions should appear on any PID1 hook because
 
 (ert-deftest elinit-test-pid1-no-process-side-effects-when-disabled ()
   "Boot and shutdown produce zero calls when mode is disabled.
-Verifies that `elinit-start', `elinit-stop-now', `load', and
-`elinit--log' are never invoked when `elinit-pid1-mode-enabled'
-is nil -- the default in non-PID1 environments."
+Verifies that `elinit-start' and `elinit-stop-now' are never
+invoked when `elinit-pid1-mode-enabled' is nil -- the default
+in non-PID1 environments."
   (let ((elinit-pid1-mode-enabled nil)
-        (elinit-pid1-boot-script "/lib/init/rc.boot.el")
-        (elinit-pid1-boot-policy 'if-present)
-        (elinit-pid1-shutdown-script "/lib/init/rc.shutdown.el")
-        (elinit-pid1-shutdown-policy 'if-present)
         (any-call nil))
     (cl-letf (((symbol-function 'elinit-start)
                (lambda () (setq any-call t)))
               ((symbol-function 'elinit-stop-now)
-               (lambda () (setq any-call t)))
-              ((symbol-function 'elinit--log)
-               (lambda (&rest _) (setq any-call t)))
-              ((symbol-function 'load)
                (lambda (&rest _) (setq any-call t))))
       (elinit--pid1-boot)
       (elinit--pid1-shutdown)

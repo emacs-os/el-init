@@ -28,7 +28,6 @@
 ;;; Code:
 
 ;; Forward declarations for elinit-core functions we depend on
-(declare-function elinit--log "elinit-core" (level format-string &rest args))
 (declare-function elinit-start "elinit-core" ())
 (declare-function elinit-stop-now "elinit-core" ())
 
@@ -52,7 +51,7 @@ current process is actually PID 1."
 (defcustom elinit-pid1-mode-enabled (elinit--pid1-detect-mode)
   "Non-nil means PID1 boot/shutdown actions are active.
 When non-nil, `elinit--pid1-boot' and `elinit--pid1-shutdown'
-load rc scripts and call `elinit-start'/`elinit-stop-now'.
+call `elinit-start'/`elinit-stop-now'.
 When nil, those functions are no-ops.  Hook registration is
 separately gated by `pid1-mode' at module load time; setting
 this variable to nil does not remove hooks.  Default is
@@ -60,82 +59,18 @@ auto-detected from `pid1-mode' and the process PID."
   :type 'boolean
   :group 'elinit-pid1)
 
-(defcustom elinit-pid1-boot-script "/lib/init/rc.boot.el"
-  "File name of the boot script loaded during PID1 startup."
-  :type 'string
-  :group 'elinit-pid1)
-
-(defcustom elinit-pid1-shutdown-script "/lib/init/rc.shutdown.el"
-  "File name of the shutdown script loaded during PID1 shutdown."
-  :type 'string
-  :group 'elinit-pid1)
-
-(defcustom elinit-pid1-boot-policy 'if-present
-  "Policy for loading the boot script.
-`never' skips the script unconditionally.  `if-present' loads
-the script when it is a readable regular file, silently skipping
-otherwise.
-`require' loads the script and signals an error if missing
-or unreadable."
-  :type '(choice (const :tag "Never load" never)
-                 (const :tag "Load if present" if-present)
-                 (const :tag "Require (error if missing or unreadable)" require))
-  :group 'elinit-pid1)
-
-(defcustom elinit-pid1-shutdown-policy 'if-present
-  "Policy for loading the shutdown script.
-`never' skips the script unconditionally.  `if-present' loads
-the script when it is a readable regular file, silently skipping
-otherwise.
-`require' loads the script and signals an error if missing
-or unreadable."
-  :type '(choice (const :tag "Never load" never)
-                 (const :tag "Load if present" if-present)
-                 (const :tag "Require (error if missing or unreadable)" require))
-  :group 'elinit-pid1)
-
-;;;; Script loading
-
-(defun elinit--pid1-load-script (script-file-name policy)
-  "Load SCRIPT-FILE-NAME according to POLICY.
-POLICY is one of `never', `if-present', or `require'.
-With `never', the script is unconditionally skipped.
-With `if-present', the script is loaded when it is a readable
-regular file, silently skipped otherwise (including directories
-and non-existent paths).  With `require', the script is loaded
-and an error is signaled if the file is missing or unreadable."
-  (pcase policy
-    ('never nil)
-    ('if-present
-     (when (and (file-regular-p script-file-name)
-                (file-readable-p script-file-name))
-       (elinit--log 'info "Loading PID1 script: %s" script-file-name)
-       (load script-file-name nil t)))
-    ('require
-     (elinit--log 'info "Loading PID1 script (required): %s"
-                  script-file-name)
-     (load script-file-name nil nil))
-    (_
-     (error "elinit-pid1: Unknown script policy `%S'" policy))))
-
 ;;;; Boot and shutdown functions
 
 (defun elinit--pid1-boot ()
   "Initialize elinit PID1 mode.
-Load the boot script per `elinit-pid1-boot-policy', then start
-service management via `elinit-start'."
+Start service management via `elinit-start'."
   (when elinit-pid1-mode-enabled
-    (elinit--pid1-load-script elinit-pid1-boot-script
-                              elinit-pid1-boot-policy)
     (elinit-start)))
 
 (defun elinit--pid1-shutdown ()
   "Shut down elinit PID1 mode.
-Load the shutdown script per `elinit-pid1-shutdown-policy', then
-stop all managed services via `elinit-stop-now'."
+Stop all managed services via `elinit-stop-now'."
   (when elinit-pid1-mode-enabled
-    (elinit--pid1-load-script elinit-pid1-shutdown-script
-                              elinit-pid1-shutdown-policy)
     (elinit-stop-now)))
 
 ;;;; Hook registration

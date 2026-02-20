@@ -96,32 +96,20 @@ Implementation note:
    hook points.
 2. Script execution policy logic MUST remain in Lisp layer (elinit/site
    startup), not hard-coded in C.
-3. Default script paths for this repository MUST be:
-   - `/lib/init/rc.boot.el`
-   - `/lib/init/rc.shutdown.el`
-4. Missing script behavior MUST be policy-driven by Lisp config, not by C
-   fatal exits.
+3. Emacs patch MUST NOT require implicit rc script path probing in C.
+4. Any script execution behavior remains an explicit Lisp/admin concern, not a
+   PID1 C runtime default.
 
 ## Elinit Integration Contract
 This patch MUST enable the elinit-side workflow defined in
 `static-builds/PLAN.md` and `static-builds/README.md`.
 
-Required elinit-side variables (implemented in this repository) are:
+Required elinit-side variable (implemented in this repository):
 
 1. `elinit-pid1-mode-enabled`
-2. `elinit-pid1-boot-script`
-3. `elinit-pid1-shutdown-script`
-4. `elinit-pid1-boot-policy`
-5. `elinit-pid1-shutdown-policy`
 
-Policies MUST support:
-
-1. `never`
-2. `if-present`
-3. `require`
-
-The Emacs patch MUST provide hook/state primitives sufficient for these
-variables to drive behavior entirely from Lisp.
+The Emacs patch MUST provide hook/state primitives sufficient for this
+variable to drive behavior entirely from Lisp.
 
 ## Downstream handoff contract
 On completion, this plan MUST unblock the following downstream work:
