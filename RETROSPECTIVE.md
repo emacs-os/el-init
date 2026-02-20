@@ -88,3 +88,9 @@ supervision goes.  It is actually useful -- for tinkerers, init
 hackers, or regular users who just want to supervise userland
 processes.  Bugs reported are planned to be hopefully squashed, as
 time permits.
+
+![pissoff](assets/fuck-you-nvidia.jpg)
+
+So yeah. I got kinda radicalized midway through this project. It's cucked to pay corpos $$$ to code. I used to enjoy it. Now they give us a tool where our jobs will make us use it and expect our output to be higher, because they never cared about quality anyways. Maybe this is the world we deserve though. "If it works, ship it" has been the software engineers mentality for far too long,  such that we now made a tool to make us release mediocre software, even faster.
+
+Fuck you, Nvidia / OpenAI / Anthropic, and the rest of you all whores. While I whore with you here. Let's roll around in the mud together. Am I crashing out? Yes. Regards.
