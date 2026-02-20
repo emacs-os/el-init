@@ -263,8 +263,8 @@ The script paths above are conventions only.  `elinit-pid1` no longer
 auto-loads these files.  Use explicit units if you want them executed.
 
 The `rc.boot.el.example` and `rc.shutdown.el.example` scripts under
-`static-builds/scripts/` are provided for historical reference.  They
-originate from the [systemE](https://github.com/emacs-os/systemE) project,
+`static-builds/scripts/` are provided for reference.  They originate from
+the historical [systemE](https://github.com/emacs-os/systemE) project,
 which first demonstrated Emacs as PID1.  El-init takes that concept all the
 way to completion with proper process supervision, dependency ordering, and
 a unit system.
