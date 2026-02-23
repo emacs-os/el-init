@@ -1,18 +1,20 @@
-;;; elinit-test-policy.el --- Core policy mutators tests for elinit.el -*- lexical-binding: t -*-
+;;; elinit-test-overrides.el --- Overrides persistence and policy tests for elinit.el -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is not part of GNU Emacs.
 
 ;;; Commentary:
 
-;; Core policy mutators ERT tests for elinit.el.
+;; Tests for the elinit-overrides module: override persistence,
+;; effective state getters, and policy mutators.
 
 ;;; Code:
 
 (require 'elinit-test-helpers)
 
-;;; Core Policy Mutator Tests
+;;; Enable/Disable Policy Tests
 
 (ert-deftest elinit-test-policy-enable-sets-override ()
   "Core enable mutator sets override for disabled entry."
@@ -38,7 +40,9 @@
         (should (eq 'skipped (plist-get result :status)))))))
 
 (ert-deftest elinit-test-policy-enable-clears-stale-override ()
-  "Core enable mutator clears override when config default is enabled."
+  "Core enable mutator clears override when config default is enabled.
+When the config already says enabled, the override is redundant
+and must be cleared to keep the override file minimal."
   (elinit-test-with-unit-files
       '(("sleep 300" :id "svc" :type simple))
     (let ((elinit--enabled-override (make-hash-table :test 'equal))
@@ -53,7 +57,8 @@
         (should-not (gethash "svc" elinit--enabled-override))))))
 
 (ert-deftest elinit-test-policy-disable-normalization ()
-  "Core disable mutator clears override when config default is disabled."
+  "Core disable mutator clears override when config default is disabled.
+Mirror of enable normalization: redundant overrides are removed."
   (elinit-test-with-unit-files
       '(("sleep 300" :id "svc" :type simple :enabled nil))
     (let ((elinit--enabled-override (make-hash-table :test 'equal))
@@ -91,6 +96,8 @@
         (should (eq 'error (plist-get result :status)))
         (should (string-match-p "Unknown" (plist-get result :message)))))))
 
+;;; Mask Policy Tests
+
 (ert-deftest elinit-test-policy-mask-idempotent ()
   "Core mask mutator returns skipped when already masked."
   (elinit-test-with-unit-files
@@ -112,8 +119,11 @@
       (let ((result (elinit--policy-unmask "svc")))
         (should (eq 'skipped (plist-get result :status)))))))
 
+;;; Restart/Logging Policy Tests
+
 (ert-deftest elinit-test-policy-restart-rejects-oneshot ()
-  "Core restart-policy mutator rejects oneshot entries."
+  "Core restart-policy mutator rejects oneshot entries.
+Oneshots run once and exit -- restart policy is meaningless for them."
   (elinit-test-with-unit-files
       '(("true" :id "svc" :type oneshot))
     (let ((elinit--restart-override (make-hash-table :test 'equal))
@@ -124,7 +134,9 @@
         (should (string-match-p "oneshot" (plist-get result :message)))))))
 
 (ert-deftest elinit-test-policy-restart-normalizes-config ()
-  "Core restart-policy mutator clears override matching config."
+  "Core restart-policy mutator clears override matching config.
+When the requested policy matches the config default, the override
+is redundant and must be cleared."
   (elinit-test-with-unit-files
       '(("sleep 300" :id "svc" :type simple :restart t))
     (let ((elinit--restart-override (make-hash-table :test 'equal))
@@ -138,7 +150,8 @@
         (should-not (gethash "svc" elinit--restart-override))))))
 
 (ert-deftest elinit-test-policy-logging-normalizes-config ()
-  "Core logging mutator clears override matching config default."
+  "Core logging mutator clears override matching config default.
+Mirrors restart normalization: redundant overrides are removed."
   (elinit-test-with-unit-files
       '(("sleep 300" :id "svc" :type simple))
     (let ((elinit--logging (make-hash-table :test 'equal))
@@ -149,21 +162,48 @@
         (should (eq 'applied (plist-get result :status)))
         (should-not (gethash "svc" elinit--logging))))))
 
-(ert-deftest elinit-test-cli-policy-batch-reports-errors ()
-  "CLI policy batch reports errors for unknown entries."
-  (elinit-test-with-unit-files
-      '(("sleep 300" :id "svc" :type simple :enabled nil))
-    (let ((elinit--enabled-override (make-hash-table :test 'equal))
-          (elinit-overrides-file nil))
-      (let ((result (elinit--cli-dispatch
-                     '("enable" "svc" "bogus" "--json"))))
-        ;; Should fail because of unknown entry
-        (should (= elinit-cli-exit-failure
-                    (elinit-cli-result-exitcode result)))
-        ;; But svc should still be enabled
-        (should (eq 'enabled
-                    (gethash "svc" elinit--enabled-override)))))))
+;;; Restart Override Tests
 
+(ert-deftest elinit-test-overrides-load-migrates-legacy-restart ()
+  "Loading overrides with legacy enabled/disabled migrates to policy symbols."
+  (let* ((temp-file (make-temp-file "elinit-test-migrate-" nil ".eld"))
+         (elinit-overrides-file temp-file)
+         (elinit--enabled-override (make-hash-table :test 'equal))
+         (elinit--restart-override (make-hash-table :test 'equal))
+         (elinit--logging (make-hash-table :test 'equal))
+         (elinit--mask-override (make-hash-table :test 'equal))
+         (elinit--overrides-loaded nil))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert ";; test overrides\n")
+            (prin1 `((version . 1)
+                     (timestamp . "2025-01-01T00:00:00+0000")
+                     (overrides . (("svc-a" :restart enabled)
+                                   ("svc-b" :restart disabled))))
+                   (current-buffer)))
+          (should (elinit--load-overrides))
+          (should (eq 'always (gethash "svc-a" elinit--restart-override)))
+          (should (eq 'no (gethash "svc-b" elinit--restart-override))))
+      (delete-file temp-file))))
 
-(provide 'elinit-test-policy)
-;;; elinit-test-policy.el ends here
+(ert-deftest elinit-test-get-effective-restart-policy ()
+  "Effective restart returns policy symbols with override migration."
+  (let ((elinit--restart-override (make-hash-table :test 'equal)))
+    ;; No override: return config value
+    (should (eq 'always (elinit--get-effective-restart "svc" 'always)))
+    (should (eq 'on-failure (elinit--get-effective-restart "svc" 'on-failure)))
+    ;; Legacy boolean config: normalized
+    (should (eq 'always (elinit--get-effective-restart "svc" t)))
+    (should (eq 'no (elinit--get-effective-restart "svc" nil)))
+    ;; Override with policy symbol
+    (puthash "svc" 'no elinit--restart-override)
+    (should (eq 'no (elinit--get-effective-restart "svc" 'always)))
+    ;; Override with legacy enabled/disabled
+    (puthash "svc" 'enabled elinit--restart-override)
+    (should (eq 'always (elinit--get-effective-restart "svc" 'no)))
+    (puthash "svc" 'disabled elinit--restart-override)
+    (should (eq 'no (elinit--get-effective-restart "svc" 'always)))))
+
+(provide 'elinit-test-overrides)
+;;; elinit-test-overrides.el ends here

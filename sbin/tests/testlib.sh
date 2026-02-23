@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # testlib.sh - minimal POSIX shell test framework for elinit sbin tests
 #
 # Source this file from test scripts.  Define test_ functions and call

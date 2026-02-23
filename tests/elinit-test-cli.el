@@ -1,6 +1,7 @@
 ;;; elinit-test-cli.el --- CLI commands and transport tests for elinit.el -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is not part of GNU Emacs.
 
@@ -2578,6 +2579,1885 @@ could incorrectly preserve a non-running disabled unit."
          (info (elinit--cli-entry-info entry))
          (json-obj (elinit--cli-entry-to-json-obj info)))
     (should (equal (alist-get 'conflicts json-obj) []))))
+
+;;; CLI Policy Batch Tests (from elinit-test-policy)
+
+(ert-deftest elinit-test-cli-policy-batch-reports-errors ()
+  "CLI policy batch reports errors for unknown entries."
+  (elinit-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple :enabled nil))
+    (let ((elinit--enabled-override (make-hash-table :test 'equal))
+          (elinit-overrides-file nil))
+      (let ((result (elinit--cli-dispatch
+                     '("enable" "svc" "bogus" "--json"))))
+        ;; Should fail because of unknown entry
+        (should (= elinit-cli-exit-failure
+                    (elinit-cli-result-exitcode result)))
+        ;; But svc should still be enabled
+        (should (eq 'enabled
+                    (gethash "svc" elinit--enabled-override)))))))
+
+;;; Identity and Sandbox CLI Surface Tests
+
+(ert-deftest elinit-test-cli-entry-info-includes-user-group ()
+  "Entry info alist includes user and group fields."
+  (elinit-test-with-unit-files
+      '(("sleep 300" :id "svc" :type simple :user "alice" :group "staff"))
+    (let* ((elinit--processes (make-hash-table :test 'equal))
+           (elinit--entry-state (make-hash-table :test 'equal))
+           (plan (elinit--build-plan (elinit--effective-programs)))
+           (entry (car (elinit-plan-entries plan)))
+           (info (elinit--cli-entry-info entry)))
+      (should (equal "alice" (alist-get 'user info)))
+      (should (equal "staff" (alist-get 'group info))))))
+
+(ert-deftest elinit-test-cli-entry-info-sandbox-fields ()
+  "CLI entry-info includes sandbox profile, effective network, and enabled."
+  (let* ((elinit--processes (make-hash-table :test 'equal))
+         (elinit--failed (make-hash-table :test 'equal))
+         (elinit--restart-override (make-hash-table :test 'equal))
+         (elinit--enabled-override (make-hash-table :test 'equal))
+         (elinit--mask-override (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (elinit--invalid (make-hash-table :test 'equal))
+         (elinit--manually-stopped (make-hash-table :test 'equal))
+         (elinit--manually-started (make-hash-table :test 'equal))
+         (elinit--oneshot-completed (make-hash-table :test 'equal))
+         (elinit--remain-active (make-hash-table :test 'equal))
+         (elinit--last-exit-info (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--restart-times (make-hash-table :test 'equal))
+         (elinit--restart-timers (make-hash-table :test 'equal))
+         (elinit--logging (make-hash-table :test 'equal))
+         (entry (elinit--parse-entry
+                 '("sleep 300" :id "svc" :sandbox-profile strict))))
+    (let ((info (elinit--cli-entry-info entry)))
+      (should (eq 'strict (alist-get 'sandbox-profile info)))
+      (should (eq 'isolated (alist-get 'sandbox-network info)))
+      (should (eq t (alist-get 'sandbox-enabled info))))))
+
+;;; Restart Policy CLI Tests
+
+(ert-deftest elinit-test-cli-restart-policy-rejects-legacy-on-off ()
+  "Restart-policy rejects legacy on/off values."
+  (let ((elinit--restart-override (make-hash-table :test 'equal)))
+    (let ((result (elinit--cli-dispatch '("restart-policy" "on" "test-id"))))
+      (should (= elinit-cli-exit-invalid-args
+                 (elinit-cli-result-exitcode result))))
+    (let ((result (elinit--cli-dispatch '("restart-policy" "off" "test-id"))))
+      (should (= elinit-cli-exit-invalid-args
+                 (elinit-cli-result-exitcode result))))))
+
+(ert-deftest elinit-test-oneshot-json-restart-na ()
+  "Oneshot entries emit restart \"n/a\" in JSON."
+  (let* ((elinit-programs '(("true" :type oneshot)))
+         (elinit--programs-cache '(("true" :type oneshot)))
+         (elinit--processes (make-hash-table :test 'equal))
+         (elinit--restart-override (make-hash-table :test 'equal))
+         (elinit--enabled-override (make-hash-table :test 'equal))
+         (elinit--logging (make-hash-table :test 'equal))
+         (elinit--mask-override (make-hash-table :test 'equal))
+         (elinit--failed (make-hash-table :test 'equal))
+         (elinit--oneshot-completed (make-hash-table :test 'equal))
+         (elinit--manually-stopped (make-hash-table :test 'equal))
+         (elinit--manually-started (make-hash-table :test 'equal))
+         (elinit--invalid (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (elinit-unit-directory "/nonexistent-elinit-test-dir")
+         (elinit-overrides-file nil)
+         (elinit--overrides-loaded t))
+    (let* ((result (elinit--cli-all-entries-info))
+           (entries (car result))
+           (info (car entries))
+           (json-obj (elinit--cli-entry-to-json-obj info)))
+      (should (equal "n/a" (alist-get 'restart json-obj))))))
+
+;;; Metadata and Remain-After-Exit CLI Tests
+
+(ert-deftest elinit-test-cli-describe-human-description ()
+  "Human describe includes description line."
+  (let* ((entry (elinit--parse-entry
+                 '("cmd" :id "svc" :description "My service")))
+         (info (elinit--cli-entry-info entry))
+         (output (elinit--cli-describe-human info)))
+    (should (string-match-p "Description: My service" output))))
+
+(ert-deftest elinit-test-cli-show-includes-description ()
+  "The `show ID' output includes Description when set."
+  (elinit-test-with-unit-files
+      '(("cmd" :id "svc" :description "My test service"))
+    (let* ((elinit--processes (make-hash-table :test 'equal))
+           (elinit--entry-state (make-hash-table :test 'equal))
+           (result (elinit--cli-dispatch '("show" "svc"))))
+      (should (= elinit-cli-exit-success (elinit-cli-result-exitcode result)))
+      (should (string-match-p "Description: My test service"
+                              (elinit-cli-result-output result))))))
+
+(ert-deftest elinit-test-cli-is-active-remain-after-exit ()
+  "The `is-active' returns exit 0 for an active remain-after-exit unit."
+  (elinit-test-with-unit-files
+      '(("true" :id "svc" :type oneshot :remain-after-exit t))
+    (let* ((elinit--processes (make-hash-table :test 'equal))
+           (elinit--entry-state (make-hash-table :test 'equal))
+           (elinit--remain-active (make-hash-table :test 'equal))
+           (elinit--oneshot-completed (make-hash-table :test 'equal))
+           (elinit--failed (make-hash-table :test 'equal))
+           (elinit--invalid (make-hash-table :test 'equal))
+           (elinit--enabled-override (make-hash-table :test 'equal))
+           (elinit--restart-override (make-hash-table :test 'equal))
+           (elinit--mask-override (make-hash-table :test 'equal))
+           (elinit--logging (make-hash-table :test 'equal))
+           (elinit--manually-started (make-hash-table :test 'equal)))
+      ;; Simulate active latch state
+      (puthash "svc" 0 elinit--oneshot-completed)
+      (puthash "svc" t elinit--remain-active)
+      (let ((result (elinit--cli-dispatch '("is-active" "svc"))))
+        (should (= elinit-cli-exit-success
+                   (elinit-cli-result-exitcode result)))
+        (should (string-match "active" (elinit-cli-result-output result)))))))
+
+;;; Resource Limits CLI Tests
+
+(ert-deftest elinit-test-rlimits-cli-describe-human-shows-limits ()
+  "CLI describe-human output contains Limits line with set fields."
+  (let ((info '((id . "svc") (type . simple) (status . stopped)
+                (enabled . t) (restart . always) (logging . t)
+                (limit-nofile . 1024) (limit-nproc . "256:512")
+                (limit-core . nil) (limit-fsize . nil)
+                (limit-as . infinity))))
+    (let ((output (elinit--cli-describe-human info)))
+      (should (string-match-p "Limits:" output))
+      (should (string-match-p "nofile=1024" output))
+      (should (string-match-p "nproc=256:512" output))
+      (should (string-match-p "as=infinity" output))
+      ;; nil fields should not appear
+      (should-not (string-match-p "core=" output))
+      (should-not (string-match-p "fsize=" output)))))
+
+(ert-deftest elinit-test-rlimits-cli-describe-human-no-limits-line ()
+  "CLI describe-human output omits Limits line when no limits set."
+  (let ((info '((id . "svc") (type . simple) (status . stopped)
+                (enabled . t) (restart . always) (logging . t)
+                (limit-nofile . nil) (limit-nproc . nil)
+                (limit-core . nil) (limit-fsize . nil)
+                (limit-as . nil))))
+    (let ((output (elinit--cli-describe-human info)))
+      (should-not (string-match-p "Limits:" output)))))
+
+(ert-deftest elinit-test-rlimits-cli-json-includes-limit-fields ()
+  "CLI JSON object includes limit fields."
+  (let ((info '((id . "svc") (type . simple) (status . stopped)
+                (enabled . t) (restart . always) (logging . t)
+                (limit-nofile . 1024) (limit-nproc . nil)
+                (limit-core . 0) (limit-fsize . nil)
+                (limit-as . "100:200"))))
+    (let ((json-obj (elinit--cli-entry-to-json-obj info)))
+      (should (equal 1024 (alist-get 'limit_nofile json-obj)))
+      (should (null (alist-get 'limit_nproc json-obj)))
+      (should (equal 0 (alist-get 'limit_core json-obj)))
+      (should (null (alist-get 'limit_fsize json-obj)))
+      (should (equal "100:200" (alist-get 'limit_as json-obj))))))
+
+;;; Target CLI Command Tests
+
+(ert-deftest elinit-test-cli-get-default ()
+  "The `get-default' command returns effective default-target-link."
+  (let ((elinit-default-target-link "graphical.target")
+        (elinit--default-target-link-override nil))
+    (let ((result (elinit--cli-dispatch '("get-default"))))
+      (should (= elinit-cli-exit-success
+                  (elinit-cli-result-exitcode result)))
+      (should (string-match "graphical\\.target"
+                            (elinit-cli-result-output result))))))
+
+(ert-deftest elinit-test-cli-get-default-json ()
+  "The `get-default --json' returns JSON with default-target key."
+  (let ((elinit-default-target-link "graphical.target")
+        (elinit--default-target-link-override nil))
+    (let ((result (elinit--cli-dispatch '("get-default" "--json"))))
+      (should (= elinit-cli-exit-success
+                  (elinit-cli-result-exitcode result)))
+      (should (eq 'json (elinit-cli-result-format result)))
+      (let ((parsed (json-read-from-string
+                     (elinit-cli-result-output result))))
+        (should (equal "graphical.target"
+                       (alist-get 'default-target parsed)))))))
+
+(ert-deftest elinit-test-cli-get-default-with-override ()
+  "The `get-default' returns override when set."
+  (let ((elinit-default-target-link "graphical.target")
+        (elinit--default-target-link-override "basic.target"))
+    (let ((result (elinit--cli-dispatch '("get-default"))))
+      (should (= elinit-cli-exit-success
+                  (elinit-cli-result-exitcode result)))
+      (should (string-match "basic\\.target"
+                            (elinit-cli-result-output result))))))
+
+(ert-deftest elinit-test-cli-set-default-persists ()
+  "The `set-default' sets override and persists."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target
+             :after ("basic.target"))
+        (nil :id "graphical.target" :type target
+             :after ("multi-user.target"))
+        (nil :id "default.target" :type target))
+    (let ((elinit--default-target-link-override nil)
+          (elinit-overrides-file nil)
+          (elinit-default-target-link "graphical.target"))
+      (let ((result (elinit--cli-dispatch
+                     '("set-default" "multi-user.target"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (should (equal "multi-user.target"
+                       elinit--default-target-link-override))
+        ;; get-default should now return the new value
+        (let ((get-result (elinit--cli-dispatch '("get-default"))))
+          (should (string-match "multi-user\\.target"
+                                (elinit-cli-result-output
+                                 get-result))))))))
+
+(ert-deftest elinit-test-cli-set-default-rejects-default-target ()
+  "Setting default to \"default.target\" is rejected."
+  (let ((result (elinit--cli-dispatch
+                 '("set-default" "default.target"))))
+    (should (= elinit-cli-exit-invalid-args
+                (elinit-cli-result-exitcode result)))
+    (should (string-match "circular"
+                          (elinit-cli-result-output result)))))
+
+(ert-deftest elinit-test-cli-set-default-rejects-non-target ()
+  "Setting default to a non-.target ID is rejected."
+  (let ((result (elinit--cli-dispatch
+                 '("set-default" "my-service"))))
+    (should (= elinit-cli-exit-invalid-args
+                (elinit-cli-result-exitcode result)))
+    (should (string-match "\\.target"
+                          (elinit-cli-result-output result)))))
+
+(ert-deftest elinit-test-cli-set-default-rejects-nonexistent ()
+  "Setting default to a nonexistent target is rejected with exit code 4."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--default-target-link-override nil)
+          (elinit-default-target-link "basic.target"))
+      (let ((result (elinit--cli-dispatch
+                     '("set-default" "nonexistent.target"))))
+        (should (= elinit-cli-exit-no-such-unit
+                    (elinit-cli-result-exitcode result)))))))
+
+(ert-deftest elinit-test-cli-list-targets ()
+  "The `list-targets' command lists all targets with convergence state."
+  (elinit-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("multi-user.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target
+             :after ("basic.target"))
+        (nil :id "graphical.target" :type target
+             :after ("multi-user.target"))
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit-default-target-link "graphical.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch '("list-targets"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (let ((output (elinit-cli-result-output result)))
+          (should (string-match "basic\\.target" output))
+          (should (string-match "multi-user\\.target" output))
+          (should (string-match "graphical\\.target" output))
+          (should (string-match "default\\.target" output))
+          ;; default.target should show resolved link
+          (should (string-match "graphical\\.target" output)))))))
+
+(ert-deftest elinit-test-cli-list-targets-json ()
+  "The `list-targets --json' returns JSON array."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit-default-target-link "basic.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch
+                     '("list-targets" "--json"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (should (eq 'json (elinit-cli-result-format result)))
+        (let ((parsed (json-read-from-string
+                       (elinit-cli-result-output result))))
+          (should (vectorp parsed))
+          (should (> (length parsed) 0)))))))
+
+(ert-deftest elinit-test-cli-list-targets-outside-closure-unreachable ()
+  "List-targets marks outside-closure targets as unreachable."
+  (elinit-test-with-unit-files
+      '((nil :id "graphical.target" :type target)
+        (nil :id "rescue.target" :type target)
+        (nil :id "default.target" :type target))
+    (let* ((closure (make-hash-table :test 'equal))
+           (elinit--current-plan
+            (elinit-plan--create
+             :entries nil :by-target nil
+             :deps (make-hash-table :test 'equal)
+             :requires-deps (make-hash-table :test 'equal)
+             :dependents (make-hash-table :test 'equal)
+             :invalid (make-hash-table :test 'equal)
+             :cycle-fallback-ids (make-hash-table :test 'equal)
+             :order-index (make-hash-table :test 'equal)
+             :meta nil
+             :activation-closure closure))
+           (elinit--processes (make-hash-table :test 'equal))
+           (elinit--failed (make-hash-table :test 'equal))
+           (elinit--oneshot-completed (make-hash-table :test 'equal))
+           (elinit--remain-active (make-hash-table :test 'equal))
+           (elinit--manually-stopped (make-hash-table :test 'equal))
+           (elinit--mask-override (make-hash-table :test 'equal))
+           (elinit--entry-state (make-hash-table :test 'equal))
+           (elinit--target-convergence (make-hash-table :test 'equal))
+           (elinit--target-convergence-reasons (make-hash-table :test 'equal))
+           (elinit-default-target-link "graphical.target")
+           (elinit--default-target-link-override nil))
+      (puthash "graphical.target" t closure)
+      (let ((result (elinit--cli-dispatch '("list-targets"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (let ((output (elinit-cli-result-output result)))
+          (should (string-match "rescue\\.target" output))
+          (should (string-match "rescue\\.target[[:space:]]+unreachable"
+                                output)))))))
+
+(ert-deftest elinit-test-cli-target-status ()
+  "The `target-status' shows convergence and member lists for a target."
+  (elinit-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("multi-user.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target
+             :after ("basic.target"))
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit-default-target-link "multi-user.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch
+                     '("target-status" "multi-user.target"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (let ((output (elinit-cli-result-output result)))
+          (should (string-match "multi-user\\.target" output))
+          (should (string-match "Status:" output))
+          (should (string-match "Wants:" output)))))))
+
+(ert-deftest elinit-test-cli-target-status-default-shows-link ()
+  "The `target-status default.target' shows resolved link."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit-default-target-link "basic.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch
+                     '("target-status" "default.target"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (should (string-match "basic\\.target"
+                              (elinit-cli-result-output result)))))))
+
+(ert-deftest elinit-test-cli-target-status-nonexistent ()
+  "Unknown target returns exit code 4."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit-default-target-link "basic.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch
+                     '("target-status" "nonexistent.target"))))
+        (should (= elinit-cli-exit-no-such-unit
+                    (elinit-cli-result-exitcode result)))))))
+
+(ert-deftest elinit-test-cli-explain-target-reached ()
+  "Reached target shows all members healthy message."
+  (elinit-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--target-convergence (make-hash-table :test 'equal))
+          (elinit--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (elinit-default-target-link "app.target")
+          (elinit--default-target-link-override nil))
+      (puthash "app.target" 'reached elinit--target-convergence)
+      (let ((result (elinit--cli-dispatch
+                     '("explain-target" "app.target"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (should (string-match "reached"
+                              (elinit-cli-result-output result)))
+        (should (string-match "healthy"
+                              (elinit-cli-result-output result)))))))
+
+(ert-deftest elinit-test-cli-explain-target-degraded ()
+  "Degraded target lists failed members."
+  (elinit-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--target-convergence (make-hash-table :test 'equal))
+          (elinit--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (elinit-default-target-link "app.target")
+          (elinit--default-target-link-override nil))
+      (puthash "app.target" 'degraded elinit--target-convergence)
+      (puthash "app.target" '("svc-a: failed-to-spawn")
+               elinit--target-convergence-reasons)
+      (puthash "svc-a" t elinit--failed)
+      (let ((result (elinit--cli-dispatch
+                     '("explain-target" "app.target"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (should (string-match "degraded"
+                              (elinit-cli-result-output result)))
+        (should (string-match "svc-a"
+                              (elinit-cli-result-output result)))))))
+
+(ert-deftest elinit-test-cli-explain-target-pending ()
+  "Pending target shows appropriate message."
+  (elinit-test-with-unit-files
+      '((nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit-default-target-link "app.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch
+                     '("explain-target" "app.target"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (should (string-match "pending"
+                              (elinit-cli-result-output result)))))))
+
+(ert-deftest elinit-test-cli-explain-target-outside-closure-unreachable ()
+  "Explain-target reports unreachable when target is outside closure."
+  (elinit-test-with-unit-files
+      '((nil :id "graphical.target" :type target)
+        (nil :id "rescue.target" :type target)
+        (nil :id "default.target" :type target))
+    (let* ((closure (make-hash-table :test 'equal))
+           (elinit--current-plan
+            (elinit-plan--create
+             :entries nil :by-target nil
+             :deps (make-hash-table :test 'equal)
+             :requires-deps (make-hash-table :test 'equal)
+             :dependents (make-hash-table :test 'equal)
+             :invalid (make-hash-table :test 'equal)
+             :cycle-fallback-ids (make-hash-table :test 'equal)
+             :order-index (make-hash-table :test 'equal)
+             :meta nil
+             :activation-closure closure))
+           (elinit--processes (make-hash-table :test 'equal))
+           (elinit--entry-state (make-hash-table :test 'equal))
+           (elinit--failed (make-hash-table :test 'equal))
+           (elinit--oneshot-completed (make-hash-table :test 'equal))
+           (elinit--remain-active (make-hash-table :test 'equal))
+           (elinit--manually-stopped (make-hash-table :test 'equal))
+           (elinit--mask-override (make-hash-table :test 'equal))
+           (elinit--target-convergence (make-hash-table :test 'equal))
+           (elinit--target-convergence-reasons (make-hash-table :test 'equal))
+           (elinit-default-target-link "graphical.target")
+           (elinit--default-target-link-override nil))
+      (puthash "graphical.target" t closure)
+      (let ((result (elinit--cli-dispatch
+                     '("explain-target" "rescue.target"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (let ((output (elinit-cli-result-output result)))
+          (should (string-match "rescue\\.target: unreachable" output))
+          (should (string-match "outside the current activation closure"
+                                output)))))))
+
+(ert-deftest elinit-test-cli-explain-target-nonexistent ()
+  "Explain-target with nonexistent target returns exit code 4."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit-default-target-link "basic.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch
+                     '("explain-target" "nonexistent.target"))))
+        (should (= elinit-cli-exit-no-such-unit
+                    (elinit-cli-result-exitcode result)))))))
+
+(ert-deftest elinit-test-cli-isolate-requires-yes ()
+  "Isolate without --yes returns error."
+  (elinit-test-with-unit-files
+      '((nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit-default-target-link "app.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch
+                     '("isolate" "app.target"))))
+        (should (= elinit-cli-exit-invalid-args
+                    (elinit-cli-result-exitcode result)))
+        (should (string-match "--yes"
+                              (elinit-cli-result-output result)))))))
+
+(ert-deftest elinit-test-cli-isolate-stops-and-starts ()
+  "Isolate with --yes stops non-closure entries and starts closure entries."
+  (elinit-test-with-unit-files
+      '(("sleep 300" :id "svc-a" :required-by ("app.target"))
+        ("sleep 300" :id "svc-b" :required-by ("other.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "other.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit-default-target-link "app.target")
+          (elinit--default-target-link-override nil)
+          (dag-entries nil)
+          (stopped nil))
+      ;; Mock dag-start-with-deps to capture entries and manual-stop to track stops
+      (cl-letf (((symbol-function 'elinit--dag-start-with-deps)
+                 (lambda (entries callback)
+                   (setq dag-entries (mapcar #'elinit-entry-id entries))
+                   (funcall callback)))
+                ((symbol-function 'elinit--manual-stop)
+                 (lambda (id) (push id stopped)
+                   (list :status 'stopped :reason nil))))
+        (let ((result (elinit--cli-dispatch
+                       '("isolate" "--yes" "app.target"))))
+          (should (= elinit-cli-exit-success
+                      (elinit-cli-result-exitcode result)))
+          (should (string-match "Isolated"
+                                (elinit-cli-result-output result)))
+          ;; svc-a should be submitted to DAG (in app.target closure)
+          (should (member "svc-a" dag-entries))
+          ;; svc-b should NOT be submitted (not in closure)
+          (should-not (member "svc-b" dag-entries)))))))
+
+(ert-deftest elinit-test-cli-isolate-nonexistent ()
+  "Isolate with nonexistent target returns exit code 4."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit-default-target-link "basic.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch
+                     '("isolate" "--yes" "nonexistent.target"))))
+        (should (= elinit-cli-exit-no-such-unit
+                    (elinit-cli-result-exitcode result)))))))
+
+(ert-deftest elinit-test-cli-start-target-override ()
+  "The `start --target' uses specified root via let-bind."
+  (elinit-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :required-by ("basic.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "graphical.target" :type target
+             :after ("basic.target"))
+        (nil :id "default.target" :type target))
+    (let ((elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--cycle-fallback-ids (make-hash-table :test 'equal))
+          (elinit--computed-deps (make-hash-table :test 'equal))
+          (elinit--restart-override (make-hash-table :test 'equal))
+          (elinit--enabled-override (make-hash-table :test 'equal))
+          (elinit--logging (make-hash-table :test 'equal))
+          (elinit--writers (make-hash-table :test 'equal))
+          (elinit--stderr-writers (make-hash-table :test 'equal))
+          (elinit--stderr-pipes (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--restart-timers (make-hash-table :test 'equal))
+          (elinit--last-exit-info (make-hash-table :test 'equal))
+          (elinit--start-times (make-hash-table :test 'equal))
+          (elinit--ready-times (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit--timers nil)
+          (elinit--current-plan nil)
+          (elinit--shutting-down nil)
+          (elinit--overrides-loaded nil)
+          (elinit-overrides-file nil)
+          (elinit-default-target "default.target")
+          (elinit-default-target-link "graphical.target")
+          (elinit--default-target-link-override nil)
+          (captured-target nil))
+      ;; Mock elinit-start to capture what target was used
+      (cl-letf (((symbol-function 'elinit-start)
+                 (lambda ()
+                   (setq captured-target elinit-default-target))))
+        (let ((result (elinit--cli-dispatch
+                       '("start" "--target" "basic.target"))))
+          (should (= elinit-cli-exit-success
+                      (elinit-cli-result-exitcode result)))
+          ;; The let-binding should have set elinit-default-target
+          ;; to basic.target during the call
+          (should (equal "basic.target" captured-target)))))))
+
+(ert-deftest elinit-test-cli-start-target-invalid ()
+  "The `start --target' with non-.target suffix returns error."
+  (let ((result (elinit--cli-dispatch
+                 '("start" "--target" "my-service"))))
+    (should (= elinit-cli-exit-invalid-args
+                (elinit-cli-result-exitcode result)))
+    (should (string-match "\\.target"
+                          (elinit-cli-result-output result)))))
+
+(ert-deftest elinit-test-cli-start-target-missing-value ()
+  "The `start --target' without a value returns error."
+  (let ((result (elinit--cli-dispatch '("start" "--target"))))
+    (should (= elinit-cli-exit-invalid-args
+                (elinit-cli-result-exitcode result)))))
+
+(ert-deftest elinit-test-cli-start-target-with-ids-rejected ()
+  "The `start --target T ID' is rejected -- cannot combine."
+  (let ((result (elinit--cli-dispatch
+                 '("start" "--target" "basic.target" "svc-a"))))
+    (should (= elinit-cli-exit-invalid-args
+                (elinit-cli-result-exitcode result)))
+    (should (string-match "cannot be combined"
+                          (elinit-cli-result-output result)))))
+
+(ert-deftest elinit-test-cli-start-target-nonexistent-clean-error ()
+  "The `start --target' with nonexistent target returns clean error."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit-default-target-link "basic.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch
+                     '("start" "--target" "nonexistent.target"))))
+        (should (= elinit-cli-exit-no-such-unit
+                    (elinit-cli-result-exitcode result)))
+        ;; Should be a clean error, not "Internal error"
+        (should-not (string-match "Internal error"
+                                  (elinit-cli-result-output result)))))))
+
+(ert-deftest elinit-test-cli-start-no-args-calls-elinit-start ()
+  "Plain `start' with no arguments calls `elinit-start'."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit-default-target-link "basic.target")
+          (elinit--default-target-link-override nil)
+          (called nil))
+      (cl-letf (((symbol-function 'elinit-start)
+                 (lambda () (setq called t))))
+        (let ((result (elinit--cli-dispatch '("start"))))
+          (should (= elinit-cli-exit-success
+                      (elinit-cli-result-exitcode result)))
+          (should called))))))
+
+(ert-deftest elinit-test-cli-isolate-skips-running-entries ()
+  "Isolate does not submit already-running entries to DAG for starting."
+  (elinit-test-with-unit-files
+      '(("sleep 300" :id "svc-a" :required-by ("app.target"))
+        ("sleep 300" :id "svc-b" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit-default-target-link "app.target")
+          (elinit--default-target-link-override nil)
+          (dag-entries nil)
+          (stopped nil))
+      ;; Simulate svc-a already running
+      (let ((fake-proc (start-process "fake-svc-a" nil "sleep" "300")))
+        (unwind-protect
+            (progn
+              (puthash "svc-a" fake-proc elinit--processes)
+              (cl-letf (((symbol-function 'elinit--dag-start-with-deps)
+                         (lambda (entries callback)
+                           (setq dag-entries
+                                 (mapcar #'elinit-entry-id entries))
+                           (funcall callback)))
+                        ((symbol-function 'elinit--manual-stop)
+                         (lambda (id) (push id stopped)
+                           (list :status 'stopped :reason nil))))
+                (let ((result (elinit--cli-dispatch
+                               '("isolate" "--yes" "app.target"))))
+                  (should (= elinit-cli-exit-success
+                              (elinit-cli-result-exitcode result)))
+                  ;; svc-a should NOT be in DAG entries (already running)
+                  (should-not (member "svc-a" dag-entries))
+                  ;; svc-b should be in DAG entries (not running)
+                  (should (member "svc-b" dag-entries)))))
+          (when (process-live-p fake-proc)
+            (delete-process fake-proc)))))))
+
+(ert-deftest elinit-test-cli-explain-target-converging ()
+  "Converging target lists non-terminal members."
+  (elinit-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :required-by ("app.target"))
+        ("sleep 1" :id "svc-b" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--target-convergence (make-hash-table :test 'equal))
+          (elinit--target-convergence-reasons
+           (make-hash-table :test 'equal))
+          (elinit-default-target-link "app.target")
+          (elinit--default-target-link-override nil))
+      (puthash "app.target" 'converging elinit--target-convergence)
+      ;; svc-a is running, svc-b is pending (non-terminal)
+      (puthash "svc-a" 'started elinit--entry-state)
+      (let ((result (elinit--cli-dispatch
+                     '("explain-target" "app.target"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (should (string-match "converging"
+                              (elinit-cli-result-output result)))
+        (should (string-match "not yet terminal"
+                              (elinit-cli-result-output result)))))))
+
+;;; SysV Init CLI Command Tests
+
+(ert-deftest elinit-test-cli-init-valid-runlevels ()
+  "The `init' command accepts all runlevels 0-6 and resolves correctly."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "graphical.target" :type target)
+        (nil :id "rescue.target" :type target)
+        (nil :id "shutdown.target" :type target)
+        (nil :id "poweroff.target" :type target)
+        (nil :id "reboot.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit-default-target-link "graphical.target")
+          (elinit--default-target-link-override nil))
+      (cl-letf (((symbol-function 'elinit--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'elinit--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        ;; Test all runlevels with both target and runlevel identity
+        (dolist (spec '((0 "poweroff\\.target" "runlevel 0")
+                        (1 "rescue\\.target" "runlevel 1")
+                        (2 "multi-user\\.target" "runlevel 2")
+                        (3 "multi-user\\.target" "runlevel 3")
+                        (4 "multi-user\\.target" "runlevel 4")
+                        (5 "graphical\\.target" "runlevel 5")
+                        (6 "reboot\\.target" "runlevel 6")))
+          (let* ((rl (number-to-string (car spec)))
+                 (target-pattern (nth 1 spec))
+                 (runlevel-pattern (nth 2 spec))
+                 (result (elinit--cli-dispatch
+                          (list "init" "--yes" rl)))
+                 (output (elinit-cli-result-output result)))
+            (should (= elinit-cli-exit-success
+                        (elinit-cli-result-exitcode result)))
+            ;; Target identity in output
+            (should (string-match target-pattern output))
+            ;; Numeric runlevel identity in output
+            (should (string-match runlevel-pattern output))))))))
+
+(ert-deftest elinit-test-cli-init-out-of-range ()
+  "The `init' command rejects runlevels outside 0-6."
+  (let ((result (elinit--cli-dispatch '("init" "7"))))
+    (should (= elinit-cli-exit-invalid-args
+                (elinit-cli-result-exitcode result)))
+    (should (string-match "out of range"
+                          (elinit-cli-result-output result)))))
+
+(ert-deftest elinit-test-cli-init-destructive-requires-yes ()
+  "Runlevels 0 and 6 require --yes for destructive confirmation."
+  ;; init 0 without --yes
+  (let ((result (elinit--cli-dispatch '("init" "0"))))
+    (should (= elinit-cli-exit-invalid-args
+                (elinit-cli-result-exitcode result)))
+    (should (string-match "destructive"
+                          (elinit-cli-result-output result)))
+    (should (string-match "--yes"
+                          (elinit-cli-result-output result))))
+  ;; init 6 without --yes
+  (let ((result (elinit--cli-dispatch '("init" "6"))))
+    (should (= elinit-cli-exit-invalid-args
+                (elinit-cli-result-exitcode result)))
+    (should (string-match "destructive"
+                          (elinit-cli-result-output result)))))
+
+(ert-deftest elinit-test-cli-init-interactive-prompt-accepts ()
+  "Interactive destructive init succeeds when user confirms via y-or-n-p."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "shutdown.target" :type target)
+        (nil :id "poweroff.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit-default-target-link "poweroff.target")
+          (elinit--default-target-link-override nil)
+          ;; Simulate interactive Emacs
+          (noninteractive nil))
+      (cl-letf (((symbol-function 'elinit--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'elinit--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil)))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (_prompt) t)))
+        ;; init 0 without --yes, but y-or-n-p returns t
+        (let ((result (elinit--cli-dispatch '("init" "0"))))
+          (should (= elinit-cli-exit-success
+                      (elinit-cli-result-exitcode result)))
+          (should (string-match "poweroff\\.target"
+                                (elinit-cli-result-output result))))))))
+
+(ert-deftest elinit-test-cli-init-interactive-prompt-declines ()
+  "Interactive destructive init fails when user declines via y-or-n-p."
+  (let ((noninteractive nil))
+    (cl-letf (((symbol-function 'y-or-n-p)
+               (lambda (_prompt) nil)))
+      ;; init 0 without --yes, y-or-n-p returns nil
+      (let ((result (elinit--cli-dispatch '("init" "0"))))
+        (should (= elinit-cli-exit-invalid-args
+                    (elinit-cli-result-exitcode result)))
+        (should (string-match "destructive"
+                              (elinit-cli-result-output result)))))))
+
+(ert-deftest elinit-test-cli-init-non-destructive-no-yes ()
+  "Runlevels 1-5 do not require --yes."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit-default-target-link "multi-user.target")
+          (elinit--default-target-link-override nil))
+      ;; init routes through isolate which requires --yes, but init
+      ;; passes --yes automatically for non-destructive transitions
+      (cl-letf (((symbol-function 'elinit--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'elinit--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        (let ((result (elinit--cli-dispatch '("init" "3"))))
+          (should (= elinit-cli-exit-success
+                      (elinit-cli-result-exitcode result))))))))
+
+(ert-deftest elinit-test-cli-init-does-not-persist-default ()
+  "The `init' command does not persist default target changes."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "graphical.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit-default-target-link "graphical.target")
+          (elinit--default-target-link-override nil))
+      (cl-letf (((symbol-function 'elinit--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'elinit--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        (elinit--cli-dispatch '("init" "--yes" "3"))
+        ;; default-target-link-override must remain nil
+        (should-not elinit--default-target-link-override)
+        ;; get-default must still return original
+        (let ((result (elinit--cli-dispatch '("get-default"))))
+          (should (string-match "graphical\\.target"
+                                (elinit-cli-result-output result))))))))
+
+;;; Target Alias CLI Tests
+
+(ert-deftest elinit-test-cli-list-targets-alias-shows-resolved ()
+  "Alias targets in list-targets show resolved canonical target."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "graphical.target" :type target)
+        (nil :id "default.target" :type target)
+        (nil :id "runlevel5.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit-default-target-link "graphical.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch '("list-targets"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (let ((output (elinit-cli-result-output result)))
+          (should (string-match "alias" output))
+          (should (string-match "runlevel5\\.target" output))
+          (should (string-match "graphical\\.target" output)))))))
+
+(ert-deftest elinit-test-cli-target-status-alias-shows-kind ()
+  "Target-status for an alias target shows kind and resolved link."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "runlevel3.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit-default-target-link "multi-user.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch
+                     '("target-status" "runlevel3.target"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (let ((output (elinit-cli-result-output result)))
+          (should (string-match "alias" output))
+          (should (string-match "multi-user\\.target" output)))))))
+
+(ert-deftest elinit-test-cli-set-default-resolves-alias ()
+  "The `set-default' with alias target persists canonical target."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "graphical.target" :type target)
+        (nil :id "runlevel5.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--default-target-link-override nil)
+          (elinit-overrides-file nil)
+          (elinit-default-target-link "multi-user.target"))
+      (let ((result (elinit--cli-dispatch
+                     '("set-default" "runlevel5.target"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        ;; Must persist the canonical target, not the alias
+        (should (equal "graphical.target"
+                       elinit--default-target-link-override))
+        ;; Output should mention both
+        (should (string-match "graphical\\.target"
+                              (elinit-cli-result-output result)))))))
+
+(ert-deftest elinit-test-cli-isolate-accepts-alias ()
+  "Isolate accepts alias targets and resolves to canonical."
+  (elinit-test-with-unit-files
+      '(("sleep 300" :id "svc-a" :required-by ("multi-user.target"))
+        (nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "runlevel3.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit-default-target-link "multi-user.target")
+          (elinit--default-target-link-override nil))
+      (cl-letf (((symbol-function 'elinit--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'elinit--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        (let ((result (elinit--cli-dispatch
+                       '("isolate" "--yes" "runlevel3.target"))))
+          (should (= elinit-cli-exit-success
+                      (elinit-cli-result-exitcode result)))
+          ;; Output should reference the canonical target
+          (should (string-match "multi-user\\.target"
+                                (elinit-cli-result-output result))))))))
+
+(ert-deftest elinit-test-cli-list-timers-init-transition-human ()
+  "The `list-timers' human output carries init-transition reason text."
+  (elinit-test-with-unit-files
+      '((nil :id "poweroff.target" :type target))
+    (let ((elinit-mode t)
+          (elinit-timers '((:id "timer-poweroff"
+                               :target "poweroff.target"
+                               :on-startup-sec 60)))
+          (elinit--timer-list nil)
+          (elinit--timer-state (make-hash-table :test 'equal))
+          (elinit--invalid-timers (make-hash-table :test 'equal)))
+      (let ((result (elinit--cli-dispatch '("list-timers"))))
+        (should (elinit-cli-result-p result))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (let ((output (elinit-cli-result-output result)))
+          (should (string-match-p "timer-poweroff" output))
+          (should (string-match-p "init-transition" output))
+          (should (string-match-p "not timer-eligible" output)))))))
+
+(ert-deftest elinit-test-cli-explain-target-alias-shows-resolved ()
+  "Explain-target for alias shows resolved canonical target."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "multi-user.target" :type target)
+        (nil :id "runlevel3.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit-default-target-link "multi-user.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch
+                     '("explain-target" "runlevel3.target"))))
+        (should (= elinit-cli-exit-success
+                    (elinit-cli-result-exitcode result)))
+        (let ((output (elinit-cli-result-output result)))
+          (should (string-match "alias" output))
+          (should (string-match "multi-user\\.target" output)))))))
+
+;;; Target Guard CLI Tests
+
+(ert-deftest elinit-test-cli-cat-rejects-target ()
+  "CLI cat rejects target units."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit-default-target-link "basic.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch '("cat" "basic.target"))))
+        (should (/= elinit-cli-exit-success
+                     (elinit-cli-result-exitcode result)))
+        (should (string-match "target"
+                              (elinit-cli-result-output result)))))))
+
+(ert-deftest elinit-test-cli-logs-rejects-target ()
+  "CLI logs rejects target units."
+  (elinit-test-with-unit-files
+      '((nil :id "basic.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit-default-target-link "basic.target")
+          (elinit--default-target-link-override nil))
+      (let ((result (elinit--cli-dispatch '("logs" "basic.target"))))
+        (should (/= elinit-cli-exit-success
+                     (elinit-cli-result-exitcode result)))
+        (should (string-match "target"
+                              (elinit-cli-result-output result)))))))
+
+(ert-deftest elinit-test-cli-isolate-publishes-conflicts-metadata ()
+  "Isolate publishes plan with conflicts metadata."
+  (elinit-test-with-unit-files
+      '(("sleep 300" :id "svc-a" :conflicts "svc-b"
+         :required-by ("app.target"))
+        ("sleep 300" :id "svc-b" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit-default-target-link "app.target")
+          (elinit--default-target-link-override nil))
+      (cl-letf (((symbol-function 'elinit--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'elinit--manual-stop)
+                 (lambda (_id) (list :status 'stopped :reason nil))))
+        (elinit--cli-dispatch '("isolate" "--yes" "app.target"))
+        ;; Plan should be published with conflicts metadata
+        (should (elinit-plan-p elinit--current-plan))
+        (should (hash-table-p
+                 (elinit-plan-conflicts-deps elinit--current-plan)))
+        (should (equal (gethash "svc-a"
+                                (elinit-plan-conflicts-deps
+                                 elinit--current-plan))
+                       '("svc-b")))))))
+
+(ert-deftest elinit-test-cli-isolate-stops-latched-oneshot ()
+  "Isolate stops latched remain-after-exit oneshots outside new closure."
+  (elinit-test-with-unit-files
+      '(("sleep 300" :id "svc-a" :required-by ("app.target"))
+        ("true" :id "svc-b" :type oneshot :remain-after-exit t
+         :required-by ("other.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "other.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit-default-target-link "app.target")
+          (elinit--default-target-link-override nil)
+          (stopped nil))
+      ;; svc-b is a latched oneshot (no live process, but remain-active)
+      (puthash "svc-b" t elinit--remain-active)
+      (cl-letf (((symbol-function 'elinit--dag-start-with-deps)
+                 (lambda (_entries callback) (funcall callback)))
+                ((symbol-function 'elinit--manual-stop)
+                 (lambda (id)
+                   (push id stopped)
+                   (remhash id elinit--remain-active)
+                   (list :status 'stopped :reason nil))))
+        (elinit--cli-dispatch '("isolate" "--yes" "app.target"))
+        ;; svc-b should have been stopped (latched but outside closure)
+        (should (member "svc-b" stopped))))))
+
+(ert-deftest elinit-test-cli-isolate-dag-conflict-preflight ()
+  "Isolate DAG start path fires conflict preflight against active units.
+When the DAG scheduler starts svc-a, its conflict with svc-b should
+stop svc-b via `elinit--conflict-preflight' in `elinit--dag-do-start'."
+  (elinit-test-with-unit-files
+      '(("sleep 300" :id "svc-a" :conflicts "svc-b"
+         :required-by ("app.target"))
+        ("sleep 300" :id "svc-b" :required-by ("app.target"))
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let ((elinit--current-plan t)
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--restart-times (make-hash-table :test 'equal))
+          (elinit--restart-timers (make-hash-table :test 'equal))
+          (elinit--conflict-suppressed (make-hash-table :test 'equal))
+          (elinit--dag-delay-timers (make-hash-table :test 'equal))
+          (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+          (elinit--target-convergence nil)
+          (elinit--target-convergence-reasons nil)
+          (elinit--target-members nil)
+          (elinit--start-times (make-hash-table :test 'equal))
+          (elinit-default-target-link "app.target")
+          (elinit--default-target-link-override nil)
+          (a-started nil))
+      ;; svc-b is already running
+      (let ((b-proc (start-process "svc-b" nil "sleep" "300")))
+        (puthash "svc-b" b-proc elinit--processes)
+        (cl-letf (((symbol-function 'elinit--start-process)
+                   (lambda (id &rest _args)
+                     (when (equal id "svc-a")
+                       (setq a-started t))
+                     ;; Return a mock process for spawn success
+                     (start-process (concat "mock-" id) nil "true")))
+                  ((symbol-function 'elinit--manual-stop)
+                   (lambda (_id) (list :status 'stopped :reason nil)))
+                  ((symbol-function 'executable-find) (lambda (_) t))
+                  ((symbol-function 'elinit--maybe-refresh-dashboard) #'ignore)
+                  ((symbol-function 'elinit--refresh-dashboard) #'ignore))
+          (elinit--cli-dispatch '("isolate" "--yes" "app.target"))
+          ;; svc-a should have been started via DAG
+          (should a-started)
+          ;; svc-b should be conflict-suppressed by svc-a
+          (should (equal "svc-a"
+                         (gethash "svc-b" elinit--conflict-suppressed)))
+          ;; svc-b process should be dead (synchronous wait)
+          (should-not (process-live-p b-proc)))
+        ;; Defensive cleanup
+        (when (process-live-p b-proc)
+          (delete-process b-proc))))))
+
+;;; Journal CLI Command Tests
+
+(ert-deftest elinit-test-journal-requires-unit ()
+  "Journal command without -u returns error."
+  (cl-letf (((symbol-function 'elinit--log-file)
+             (lambda (_id) "/tmp/nonexistent.log")))
+    (let ((result (elinit--cli-cmd-journal '() nil)))
+      (should (equal (elinit-cli-result-exitcode result)
+                     elinit-cli-exit-invalid-args)))))
+
+(ert-deftest elinit-test-journal-unknown-flag ()
+  "Journal command with unknown flag returns actionable error."
+  (let ((result (elinit--cli-cmd-journal '("--bad-flag") nil)))
+    (should (equal (elinit-cli-result-exitcode result)
+                   elinit-cli-exit-invalid-args))
+    (should (string-match-p "Unknown option" (elinit-cli-result-output result)))))
+
+(ert-deftest elinit-test-journal-with-text-log ()
+  "Journal -u ID returns decoded records from text log."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=2026-02-16T12:00:00Z unit=svc pid=1 "
+                    "stream=stdout event=output status=- "
+                    "code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (elinit--cli-cmd-journal '("-u" "svc") nil)))
+              (should (= (elinit-cli-result-exitcode result) 0))
+              (should (string-match-p "hello"
+                                      (elinit-cli-result-output result))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-n-limits-records ()
+  "Journal -n N returns exactly N records."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (dotimes (i 30)
+              (insert (format "ts=2026-02-16T12:00:%02dZ unit=svc pid=1 "
+                              i)
+                      "stream=stdout event=output status=- "
+                      "code=- payload=line\n")))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (elinit--cli-cmd-journal
+                            '("-u" "svc" "-n" "5") nil))
+                   (output (elinit-cli-result-output result))
+                   (lines (split-string output "\n" t)))
+              (should (= (elinit-cli-result-exitcode result) 0))
+              (should (= 5 (length lines))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-priority-filter ()
+  "Journal -p err filters to error-priority records only."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=2026-02-16T12:00:00Z unit=svc pid=1 "
+                    "stream=stdout event=output status=- "
+                    "code=- payload=stdout-line\n")
+            (insert "ts=2026-02-16T12:00:01Z unit=svc pid=1 "
+                    "stream=stderr event=output status=- "
+                    "code=- payload=stderr-line\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (elinit--cli-cmd-journal
+                            '("-u" "svc" "-p" "err") nil))
+                   (output (elinit-cli-result-output result)))
+              (should (= (elinit-cli-result-exitcode result) 0))
+              ;; Only stderr line should appear
+              (should (string-match-p "stderr-line" output))
+              (should-not (string-match-p "stdout-line" output)))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-json-output ()
+  "Journal --json returns JSON with records array."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=2026-02-16T12:00:00Z unit=svc pid=1 "
+                    "stream=stdout event=output status=- "
+                    "code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (elinit--cli-cmd-journal
+                            '("-u" "svc") t))
+                   (json-data (json-read-from-string
+                               (elinit-cli-result-output result))))
+              (should (= (elinit-cli-result-exitcode result) 0))
+              (should (equal (cdr (assq 'unit json-data)) "svc"))
+              (should (> (length (cdr (assq 'records json-data))) 0)))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-fu-combined ()
+  "Journal -fu ID combined short form parsed correctly."
+  (let ((parsed (elinit--cli-parse-journal-args '("-fu" "my-svc"))))
+    (should (equal (plist-get parsed :unit) "my-svc"))
+    (should (null (plist-get parsed :unknown)))))
+
+(ert-deftest elinit-test-journal-since-until-filtering ()
+  "Journal --since and --until timestamp filtering works."
+  (let ((tmpfile (make-temp-file "journal-ts-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout event=output status=- code=- payload=early\n")
+            (insert "ts=2000 unit=svc pid=1 stream=stdout event=output status=- code=- payload=middle\n")
+            (insert "ts=3000 unit=svc pid=1 stream=stdout event=output status=- code=- payload=late\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (elinit--cli-cmd-journal
+                           '("--since" "2000" "--until" "2000" "-u" "svc")
+                           nil)))
+              (should (= (elinit-cli-result-exitcode result) 0))
+              (should (string-match-p "middle"
+                                      (elinit-cli-result-output result)))
+              (should-not (string-match-p "early"
+                                          (elinit-cli-result-output result)))
+              (should-not (string-match-p "late"
+                                          (elinit-cli-result-output result))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-parse-f-n-u-combination ()
+  "Journal parser handles -f -n N -u ID combination."
+  (let ((parsed (elinit--cli-parse-journal-args
+                 '("-f" "-n" "10" "-u" "myapp"))))
+    (should (equal "myapp" (plist-get parsed :unit)))
+    (should (= 10 (plist-get parsed :lines)))
+    (should-not (plist-get parsed :unknown))))
+
+(ert-deftest elinit-test-journal-parse-n-missing-value ()
+  "Journal parser reports error for -n without value."
+  (let ((parsed (elinit--cli-parse-journal-args '("-n" "-u" "svc"))))
+    (should (plist-get parsed :unknown))))
+
+(ert-deftest elinit-test-journal-parse-p-invalid-value ()
+  "Journal parser reports error for -p with invalid priority."
+  (let ((parsed (elinit--cli-parse-journal-args
+                 '("-p" "debug" "-u" "svc"))))
+    (should (plist-get parsed :unknown))))
+
+(ert-deftest elinit-test-journal-default-all-records ()
+  "Journal without -n returns all records (no 50-record cap)."
+  (let ((tmpfile (make-temp-file "journal-all-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (dotimes (i 60)
+              (insert (format "ts=2026-02-16T12:00:%02dZ unit=svc pid=1 "
+                              (mod i 60))
+                      "stream=stdout event=output status=- "
+                      "code=- payload=line\n")))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (elinit--cli-cmd-journal
+                            '("-u" "svc") nil))
+                   (output (elinit-cli-result-output result))
+                   (lines (split-string output "\n" t)))
+              (should (= (elinit-cli-result-exitcode result) 0))
+              (should (= 60 (length lines))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-invalid-since-timestamp ()
+  "Journal --since with invalid timestamp returns actionable error."
+  (let ((tmpfile (make-temp-file "journal-ts-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=x\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (elinit--cli-cmd-journal
+                           '("--since" "not-a-timestamp" "-u" "svc")
+                           nil)))
+              (should (equal (elinit-cli-result-exitcode result)
+                             elinit-cli-exit-invalid-args))
+              (should (string-match-p "Invalid --since"
+                                      (elinit-cli-result-output result))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-invalid-until-timestamp ()
+  "Journal --until with invalid timestamp returns actionable error."
+  (let ((tmpfile (make-temp-file "journal-ts-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=x\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (elinit--cli-cmd-journal
+                           '("--until" "garbage" "-u" "svc") nil)))
+              (should (equal (elinit-cli-result-exitcode result)
+                             elinit-cli-exit-invalid-args))
+              (should (string-match-p "Invalid --until"
+                                      (elinit-cli-result-output result))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-json-envelope-metadata ()
+  "Journal JSON output includes metadata fields in envelope."
+  (let ((tmpfile (make-temp-file "journal-json-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (elinit--cli-cmd-journal
+                            '("--since" "500" "--until" "2000"
+                              "-p" "info" "-n" "10" "-u" "svc")
+                            t))
+                   (json-data (json-read-from-string
+                               (elinit-cli-result-output result))))
+              (should (= (elinit-cli-result-exitcode result) 0))
+              ;; Envelope metadata fields
+              (should (equal (cdr (assq 'since json-data)) "500"))
+              (should (equal (cdr (assq 'until json-data)) "2000"))
+              (should (equal (cdr (assq 'priority json-data)) "info"))
+              (should (equal (cdr (assq 'limit json-data)) 10))
+              (should (eq (cdr (assq 'follow json-data)) :json-false)))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-json-record-priority ()
+  "Journal JSON records include per-record priority field."
+  (let ((tmpfile (make-temp-file "journal-pri-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=out\n")
+            (insert "ts=1001 unit=svc pid=1 stream=stderr "
+                    "event=output status=- code=- payload=err\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (elinit--cli-cmd-journal
+                            '("-u" "svc") t))
+                   (json-data (json-read-from-string
+                               (elinit-cli-result-output result)))
+                   (records (cdr (assq 'records json-data))))
+              (should (= (elinit-cli-result-exitcode result) 0))
+              (should (= 2 (length records)))
+              ;; First record: stdout -> info
+              (should (equal (cdr (assq 'priority (aref records 0)))
+                             "info"))
+              ;; Second record: stderr -> err
+              (should (equal (cdr (assq 'priority (aref records 1)))
+                             "err")))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-follow-flag-accepted ()
+  "Journal --follow flag is accepted without error."
+  (let ((parsed (elinit--cli-parse-journal-args
+                 '("--follow" "-u" "svc"))))
+    (should (plist-get parsed :follow))
+    (should (equal "svc" (plist-get parsed :unit)))
+    (should-not (plist-get parsed :unknown))))
+
+(ert-deftest elinit-test-journal-f-flag-sets-follow ()
+  "Journal -f flag sets :follow in parsed args."
+  (let ((parsed (elinit--cli-parse-journal-args
+                 '("-f" "-u" "svc"))))
+    (should (plist-get parsed :follow))
+    (should-not (plist-get parsed :unknown))))
+
+(ert-deftest elinit-test-journal-fu-sets-follow ()
+  "Journal -fu ID sets both :follow and :unit."
+  (let ((parsed (elinit--cli-parse-journal-args
+                 '("-fu" "svc"))))
+    (should (plist-get parsed :follow))
+    (should (equal "svc" (plist-get parsed :unit)))
+    (should-not (plist-get parsed :unknown))))
+
+(ert-deftest elinit-test-journal-json-null-fields ()
+  "Journal JSON envelope uses JSON null for absent fields, not string."
+  (let ((tmpfile (make-temp-file "log-json-null-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (elinit--cli-cmd-journal
+                            '("-u" "svc") t))
+                   (json-data (json-read-from-string
+                               (elinit-cli-result-output result))))
+              ;; Absent fields must be JSON null (Elisp nil), not "null"
+              (should (null (cdr (assq 'since json-data))))
+              (should (null (cdr (assq 'until json-data))))
+              (should (null (cdr (assq 'priority json-data))))
+              (should (null (cdr (assq 'limit json-data))))
+              ;; They must NOT be the string "null"
+              (should-not (equal "null" (cdr (assq 'since json-data)))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-ndjson-null-status ()
+  "NDJSON record uses JSON null for absent status, not string."
+  (let ((record (list :ts 1000.0 :unit "svc" :pid 1
+                      :stream 'stdout :event 'output
+                      :status nil :code 0 :payload "hello")))
+    (let* ((json-str (elinit--log-record-to-json record))
+           (parsed (json-read-from-string json-str)))
+      ;; status should be JSON null (Elisp nil), not the string "null"
+      (should (null (cdr (assq 'status parsed))))
+      (should-not (equal "null" (cdr (assq 'status parsed)))))))
+
+(ert-deftest elinit-test-journal-rejects-extra-positional-args ()
+  "Journal rejects unexpected bare positional arguments."
+  (let ((result (elinit--cli-cmd-journal
+                 '("-u" "svc" "extra-arg") nil)))
+    (should (= elinit-cli-exit-invalid-args
+               (elinit-cli-result-exitcode result)))
+    (should (string-match-p "Unexpected argument"
+                            (elinit-cli-result-output result)))))
+
+(ert-deftest elinit-test-journal-rejects-multiple-extra-args ()
+  "Journal rejects multiple extra positional arguments."
+  (let ((result (elinit--cli-cmd-journal
+                 '("-u" "svc" "one" "two") nil)))
+    (should (= elinit-cli-exit-invalid-args
+               (elinit-cli-result-exitcode result)))
+    (should (string-match-p "Unexpected argument: one"
+                            (elinit-cli-result-output result)))))
+
+(ert-deftest elinit-test-journal-json-envelope-null-status ()
+  "JSON envelope records use JSON null for absent status."
+  (let ((tmpfile (make-temp-file "log-env-null-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let* ((result (elinit--cli-cmd-journal
+                            '("-u" "svc") t))
+                   (json-data (json-read-from-string
+                               (elinit-cli-result-output result)))
+                   (records (cdr (assq 'records json-data)))
+                   (first-rec (aref records 0)))
+              ;; status must be JSON null (Elisp nil), not string "null"
+              (should (null (cdr (assq 'status first-rec))))
+              (should-not (equal "null"
+                                 (cdr (assq 'status first-rec)))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-fu-rejects-fux ()
+  "Parser rejects -fux as unknown option, only -fu is valid."
+  (let ((parsed (elinit--cli-parse-journal-args '("-fux" "svc"))))
+    (should (plist-get parsed :unknown))
+    (should (string-match-p "Unknown option: -fux"
+                            (plist-get parsed :unknown)))))
+
+(ert-deftest elinit-test-journal-ndjson-record-format ()
+  "NDJSON record is valid JSON with all expected fields."
+  (let ((record (list :ts 1000.0 :unit "svc" :pid 42
+                      :stream 'stdout :event 'output
+                      :status nil :code 0
+                      :payload "hello")))
+    (let* ((json-str (elinit--log-record-to-json record))
+           (parsed (json-read-from-string json-str)))
+      (should (= (cdr (assq 'ts parsed)) 1000.0))
+      (should (equal (cdr (assq 'unit parsed)) "svc"))
+      (should (= (cdr (assq 'pid parsed)) 42))
+      (should (equal (cdr (assq 'stream parsed)) "stdout"))
+      (should (equal (cdr (assq 'event parsed)) "output"))
+      (should (equal (cdr (assq 'payload parsed)) "hello"))
+      (should (equal (cdr (assq 'priority parsed)) "info")))))
+
+(ert-deftest elinit-test-journal-ndjson-exit-record ()
+  "NDJSON encodes exit record with err priority."
+  (let ((record (list :ts 1000.0 :unit "svc" :pid 42
+                      :stream 'meta :event 'exit
+                      :status 'signaled :code 9
+                      :payload "")))
+    (let* ((json-str (elinit--log-record-to-json record))
+           (parsed (json-read-from-string json-str)))
+      (should (equal (cdr (assq 'priority parsed)) "err"))
+      (should (equal (cdr (assq 'status parsed)) "signaled")))))
+
+(ert-deftest elinit-test-journal-n-passes-max-bytes ()
+  "Journal with -n tries n*512 first, then retries full on shortfall."
+  (let ((tmpfile (make-temp-file "log-jmb-"))
+        (call-log nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (let ((records (cl-loop for i from 1 to 10
+                                  collect (list :ts (float i) :unit "svc"
+                                                :pid 1 :stream 'stdout
+                                                :event 'output :status nil
+                                                :code 0 :payload "x"))))
+            (cl-letf (((symbol-function 'elinit--log-file)
+                       (lambda (_id) tmpfile))
+                      ((symbol-function 'elinit--log-decode-file)
+                       (lambda (_file &optional _limit _offset max-bytes)
+                         (push max-bytes call-log)
+                         (list :records records
+                               :offset 100 :format 'text :warning nil))))
+              (elinit--cli-cmd-journal '("-u" "svc" "-n" "10") nil)
+              ;; First call uses n*512 heuristic
+              (should (= 5120 (car (last call-log))))
+              ;; Since 10 records >= 10 requested, no retry needed
+              (should (= 1 (length call-log))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-n-retries-on-shortfall ()
+  "Journal with -n retries with full decode when tail has too few records."
+  (let ((tmpfile (make-temp-file "log-jmb2-"))
+        (call-log nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (let ((few-records (list (list :ts 1.0 :unit "svc" :pid 1
+                                         :stream 'stdout :event 'output
+                                         :status nil :code 0
+                                         :payload "big-payload")))
+                (all-records (cl-loop for i from 1 to 5
+                                      collect (list :ts (float i)
+                                                    :unit "svc" :pid 1
+                                                    :stream 'stdout
+                                                    :event 'output
+                                                    :status nil :code 0
+                                                    :payload "x"))))
+            (cl-letf (((symbol-function 'elinit--log-file)
+                       (lambda (_id) tmpfile))
+                      ((symbol-function 'elinit--log-decode-file)
+                       (lambda (_file &optional _limit _offset max-bytes)
+                         (push max-bytes call-log)
+                         (if max-bytes
+                             ;; Tail read returns fewer than requested
+                             (list :records few-records
+                                   :offset 100 :format 'text :warning nil)
+                           ;; Full read returns all
+                           (list :records all-records
+                                 :offset 500 :format 'text :warning nil)))))
+              (let* ((result (elinit--cli-cmd-journal
+                              '("-u" "svc" "-n" "5") nil))
+                     (output (elinit-cli-result-output result))
+                     (lines (split-string output "\n" t)))
+                ;; Two calls: first with heuristic, second with nil
+                (should (= 2 (length call-log)))
+                (should (= 2560 (car (last call-log))))
+                (should (null (car call-log)))
+                ;; Got all 5 records from the retry
+                (should (= 5 (length lines)))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-journal-follow-no-new-data ()
+  "Follow-mode poll with no new data returns empty records."
+  (let ((tmpfile (make-temp-file "journal-follow-empty-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=only\n"))
+          (let* ((initial (elinit--log-decode-file tmpfile))
+                 (offset (plist-get initial :offset)))
+            ;; Poll at end -- no new data
+            (let* ((poll (elinit--log-decode-file tmpfile nil offset))
+                   (new-recs (plist-get poll :records)))
+              (should (= 0 (length new-recs))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-follow-journal-returns-follow-result ()
+  "Journal with -f returns result with format follow."
+  (let ((tmpfile (make-temp-file "log-follow-"))
+        (elinit--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (elinit--cli-cmd-journal
+                           '("-u" "svc" "-f") nil)))
+              (should (eq (elinit-cli-result-format result) 'follow))
+              (should (string-prefix-p "FOLLOW:"
+                                       (elinit-cli-result-output result)))
+              ;; Cleanup the session
+              (let ((output (elinit-cli-result-output result)))
+                (when (string-match "FOLLOW:[^\t]*\t[^\t]*\t\\(.+\\)" output)
+                  (elinit--cli-follow-stop (match-string 1 output)))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-existing-logs-command-unchanged ()
+  "Existing logs command still works (regression)."
+  (let ((tmpfile (make-temp-file "log-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "raw log line 1\nraw log line 2\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((result (elinit--cli-cmd-logs '("my-svc") nil)))
+              (should (= (elinit-cli-result-exitcode result) 0))
+              (should (string-match-p "raw log line 1"
+                                      (elinit-cli-result-output result))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-follow-dispatch-wrapper-protocol ()
+  "Dispatch for wrapper returns raw FOLLOW string for follow results."
+  (let ((tmpfile (make-temp-file "log-follow-"))
+        (elinit--cli-follow-sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile)))
+            (let ((output (elinit--cli-dispatch-for-wrapper
+                           '("journal" "-u" "svc" "-f"))))
+              (should (string-prefix-p "FOLLOW:" output))
+              ;; Cleanup the session
+              (when (string-match "FOLLOW:[^\t]*\t[^\t]*\t\\(.+\\)" output)
+                (elinit--cli-follow-stop (match-string 1 output))))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-follow-stop-nonexistent ()
+  "Stopping nonexistent session returns nil without error."
+  (let ((elinit--cli-follow-sessions (make-hash-table :test 'equal)))
+    (should-not (elinit--cli-follow-stop "no-such-session"))))
 
 (provide 'elinit-test-cli)
 ;;; elinit-test-cli.el ends here

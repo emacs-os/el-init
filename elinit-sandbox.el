@@ -81,7 +81,9 @@ include the `bwrap' executable itself -- callers prepend that."
                         (format "/run/user/%d" (user-uid)))
            (or (getenv "XDG_RUNTIME_DIR")
                (format "/run/user/%d" (user-uid)))
-           "--ro-bind" "/tmp/.X11-unix" "/tmp/.X11-unix"))
+           "--ro-bind"
+           (expand-file-name ".X11-unix" (temporary-file-directory))
+           (expand-file-name ".X11-unix" (temporary-file-directory))))
     (_ nil)))
 
 (defun elinit--sandbox-profile-default-network (profile)

@@ -1,6 +1,7 @@
 ;;; elinit-test-timer.el --- Timer schema and scheduler tests for elinit.el -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is not part of GNU Emacs.
 
@@ -2265,6 +2266,181 @@ TYPE is resolved from config; shows dash when target not found."
         ;; TYPE column shows resolved type even without runtime state
         (should (string= "simple" (aref entry 7)))))))
 
+
+;;; Targets-Related Timer Tests
+
+(ert-deftest elinit-test-builtin-timers-present ()
+  "Built-in timers are included when `elinit-timers' is nil."
+  (let* ((dir (make-temp-file "units-" t))
+         (elinit-unit-authority-path (list dir))
+         (elinit-unit-directory dir)
+         (elinit--programs-cache :not-yet-loaded)
+         (elinit--unit-file-invalid (make-hash-table :test 'equal)))
+    (elinit-test--write-unit-files
+     dir '(("echo rotate" :id "logrotate" :type oneshot)))
+    (unwind-protect
+        (let* ((elinit-timers nil)
+               (programs (elinit--effective-programs))
+               (plan (elinit--build-plan programs))
+               (timers (elinit-timer-build-list plan)))
+          (should (cl-find "logrotate-daily" timers
+                           :key #'elinit-timer-id
+                           :test #'equal))
+          (should (cl-find "log-prune-daily" timers
+                           :key #'elinit-timer-id
+                           :test #'equal)))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-builtin-timers-overridden-by-user ()
+  "User timer with same ID overrides the built-in timer."
+  (let* ((dir (make-temp-file "units-" t))
+         (elinit-unit-authority-path (list dir))
+         (elinit-unit-directory dir)
+         (elinit--programs-cache :not-yet-loaded)
+         (elinit--unit-file-invalid (make-hash-table :test 'equal)))
+    (elinit-test--write-unit-files
+     dir '(("echo rotate" :id "logrotate" :type oneshot)))
+    (unwind-protect
+        (let* ((elinit-timers '((:id "logrotate-daily"
+                                     :target "logrotate"
+                                     :on-startup-sec 300
+                                     :enabled t)))
+               (programs (elinit--effective-programs))
+               (plan (elinit--build-plan programs))
+               (timers (elinit-timer-build-list plan)))
+          ;; Should appear exactly once
+          (should (= 1 (cl-count "logrotate-daily" timers
+                                  :key #'elinit-timer-id
+                                  :test #'equal)))
+          ;; Should have user's on-startup-sec, not builtin's on-calendar
+          (let ((timer (cl-find "logrotate-daily" timers
+                                :key #'elinit-timer-id
+                                :test #'equal)))
+            (should (= 300 (elinit-timer-on-startup-sec timer))))
+          ;; Other built-in timer remains present.
+          (should (cl-find "log-prune-daily" timers
+                           :key #'elinit-timer-id
+                           :test #'equal)))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-timer-completion-does-not-signal-writers ()
+  "Timer completion does not send reopen signals implicitly."
+  (elinit-test-with-unit-files
+      '(("true" :id "s1" :type oneshot))
+    (let* ((elinit-mode t)
+           (timer (elinit-timer--create :id "t1" :target "s1" :enabled t))
+           (elinit--timer-state (make-hash-table :test 'equal))
+           (elinit--processes (make-hash-table :test 'equal))
+           (elinit--enabled-override (make-hash-table :test 'equal))
+           (elinit--invalid (make-hash-table :test 'equal))
+           (elinit--scheduler-startup-time (float-time))
+           (captured-callback nil)
+           (reopen-called nil))
+      (cl-letf (((symbol-function 'elinit--start-entry-async)
+                 (lambda (_entry callback) (setq captured-callback callback)))
+                ((symbol-function 'elinit--signal-writers-reopen)
+                 (lambda () (setq reopen-called t)))
+                ((symbol-function 'elinit-timer--on-target-complete)
+                 (lambda (_id _target-id _success) nil)))
+        (unwind-protect
+            (progn
+              (elinit-timer--trigger timer 'scheduled)
+              ;; Callback should have been captured
+              (should captured-callback)
+              ;; Completion callback should run without signaling writers.
+              (funcall captured-callback t)
+              (funcall captured-callback nil)
+              (should-not reopen-called))
+          (clrhash elinit--invalid)
+          (clrhash elinit--timer-state)
+          (clrhash elinit--processes)
+          (clrhash elinit--enabled-override))))))
+
+(ert-deftest elinit-test-logrotate-daily-not-scheduled-when-timer-off ()
+  "Scheduler does not process timers when subsystem is off."
+  (let ((elinit-timer-subsystem-mode nil)
+        (elinit-mode nil)
+        (build-list-called nil))
+    (cl-letf (((symbol-function 'elinit--log) #'ignore))
+      ;; elinit-timer-scheduler-start guards on subsystem-active-p
+      ;; and returns early without building or processing any timers
+      (cl-letf (((symbol-function 'elinit-timer-build-list)
+                 (lambda (_plan)
+                   (setq build-list-called t)
+                   nil)))
+        (elinit-timer-scheduler-start)
+        ;; build-list should not have been called
+        (should-not build-list-called)))))
+
+(ert-deftest elinit-test-timer-enabled-triggers-maintenance ()
+  "Enabled logrotate-daily timer triggers target oneshot on schedule."
+  (elinit-test-with-unit-files
+      '(("echo maintenance" :id "logrotate" :type oneshot))
+    (let* ((elinit-mode t)
+           (timer (elinit-timer--create :id "logrotate-daily"
+                                            :target "logrotate"
+                                            :enabled t))
+           (elinit--timer-state (make-hash-table :test 'equal))
+           (elinit--processes (make-hash-table :test 'equal))
+           (elinit--enabled-override (make-hash-table :test 'equal))
+           (elinit--invalid (make-hash-table :test 'equal))
+           (elinit--scheduler-startup-time (float-time))
+           (triggered-target nil))
+      (cl-letf (((symbol-function 'elinit--start-entry-async)
+                 (lambda (entry callback)
+                   (setq triggered-target (elinit-entry-id entry))
+                   ;; Simulate success
+                   (when callback (funcall callback t))))
+                ((symbol-function 'elinit--signal-writers-reopen) #'ignore)
+                ((symbol-function 'elinit-timer--on-target-complete)
+                 (lambda (_id _target-id _success) nil))
+                ((symbol-function 'elinit-timer--save-state) #'ignore))
+        (unwind-protect
+            (progn
+              (elinit-timer--trigger timer 'scheduled)
+              ;; The trigger should have started the "logrotate" target
+              (should (equal "logrotate" triggered-target)))
+          (clrhash elinit--invalid)
+          (clrhash elinit--timer-state)
+          (clrhash elinit--processes)
+          (clrhash elinit--enabled-override))))))
+
+(ert-deftest elinit-test-timer-rejects-init-transition-target ()
+  "Timer validation rejects init-transition targets."
+  (elinit-test-with-unit-files
+      '((nil :id "rescue.target" :type target)
+        (nil :id "shutdown.target" :type target)
+        (nil :id "poweroff.target" :type target)
+        (nil :id "reboot.target" :type target)
+        (nil :id "runlevel0.target" :type target)
+        (nil :id "default.target" :type target))
+    (let* ((plan (elinit--build-plan (elinit--effective-programs))))
+      (dolist (tid '("rescue.target" "shutdown.target"
+                     "poweroff.target" "reboot.target"
+                     "runlevel0.target"))
+        (let ((reason (elinit-timer--validate
+                       `(:id ,(format "timer-%s" tid)
+                             :target ,tid
+                             :on-calendar (:hour 3))
+                       plan)))
+          (should reason)
+          (should (string-match "init-transition" reason)))))))
+
+(ert-deftest elinit-test-timer-allows-non-init-targets ()
+  "Timer validation allows non-init-transition targets."
+  (elinit-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :type oneshot)
+        ("sleep 1" :id "svc-b" :type simple)
+        (nil :id "app.target" :type target)
+        (nil :id "default.target" :type target))
+    (let* ((plan (elinit--build-plan (elinit--effective-programs))))
+      (dolist (tid '("svc-a" "svc-b" "app.target"))
+        (let ((reason (elinit-timer--validate
+                       `(:id ,(format "timer-%s" tid)
+                             :target ,tid
+                             :on-calendar (:hour 3))
+                       plan)))
+          (should-not reason))))))
 
 (provide 'elinit-test-timer)
 ;;; elinit-test-timer.el ends here

@@ -1,6 +1,8 @@
 /*
  * test_elinit_logd.c -- black-box tests for elinit-logd
  *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * acutest.h: https://github.com/mity/acutest
  * Commit: 31751b4089c93b46a9fd8a8183a695f772de66de
  */

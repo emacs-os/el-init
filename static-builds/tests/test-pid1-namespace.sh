@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # test-pid1-namespace.sh - PID1 namespace integration tests
 #
 # Tests PID1 behavior (hooks, signals, child reaping) inside isolated

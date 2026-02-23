@@ -1,6 +1,7 @@
 ;;; elinit-test-dashboard.el --- Dashboard UI and rendering tests for elinit.el -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is not part of GNU Emacs.
 
@@ -2352,6 +2353,899 @@ configured timers must be visible for analysis."
                             (buffer-string))))
               (should (string-match-p "conflict-stopped (by a)" output)))
           (when info-buf (kill-buffer info-buf)))))))
+
+;;; Snapshot-based Rendering Tests (from elinit-test-plan)
+
+(ert-deftest elinit-test-initial-dashboard-uses-shared-snapshot ()
+  "Initial dashboard render uses same snapshot for entries and header.
+Regression: M-x elinit must use shared snapshot like refresh does."
+  (elinit-test-with-unit-files
+      '(("sleep 100" :id "a"))
+    (let ((elinit--processes (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--enabled-override (make-hash-table :test 'equal))
+          (elinit--restart-override (make-hash-table :test 'equal))
+          (elinit--logging (make-hash-table :test 'equal))
+          (snapshots-built 0))
+      (cl-letf (((symbol-function 'elinit--build-snapshot)
+                 (lambda ()
+                   (cl-incf snapshots-built)
+                   (elinit-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (copy-hash-table elinit--failed)
+                    :oneshot-exit (copy-hash-table elinit--oneshot-completed)
+                    :entry-state (copy-hash-table elinit--entry-state)
+                    :invalid (copy-hash-table elinit--invalid)
+                    :enabled-override (copy-hash-table elinit--enabled-override)
+                    :restart-override (copy-hash-table elinit--restart-override)
+                    :logging-override (copy-hash-table elinit--logging)
+                    :timestamp (float-time)))))
+        (unwind-protect
+            (progn
+              (elinit)
+              (should (= 1 snapshots-built)))
+          (when-let* ((buf (get-buffer "*elinit*")))
+            (kill-buffer buf)))))))
+
+(ert-deftest elinit-test-dashboard-header-and-services-row ()
+  "Dashboard shows counters in header and services columns in body row 1."
+  (elinit-test-with-unit-files
+      '(("true" :id "svc" :type oneshot))
+    (let ((elinit--processes (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--enabled-override (make-hash-table :test 'equal))
+          (elinit--restart-override (make-hash-table :test 'equal))
+          (elinit--logging (make-hash-table :test 'equal)))
+      (unwind-protect
+          (progn
+            (elinit)
+            (with-current-buffer "*elinit*"
+              (let* ((raw header-line-format)
+                     (header (if (stringp raw)
+                                 (substring-no-properties raw)
+                               (format "%s" raw))))
+                (should (string-match-p "\\brun\\b" header))
+                (should (string-match-p "\\bdone\\b" header))
+                (should (string-match-p "\\bpend\\b" header))
+                (should (string-match-p "\\bfail\\b" header))
+                (should (string-match-p "\\binv\\b" header))
+                (should-not (string-match-p "\\bID\\b" header)))
+              (let* ((first-row (car tabulated-list-entries))
+                     (first-id (car first-row))
+                     (first-vec (cadr first-row)))
+                (should (eq '--services-- first-id))
+                (should (string-match-p "TYPE"
+                                        (substring-no-properties (aref first-vec 1))))
+                (should (string-match-p "TARGET"
+                                        (substring-no-properties (aref first-vec 2))))
+                (should (string-match-p "PID"
+                                        (substring-no-properties (aref first-vec 7)))))))
+        (when-let* ((buf (get-buffer "*elinit*")))
+          (kill-buffer buf))))))
+
+;;; Sandbox Dashboard Surface Tests
+
+(ert-deftest elinit-test-dashboard-detail-sandbox-indicator ()
+  "Dashboard detail panel shows sandbox indicator for sandbox entries."
+  (let* ((elinit--processes (make-hash-table :test 'equal))
+         (elinit--failed (make-hash-table :test 'equal))
+         (elinit--restart-override (make-hash-table :test 'equal))
+         (elinit--enabled-override (make-hash-table :test 'equal))
+         (elinit--mask-override (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (elinit--invalid (make-hash-table :test 'equal))
+         (elinit--manually-stopped (make-hash-table :test 'equal))
+         (elinit--manually-started (make-hash-table :test 'equal))
+         (elinit--oneshot-completed (make-hash-table :test 'equal))
+         (elinit--remain-active (make-hash-table :test 'equal))
+         (elinit--last-exit-info (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--restart-times (make-hash-table :test 'equal))
+         (elinit--restart-timers (make-hash-table :test 'equal))
+         (elinit--logging (make-hash-table :test 'equal))
+         (elinit--target-convergence (make-hash-table :test 'equal))
+         (elinit--target-convergence-reasons (make-hash-table :test 'equal))
+         (elinit--target-members (make-hash-table :test 'equal))
+         (entry (elinit--parse-entry
+                 '("sleep 300" :id "svc" :sandbox-profile desktop))))
+    (elinit--describe-entry-detail "svc" entry)
+    (unwind-protect
+        (let ((output (with-current-buffer "*elinit-info*"
+                        (buffer-string))))
+          (should (string-match-p "Sandbox: desktop (network shared)" output)))
+      (when (get-buffer "*elinit-info*")
+        (kill-buffer "*elinit-info*")))))
+
+;;; Restart Policy Dashboard Tests
+
+(ert-deftest elinit-test-dashboard-set-restart-policy-interactive ()
+  "Dashboard set-restart-policy applies explicit selections end-to-end.
+Exercises the interactive function with a real tabulated-list buffer,
+verifying policy selection, override-clear on return to config, and
+restart-timer cancellation on `no'."
+  (elinit-test-with-unit-files
+      '(("sleep 999" :id "svc" :type simple :restart always))
+    (let ((elinit--restart-override (make-hash-table :test 'equal))
+          (elinit--restart-timers (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--processes (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--enabled-override (make-hash-table :test 'equal))
+          (elinit--logging (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--start-times (make-hash-table :test 'equal))
+          (elinit--ready-times (make-hash-table :test 'equal))
+          (elinit-overrides-file nil)
+          (fake-timer (run-at-time 9999 nil #'ignore)))
+      (unwind-protect
+          (let ((buf (get-buffer-create "*elinit*")))
+            (unwind-protect
+                (with-current-buffer buf
+                  (elinit-dashboard-mode)
+                  (puthash "svc" fake-timer elinit--restart-timers)
+                  (cl-flet ((goto-svc ()
+                              (goto-char (point-min))
+                              (while (and (not (eobp))
+                                          (not (equal (cons :service "svc")
+                                                      (tabulated-list-get-id))))
+                                (forward-line 1))))
+                    (elinit--refresh-dashboard)
+                    (let ((choices '("no" "on-success" "on-failure" "always")))
+                      (cl-letf (((symbol-function 'completing-read)
+                                 (lambda (_prompt _collection &rest _)
+                                   (prog1 (car choices)
+                                     (setq choices (cdr choices))))))
+                        (goto-svc)
+                        (elinit-dashboard-set-restart-policy)
+                        (should (eq 'no (gethash "svc" elinit--restart-override)))
+                        (should-not (gethash "svc" elinit--restart-timers))
+                        (goto-svc)
+                        (elinit-dashboard-set-restart-policy)
+                        (should (eq 'on-success (gethash "svc" elinit--restart-override)))
+                        (goto-svc)
+                        (elinit-dashboard-set-restart-policy)
+                        (should (eq 'on-failure (gethash "svc" elinit--restart-override)))
+                        (goto-svc)
+                        (elinit-dashboard-set-restart-policy)
+                        (should-not (gethash "svc" elinit--restart-override))))))
+              (kill-buffer buf)))
+        (when (timerp fake-timer) (cancel-timer fake-timer))))))
+
+(ert-deftest elinit-test-dashboard-restart-uses-snapshot ()
+  "Dashboard restart resolution uses snapshot, not global state."
+  (let* ((snapshot-restart (make-hash-table :test 'equal))
+         (elinit--restart-override (make-hash-table :test 'equal)))
+    (puthash "svc" 'always elinit--restart-override)
+    (puthash "svc" 'no snapshot-restart)
+    (let* ((snapshot (elinit-snapshot--create
+                      :process-alive (make-hash-table :test 'equal)
+                      :process-pids (make-hash-table :test 'equal)
+                      :failed (make-hash-table :test 'equal)
+                      :oneshot-exit (make-hash-table :test 'equal)
+                      :entry-state (make-hash-table :test 'equal)
+                      :invalid (make-hash-table :test 'equal)
+                      :enabled-override (make-hash-table :test 'equal)
+                      :restart-override snapshot-restart
+                      :logging-override (make-hash-table :test 'equal)
+                      :mask-override (make-hash-table :test 'equal)
+                      :manually-started (make-hash-table :test 'equal)
+                      :timestamp (float-time)))
+           (vec (elinit--make-dashboard-entry
+                 "svc" 'simple nil t 'always t snapshot)))
+      (should (equal "no" (aref vec 5))))))
+
+;;; Metadata and Remain-After-Exit Dashboard Tests
+
+(ert-deftest elinit-test-dashboard-describe-shows-metadata ()
+  "Dashboard describe-entry includes description and docs in detail view."
+  (let* ((entry (elinit--parse-entry
+                 '("cmd" :id "svc" :description "Dashboard desc"
+                   :documentation ("man:svc(1)"))))
+         (elinit--processes (make-hash-table :test 'equal))
+         (elinit--failed (make-hash-table :test 'equal))
+         (elinit--restart-override (make-hash-table :test 'equal))
+         (elinit--enabled-override (make-hash-table :test 'equal))
+         (elinit--mask-override (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (elinit--invalid (make-hash-table :test 'equal))
+         (elinit--manually-stopped (make-hash-table :test 'equal))
+         (elinit--manually-started (make-hash-table :test 'equal))
+         (elinit--oneshot-completed (make-hash-table :test 'equal))
+         (elinit--remain-active (make-hash-table :test 'equal))
+         (elinit--last-exit-info (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--restart-times (make-hash-table :test 'equal))
+         (elinit--restart-timers (make-hash-table :test 'equal))
+         (elinit--logging (make-hash-table :test 'equal))
+         (elinit--logging-override (make-hash-table :test 'equal))
+         (output nil))
+    ;; describe-entry-detail uses with-help-window; read the buffer
+    (cl-letf (((symbol-function 'elinit--unit-file-path)
+               (lambda (_id) nil))
+              ((symbol-function 'elinit--telemetry-log-tail)
+               (lambda (_id &optional _lines) nil)))
+      (elinit--describe-entry-detail "svc" entry)
+      (let ((info-buf (get-buffer "*elinit-info*")))
+        (unwind-protect
+            (progn
+              (should info-buf)
+              (setq output (with-current-buffer info-buf
+                             (buffer-string)))
+              (should (string-match-p "Dashboard desc" output))
+              (should (string-match-p "man:svc(1)" output)))
+          (when info-buf (kill-buffer info-buf)))))))
+
+(ert-deftest elinit-test-dashboard-stop-active-remain-after-exit ()
+  "Dashboard stop succeeds on active remain-after-exit oneshot."
+  (elinit-test-with-unit-files
+      '(("true" :id "svc1" :type oneshot :remain-after-exit t))
+    (let ((elinit--processes (make-hash-table :test 'equal))
+          (elinit--remain-active (make-hash-table :test 'equal))
+          (elinit--oneshot-completed (make-hash-table :test 'equal))
+          (elinit--manually-stopped (make-hash-table :test 'equal))
+          (elinit--manually-started (make-hash-table :test 'equal))
+          (elinit--failed (make-hash-table :test 'equal))
+          (elinit--entry-state (make-hash-table :test 'equal))
+          (elinit--invalid (make-hash-table :test 'equal))
+          (elinit--enabled-override (make-hash-table :test 'equal))
+          (elinit--restart-override (make-hash-table :test 'equal))
+          (elinit--mask-override (make-hash-table :test 'equal))
+          (elinit--logging (make-hash-table :test 'equal))
+          (refreshed nil))
+      (puthash "svc1" 0 elinit--oneshot-completed)
+      (puthash "svc1" t elinit--remain-active)
+      (cl-letf (((symbol-function 'tabulated-list-get-id)
+                 (lambda () (cons :service "svc1")))
+                ((symbol-function 'yes-or-no-p)
+                 (lambda (_prompt) t))
+                ((symbol-function 'elinit--refresh-dashboard)
+                 (lambda () (setq refreshed t))))
+        (elinit-dashboard-stop)
+        ;; Latch cleared, manually-stopped set
+        (should-not (gethash "svc1" elinit--remain-active))
+        (should (gethash "svc1" elinit--manually-stopped))
+        (should refreshed)))))
+
+;;; Resource Limits Dashboard Tests
+
+(ert-deftest elinit-test-rlimits-dashboard-detail-shows-limits ()
+  "Dashboard detail view includes Resource limits line."
+  (let* ((entry (elinit--parse-entry
+                 '("cmd" :id "svc" :limit-nofile 4096 :limit-core 0)))
+         (elinit--processes (make-hash-table :test 'equal))
+         (elinit--failed (make-hash-table :test 'equal))
+         (elinit--restart-override (make-hash-table :test 'equal))
+         (elinit--enabled-override (make-hash-table :test 'equal))
+         (elinit--mask-override (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (elinit--invalid (make-hash-table :test 'equal))
+         (elinit--manually-stopped (make-hash-table :test 'equal))
+         (elinit--manually-started (make-hash-table :test 'equal))
+         (elinit--oneshot-completed (make-hash-table :test 'equal))
+         (elinit--remain-active (make-hash-table :test 'equal))
+         (elinit--last-exit-info (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--restart-times (make-hash-table :test 'equal))
+         (elinit--restart-timers (make-hash-table :test 'equal))
+         (elinit--logging (make-hash-table :test 'equal))
+         (elinit--logging-override (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'elinit--unit-file-path)
+               (lambda (_id) nil))
+              ((symbol-function 'elinit--telemetry-log-tail)
+               (lambda (_id &optional _lines) nil))
+              ((symbol-function 'elinit--telemetry-process-tree)
+               (lambda (_pid) nil))
+              ((symbol-function 'elinit--telemetry-process-metrics)
+               (lambda (_pid) nil)))
+      (elinit--describe-entry-detail "svc" entry)
+      (let ((info-buf (get-buffer "*elinit-info*")))
+        (unwind-protect
+            (let ((output (with-current-buffer info-buf (buffer-string))))
+              (should (string-match-p "Limits:" output))
+              (should (string-match-p "nofile=4096" output))
+              (should (string-match-p "core=0" output))
+              ;; Unset limits should not appear
+              (should-not (string-match-p "nproc=" output)))
+          (when info-buf (kill-buffer info-buf)))))))
+
+(ert-deftest elinit-test-rlimits-dashboard-detail-no-limits-line ()
+  "Dashboard detail view omits Limits line when no limits set."
+  (let* ((entry (elinit--parse-entry '("cmd" :id "svc")))
+         (elinit--processes (make-hash-table :test 'equal))
+         (elinit--failed (make-hash-table :test 'equal))
+         (elinit--restart-override (make-hash-table :test 'equal))
+         (elinit--enabled-override (make-hash-table :test 'equal))
+         (elinit--mask-override (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (elinit--invalid (make-hash-table :test 'equal))
+         (elinit--manually-stopped (make-hash-table :test 'equal))
+         (elinit--manually-started (make-hash-table :test 'equal))
+         (elinit--oneshot-completed (make-hash-table :test 'equal))
+         (elinit--remain-active (make-hash-table :test 'equal))
+         (elinit--last-exit-info (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--restart-times (make-hash-table :test 'equal))
+         (elinit--restart-timers (make-hash-table :test 'equal))
+         (elinit--logging (make-hash-table :test 'equal))
+         (elinit--logging-override (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'elinit--unit-file-path)
+               (lambda (_id) nil))
+              ((symbol-function 'elinit--telemetry-log-tail)
+               (lambda (_id &optional _lines) nil))
+              ((symbol-function 'elinit--telemetry-process-tree)
+               (lambda (_pid) nil))
+              ((symbol-function 'elinit--telemetry-process-metrics)
+               (lambda (_pid) nil)))
+      (elinit--describe-entry-detail "svc" entry)
+      (let ((info-buf (get-buffer "*elinit-info*")))
+        (unwind-protect
+            (let ((output (with-current-buffer info-buf (buffer-string))))
+              (should-not (string-match-p "Limits:" output)))
+          (when info-buf (kill-buffer info-buf)))))))
+
+;;; Target and Convergence Dashboard Tests
+
+(ert-deftest elinit-test-dashboard-target-type-face ()
+  "Target entry renders with `elinit-type-target' face in TYPE column."
+  (let* ((snapshot (elinit-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time)))
+         (elinit--target-convergence (make-hash-table :test 'equal))
+         (elinit--target-convergence-reasons (make-hash-table :test 'equal))
+         (vec (elinit--make-dashboard-entry
+               "app.target" 'target nil t nil nil snapshot)))
+    ;; TYPE column (index 1) should have target face
+    (should (eq 'elinit-type-target
+                (get-text-property 0 'face (aref vec 1))))
+    ;; TYPE text should be "target"
+    (should (equal "target" (substring-no-properties (aref vec 1))))))
+
+(ert-deftest elinit-test-dashboard-target-convergence-in-status ()
+  "Target with convergence state shows correct STATUS column."
+  (let* ((conv-hash (make-hash-table :test 'equal))
+         (elinit--target-convergence conv-hash)
+         (elinit--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (snapshot (elinit-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time))))
+    ;; Test reached
+    (puthash "app.target" 'reached conv-hash)
+    (let ((vec (elinit--make-dashboard-entry
+                "app.target" 'target nil t nil nil snapshot)))
+      (should (equal "reached"
+                     (substring-no-properties (aref vec 4)))))
+    ;; Test degraded
+    (puthash "app.target" 'degraded conv-hash)
+    (let ((vec (elinit--make-dashboard-entry
+                "app.target" 'target nil t nil nil snapshot)))
+      (should (equal "degraded"
+                     (substring-no-properties (aref vec 4)))))
+    ;; Test converging
+    (puthash "app.target" 'converging conv-hash)
+    (let ((vec (elinit--make-dashboard-entry
+                "app.target" 'target nil t nil nil snapshot)))
+      (should (equal "converging"
+                     (substring-no-properties (aref vec 4)))))))
+
+(ert-deftest elinit-test-dashboard-target-reason-shows-degraded ()
+  "Target with degraded reasons shows joined reasons in REASON column."
+  (let* ((conv-hash (make-hash-table :test 'equal))
+         (reasons-hash (make-hash-table :test 'equal))
+         (elinit--target-convergence conv-hash)
+         (elinit--target-convergence-reasons reasons-hash)
+         (snapshot (elinit-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time))))
+    (puthash "app.target" 'degraded conv-hash)
+    (puthash "app.target" '("svc-a failed" "svc-b failed") reasons-hash)
+    (let ((vec (elinit--make-dashboard-entry
+                "app.target" 'target nil t nil nil snapshot)))
+      (should (equal "svc-a failed; svc-b failed"
+                     (substring-no-properties (aref vec 8)))))))
+
+(ert-deftest elinit-test-dashboard-target-filter-cycle ()
+  "Cycle filter: nil -> first-target -> second-target -> nil."
+  (let* ((members-hash (make-hash-table :test 'equal))
+         (elinit--current-plan
+          (elinit-plan--create
+           :target-members members-hash
+           :entries nil
+           :invalid (make-hash-table :test 'equal)
+           :by-target nil
+           :deps (make-hash-table :test 'equal)
+           :requires-deps (make-hash-table :test 'equal)
+           :dependents (make-hash-table :test 'equal)
+           :cycle-fallback-ids (make-hash-table :test 'equal)
+           :order-index (make-hash-table :test 'equal)
+           :meta nil)))
+    (puthash "alpha.target" '(:requires ("svc-a") :wants nil) members-hash)
+    (puthash "beta.target" '(:requires nil :wants ("svc-b")) members-hash)
+    (with-temp-buffer
+      (let ((elinit--dashboard-target-filter nil))
+        ;; First cycle: nil -> alpha.target
+        (let ((all-targets (elinit--all-target-ids)))
+          (should (equal '("alpha.target" "beta.target") all-targets)))
+        (setq elinit--dashboard-target-filter
+              (car (elinit--all-target-ids)))
+        (should (equal "alpha.target" elinit--dashboard-target-filter))
+        ;; Second cycle: alpha.target -> beta.target
+        (let* ((all-targets (elinit--all-target-ids))
+               (idx (cl-position elinit--dashboard-target-filter
+                                all-targets :test #'equal)))
+          (setq elinit--dashboard-target-filter
+                (nth (1+ idx) all-targets)))
+        (should (equal "beta.target" elinit--dashboard-target-filter))
+        ;; Third cycle: beta.target -> nil
+        (let* ((all-targets (elinit--all-target-ids))
+               (idx (cl-position elinit--dashboard-target-filter
+                                all-targets :test #'equal)))
+          (setq elinit--dashboard-target-filter
+                (when (< idx (1- (length all-targets)))
+                  (nth (1+ idx) all-targets))))
+        (should (null elinit--dashboard-target-filter))))))
+
+(ert-deftest elinit-test-dashboard-target-filter-includes-members ()
+  "Filtered view includes target and its members only."
+  (elinit-test-with-unit-files
+      '(("sleep 1" :id "svc-a" :wanted-by ("app.target"))
+        ("sleep 1" :id "svc-b")
+        (nil :id "app.target" :type target))
+    (let* ((elinit--processes (make-hash-table :test 'equal))
+           (elinit--failed (make-hash-table :test 'equal))
+           (elinit--oneshot-completed (make-hash-table :test 'equal))
+           (elinit--entry-state (make-hash-table :test 'equal))
+           (elinit--invalid (make-hash-table :test 'equal))
+           (elinit--enabled-override (make-hash-table :test 'equal))
+           (elinit--restart-override (make-hash-table :test 'equal))
+           (elinit--logging (make-hash-table :test 'equal))
+           (elinit--target-convergence (make-hash-table :test 'equal))
+           (elinit--target-convergence-reasons
+            (make-hash-table :test 'equal))
+           (members-hash (make-hash-table :test 'equal))
+           (elinit--current-plan
+            (elinit-plan--create
+             :target-members members-hash
+             :entries nil
+             :invalid (make-hash-table :test 'equal)
+             :by-target nil
+             :deps (make-hash-table :test 'equal)
+             :requires-deps (make-hash-table :test 'equal)
+             :dependents (make-hash-table :test 'equal)
+             :cycle-fallback-ids (make-hash-table :test 'equal)
+             :order-index (make-hash-table :test 'equal)
+             :meta nil))
+           (elinit--dashboard-target-filter "app.target"))
+      (puthash "app.target" '(:requires nil :wants ("svc-a")) members-hash)
+      (let* ((snapshot (elinit--build-snapshot))
+             (all-entries (elinit--get-entries snapshot))
+             ;; Filter out separator rows
+             (service-ids
+              (cl-loop for entry in all-entries
+                       when (elinit--service-row-p (car entry))
+                       collect (cdr (car entry)))))
+        ;; Should include svc-a (member) and app.target, not svc-b
+        (should (member "svc-a" service-ids))
+        (should (member "app.target" service-ids))
+        (should-not (member "svc-b" service-ids))))))
+
+(ert-deftest elinit-test-dashboard-header-shows-root ()
+  "When plan has activation-root, header includes root info."
+  (let* ((elinit--current-plan
+          (elinit-plan--create
+           :activation-root "graphical.target"
+           :entries nil
+           :invalid (make-hash-table :test 'equal)
+           :by-target nil
+           :deps (make-hash-table :test 'equal)
+           :requires-deps (make-hash-table :test 'equal)
+           :dependents (make-hash-table :test 'equal)
+           :cycle-fallback-ids (make-hash-table :test 'equal)
+           :order-index (make-hash-table :test 'equal)
+           :target-members (make-hash-table :test 'equal)
+           :meta nil))
+         (elinit--processes (make-hash-table :test 'equal))
+         (elinit--failed (make-hash-table :test 'equal))
+         (elinit--oneshot-completed (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (elinit--invalid (make-hash-table :test 'equal))
+         (elinit--enabled-override (make-hash-table :test 'equal))
+         (elinit--restart-override (make-hash-table :test 'equal))
+         (elinit--logging (make-hash-table :test 'equal))
+         (header (elinit--dashboard-header-line)))
+    (should (string-match-p "root" (substring-no-properties header)))
+    (should (string-match-p "graphical\\.target"
+                            (substring-no-properties header)))))
+
+(ert-deftest elinit-test-dashboard-describe-target-shows-convergence ()
+  "Describe entry detail for target shows convergence state and members."
+  (let* ((elinit--target-convergence (make-hash-table :test 'equal))
+         (elinit--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (elinit--target-members (make-hash-table :test 'equal))
+         (elinit--processes (make-hash-table :test 'equal))
+         (elinit--failed (make-hash-table :test 'equal))
+         (elinit--oneshot-completed (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (elinit--enabled-override (make-hash-table :test 'equal))
+         (elinit--restart-override (make-hash-table :test 'equal))
+         (elinit--logging (make-hash-table :test 'equal))
+         (elinit--mask-override (make-hash-table :test 'equal))
+         (elinit--remain-active (make-hash-table :test 'equal))
+         (elinit--manually-stopped (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--restart-times (make-hash-table :test 'equal))
+         (elinit--restart-timers (make-hash-table :test 'equal))
+         (elinit--logging-override (make-hash-table :test 'equal))
+         (elinit--last-exit-info (make-hash-table :test 'equal))
+         (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+         ;; 38-element target entry
+         (entry (list "app.target" nil 0 t nil nil nil nil
+                      'target nil nil nil nil nil
+                      nil nil nil nil nil nil
+                      "Test target" nil nil nil nil nil nil nil nil nil
+                      '("multi-user.target") nil
+                      nil nil nil nil nil nil)))
+    (puthash "app.target" 'degraded elinit--target-convergence)
+    (puthash "app.target" '("svc-x failed")
+             elinit--target-convergence-reasons)
+    (puthash "app.target" '(:requires ("svc-a") :wants ("svc-b"))
+             elinit--target-members)
+    (cl-letf (((symbol-function 'elinit--unit-file-path)
+               (lambda (_id) nil))
+              ((symbol-function 'elinit--telemetry-log-tail)
+               (lambda (_id &optional _lines) nil)))
+      (elinit--describe-entry-detail "app.target" entry)
+      (let ((info-buf (get-buffer "*elinit-info*")))
+        (unwind-protect
+            (progn
+              (should info-buf)
+              (let ((output (with-current-buffer info-buf
+                              (buffer-string))))
+                (should (string-match-p "Converge: degraded" output))
+                (should (string-match-p "Reasons: svc-x failed" output))
+                (should (string-match-p "Req-mem: svc-a" output))
+                (should (string-match-p "Want-mem: svc-b" output))))
+          (when info-buf (kill-buffer info-buf)))))))
+
+(ert-deftest elinit-test-dashboard-target-column-outside-closure-unreachable ()
+  "TARGET column shows unreachable for targets outside activation closure."
+  (let* ((conv-hash (make-hash-table :test 'equal))
+         (closure (make-hash-table :test 'equal))
+         (elinit--target-convergence conv-hash)
+         (elinit--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (elinit--current-plan
+          (elinit-plan--create
+           :entries nil :by-target nil
+           :deps (make-hash-table :test 'equal)
+           :requires-deps (make-hash-table :test 'equal)
+           :dependents (make-hash-table :test 'equal)
+           :invalid (make-hash-table :test 'equal)
+           :cycle-fallback-ids (make-hash-table :test 'equal)
+           :order-index (make-hash-table :test 'equal)
+           :meta nil
+           :activation-closure closure))
+         (snapshot (elinit-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time))))
+    (puthash "graphical.target" t closure)
+    (let ((vec (elinit--make-dashboard-entry
+                "rescue.target" 'target nil t nil nil snapshot)))
+      (should (equal "unreachable"
+                     (substring-no-properties (aref vec 2))))
+      (should (equal "unreachable"
+                     (substring-no-properties (aref vec 4)))))))
+
+(ert-deftest elinit-test-dashboard-timer-init-transition-reason ()
+  "Dashboard timer section carries init-transition reason text."
+  (elinit-test-with-unit-files
+      '(("sleep 60" :id "svc" :type simple))
+    (let* ((elinit--processes (make-hash-table :test 'equal))
+           (elinit--entry-state (make-hash-table :test 'equal))
+           (elinit--invalid (make-hash-table :test 'equal))
+           (elinit--timer-state (make-hash-table :test 'equal))
+           (elinit--invalid-timers (make-hash-table :test 'equal))
+           (elinit-dashboard-show-timers t)
+           (elinit--timer-list nil)
+           (reason ":target 'poweroff.target' is an init-transition target and is not timer-eligible"))
+      (puthash "timer-poweroff" reason elinit--invalid-timers)
+      (let ((entries (elinit--get-entries)))
+        (let ((bad-row (cl-find (cons :timer "timer-poweroff") entries
+                                :key #'car :test #'equal)))
+          (should bad-row)
+          ;; Reason is at index 6 in dashboard vector
+          (should (string-match-p "init-transition"
+                                  (aref (cadr bad-row) 6)))
+          (should (string-match-p "not timer-eligible"
+                                  (aref (cadr bad-row) 6))))))))
+
+(ert-deftest elinit-test-dashboard-alias-target-shows-canonical-convergence ()
+  "Dashboard entry for alias target shows convergence from canonical."
+  (let* ((conv-hash (make-hash-table :test 'equal))
+         (elinit--target-convergence conv-hash)
+         (elinit--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (snapshot (elinit-snapshot--create
+                    :process-alive (make-hash-table :test 'equal)
+                    :process-pids (make-hash-table :test 'equal)
+                    :failed (make-hash-table :test 'equal)
+                    :oneshot-exit (make-hash-table :test 'equal)
+                    :entry-state (make-hash-table :test 'equal)
+                    :invalid (make-hash-table :test 'equal)
+                    :enabled-override (make-hash-table :test 'equal)
+                    :restart-override (make-hash-table :test 'equal)
+                    :logging-override (make-hash-table :test 'equal)
+                    :mask-override (make-hash-table :test 'equal)
+                    :manually-started (make-hash-table :test 'equal)
+                    :manually-stopped (make-hash-table :test 'equal)
+                    :remain-active (make-hash-table :test 'equal)
+                    :timestamp (float-time))))
+    ;; Convergence stored under canonical ID
+    (puthash "multi-user.target" 'reached conv-hash)
+    ;; Query via alias ID
+    (let ((vec (elinit--make-dashboard-entry
+                "runlevel3.target" 'target nil t nil nil snapshot)))
+      ;; TARGET column (index 2) should show reached
+      (should (equal "reached"
+                     (substring-no-properties (aref vec 2)))))))
+
+(ert-deftest elinit-test-dashboard-detail-alias-shows-canonical-convergence ()
+  "Detail panel for alias target shows convergence from canonical."
+  (let* ((elinit--target-convergence (make-hash-table :test 'equal))
+         (elinit--target-convergence-reasons
+          (make-hash-table :test 'equal))
+         (elinit--target-members (make-hash-table :test 'equal))
+         (elinit--processes (make-hash-table :test 'equal))
+         (elinit--failed (make-hash-table :test 'equal))
+         (elinit--oneshot-completed (make-hash-table :test 'equal))
+         (elinit--entry-state (make-hash-table :test 'equal))
+         (elinit--enabled-override (make-hash-table :test 'equal))
+         (elinit--restart-override (make-hash-table :test 'equal))
+         (elinit--logging (make-hash-table :test 'equal))
+         (elinit--mask-override (make-hash-table :test 'equal))
+         (elinit--remain-active (make-hash-table :test 'equal))
+         (elinit--manually-stopped (make-hash-table :test 'equal))
+         (elinit--start-times (make-hash-table :test 'equal))
+         (elinit--ready-times (make-hash-table :test 'equal))
+         (elinit--restart-times (make-hash-table :test 'equal))
+         (elinit--restart-timers (make-hash-table :test 'equal))
+         (elinit--logging-override (make-hash-table :test 'equal))
+         (elinit--last-exit-info (make-hash-table :test 'equal))
+         (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+         ;; 38-element target entry for runlevel3.target (alias)
+         (entry (list "runlevel3.target" nil 0 t nil nil nil nil
+                      'target nil nil nil nil nil
+                      nil nil nil nil nil nil
+                      nil nil nil nil nil nil nil nil nil nil
+                      nil nil
+                      nil nil nil nil nil nil)))
+    ;; Store convergence under canonical ID
+    (puthash "multi-user.target" 'reached elinit--target-convergence)
+    (puthash "multi-user.target" '("all healthy")
+             elinit--target-convergence-reasons)
+    (puthash "multi-user.target" '(:requires ("svc-a") :wants ("svc-b"))
+             elinit--target-members)
+    (cl-letf (((symbol-function 'elinit--unit-file-path)
+               (lambda (_id) nil))
+              ((symbol-function 'elinit--telemetry-log-tail)
+               (lambda (_id &optional _lines) nil)))
+      (elinit--describe-entry-detail "runlevel3.target" entry)
+      (let ((info-buf (get-buffer "*elinit-info*")))
+        (unwind-protect
+            (progn
+              (should info-buf)
+              (let ((output (with-current-buffer info-buf
+                              (buffer-string))))
+                (should (string-match-p "Converge: reached" output))
+                (should (string-match-p "Req-mem: svc-a" output))
+                (should (string-match-p "Want-mem: svc-b" output))))
+          (when info-buf (kill-buffer info-buf)))))))
+
+;;; Log Viewing Dashboard Tests
+
+(ert-deftest elinit-test-dashboard-view-log-decodes-text ()
+  "Dashboard view-log decodes text format through structured decoder."
+  (let ((tmpfile (make-temp-file "dash-view-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'elinit--require-service-row)
+                     (lambda () "svc")))
+            (save-window-excursion
+              (elinit-dashboard-view-log)
+              ;; Buffer should contain human-formatted record
+              (let ((buf (get-buffer "*elinit-log-svc*")))
+                (should buf)
+                (with-current-buffer buf
+                  ;; Should have formatted timestamp, not raw ts= line
+                  (should (string-match-p "svc\\[1\\]"
+                                          (buffer-string)))
+                  (should (string-match-p "hello"
+                                          (buffer-string)))
+                  (should-not (string-match-p "\\`ts="
+                                              (buffer-string))))
+                (kill-buffer buf)))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-dashboard-view-log-applies-record-limit ()
+  "Dashboard view-log bounds both record count and byte read."
+  (let ((tmpfile (make-temp-file "dash-view-limit-"))
+        (captured-limit 'unset)
+        (captured-max-bytes 'unset))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'elinit--require-service-row)
+                     (lambda () "svc"))
+                    ((symbol-function 'elinit--log-decode-file)
+                     (lambda (_file &optional limit _offset max-bytes)
+                       (setq captured-limit limit)
+                       (setq captured-max-bytes max-bytes)
+                       (list :records nil :offset 0 :format 'text
+                             :warning nil))))
+            (save-window-excursion
+              (elinit-dashboard-view-log)
+              (should (equal elinit-dashboard-log-view-record-limit
+                             captured-limit))
+              (should (equal (* elinit-dashboard-log-view-record-limit 512)
+                             captured-max-bytes))
+              (when-let* ((buf (get-buffer "*elinit-log-svc*")))
+                (kill-buffer buf)))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-dashboard-view-log-nil-limit-uses-default ()
+  "Dashboard view-log clamps nil limit to default 1000."
+  (let ((tmpfile (make-temp-file "dash-nil-limit-"))
+        (elinit-dashboard-log-view-record-limit nil)
+        (captured-limit 'unset)
+        (captured-max-bytes 'unset))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'elinit--require-service-row)
+                     (lambda () "svc"))
+                    ((symbol-function 'elinit--log-decode-file)
+                     (lambda (_file &optional limit _offset max-bytes)
+                       (setq captured-limit limit)
+                       (setq captured-max-bytes max-bytes)
+                       (list :records nil :offset 0 :format 'text
+                             :warning nil))))
+            (save-window-excursion
+              (elinit-dashboard-view-log)
+              (should (equal 1000 captured-limit))
+              (should (equal (* 1000 512) captured-max-bytes))
+              (when-let* ((buf (get-buffer "*elinit-log-svc*")))
+                (kill-buffer buf)))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-dashboard-view-log-zero-limit-uses-default ()
+  "Dashboard view-log clamps zero limit to default 1000."
+  (let ((tmpfile (make-temp-file "dash-zero-limit-"))
+        (elinit-dashboard-log-view-record-limit 0)
+        (captured-limit 'unset))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'elinit--require-service-row)
+                     (lambda () "svc"))
+                    ((symbol-function 'elinit--log-decode-file)
+                     (lambda (_file &optional limit _offset _max-bytes)
+                       (setq captured-limit limit)
+                       (list :records nil :offset 0 :format 'text
+                             :warning nil))))
+            (save-window-excursion
+              (elinit-dashboard-view-log)
+              (should (equal 1000 captured-limit))
+              (when-let* ((buf (get-buffer "*elinit-log-svc*")))
+                (kill-buffer buf)))))
+      (delete-file tmpfile))))
+
+(ert-deftest elinit-test-dashboard-view-log-negative-limit-uses-default ()
+  "Dashboard view-log clamps negative limit to default 1000."
+  (let ((tmpfile (make-temp-file "dash-neg-limit-"))
+        (elinit-dashboard-log-view-record-limit -5)
+        (captured-limit 'unset))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ts=1000 unit=svc pid=1 stream=stdout "
+                    "event=output status=- code=- payload=hello\n"))
+          (cl-letf (((symbol-function 'elinit--log-file)
+                     (lambda (_id) tmpfile))
+                    ((symbol-function 'elinit--require-service-row)
+                     (lambda () "svc"))
+                    ((symbol-function 'elinit--log-decode-file)
+                     (lambda (_file &optional limit _offset _max-bytes)
+                       (setq captured-limit limit)
+                       (list :records nil :offset 0 :format 'text
+                             :warning nil))))
+            (save-window-excursion
+              (elinit-dashboard-view-log)
+              (should (equal 1000 captured-limit))
+              (when-let* ((buf (get-buffer "*elinit-log-svc*")))
+                (kill-buffer buf)))))
+      (delete-file tmpfile))))
 
 (provide 'elinit-test-dashboard)
 ;;; elinit-test-dashboard.el ends here

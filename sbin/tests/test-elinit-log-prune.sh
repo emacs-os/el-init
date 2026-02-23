@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # test-log-prune.sh - tests for sbin/elinit-log-prune
 set -eu
 

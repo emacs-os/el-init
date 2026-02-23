@@ -1,6 +1,7 @@
 ;;; elinit-test-sandbox.el --- Bubblewrap sandbox integration tests for elinit.el -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is not part of GNU Emacs.
 

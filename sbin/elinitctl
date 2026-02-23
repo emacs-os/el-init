@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Stay POSIX shell; GNU coreutils assumptions are fine.
 # No bashisms.
 # CRITICAL: Must pass ShellCheck.

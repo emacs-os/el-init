@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # test-logrotate.sh - tests for sbin/elinit-logrotate
 set -eu
 

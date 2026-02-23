@@ -1,4 +1,5 @@
 ;;; pid1-test-hooks.el --- PID1 boot-hook test helper  -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; Writes marker files to PID1_TEST_MARKER_DIR when hooks fire.
 ;; Intended for use with --fg-daemon inside a PID namespace.

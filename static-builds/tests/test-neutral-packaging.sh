@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # test-neutral-packaging.sh - Verify PID1 packaging files ship no implicit
 # el-init payload or autostart wiring.
 #

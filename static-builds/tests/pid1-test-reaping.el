@@ -1,4 +1,5 @@
 ;;; pid1-test-reaping.el --- PID1 child-reaping test helper  -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; On pid1-boot-hook, spawns orphan children and checks that PID 1
 ;; reaps them (no zombies remain).

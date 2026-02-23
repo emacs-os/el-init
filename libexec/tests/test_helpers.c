@@ -1,6 +1,8 @@
 /*
  * test_helpers.c -- shared utilities for libexec C tests
  *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * acutest.h: https://github.com/mity/acutest
  * Commit: 31751b4089c93b46a9fd8a8183a695f772de66de
  */

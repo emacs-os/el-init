@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # test-elinitctl.sh - tests for sbin/elinitctl
 set -eu
 

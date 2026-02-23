@@ -1,5 +1,7 @@
 /*
  * test_elinit_rlimits.c -- tests for the elinit-rlimits helper
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include "vendor/acutest.h"

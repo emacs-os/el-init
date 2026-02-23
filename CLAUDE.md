@@ -164,8 +164,16 @@ A stage is complete only when:
 
 ### Testing (Elisp)
 - Use ERT for all tests
-- If a behavior can be tested, it must be tested
-- Required test coverage: whitelist validation, cycle fallback, stable ordering, oneshot timeout unlock, delayed entry handling, async oneshot non-blocking, limit-key validation (value shapes, target rejection, plan-level invalid plumbing), rlimits launch-argv composition
+- Tests communicate intent to people reading the code -- not everything
+  that can be tested needs a test
+- Each test should explain a contract, a decision, or a "why"
+- Good tests: policy decision matrices, scheduler invariants,
+  semantic contradiction detection, failure recovery behavior
+- Bad tests: getter/setter round-trips, defcustom default checks,
+  feature-provided checks, repeating the same validation pattern
+  per field
+- Test files match source module files: elinit-foo.el is tested
+  by tests/elinit-test-foo.el
 
 ### Testing (Shell -- sbin/)
 

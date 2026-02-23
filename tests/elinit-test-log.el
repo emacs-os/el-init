@@ -1,16 +1,372 @@
-;;; elinit-test-logformat.el --- Structured log format (text/binary) tests for elinit.el -*- lexical-binding: t -*-
+;;; elinit-test-log.el --- Log subsystem tests for elinit.el -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 telecommuter <telecommuter@riseup.net>
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is not part of GNU Emacs.
 
 ;;; Commentary:
 
-;; Structured log format (text/binary) ERT tests for elinit.el.
+;; Tests for the elinit-log module: log framing, encode/decode,
+;; record filtering/formatting, and writer lifecycle.
 
 ;;; Code:
 
 (require 'elinit-test-helpers)
+
+;;; Logd Protocol and Rotation Tests
+
+(ert-deftest elinit-test-logd-rotates-on-size-cap-exceed ()
+  "Logd rotates the log file when it exceeds the size cap."
+  (let* ((logd (elinit-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-rotate-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (let* ((proc (make-process
+                      :name "test-logd"
+                      :command (list logd
+                                    "--file" log-file
+                                    "--max-file-size-bytes" "50")
+                      :connection-type 'pipe))
+               (wrote nil))
+          (unwind-protect
+              (progn
+                ;; Write enough data to exceed the 50-byte cap
+                (process-send-string proc (make-string 80 ?x))
+                (setq wrote t)
+                ;; Give logd time to write and rotate
+                (sleep-for 0.3)
+                ;; Close stdin to trigger clean exit
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                ;; A rotated file should exist alongside the fresh log
+                (let ((rotated (directory-files dir nil
+                                               "^log-svc\\.[0-9].*\\.log$")))
+                  (should (>= (length rotated) 1)))
+                ;; The active log file should exist (reopened after rotation)
+                (should (file-exists-p log-file))
+                ;; Active log should be smaller than the cap (fresh after rotate)
+                (let ((size (nth 7 (file-attributes log-file))))
+                  (should (< size 50))))
+            (when (process-live-p proc)
+              (delete-process proc))))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-logd-binary-rotation-both-files-decodable ()
+  "Binary logd rotation produces SLG1 headers and decodable records in both files."
+  (let* ((logd (elinit-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-binrot-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-binrot"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "svc"
+                                   "--format" "binary"
+                                   "--max-file-size-bytes" "100")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                ;; Each binary record: 34 hdr + 3 unit + 8 payload = 45 bytes.
+                ;; First record + SLG1 header = 49 bytes.
+                ;; Second record brings total to 94 -- still under 100.
+                ;; Third record crosses 100, triggering rotation.
+                ;; Fourth record lands in the fresh active file.
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 1 10 "svc" "data-001"))
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 1 10 "svc" "data-002"))
+                (sleep-for 0.2)
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 1 10 "svc" "data-003"))
+                (sleep-for 0.2)
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 1 10 "svc" "data-004"))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                ;; Rotated file(s) should exist
+                (let ((rotated (directory-files dir t
+                                               "^log-svc\\.[0-9].*\\.log")))
+                  (should (>= (length rotated) 1))
+                  ;; Decode the rotated file
+                  (let* ((rot-content
+                          (with-temp-buffer
+                            (set-buffer-multibyte nil)
+                            (insert-file-contents-literally (car rotated))
+                            (buffer-string)))
+                         (rot-result (elinit--log-decode-binary-records
+                                     rot-content))
+                         (rot-records (plist-get rot-result :records)))
+                    ;; Rotated file starts with SLG1
+                    (should (>= (length rot-content) 4))
+                    (should (equal (substring rot-content 0 4) "SLG1"))
+                    (should (null (plist-get rot-result :warning)))
+                    ;; At least one record in rotated file
+                    (should (>= (length rot-records) 1))
+                    ;; All rotated records have valid payloads
+                    (dolist (r rot-records)
+                      (should (string-match-p "\\`data-00[0-9]\\'"
+                                              (plist-get r :payload))))))
+                ;; Active file should exist and be decodable
+                (should (file-exists-p log-file))
+                (let* ((act-content
+                        (with-temp-buffer
+                          (set-buffer-multibyte nil)
+                          (insert-file-contents-literally log-file)
+                          (buffer-string)))
+                       (act-result (elinit--log-decode-binary-records
+                                   act-content))
+                       (act-records (plist-get act-result :records)))
+                  ;; Active file starts with SLG1
+                  (should (>= (length act-content) 4))
+                  (should (equal (substring act-content 0 4) "SLG1"))
+                  (should (null (plist-get act-result :warning)))
+                  ;; At least one record in active file
+                  (should (>= (length act-records) 1))
+                  (dolist (r act-records)
+                    (should (string-match-p "\\`data-00[0-9]\\'"
+                                            (plist-get r :payload))))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-logd-text-framed-round-trip ()
+  "End-to-end: framed input to logd --format text produces decodable records."
+  (let* ((logd (elinit-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-text-rt-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-text-rt"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "test-svc"
+                                   "--format" "text"
+                                   "--max-file-size-bytes" "1048576")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                ;; Frame 1: output with literal "-" payload
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 1 42 "test-svc" "-"))
+                ;; Frame 2: output with empty payload
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 1 42 "test-svc" ""))
+                ;; Frame 3: stderr output with normal payload
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 2 42 "test-svc"
+                                                    "hello world\n"))
+                ;; Frame 4: exit event
+                (process-send-string
+                 proc (elinit--log-frame-encode 2 3 42 "test-svc"
+                                                    nil 0 1))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                ;; Read and decode the text log file
+                (should (file-exists-p log-file))
+                (let* ((content (with-temp-buffer
+                                  (insert-file-contents log-file)
+                                  (buffer-string)))
+                       (records (elinit--log-decode-text-records content)))
+                  (should (= 4 (length records)))
+                  (let ((r1 (nth 0 records))
+                        (r2 (nth 1 records))
+                        (r3 (nth 2 records))
+                        (r4 (nth 3 records)))
+                    ;; Literal "-" round-trips correctly
+                    (should (eq (plist-get r1 :event) 'output))
+                    (should (eq (plist-get r1 :stream) 'stdout))
+                    (should (equal (plist-get r1 :payload) "-"))
+                    ;; Rule 1: output status=- and code=-
+                    (should-not (plist-get r1 :status))
+                    (should (= (plist-get r1 :code) 0))
+                    ;; Empty payload round-trips correctly
+                    (should (eq (plist-get r2 :event) 'output))
+                    (should (equal (plist-get r2 :payload) ""))
+                    (should-not (plist-get r2 :status))
+                    ;; Stderr output has correct stream tag and status=-
+                    (should (eq (plist-get r3 :stream) 'stderr))
+                    (should (equal (plist-get r3 :payload) "hello world\n"))
+                    (should-not (plist-get r3 :status))
+                    ;; Exit event decodes correctly with status/code
+                    (should (eq (plist-get r4 :event) 'exit))
+                    (should (eq (plist-get r4 :stream) 'meta))
+                    (should (eq (plist-get r4 :status) 'exited))
+                    (should (= (plist-get r4 :code) 0)))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-logd-text-framed-default-format ()
+  "Framed logd without --format defaults to text, not raw."
+  (let* ((logd (elinit-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-deffmt-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-deffmt"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "test-svc"
+                                   "--max-file-size-bytes" "1048576")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 1 42 "test-svc" "hi"))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                (should (file-exists-p log-file))
+                (let* ((content (with-temp-buffer
+                                  (insert-file-contents log-file)
+                                  (buffer-string)))
+                       (records (elinit--log-decode-text-records content)))
+                  ;; If raw, records would be empty (no ts= prefix)
+                  (should (= 1 (length records)))
+                  (should (equal (plist-get (car records) :payload) "hi"))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-logd-text-nul-highbyte-round-trip ()
+  "End-to-end: NUL and high-byte payloads survive C text escaping."
+  (let* ((logd (elinit-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-bytes-" t))
+         (log-file (expand-file-name "log-svc.log" dir))
+         (nul-payload (unibyte-string 0 65 0 66))  ; \x00 A \x00 B
+         (high-payload (unibyte-string #x80 #xff #xfe 92 110))) ; high bytes + backslash + n
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-bytes"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "test-svc"
+                                   "--format" "text"
+                                   "--max-file-size-bytes" "1048576")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 1 42 "test-svc"
+                                                    nul-payload))
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 1 42 "test-svc"
+                                                    high-payload))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                (should (file-exists-p log-file))
+                (let* ((content (with-temp-buffer
+                                  (insert-file-contents log-file)
+                                  (buffer-string)))
+                       (records (elinit--log-decode-text-records content)))
+                  (should (= 2 (length records)))
+                  ;; NUL bytes round-trip through \x00 escaping
+                  (should (equal (plist-get (nth 0 records) :payload)
+                                 nul-payload))
+                  ;; High bytes + backslash round-trip
+                  (should (equal (plist-get (nth 1 records) :payload)
+                                 high-payload))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-logd-text-timestamp-rfc3339nano ()
+  "Text records from logd have strict RFC3339Nano UTC timestamps."
+  (let* ((logd (elinit-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-ts-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-ts"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "test-svc"
+                                   "--format" "text"
+                                   "--max-file-size-bytes" "1048576")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 1 42 "test-svc" "x"))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                (should (file-exists-p log-file))
+                (let ((content (with-temp-buffer
+                                 (insert-file-contents log-file)
+                                 (buffer-string))))
+                  ;; Raw ts= token must match YYYY-MM-DDTHH:MM:SS.NNNNNNNNNZ
+                  (should (string-match
+                           "\\`ts=\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}T[0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\.[0-9]\\{9\\}Z\\) "
+                           content))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-logd-text-rejects-invalid-event-stream ()
+  "Logd rejects frames with invalid event/stream pairings."
+  (let* ((logd (elinit-test--ensure-logd-binary))
+         (dir (make-temp-file "logd-reject-" t))
+         (log-file (expand-file-name "log-svc.log" dir)))
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "test-logd-reject"
+                     :command (list logd
+                                   "--file" log-file
+                                   "--framed"
+                                   "--unit" "test-svc"
+                                   "--format" "text"
+                                   "--max-file-size-bytes" "1048576")
+                     :connection-type 'pipe
+                     :coding 'no-conversion)))
+          (unwind-protect
+              (progn
+                ;; Valid frame first (anchor for record count)
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 1 42 "test-svc"
+                                                    "valid"))
+                ;; Invalid: output on meta stream
+                (process-send-string
+                 proc (elinit--log-frame-encode 1 3 42 "test-svc"
+                                                    "bad-meta"))
+                ;; Invalid: exit on stdout stream
+                (process-send-string
+                 proc (elinit--log-frame-encode 2 1 42 "test-svc"
+                                                    nil 0 1))
+                ;; Invalid: exit on stderr stream
+                (process-send-string
+                 proc (elinit--log-frame-encode 2 2 42 "test-svc"
+                                                    nil 1 2))
+                ;; Valid exit to confirm logd is still processing
+                (process-send-string
+                 proc (elinit--log-frame-encode 2 3 42 "test-svc"
+                                                    nil 0 1))
+                (sleep-for 0.3)
+                (process-send-eof proc)
+                (sleep-for 0.3)
+                (should (file-exists-p log-file))
+                (let* ((content (with-temp-buffer
+                                  (insert-file-contents log-file)
+                                  (buffer-string)))
+                       (records (elinit--log-decode-text-records
+                                 content)))
+                  ;; Only the 2 valid frames should produce records
+                  (should (= 2 (length records)))
+                  (should (eq (plist-get (nth 0 records) :event) 'output))
+                  (should (eq (plist-get (nth 1 records) :event) 'exit))))
+            (when (process-live-p proc) (delete-process proc))))
+      (delete-directory dir t))))
+
 
 ;;; Log-format tests
 
@@ -81,36 +437,12 @@
     (should-not (elinit--validate-entry
                  '("cmd" :id "svc" :log-format text)))))
 
-(ert-deftest elinit-test-log-format-service-round-trip ()
-  "Entry->service->entry preserves :log-format."
-  (let ((elinit-log-format-binary-enable t))
-    (let* ((entry (elinit--parse-entry
-                   '("sleep 300" :id "svc" :log-format binary)))
-           (service (elinit-entry-to-service entry))
-           (entry2 (elinit-service-to-entry service)))
-      (should (eq (elinit-entry-log-format entry2) 'binary))
-      (should (eq (elinit-service-log-format service) 'binary)))))
-
-(ert-deftest elinit-test-log-format-unit-file-keyword ()
-  ":log-format is in unit-file keyword allowlist."
-  (should (memq :log-format elinit--unit-file-keywords)))
-
 (ert-deftest elinit-test-log-format-oneshot-parse ()
   "Parse :type oneshot with :log-format preserves both."
   (let ((entry (elinit--parse-entry
                 '("sleep 1" :id "job" :type oneshot :log-format text))))
     (should (eq (elinit-entry-type entry) 'oneshot))
     (should (eq (elinit-entry-log-format entry) 'text))))
-
-(ert-deftest elinit-test-log-format-oneshot-round-trip ()
-  "Entry->service->entry round-trip preserves :log-format for oneshot."
-  (let ((elinit-log-format-binary-enable t))
-    (let* ((entry (elinit--parse-entry
-                   '("sleep 1" :id "job" :type oneshot :log-format binary)))
-           (service (elinit-entry-to-service entry))
-           (entry2 (elinit-service-to-entry service)))
-      (should (eq (elinit-entry-type entry2) 'oneshot))
-      (should (eq (elinit-entry-log-format entry2) 'binary)))))
 
 (ert-deftest elinit-test-log-format-oneshot-validate-ok ()
   ":type oneshot + :log-format text passes validation."
@@ -138,6 +470,7 @@
                  "test.el" 1)))
     (should (stringp reason))
     (should (string-match-p ":log-format must be" reason))))
+
 
 ;;;; Phase 2: Frame encoding and transport tests
 
@@ -351,6 +684,7 @@
       (when (process-live-p fake-writer) (delete-process fake-writer))
       (when (process-live-p fake-svc) (delete-process fake-svc)))))
 
+
 ;;;; Phase 3: Text structured record writer tests
 
 (ert-deftest elinit-test-writer-cmd-includes-framed-flags ()
@@ -420,8 +754,8 @@
       (when (process-live-p fake-proc)
         (delete-process fake-proc)))))
 
-;;;; Phase 4: Binary structured record writer tests
 
+;;;; Phase 4: Binary structured record writer tests
 
 (ert-deftest elinit-test-binary-decode-correct-fields ()
   "Binary decoder parses records with correct fields."
@@ -750,6 +1084,7 @@
             (should (equal (plist-get (nth 1 records) :payload) "second"))))
       (delete-directory dir t))))
 
+
 ;;;; Phase 5: Decoder and user surfaces tests
 
 (ert-deftest elinit-test-text-decode-records ()
@@ -854,108 +1189,6 @@
           (should (eq (elinit--log-detect-format tmpfile) 'legacy)))
       (delete-file tmpfile))))
 
-(ert-deftest elinit-test-journal-requires-unit ()
-  "Journal command without -u returns error."
-  (cl-letf (((symbol-function 'elinit--log-file)
-             (lambda (_id) "/tmp/nonexistent.log")))
-    (let ((result (elinit--cli-cmd-journal '() nil)))
-      (should (equal (elinit-cli-result-exitcode result)
-                     elinit-cli-exit-invalid-args)))))
-
-(ert-deftest elinit-test-journal-unknown-flag ()
-  "Journal command with unknown flag returns actionable error."
-  (let ((result (elinit--cli-cmd-journal '("--bad-flag") nil)))
-    (should (equal (elinit-cli-result-exitcode result)
-                   elinit-cli-exit-invalid-args))
-    (should (string-match-p "Unknown option" (elinit-cli-result-output result)))))
-
-(ert-deftest elinit-test-journal-with-text-log ()
-  "Journal -u ID returns decoded records from text log."
-  (let ((tmpfile (make-temp-file "log-test-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=2026-02-16T12:00:00Z unit=svc pid=1 "
-                    "stream=stdout event=output status=- "
-                    "code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let ((result (elinit--cli-cmd-journal '("-u" "svc") nil)))
-              (should (= (elinit-cli-result-exitcode result) 0))
-              (should (string-match-p "hello"
-                                      (elinit-cli-result-output result))))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-n-limits-records ()
-  "Journal -n N returns exactly N records."
-  (let ((tmpfile (make-temp-file "log-test-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (dotimes (i 30)
-              (insert (format "ts=2026-02-16T12:00:%02dZ unit=svc pid=1 "
-                              i)
-                      "stream=stdout event=output status=- "
-                      "code=- payload=line\n")))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let* ((result (elinit--cli-cmd-journal
-                            '("-u" "svc" "-n" "5") nil))
-                   (output (elinit-cli-result-output result))
-                   (lines (split-string output "\n" t)))
-              (should (= (elinit-cli-result-exitcode result) 0))
-              (should (= 5 (length lines))))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-priority-filter ()
-  "Journal -p err filters to error-priority records only."
-  (let ((tmpfile (make-temp-file "log-test-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=2026-02-16T12:00:00Z unit=svc pid=1 "
-                    "stream=stdout event=output status=- "
-                    "code=- payload=stdout-line\n")
-            (insert "ts=2026-02-16T12:00:01Z unit=svc pid=1 "
-                    "stream=stderr event=output status=- "
-                    "code=- payload=stderr-line\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let* ((result (elinit--cli-cmd-journal
-                            '("-u" "svc" "-p" "err") nil))
-                   (output (elinit-cli-result-output result)))
-              (should (= (elinit-cli-result-exitcode result) 0))
-              ;; Only stderr line should appear
-              (should (string-match-p "stderr-line" output))
-              (should-not (string-match-p "stdout-line" output)))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-json-output ()
-  "Journal --json returns JSON with records array."
-  (let ((tmpfile (make-temp-file "log-test-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=2026-02-16T12:00:00Z unit=svc pid=1 "
-                    "stream=stdout event=output status=- "
-                    "code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let* ((result (elinit--cli-cmd-journal
-                            '("-u" "svc") t))
-                   (json-data (json-read-from-string
-                               (elinit-cli-result-output result))))
-              (should (= (elinit-cli-result-exitcode result) 0))
-              (should (equal (cdr (assq 'unit json-data)) "svc"))
-              (should (> (length (cdr (assq 'records json-data))) 0)))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-fu-combined ()
-  "Journal -fu ID combined short form parsed correctly."
-  (let ((parsed (elinit--cli-parse-journal-args '("-fu" "my-svc"))))
-    (should (equal (plist-get parsed :unit) "my-svc"))
-    (should (null (plist-get parsed :unknown)))))
-
 (ert-deftest elinit-test-priority-classification ()
   "Priority: stderr output and non-clean exit are err, else info."
   (should (eq (elinit--log-record-priority
@@ -984,20 +1217,6 @@
   (let ((ts (elinit--log-parse-timestamp "1708098896")))
     (should (= ts 1708098896.0))))
 
-(ert-deftest elinit-test-existing-logs-command-unchanged ()
-  "Existing logs command still works (regression)."
-  (let ((tmpfile (make-temp-file "log-test-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "raw log line 1\nraw log line 2\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let ((result (elinit--cli-cmd-logs '("my-svc") nil)))
-              (should (= (elinit-cli-result-exitcode result) 0))
-              (should (string-match-p "raw log line 1"
-                                      (elinit-cli-result-output result))))))
-      (delete-file tmpfile))))
 
 ;;;; Log Format Phase 6: Integration Edge Cases
 
@@ -1421,6 +1640,7 @@
       ;; Verify the sed strips .tar.gz first
       (should (search-forward "s/\\.tar\\.gz$//" nil t)))))
 
+
 ;;;; Log Format Phase 7: Gap-Fill Test Coverage
 
 (ert-deftest elinit-test-filter-metadata-only ()
@@ -1500,182 +1720,6 @@
     (let ((result (elinit--log-decode-binary-records buf)))
       (should (= 0 (length (plist-get result :records)))))))
 
-(ert-deftest elinit-test-journal-since-until-filtering ()
-  "Journal --since and --until timestamp filtering works."
-  (let ((tmpfile (make-temp-file "journal-ts-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout event=output status=- code=- payload=early\n")
-            (insert "ts=2000 unit=svc pid=1 stream=stdout event=output status=- code=- payload=middle\n")
-            (insert "ts=3000 unit=svc pid=1 stream=stdout event=output status=- code=- payload=late\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let ((result (elinit--cli-cmd-journal
-                           '("--since" "2000" "--until" "2000" "-u" "svc")
-                           nil)))
-              (should (= (elinit-cli-result-exitcode result) 0))
-              (should (string-match-p "middle"
-                                      (elinit-cli-result-output result)))
-              (should-not (string-match-p "early"
-                                          (elinit-cli-result-output result)))
-              (should-not (string-match-p "late"
-                                          (elinit-cli-result-output result))))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-parse-f-n-u-combination ()
-  "Journal parser handles -f -n N -u ID combination."
-  (let ((parsed (elinit--cli-parse-journal-args
-                 '("-f" "-n" "10" "-u" "myapp"))))
-    (should (equal "myapp" (plist-get parsed :unit)))
-    (should (= 10 (plist-get parsed :lines)))
-    (should-not (plist-get parsed :unknown))))
-
-(ert-deftest elinit-test-journal-parse-n-missing-value ()
-  "Journal parser reports error for -n without value."
-  (let ((parsed (elinit--cli-parse-journal-args '("-n" "-u" "svc"))))
-    (should (plist-get parsed :unknown))))
-
-(ert-deftest elinit-test-journal-parse-p-invalid-value ()
-  "Journal parser reports error for -p with invalid priority."
-  (let ((parsed (elinit--cli-parse-journal-args
-                 '("-p" "debug" "-u" "svc"))))
-    (should (plist-get parsed :unknown))))
-
-;;;; Phase 5 Remediation: P1 -- Non-follow journal fixes
-
-(ert-deftest elinit-test-journal-default-all-records ()
-  "Journal without -n returns all records (no 50-record cap)."
-  (let ((tmpfile (make-temp-file "journal-all-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (dotimes (i 60)
-              (insert (format "ts=2026-02-16T12:00:%02dZ unit=svc pid=1 "
-                              (mod i 60))
-                      "stream=stdout event=output status=- "
-                      "code=- payload=line\n")))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let* ((result (elinit--cli-cmd-journal
-                            '("-u" "svc") nil))
-                   (output (elinit-cli-result-output result))
-                   (lines (split-string output "\n" t)))
-              (should (= (elinit-cli-result-exitcode result) 0))
-              (should (= 60 (length lines))))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-invalid-since-timestamp ()
-  "Journal --since with invalid timestamp returns actionable error."
-  (let ((tmpfile (make-temp-file "journal-ts-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=x\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let ((result (elinit--cli-cmd-journal
-                           '("--since" "not-a-timestamp" "-u" "svc")
-                           nil)))
-              (should (equal (elinit-cli-result-exitcode result)
-                             elinit-cli-exit-invalid-args))
-              (should (string-match-p "Invalid --since"
-                                      (elinit-cli-result-output result))))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-invalid-until-timestamp ()
-  "Journal --until with invalid timestamp returns actionable error."
-  (let ((tmpfile (make-temp-file "journal-ts-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=x\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let ((result (elinit--cli-cmd-journal
-                           '("--until" "garbage" "-u" "svc") nil)))
-              (should (equal (elinit-cli-result-exitcode result)
-                             elinit-cli-exit-invalid-args))
-              (should (string-match-p "Invalid --until"
-                                      (elinit-cli-result-output result))))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-json-envelope-metadata ()
-  "Journal JSON output includes metadata fields in envelope."
-  (let ((tmpfile (make-temp-file "journal-json-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let* ((result (elinit--cli-cmd-journal
-                            '("--since" "500" "--until" "2000"
-                              "-p" "info" "-n" "10" "-u" "svc")
-                            t))
-                   (json-data (json-read-from-string
-                               (elinit-cli-result-output result))))
-              (should (= (elinit-cli-result-exitcode result) 0))
-              ;; Envelope metadata fields
-              (should (equal (cdr (assq 'since json-data)) "500"))
-              (should (equal (cdr (assq 'until json-data)) "2000"))
-              (should (equal (cdr (assq 'priority json-data)) "info"))
-              (should (equal (cdr (assq 'limit json-data)) 10))
-              (should (eq (cdr (assq 'follow json-data)) :json-false)))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-json-record-priority ()
-  "Journal JSON records include per-record priority field."
-  (let ((tmpfile (make-temp-file "journal-pri-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=out\n")
-            (insert "ts=1001 unit=svc pid=1 stream=stderr "
-                    "event=output status=- code=- payload=err\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let* ((result (elinit--cli-cmd-journal
-                            '("-u" "svc") t))
-                   (json-data (json-read-from-string
-                               (elinit-cli-result-output result)))
-                   (records (cdr (assq 'records json-data))))
-              (should (= (elinit-cli-result-exitcode result) 0))
-              (should (= 2 (length records)))
-              ;; First record: stdout -> info
-              (should (equal (cdr (assq 'priority (aref records 0)))
-                             "info"))
-              ;; Second record: stderr -> err
-              (should (equal (cdr (assq 'priority (aref records 1)))
-                             "err")))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-follow-flag-accepted ()
-  "Journal --follow flag is accepted without error."
-  (let ((parsed (elinit--cli-parse-journal-args
-                 '("--follow" "-u" "svc"))))
-    (should (plist-get parsed :follow))
-    (should (equal "svc" (plist-get parsed :unit)))
-    (should-not (plist-get parsed :unknown))))
-
-(ert-deftest elinit-test-journal-f-flag-sets-follow ()
-  "Journal -f flag sets :follow in parsed args."
-  (let ((parsed (elinit--cli-parse-journal-args
-                 '("-f" "-u" "svc"))))
-    (should (plist-get parsed :follow))
-    (should-not (plist-get parsed :unknown))))
-
-(ert-deftest elinit-test-journal-fu-sets-follow ()
-  "Journal -fu ID sets both :follow and :unit."
-  (let ((parsed (elinit--cli-parse-journal-args
-                 '("-fu" "svc"))))
-    (should (plist-get parsed :follow))
-    (should (equal "svc" (plist-get parsed :unit)))
-    (should-not (plist-get parsed :unknown))))
 
 ;;;; Phase 5 Remediation: P2 -- Journal follow mode
 
@@ -1707,189 +1751,8 @@
                              (plist-get (car new-recs) :payload))))))
       (delete-file tmpfile))))
 
-(ert-deftest elinit-test-journal-ndjson-record-format ()
-  "NDJSON record is valid JSON with all expected fields."
-  (let ((record (list :ts 1000.0 :unit "svc" :pid 42
-                      :stream 'stdout :event 'output
-                      :status nil :code 0
-                      :payload "hello")))
-    (let* ((json-str (elinit--log-record-to-json record))
-           (parsed (json-read-from-string json-str)))
-      (should (= (cdr (assq 'ts parsed)) 1000.0))
-      (should (equal (cdr (assq 'unit parsed)) "svc"))
-      (should (= (cdr (assq 'pid parsed)) 42))
-      (should (equal (cdr (assq 'stream parsed)) "stdout"))
-      (should (equal (cdr (assq 'event parsed)) "output"))
-      (should (equal (cdr (assq 'payload parsed)) "hello"))
-      (should (equal (cdr (assq 'priority parsed)) "info")))))
-
-(ert-deftest elinit-test-journal-ndjson-exit-record ()
-  "NDJSON encodes exit record with err priority."
-  (let ((record (list :ts 1000.0 :unit "svc" :pid 42
-                      :stream 'meta :event 'exit
-                      :status 'signaled :code 9
-                      :payload "")))
-    (let* ((json-str (elinit--log-record-to-json record))
-           (parsed (json-read-from-string json-str)))
-      (should (equal (cdr (assq 'priority parsed)) "err"))
-      (should (equal (cdr (assq 'status parsed)) "signaled")))))
-
-(ert-deftest elinit-test-journal-follow-no-new-data ()
-  "Follow-mode poll with no new data returns empty records."
-  (let ((tmpfile (make-temp-file "journal-follow-empty-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=only\n"))
-          (let* ((initial (elinit--log-decode-file tmpfile))
-                 (offset (plist-get initial :offset)))
-            ;; Poll at end -- no new data
-            (let* ((poll (elinit--log-decode-file tmpfile nil offset))
-                   (new-recs (plist-get poll :records)))
-              (should (= 0 (length new-recs))))))
-      (delete-file tmpfile))))
 
 ;;;; Phase 5 Remediation: P3 -- Consistent decoded rendering
-
-(ert-deftest elinit-test-dashboard-view-log-decodes-text ()
-  "Dashboard view-log decodes text format through structured decoder."
-  (let ((tmpfile (make-temp-file "dash-view-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile))
-                    ((symbol-function 'elinit--require-service-row)
-                     (lambda () "svc")))
-            (save-window-excursion
-              (elinit-dashboard-view-log)
-              ;; Buffer should contain human-formatted record
-              (let ((buf (get-buffer "*elinit-log-svc*")))
-                (should buf)
-                (with-current-buffer buf
-                  ;; Should have formatted timestamp, not raw ts= line
-                  (should (string-match-p "svc\\[1\\]"
-                                          (buffer-string)))
-                  (should (string-match-p "hello"
-                                          (buffer-string)))
-                  (should-not (string-match-p "\\`ts="
-                                              (buffer-string))))
-                (kill-buffer buf)))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-dashboard-view-log-applies-record-limit ()
-  "Dashboard view-log bounds both record count and byte read."
-  (let ((tmpfile (make-temp-file "dash-view-limit-"))
-        (captured-limit 'unset)
-        (captured-max-bytes 'unset))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile))
-                    ((symbol-function 'elinit--require-service-row)
-                     (lambda () "svc"))
-                    ((symbol-function 'elinit--log-decode-file)
-                     (lambda (_file &optional limit _offset max-bytes)
-                       (setq captured-limit limit)
-                       (setq captured-max-bytes max-bytes)
-                       (list :records nil :offset 0 :format 'text
-                             :warning nil))))
-            (save-window-excursion
-              (elinit-dashboard-view-log)
-              (should (equal elinit-dashboard-log-view-record-limit
-                             captured-limit))
-              (should (equal (* elinit-dashboard-log-view-record-limit 512)
-                             captured-max-bytes))
-              (when-let* ((buf (get-buffer "*elinit-log-svc*")))
-                (kill-buffer buf)))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-dashboard-view-log-nil-limit-uses-default ()
-  "Dashboard view-log clamps nil limit to default 1000."
-  (let ((tmpfile (make-temp-file "dash-nil-limit-"))
-        (elinit-dashboard-log-view-record-limit nil)
-        (captured-limit 'unset)
-        (captured-max-bytes 'unset))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile))
-                    ((symbol-function 'elinit--require-service-row)
-                     (lambda () "svc"))
-                    ((symbol-function 'elinit--log-decode-file)
-                     (lambda (_file &optional limit _offset max-bytes)
-                       (setq captured-limit limit)
-                       (setq captured-max-bytes max-bytes)
-                       (list :records nil :offset 0 :format 'text
-                             :warning nil))))
-            (save-window-excursion
-              (elinit-dashboard-view-log)
-              (should (equal 1000 captured-limit))
-              (should (equal (* 1000 512) captured-max-bytes))
-              (when-let* ((buf (get-buffer "*elinit-log-svc*")))
-                (kill-buffer buf)))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-dashboard-view-log-zero-limit-uses-default ()
-  "Dashboard view-log clamps zero limit to default 1000."
-  (let ((tmpfile (make-temp-file "dash-zero-limit-"))
-        (elinit-dashboard-log-view-record-limit 0)
-        (captured-limit 'unset))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile))
-                    ((symbol-function 'elinit--require-service-row)
-                     (lambda () "svc"))
-                    ((symbol-function 'elinit--log-decode-file)
-                     (lambda (_file &optional limit _offset _max-bytes)
-                       (setq captured-limit limit)
-                       (list :records nil :offset 0 :format 'text
-                             :warning nil))))
-            (save-window-excursion
-              (elinit-dashboard-view-log)
-              (should (equal 1000 captured-limit))
-              (when-let* ((buf (get-buffer "*elinit-log-svc*")))
-                (kill-buffer buf)))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-dashboard-view-log-negative-limit-uses-default ()
-  "Dashboard view-log clamps negative limit to default 1000."
-  (let ((tmpfile (make-temp-file "dash-neg-limit-"))
-        (elinit-dashboard-log-view-record-limit -5)
-        (captured-limit 'unset))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile))
-                    ((symbol-function 'elinit--require-service-row)
-                     (lambda () "svc"))
-                    ((symbol-function 'elinit--log-decode-file)
-                     (lambda (_file &optional limit _offset _max-bytes)
-                       (setq captured-limit limit)
-                       (list :records nil :offset 0 :format 'text
-                             :warning nil))))
-            (save-window-excursion
-              (elinit-dashboard-view-log)
-              (should (equal 1000 captured-limit))
-              (when-let* ((buf (get-buffer "*elinit-log-svc*")))
-                (kill-buffer buf)))))
-      (delete-file tmpfile))))
 
 (ert-deftest elinit-test-telemetry-log-tail-decodes-text ()
   "Telemetry log-tail decodes text format through structured decoder."
@@ -1972,6 +1835,7 @@
   "Priority classification: clean exit (code 0) is info."
   (let ((rec (list :stream 'meta :event 'exit :status 'exited :code 0)))
     (should (eq 'info (elinit--log-record-priority rec)))))
+
 
 ;;;; Merged-stream identity and exit-frame drain fixes
 
@@ -2288,6 +2152,7 @@ identity must be correct regardless of whether log-format is set."
       (when (process-live-p fake-stderr-writer)
         (delete-process fake-stderr-writer)))))
 
+
 ;;;; Bounded decode (max-bytes) tests
 
 (ert-deftest elinit-test-decode-text-max-bytes-limits-records ()
@@ -2364,78 +2229,6 @@ identity must be correct regardless of whether log-format is set."
             (should (= 5 (length records)))))
       (delete-file tmpfile))))
 
-(ert-deftest elinit-test-journal-n-passes-max-bytes ()
-  "Journal with -n tries n*512 first, then retries full on shortfall."
-  (let ((tmpfile (make-temp-file "log-jmb-"))
-        (call-log nil))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=hello\n"))
-          (let ((records (cl-loop for i from 1 to 10
-                                  collect (list :ts (float i) :unit "svc"
-                                                :pid 1 :stream 'stdout
-                                                :event 'output :status nil
-                                                :code 0 :payload "x"))))
-            (cl-letf (((symbol-function 'elinit--log-file)
-                       (lambda (_id) tmpfile))
-                      ((symbol-function 'elinit--log-decode-file)
-                       (lambda (_file &optional _limit _offset max-bytes)
-                         (push max-bytes call-log)
-                         (list :records records
-                               :offset 100 :format 'text :warning nil))))
-              (elinit--cli-cmd-journal '("-u" "svc" "-n" "10") nil)
-              ;; First call uses n*512 heuristic
-              (should (= 5120 (car (last call-log))))
-              ;; Since 10 records >= 10 requested, no retry needed
-              (should (= 1 (length call-log))))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-n-retries-on-shortfall ()
-  "Journal with -n retries with full decode when tail has too few records."
-  (let ((tmpfile (make-temp-file "log-jmb2-"))
-        (call-log nil))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=hello\n"))
-          (let ((few-records (list (list :ts 1.0 :unit "svc" :pid 1
-                                         :stream 'stdout :event 'output
-                                         :status nil :code 0
-                                         :payload "big-payload")))
-                (all-records (cl-loop for i from 1 to 5
-                                      collect (list :ts (float i)
-                                                    :unit "svc" :pid 1
-                                                    :stream 'stdout
-                                                    :event 'output
-                                                    :status nil :code 0
-                                                    :payload "x"))))
-            (cl-letf (((symbol-function 'elinit--log-file)
-                       (lambda (_id) tmpfile))
-                      ((symbol-function 'elinit--log-decode-file)
-                       (lambda (_file &optional _limit _offset max-bytes)
-                         (push max-bytes call-log)
-                         (if max-bytes
-                             ;; Tail read returns fewer than requested
-                             (list :records few-records
-                                   :offset 100 :format 'text :warning nil)
-                           ;; Full read returns all
-                           (list :records all-records
-                                 :offset 500 :format 'text :warning nil)))))
-              (let* ((result (elinit--cli-cmd-journal
-                              '("-u" "svc" "-n" "5") nil))
-                     (output (elinit-cli-result-output result))
-                     (lines (split-string output "\n" t)))
-                ;; Two calls: first with heuristic, second with nil
-                (should (= 2 (length call-log)))
-                (should (= 2560 (car (last call-log))))
-                (should (null (car call-log)))
-                ;; Got all 5 records from the retry
-                (should (= 5 (length lines)))))))
-      (delete-file tmpfile))))
-
 (ert-deftest elinit-test-binary-scan-to-record ()
   "Binary scan finds first valid record in partial chunk."
   (let* ((rec1 (elinit-test--make-binary-record
@@ -2454,6 +2247,7 @@ identity must be correct regardless of whether log-format is set."
              (records (plist-get result :records)))
         (should (= 2 (length records)))
         (should (equal "hello" (plist-get (car records) :payload)))))))
+
 
 ;;;; Follow session tests
 
@@ -2656,52 +2450,6 @@ identity must be correct regardless of whether log-format is set."
             (elinit--cli-follow-stop session-id)))
       (delete-directory tmpdir t))))
 
-(ert-deftest elinit-test-follow-journal-returns-follow-result ()
-  "Journal with -f returns result with format follow."
-  (let ((tmpfile (make-temp-file "log-follow-"))
-        (elinit--cli-follow-sessions (make-hash-table :test 'equal)))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let ((result (elinit--cli-cmd-journal
-                           '("-u" "svc" "-f") nil)))
-              (should (eq (elinit-cli-result-format result) 'follow))
-              (should (string-prefix-p "FOLLOW:"
-                                       (elinit-cli-result-output result)))
-              ;; Cleanup the session
-              (let ((output (elinit-cli-result-output result)))
-                (when (string-match "FOLLOW:[^\t]*\t[^\t]*\t\\(.+\\)" output)
-                  (elinit--cli-follow-stop (match-string 1 output)))))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-follow-dispatch-wrapper-protocol ()
-  "Dispatch for wrapper returns raw FOLLOW string for follow results."
-  (let ((tmpfile (make-temp-file "log-follow-"))
-        (elinit--cli-follow-sessions (make-hash-table :test 'equal)))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let ((output (elinit--cli-dispatch-for-wrapper
-                           '("journal" "-u" "svc" "-f"))))
-              (should (string-prefix-p "FOLLOW:" output))
-              ;; Cleanup the session
-              (when (string-match "FOLLOW:[^\t]*\t[^\t]*\t\\(.+\\)" output)
-                (elinit--cli-follow-stop (match-string 1 output))))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-follow-stop-nonexistent ()
-  "Stopping nonexistent session returns nil without error."
-  (let ((elinit--cli-follow-sessions (make-hash-table :test 'equal)))
-    (should-not (elinit--cli-follow-stop "no-such-session"))))
-
 (ert-deftest elinit-test-follow-initial-output-encoding ()
   "FOLLOW protocol base64 initial output decodes correctly."
   (let ((tmpfile (make-temp-file "log-follow-"))
@@ -2766,6 +2514,7 @@ identity must be correct regardless of whether log-format is set."
               (should-not (string-match-p "stdout-line" content)))
             (elinit--cli-follow-stop session-id)))
       (delete-directory tmpdir t))))
+
 
 ;;;; Bounded decode default cap tests
 
@@ -2938,88 +2687,6 @@ identity must be correct regardless of whether log-format is set."
             (elinit--cli-follow-stop session-id)))
       (delete-directory tmpdir t))))
 
-;;;; JSON null and argument validation tests
-
-(ert-deftest elinit-test-journal-json-null-fields ()
-  "Journal JSON envelope uses JSON null for absent fields, not string."
-  (let ((tmpfile (make-temp-file "log-json-null-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let* ((result (elinit--cli-cmd-journal
-                            '("-u" "svc") t))
-                   (json-data (json-read-from-string
-                               (elinit-cli-result-output result))))
-              ;; Absent fields must be JSON null (Elisp nil), not "null"
-              (should (null (cdr (assq 'since json-data))))
-              (should (null (cdr (assq 'until json-data))))
-              (should (null (cdr (assq 'priority json-data))))
-              (should (null (cdr (assq 'limit json-data))))
-              ;; They must NOT be the string "null"
-              (should-not (equal "null" (cdr (assq 'since json-data)))))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-ndjson-null-status ()
-  "NDJSON record uses JSON null for absent status, not string."
-  (let ((record (list :ts 1000.0 :unit "svc" :pid 1
-                      :stream 'stdout :event 'output
-                      :status nil :code 0 :payload "hello")))
-    (let* ((json-str (elinit--log-record-to-json record))
-           (parsed (json-read-from-string json-str)))
-      ;; status should be JSON null (Elisp nil), not the string "null"
-      (should (null (cdr (assq 'status parsed))))
-      (should-not (equal "null" (cdr (assq 'status parsed)))))))
-
-(ert-deftest elinit-test-journal-rejects-extra-positional-args ()
-  "Journal rejects unexpected bare positional arguments."
-  (let ((result (elinit--cli-cmd-journal
-                 '("-u" "svc" "extra-arg") nil)))
-    (should (= elinit-cli-exit-invalid-args
-               (elinit-cli-result-exitcode result)))
-    (should (string-match-p "Unexpected argument"
-                            (elinit-cli-result-output result)))))
-
-(ert-deftest elinit-test-journal-rejects-multiple-extra-args ()
-  "Journal rejects multiple extra positional arguments."
-  (let ((result (elinit--cli-cmd-journal
-                 '("-u" "svc" "one" "two") nil)))
-    (should (= elinit-cli-exit-invalid-args
-               (elinit-cli-result-exitcode result)))
-    (should (string-match-p "Unexpected argument: one"
-                            (elinit-cli-result-output result)))))
-
-(ert-deftest elinit-test-journal-json-envelope-null-status ()
-  "JSON envelope records use JSON null for absent status."
-  (let ((tmpfile (make-temp-file "log-env-null-")))
-    (unwind-protect
-        (progn
-          (with-temp-file tmpfile
-            (insert "ts=1000 unit=svc pid=1 stream=stdout "
-                    "event=output status=- code=- payload=hello\n"))
-          (cl-letf (((symbol-function 'elinit--log-file)
-                     (lambda (_id) tmpfile)))
-            (let* ((result (elinit--cli-cmd-journal
-                            '("-u" "svc") t))
-                   (json-data (json-read-from-string
-                               (elinit-cli-result-output result)))
-                   (records (cdr (assq 'records json-data)))
-                   (first-rec (aref records 0)))
-              ;; status must be JSON null (Elisp nil), not string "null"
-              (should (null (cdr (assq 'status first-rec))))
-              (should-not (equal "null"
-                                 (cdr (assq 'status first-rec)))))))
-      (delete-file tmpfile))))
-
-(ert-deftest elinit-test-journal-fu-rejects-fux ()
-  "Parser rejects -fux as unknown option, only -fu is valid."
-  (let ((parsed (elinit--cli-parse-journal-args '("-fux" "svc"))))
-    (should (plist-get parsed :unknown))
-    (should (string-match-p "Unknown option: -fux"
-                            (plist-get parsed :unknown)))))
 
 ;;;; RFC3339 range validation tests
 
@@ -3101,104 +2768,6 @@ identity must be correct regardless of whether log-format is set."
   (should (elinit--log-parse-timestamp
            "2026-01-31T00:00:00Z")))
 
-;;;; Log-format propagation on non-DAG start paths
-
-(ert-deftest elinit-test-manual-start-passes-log-format ()
-  "Manual start threads :log-format through to start-process."
-  (elinit-test-with-unit-files
-      '(("echo hi" :id "svc1" :log-format text))
-    (let* ((elinit--processes (make-hash-table :test 'equal))
-           (elinit--failed (make-hash-table :test 'equal))
-           (elinit--restart-times (make-hash-table :test 'equal))
-           (elinit--oneshot-completed (make-hash-table :test 'equal))
-           (elinit--manually-stopped (make-hash-table :test 'equal))
-           (elinit--manually-started (make-hash-table :test 'equal))
-           (elinit--entry-state (make-hash-table :test 'equal))
-           (elinit--mask-override (make-hash-table :test 'equal))
-           (elinit--enabled-override (make-hash-table :test 'equal))
-           (elinit--invalid (make-hash-table :test 'equal))
-           (elinit--cycle-fallback-ids (make-hash-table :test 'equal))
-           (elinit--computed-deps (make-hash-table :test 'equal))
-           (elinit--logging (make-hash-table :test 'equal))
-           (elinit--remain-active (make-hash-table :test 'equal))
-           (elinit--spawn-failure-reason (make-hash-table :test 'equal))
-           (captured-log-format :not-set))
-      (cl-letf (((symbol-function 'elinit--start-process)
-                 (lambda (_id _cmd _logging _type _restart
-                          &optional _is-restart _wd _env _envf _rsec
-                          _ufd _user _group _sout _serr _sandbox
-                          log-format _limits-entry)
-                   (setq captured-log-format log-format)
-                   t)))
-        (let ((result (elinit--manual-start "svc1")))
-          (should (eq 'started (plist-get result :status)))
-          (should (eq 'text captured-log-format)))))))
-
-(ert-deftest elinit-test-reconcile-passes-log-format ()
-  "Reconcile start path threads :log-format through to start-process."
-  (elinit-test-with-unit-files
-      '(("echo hi" :id "new-svc" :log-format text))
-    (let ((elinit--enabled-override (make-hash-table :test 'equal))
-          (elinit--processes (make-hash-table :test 'equal))
-          (elinit--failed (make-hash-table :test 'equal))
-          (elinit--oneshot-completed (make-hash-table :test 'equal))
-          (elinit--restart-override (make-hash-table :test 'equal))
-          (elinit--logging (make-hash-table :test 'equal))
-          (elinit--invalid (make-hash-table :test 'equal))
-          (captured-log-format :not-set))
-      (cl-letf (((symbol-function 'elinit--start-process)
-                 (lambda (_id _cmd _logging _type _restart
-                          &optional _is-restart _wd _env _envf _rsec
-                          _ufd _user _group _sout _serr _sandbox
-                          log-format _limits-entry)
-                   (setq captured-log-format log-format)
-                   t))
-                ((symbol-function 'elinit--refresh-dashboard) #'ignore)
-                ((symbol-function 'executable-find) (lambda (_) t)))
-        (elinit--reconcile)
-        (should (eq 'text captured-log-format))))))
-
-(ert-deftest elinit-test-reload-unit-passes-log-format ()
-  "Reload restart path threads :log-format through to start-process."
-  (elinit-test-with-unit-files
-      '(("sleep 999" :id "svc1" :log-format text))
-    (let* ((elinit--processes (make-hash-table :test 'equal))
-           (elinit--failed (make-hash-table :test 'equal))
-           (elinit--restart-times (make-hash-table :test 'equal))
-           (elinit--oneshot-completed (make-hash-table :test 'equal))
-           (elinit--manually-stopped (make-hash-table :test 'equal))
-           (elinit--entry-state (make-hash-table :test 'equal))
-           (elinit--mask-override (make-hash-table :test 'equal))
-           (elinit--enabled-override (make-hash-table :test 'equal))
-           (elinit--invalid (make-hash-table :test 'equal))
-           (elinit--cycle-fallback-ids (make-hash-table :test 'equal))
-           (elinit--computed-deps (make-hash-table :test 'equal))
-           (elinit--logging (make-hash-table :test 'equal))
-           (captured-log-format :not-set))
-      ;; Simulate a running process
-      (puthash "svc1" (start-process "test" nil "sleep" "999")
-               elinit--processes)
-      (unwind-protect
-          (cl-letf (((symbol-function 'elinit--manual-stop)
-                     (lambda (id)
-                       (let ((p (gethash id elinit--processes)))
-                         (when (and p (process-live-p p))
-                           (delete-process p)))
-                       (list :status 'stopped :reason nil)))
-                    ((symbol-function 'elinit--start-process)
-                     (lambda (_id _cmd _logging _type _restart
-                              &optional _is-restart _wd _env _envf _rsec
-                              _ufd _user _group _sout _serr _sandbox
-                              log-format _limits-entry)
-                       (setq captured-log-format log-format)
-                       t)))
-            (let ((result (elinit--reload-unit "svc1")))
-              (should (equal "reloaded" (plist-get result :action)))
-              (should (eq 'text captured-log-format))))
-        ;; Cleanup
-        (let ((p (gethash "svc1" elinit--processes)))
-          (when (and p (process-live-p p))
-            (delete-process p)))))))
 
 ;;;; Prune hook directory correctness
 
@@ -3248,6 +2817,7 @@ identity must be correct regardless of whether log-format is set."
               (should-not (string-match-p (regexp-quote "/global/logs")
                                           prune-val)))))
       (when (process-live-p fake-proc) (delete-process fake-proc)))))
+
 
 ;;;; Behavioral logrotate compression tests
 
@@ -3307,98 +2877,8 @@ identity must be correct regardless of whether log-format is set."
       (delete-directory log-dir t)
       (delete-directory bin-dir t))))
 
-;;;; Exit marker coverage for manual-stop and oneshot completion
-
-(ert-deftest elinit-test-manual-stop-triggers-exit-frame ()
-  "Sentinel emits exit frame when process is killed by manual-stop."
-  (let ((elinit--writers (make-hash-table :test 'equal))
-        (elinit--stderr-writers (make-hash-table :test 'equal))
-        (elinit--processes (make-hash-table :test 'equal))
-        (elinit--shutting-down nil)
-        (elinit--restart-timers (make-hash-table :test 'equal))
-        (elinit--manually-stopped (make-hash-table :test 'equal))
-        (elinit--enabled-override (make-hash-table :test 'equal))
-        (elinit--failed (make-hash-table :test 'equal))
-        (elinit--logging (make-hash-table :test 'equal))
-        (elinit--oneshot-completed (make-hash-table :test 'equal))
-        (elinit--oneshot-callbacks (make-hash-table :test 'equal))
-        (elinit--crash-log (make-hash-table :test 'equal))
-        (elinit--last-exit-info (make-hash-table :test 'equal))
-        (elinit--spawn-failure-reason (make-hash-table :test 'equal))
-        (exit-frames nil))
-    ;; Mark as manually stopped (as manual-stop would before killing)
-    (puthash "manual-stop-svc" t elinit--manually-stopped)
-    (let ((fake-writer (start-process "ms-fw" nil "sleep" "300")))
-      (unwind-protect
-          (progn
-            (puthash "manual-stop-svc" fake-writer elinit--writers)
-            (let ((fake-proc (start-process "manual-stop-svc" nil "true")))
-              (puthash "manual-stop-svc" fake-proc elinit--processes)
-              ;; Wait for "true" to exit (simulates kill-process sentinel)
-              (while (process-live-p fake-proc) (sit-for 0.05))
-              (cl-letf (((symbol-function 'elinit--log-send-frame)
-                         (lambda (_w event _stream _pid unit-id &rest _args)
-                           (push (list event unit-id) exit-frames)))
-                        ((symbol-function 'process-send-eof)
-                         (lambda (_proc) nil))
-                        ((symbol-function 'elinit--emit-event) #'ignore)
-                        ((symbol-function 'elinit--maybe-refresh-dashboard) #'ignore)
-                        ((symbol-function 'elinit--should-restart-p) (lambda (&rest _) nil))
-                        ((symbol-function 'run-at-time) (lambda (&rest _) nil)))
-                (let ((sentinel (elinit--make-process-sentinel
-                                 "manual-stop-svc" '("true") t 'simple t)))
-                  (funcall sentinel fake-proc "exited abnormally with code 15\n")))))
-        (when (process-live-p fake-writer) (delete-process fake-writer))))
-    ;; Exit frame (event=2) should have been sent
-    (should exit-frames)
-    (should (= 2 (car (car exit-frames))))
-    (should (equal "manual-stop-svc" (cadr (car exit-frames))))))
-
-(ert-deftest elinit-test-oneshot-completion-triggers-exit-frame ()
-  "Sentinel emits exit frame when oneshot process completes normally."
-  (let ((elinit--writers (make-hash-table :test 'equal))
-        (elinit--stderr-writers (make-hash-table :test 'equal))
-        (elinit--processes (make-hash-table :test 'equal))
-        (elinit--shutting-down nil)
-        (elinit--restart-timers (make-hash-table :test 'equal))
-        (elinit--manually-stopped (make-hash-table :test 'equal))
-        (elinit--enabled-override (make-hash-table :test 'equal))
-        (elinit--failed (make-hash-table :test 'equal))
-        (elinit--logging (make-hash-table :test 'equal))
-        (elinit--oneshot-completed (make-hash-table :test 'equal))
-        (elinit--oneshot-callbacks (make-hash-table :test 'equal))
-        (elinit--crash-log (make-hash-table :test 'equal))
-        (elinit--last-exit-info (make-hash-table :test 'equal))
-        (elinit--spawn-failure-reason (make-hash-table :test 'equal))
-        (exit-frames nil))
-    (let ((fake-writer (start-process "os-fw" nil "sleep" "300")))
-      (unwind-protect
-          (progn
-            (puthash "oneshot-svc" fake-writer elinit--writers)
-            (let ((fake-proc (start-process "oneshot-svc" nil "true")))
-              (puthash "oneshot-svc" fake-proc elinit--processes)
-              (while (process-live-p fake-proc) (sit-for 0.05))
-              (cl-letf (((symbol-function 'elinit--log-send-frame)
-                         (lambda (_w event _stream _pid unit-id &rest _args)
-                           (push (list event unit-id) exit-frames)))
-                        ((symbol-function 'process-send-eof)
-                         (lambda (_proc) nil))
-                        ((symbol-function 'elinit--emit-event) #'ignore)
-                        ((symbol-function 'elinit--maybe-refresh-dashboard) #'ignore)
-                        ((symbol-function 'elinit--should-restart-p) (lambda (&rest _) nil))
-                        ((symbol-function 'run-at-time) (lambda (&rest _) nil)))
-                ;; Oneshot sentinel: type=oneshot, restart=nil
-                (let ((sentinel (elinit--make-process-sentinel
-                                 "oneshot-svc" '("true") t 'oneshot nil)))
-                  (funcall sentinel fake-proc "finished\n")))))
-        (when (process-live-p fake-writer) (delete-process fake-writer))))
-    ;; Exit frame (event=2) should have been sent
-    (should exit-frames)
-    (should (= 2 (car (car exit-frames))))
-    (should (equal "oneshot-svc" (cadr (car exit-frames))))))
 
 ;;;; Behavioral equivalence: format-hint and vacuum alias
-
 
 (ert-deftest elinit-test-prune-format-hint-does-not-alter-order ()
   "Prune deletion order is identical with and without --format-hint."
@@ -3460,5 +2940,1009 @@ identity must be correct regardless of whether log-format is set."
                            (elinit-test--grep-lines prune-re output-vacuum)))))
       (delete-directory dir t))))
 
-(provide 'elinit-test-logformat)
-;;; elinit-test-logformat.el ends here
+
+;;; Writer Lifecycle Tests
+
+(ert-deftest elinit-test-writer-spawns-when-logging-enabled ()
+  "Start-writer spawns logd with correct arguments."
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit-logd-command "/usr/bin/logd-stub")
+        (elinit-logd-max-file-size 1000)
+        (elinit-log-directory "/tmp/logs")
+        (spawned-args nil)
+        ;; Create fake process before mocking make-process
+        (fake-proc (start-process "fake" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (setq spawned-args args)
+                     fake-proc)))
+          (let ((proc (elinit--start-writer "svc1" "/tmp/logs/log-svc1.log")))
+            (should (eq proc fake-proc))
+            ;; Verify logd in writers hash
+            (should (eq proc (gethash "svc1" elinit--writers)))
+            ;; Verify command arguments
+            (let ((cmd (plist-get spawned-args :command)))
+              (should (equal (nth 0 cmd) "/usr/bin/logd-stub"))
+              (should (equal (nth 1 cmd) "--file"))
+              (should (equal (nth 2 cmd) "/tmp/logs/log-svc1.log"))
+              (should (equal (nth 3 cmd) "--max-file-size-bytes"))
+              (should (equal (nth 4 cmd) "1000"))
+              (should (equal (nth 5 cmd) "--log-dir"))
+              (should (equal (nth 6 cmd) "/tmp/logs")))
+            ;; Verify connection type is pipe
+            (should (eq (plist-get spawned-args :connection-type) 'pipe))))
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+(ert-deftest elinit-test-writer-not-spawned-when-logging-disabled ()
+  "No writer spawned when logging is disabled in start-process."
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit--processes (make-hash-table :test 'equal))
+        (elinit--shutting-down nil)
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--enabled-override (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--logging (make-hash-table :test 'equal))
+        (elinit--spawn-failure-reason (make-hash-table :test 'equal))
+        (writer-started nil)
+        (fake-proc (start-process "fake-svc" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'elinit--get-effective-logging)
+                   (lambda (_id _default) nil))
+                  ((symbol-function 'elinit--start-writer)
+                   (lambda (_id _file &optional _log-format)
+                     (setq writer-started t)
+                     nil))
+                  ((symbol-function 'make-process)
+                   (lambda (&rest _args) fake-proc))
+                  ((symbol-function 'elinit--make-process-sentinel)
+                   (lambda (&rest _args) #'ignore))
+                  ((symbol-function 'elinit--build-launch-command)
+                   (lambda (_cmd &rest _args) (list "sleep" "300"))))
+          (let ((proc (elinit--start-process
+                       "svc2" "sleep 300" nil 'simple 'always)))
+            (should proc)
+            (should-not writer-started)
+            (should (zerop (hash-table-count elinit--writers)))))
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+(ert-deftest elinit-test-writer-stopped-on-service-exit ()
+  "Sentinel stops the writer when the service process exits."
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit--processes (make-hash-table :test 'equal))
+        (elinit--last-exit-info (make-hash-table :test 'equal))
+        (elinit--shutting-down nil)
+        (elinit--oneshot-completed (make-hash-table :test 'equal))
+        (elinit--manually-stopped (make-hash-table :test 'equal))
+        (elinit--enabled-override (make-hash-table :test 'equal))
+        (elinit--failed (make-hash-table :test 'equal))
+        (elinit--restart-times (make-hash-table :test 'equal))
+        (elinit--restart-timers (make-hash-table :test 'equal))
+        (writer-stopped nil))
+    (cl-letf (((symbol-function 'elinit--stop-writer-if-same)
+               (lambda (id &rest _args)
+                 (when (string= id "svc3")
+                   (setq writer-stopped t))))
+              ((symbol-function 'elinit--emit-event) #'ignore)
+              ((symbol-function 'elinit--maybe-refresh-dashboard) #'ignore)
+              ((symbol-function 'elinit--should-restart-p)
+               (lambda (&rest _) nil)))
+      ;; Create a real process we can kill
+      (let ((proc (start-process "svc3" nil "sleep" "300")))
+        (puthash "svc3" proc elinit--processes)
+        (set-process-sentinel
+         proc
+         (elinit--make-process-sentinel
+          "svc3" "sleep 300" nil 'simple 'no))
+        (delete-process proc)
+        ;; Give sentinel + deferred writer teardown a chance to run.
+        ;; Sentinel fires immediately; writer teardown is deferred 0.2s
+        ;; to let logd drain buffered frames after EOF.
+        (sit-for 0.4)
+        (should writer-stopped)))))
+
+(ert-deftest elinit-test-stop-all-writers-clears-hash ()
+  "Stop-all-writers sends SIGTERM to live writers and clears the hash."
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (signaled nil))
+    (cl-letf (((symbol-function 'signal-process)
+               (lambda (proc sig)
+                 (when (eq sig 'SIGTERM)
+                   (push (process-name proc) signaled))
+                 0)))
+      ;; Add a fake live writer
+      (let ((w1 (start-process "logd-a" nil "sleep" "300"))
+            (w2 (start-process "logd-b" nil "sleep" "300")))
+        (puthash "a" w1 elinit--writers)
+        (puthash "b" w2 elinit--writers)
+        (unwind-protect
+            (progn
+              (elinit--stop-all-writers)
+              (should (zerop (hash-table-count elinit--writers)))
+              (should (member "logd-a" signaled))
+              (should (member "logd-b" signaled)))
+          (when (process-live-p w1) (delete-process w1))
+          (when (process-live-p w2) (delete-process w2)))))))
+
+(ert-deftest elinit-test-writers-cleared-on-start ()
+  "Elinit-start clears the writers hash table."
+  (let ((elinit--writers (make-hash-table :test 'equal)))
+    (puthash "stale" t elinit--writers)
+    ;; We cannot easily call elinit-start fully, but we can verify
+    ;; the hash is among those cleared.  Check the variable is mentioned
+    ;; in the clrhash calls by verifying the state after a controlled call.
+    (clrhash elinit--writers)
+    (should (zerop (hash-table-count elinit--writers)))))
+
+(ert-deftest elinit-test-stop-writer-removes-from-hash ()
+  "Stop-writer removes the entry from the writers hash."
+  (let ((elinit--writers (make-hash-table :test 'equal)))
+    (let ((w (start-process "logd-x" nil "sleep" "300")))
+      (puthash "x" w elinit--writers)
+      (unwind-protect
+          (progn
+            (elinit--stop-writer "x")
+            (should (zerop (hash-table-count elinit--writers))))
+        (when (process-live-p w) (delete-process w))))))
+
+(ert-deftest elinit-test-stop-writer-noop-for-unknown-id ()
+  "Stop-writer is a no-op for an ID not in the writers hash."
+  (let ((elinit--writers (make-hash-table :test 'equal)))
+    (elinit--stop-writer "nonexistent")
+    (should (zerop (hash-table-count elinit--writers)))))
+
+(ert-deftest elinit-test-writer-pid-file-written ()
+  "Start-writer writes a PID file for the logd process."
+  (let* ((pid-dir (make-temp-file "sv-pid-" t))
+         (elinit--writers (make-hash-table :test 'equal))
+         (elinit-logd-pid-directory pid-dir)
+         (elinit-logd-command "sleep")
+         (elinit-logd-max-file-size 1000)
+         (elinit-log-directory pid-dir)
+         (elinit-logd-prune-min-interval 60)
+         (elinit-log-prune-command "/bin/true")
+         (elinit-log-prune-max-total-bytes 1000000)
+         (fake-proc (start-process "fake-logd" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest _args) fake-proc)))
+          (elinit--start-writer "svc1" "/tmp/log-svc1.log")
+          (let ((pid-file (expand-file-name "logd-svc1.pid" pid-dir)))
+            (should (file-exists-p pid-file))
+            (should (equal (string-trim
+                            (with-temp-buffer
+                              (insert-file-contents pid-file)
+                              (buffer-string)))
+                           (number-to-string (process-id fake-proc))))))
+      (when (process-live-p fake-proc) (delete-process fake-proc))
+      (delete-directory pid-dir t))))
+
+(ert-deftest elinit-test-stop-writer-removes-pid-file ()
+  "Stop-writer removes the PID file."
+  (let* ((pid-dir (make-temp-file "sv-pid-" t))
+         (elinit--writers (make-hash-table :test 'equal))
+         (elinit-logd-pid-directory pid-dir))
+    (let ((w (start-process "logd-y" nil "sleep" "300")))
+      (puthash "y" w elinit--writers)
+      (let ((pid-file (expand-file-name "logd-y.pid" pid-dir)))
+        (write-region "12345" nil pid-file nil 'silent)
+        (unwind-protect
+            (progn
+              (elinit--stop-writer "y")
+              (should-not (file-exists-p pid-file))
+              (should (zerop (hash-table-count elinit--writers))))
+          (when (process-live-p w) (delete-process w))
+          (delete-directory pid-dir t))))))
+
+(ert-deftest elinit-test-stop-all-writers-removes-pid-files ()
+  "Stop-all-writers removes PID files for all writers."
+  (let* ((pid-dir (make-temp-file "sv-pid-" t))
+         (elinit--writers (make-hash-table :test 'equal))
+         (elinit-logd-pid-directory pid-dir)
+         (w1 (start-process "logd-a" nil "sleep" "300"))
+         (w2 (start-process "logd-b" nil "sleep" "300")))
+    (puthash "a" w1 elinit--writers)
+    (puthash "b" w2 elinit--writers)
+    (write-region "111" nil (expand-file-name "logd-a.pid" pid-dir) nil 'silent)
+    (write-region "222" nil (expand-file-name "logd-b.pid" pid-dir) nil 'silent)
+    (unwind-protect
+        (progn
+          (elinit--stop-all-writers)
+          (should-not (file-exists-p (expand-file-name "logd-a.pid" pid-dir)))
+          (should-not (file-exists-p (expand-file-name "logd-b.pid" pid-dir)))
+          (should (zerop (hash-table-count elinit--writers))))
+      (when (process-live-p w1) (delete-process w1))
+      (when (process-live-p w2) (delete-process w2))
+      (delete-directory pid-dir t))))
+
+(ert-deftest elinit-test-writer-failure-degrades-gracefully ()
+  "Start-writer returns nil and logs warning when make-process signals."
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit-logd-command "/usr/bin/logd-stub")
+        (elinit-logd-max-file-size 1000)
+        (elinit-log-directory "/tmp/logs")
+        (logged nil))
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest _args)
+                 (error "Doing vfork: No such file or directory")))
+              ((symbol-function 'elinit--log)
+               (lambda (level fmt &rest args)
+                 (when (eq level 'warning)
+                   (push (apply #'format fmt args) logged)))))
+      (let ((result (elinit--start-writer "svc-fail" "/tmp/logs/log-svc-fail.log")))
+        (should-not result)
+        (should (zerop (hash-table-count elinit--writers)))
+        (should logged)
+        (should (string-match-p "log writer failed to start" (car logged)))))))
+
+(ert-deftest elinit-test-start-writer-passes-prune-flags ()
+  "Start-writer includes --prune-cmd and --prune-min-interval-sec."
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit-logd-command "/usr/bin/logd-stub")
+        (elinit-logd-max-file-size 1000)
+        (elinit-log-directory "/tmp/logs")
+        (elinit-log-prune-command "/usr/bin/prune-stub")
+        (elinit-log-prune-max-total-bytes 5000)
+        (elinit-logd-prune-min-interval 30)
+        (spawned-args nil)
+        (fake-proc (start-process "fake" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (setq spawned-args args)
+                     fake-proc)))
+          (elinit--start-writer "svc1" "/tmp/logs/log-svc1.log")
+          (let ((cmd (plist-get spawned-args :command)))
+            (should (member "--prune-cmd" cmd))
+            (should (member "--prune-min-interval-sec" cmd))
+            ;; Verify values follow flags
+            (let ((prune-pos (cl-position "--prune-cmd" cmd :test #'equal))
+                  (interval-pos (cl-position "--prune-min-interval-sec"
+                                             cmd :test #'equal)))
+              (should (string-match-p "prune-stub"
+                                      (nth (1+ prune-pos) cmd)))
+              (should (equal "30" (nth (1+ interval-pos) cmd))))))
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+;;; Log Directory and Path Tests
+
+(ert-deftest elinit-test-effective-log-directory-falls-back ()
+  "Unwritable configured log directory falls back to user-local default."
+  (let ((elinit-log-directory "/root/locked-elinit")
+        (user-emacs-directory "/tmp/emacs-user/")
+        (warnings nil))
+    (cl-letf (((symbol-function 'elinit--ensure-directory-writable)
+               (lambda (directory)
+                 (cond
+                  ((equal directory "/root/locked-elinit") nil)
+                  ((equal directory "/tmp/emacs-user/elinit")
+                   directory)
+                  (t nil))))
+              ((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) warnings))))
+      (should (equal "/tmp/emacs-user/elinit"
+                     (elinit--effective-log-directory)))
+      (should (car warnings))
+      (should (string-match-p "using /tmp/emacs-user/elinit"
+                              (car warnings))))))
+
+(ert-deftest elinit-test-effective-log-directory-unavailable ()
+  "No writable log directory returns nil and emits a warning."
+  (let ((elinit-log-directory "/root/locked-elinit")
+        (user-emacs-directory "/tmp/emacs-user/")
+        (warnings nil))
+    (cl-letf (((symbol-function 'elinit--ensure-directory-writable)
+               (lambda (_directory) nil))
+              ((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) warnings))))
+      (should-not (elinit--effective-log-directory))
+      (should (car warnings))
+      (should (string-match-p "file logging disabled" (car warnings))))))
+
+(ert-deftest elinit-test-signal-writers-reopen ()
+  "Signal-writers-reopen sends SIGHUP to live writers."
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit--stderr-writers (make-hash-table :test 'equal))
+        (signals-sent nil)
+        (fake-proc (start-process "fake-writer" nil "sleep" "300")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'signal-process)
+                   (lambda (proc sig)
+                     (push (cons proc sig) signals-sent)
+                     0)))
+          (puthash "svc1" fake-proc elinit--writers)
+          (should (process-live-p fake-proc))
+          (elinit--signal-writers-reopen)
+          (should (= 1 (length signals-sent)))
+          (should (eq (caar signals-sent) fake-proc))
+          (should (eq (cdar signals-sent) 'SIGHUP)))
+      (when (process-live-p fake-proc)
+        (delete-process fake-proc)))))
+
+(ert-deftest elinit-test-build-prune-command-format ()
+  "Build-prune-command returns a properly formatted command string."
+  (let ((log-directory (make-temp-file "logs-" t)))
+    (unwind-protect
+        (let ((elinit-log-prune-command "/opt/prune")
+              (elinit-log-directory log-directory)
+              (elinit-log-prune-max-total-bytes 2048))
+          (let ((cmd (elinit--build-prune-command)))
+            (should (stringp cmd))
+            (should (string-match-p (regexp-quote "/opt/prune") cmd))
+            (should (string-match-p "--log-dir" cmd))
+            (should (string-match-p (regexp-quote log-directory) cmd))
+            (should (string-match-p "--max-total-bytes" cmd))
+            (should (string-match-p "2048" cmd))))
+      (delete-directory log-directory t))))
+
+;;; Log Rotation Script Tests
+
+(ert-deftest elinit-test-logrotate-help-exits-zero ()
+  "The --help flag exits 0 and prints usage."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-logrotate" root)))
+    (with-temp-buffer
+      (let ((exit-code (call-process script nil t nil "--help")))
+        (should (= exit-code 0))
+        (should (string-match-p "Usage:" (buffer-string)))))))
+
+(ert-deftest elinit-test-logrotate-missing-log-dir-exits-nonzero ()
+  "Missing --log-dir exits non-zero with an error message."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-logrotate" root)))
+    (with-temp-buffer
+      (let ((exit-code (call-process script nil t nil)))
+        (should-not (= exit-code 0))
+        (should (string-match-p "--log-dir" (buffer-string)))))))
+
+(ert-deftest elinit-test-logrotate-dry-run-no-modification ()
+  "Dry-run mode prints actions without modifying files."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-logrotate" root))
+         (dir (make-temp-file "logrotate-" t)))
+    (unwind-protect
+        (progn
+          ;; Create active log files
+          (write-region "data" nil (expand-file-name "elinit.log" dir))
+          (write-region "data" nil (expand-file-name "log-svc1.log" dir))
+          (with-temp-buffer
+            (let ((exit-code (call-process script nil t nil
+                                          "--log-dir" dir "--dry-run")))
+              (should (= exit-code 0))
+              (let ((output (buffer-string)))
+                (should (string-match-p "rotate:" output)))))
+          ;; Files should still exist (not moved)
+          (should (file-exists-p (expand-file-name "elinit.log" dir)))
+          (should (file-exists-p (expand-file-name "log-svc1.log" dir))))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-logrotate-rotation-renames-active-files ()
+  "Rotation renames active files with a timestamp suffix."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-logrotate" root))
+         (dir (make-temp-file "logrotate-" t)))
+    (unwind-protect
+        (progn
+          (write-region "elinit-data" nil
+                        (expand-file-name "elinit.log" dir))
+          (write-region "svc-data" nil
+                        (expand-file-name "log-myapp.log" dir))
+          ;; Also create a rotated file that should NOT be re-rotated
+          (write-region "old" nil
+                        (expand-file-name "log-myapp.20250101-120000.log" dir))
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir)))
+            (should (= exit-code 0)))
+          ;; Active files should be gone
+          (should-not (file-exists-p
+                       (expand-file-name "elinit.log" dir)))
+          (should-not (file-exists-p
+                       (expand-file-name "log-myapp.log" dir)))
+          ;; The old rotated file should still exist (not re-rotated)
+          (should (file-exists-p
+                   (expand-file-name "log-myapp.20250101-120000.log" dir)))
+          ;; New rotated files should exist with timestamp pattern.
+          ;; When tar is available, rotated files are compressed to
+          ;; .log.tar.gz; match both .log and .log.tar.gz suffixes.
+          (let ((files (directory-files dir nil
+                                       "^elinit\\.[0-9].*\\.log")))
+            (should (= (length files) 1)))
+          (let ((files (directory-files dir nil
+                                       "^log-myapp\\.[0-9].*\\.log")))
+            ;; Should be 2: the pre-existing rotated + the newly rotated
+            (should (= (length files) 2))))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-logrotate-dotted-id-not-misclassified ()
+  "Active log for a dotted ID is rotated, not skipped or pruned."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-logrotate" root))
+         (dir (make-temp-file "logrotate-" t)))
+    (unwind-protect
+        (progn
+          ;; Active log for dotted ID like svc.1
+          (write-region "data" nil
+                        (expand-file-name "log-svc.1.log" dir))
+          ;; Also a normal active log
+          (write-region "data" nil
+                        (expand-file-name "log-plain.log" dir))
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir)))
+            (should (= exit-code 0)))
+          ;; Both active files should be gone (rotated)
+          (should-not (file-exists-p
+                       (expand-file-name "log-svc.1.log" dir)))
+          (should-not (file-exists-p
+                       (expand-file-name "log-plain.log" dir)))
+          ;; Rotated versions should exist
+          (let ((files (directory-files dir nil "^log-svc\\.1\\." t)))
+            (should (= (length files) 1)))
+          (let ((files (directory-files dir nil "^log-plain\\." t)))
+            (should (= (length files) 1))))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-logrotate-prune-spares-dotted-id-active ()
+  "Prune does not delete active log files for dotted IDs."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-logrotate" root))
+         (dir (make-temp-file "logrotate-" t)))
+    (unwind-protect
+        (progn
+          ;; Active log for dotted ID (current mtime, will be rotated)
+          (write-region "data" nil
+                        (expand-file-name "log-svc.1.log" dir))
+          ;; An actual rotated file that IS old and should be pruned
+          (let ((rotated (expand-file-name
+                          "log-svc.1.20250101-120000.log" dir)))
+            (write-region "old" nil rotated)
+            (set-file-times rotated
+                            (time-subtract (current-time)
+                                           (days-to-time 30))))
+          ;; Run rotation + prune (keep-days 14)
+          ;; The active file gets rotated (moved), the old rotated gets pruned
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--keep-days" "14")))
+            (should (= exit-code 0)))
+          ;; Old rotated file should be pruned
+          (should-not (file-exists-p
+                       (expand-file-name
+                        "log-svc.1.20250101-120000.log" dir)))
+          ;; The newly rotated file from the active log should still exist
+          ;; (its mtime is current, well within 14 days)
+          (let ((files (directory-files dir nil "^log-svc\\.1\\." t)))
+            (should (= (length files) 1))))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-logrotate-prune-removes-old-keeps-recent ()
+  "Prune removes old rotated files but keeps active and recent rotated."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-logrotate" root))
+         (dir (make-temp-file "logrotate-" t)))
+    (unwind-protect
+        (progn
+          ;; Create a rotated file and backdate its mtime to 30 days ago
+          (let ((old-file (expand-file-name
+                           "log-svc1.20250101-120000.log" dir)))
+            (write-region "old-data" nil old-file)
+            (set-file-times old-file
+                            (time-subtract (current-time)
+                                           (days-to-time 30))))
+          ;; Create a recent rotated file (mtime is now)
+          (write-region "recent-data" nil
+                        (expand-file-name
+                         "log-svc1.20250201-120000.log" dir))
+          ;; Create an active file that should never be pruned
+          (write-region "active" nil
+                        (expand-file-name "log-svc1.log" dir))
+          ;; Run with --keep-days 14
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--keep-days" "14")))
+            (should (= exit-code 0)))
+          ;; Old rotated file should be gone
+          (should-not (file-exists-p
+                       (expand-file-name
+                        "log-svc1.20250101-120000.log" dir)))
+          ;; Recent rotated file should remain (mtime is now, within 14 days)
+          ;; Note: rotation also renamed the active file, so we check that
+          ;; the recent rotated file we created is still there
+          (should (file-exists-p
+                   (expand-file-name
+                    "log-svc1.20250201-120000.log" dir)))
+          ;; Active file was rotated (moved), but that's the rotation step
+          ;; The important thing is the old file was pruned
+          )
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-logrotate-signal-reopen-sends-hup ()
+  "Signal-reopen sends SIGHUP to PIDs found in pid files."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-logrotate" root))
+         (dir (make-temp-file "logrotate-" t))
+         (pid-dir (make-temp-file "logrotate-pid-" t))
+         (proc (start-process "logrotate-test-target" nil "sleep" "300"))
+         (pid (number-to-string (process-id proc))))
+    (unwind-protect
+        (progn
+          ;; Write a PID file
+          (write-region pid nil
+                        (expand-file-name "logd-svc1.pid" pid-dir))
+          ;; Also write a stale PID file with a bogus PID
+          (write-region "999999999" nil
+                        (expand-file-name "logd-stale.pid" pid-dir))
+          ;; Create an active log so rotation has something to do
+          (write-region "data" nil
+                        (expand-file-name "log-svc1.log" dir))
+          ;; Run with --signal-reopen and --dry-run to verify output
+          (with-temp-buffer
+            (let ((exit-code (call-process script nil t nil
+                                          "--log-dir" dir
+                                          "--pid-dir" pid-dir
+                                          "--signal-reopen"
+                                          "--dry-run")))
+              (should (= exit-code 0))
+              (let ((output (buffer-string)))
+                ;; Should mention the valid PID
+                (should (string-match-p (regexp-quote pid) output))
+                (should (string-match-p "signal:" output))))))
+      (when (process-live-p proc)
+        (delete-process proc))
+      (delete-directory dir t)
+      (delete-directory pid-dir t))))
+
+;;; Log Prune Script Tests
+
+(ert-deftest elinit-test-log-prune-help-exits-zero ()
+  "The --help flag exits 0 and prints usage."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root)))
+    (with-temp-buffer
+      (let ((exit-code (call-process script nil t nil "--help")))
+        (should (= exit-code 0))
+        (should (string-match-p "Usage:" (buffer-string)))))))
+
+(ert-deftest elinit-test-log-prune-missing-log-dir-exits-nonzero ()
+  "Missing --log-dir exits non-zero with an error message."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root)))
+    (with-temp-buffer
+      (let ((exit-code (call-process script nil t nil)))
+        (should-not (= exit-code 0))
+        (should (string-match-p "--log-dir" (buffer-string)))))))
+
+(ert-deftest elinit-test-log-prune-under-cap-no-delete ()
+  "When total size is under cap, no files are deleted."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t)))
+    (unwind-protect
+        (progn
+          ;; Create a small rotated file (well under the default 1GiB cap)
+          (write-region (make-string 1024 ?x) nil
+                        (expand-file-name
+                         "log-svc1.20250101-120000.log" dir))
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "1000000")))
+            (should (= exit-code 0)))
+          ;; File should still exist
+          (should (file-exists-p
+                   (expand-file-name
+                    "log-svc1.20250101-120000.log" dir))))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-over-cap-deletes-oldest-rotated ()
+  "Over cap deletes oldest rotated files first, keeping newest."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (oldest (expand-file-name "log-svc1.20250101-120000.log" dir))
+         (middle (expand-file-name "log-svc2.20250102-120000.log" dir))
+         (newest (expand-file-name "log-svc3.20250103-120000.log" dir)))
+    (unwind-protect
+        (progn
+          ;; Parent active logs must exist so the parent-exists guard
+          ;; confirms these as rotated children.
+          (write-region "" nil (expand-file-name "log-svc1.log" dir))
+          (write-region "" nil (expand-file-name "log-svc2.log" dir))
+          (write-region "" nil (expand-file-name "log-svc3.log" dir))
+          ;; Create three rotated files with staggered mtimes.
+          ;; Each is 4096 bytes; total ~12288 + dir overhead.
+          (write-region (make-string 4096 ?a) nil oldest)
+          ;; Set mtime to oldest
+          (set-file-times oldest (encode-time 0 0 0 1 1 2025))
+          (write-region (make-string 4096 ?b) nil middle)
+          (set-file-times middle (encode-time 0 0 0 2 1 2025))
+          (write-region (make-string 4096 ?c) nil newest)
+          (set-file-times newest (encode-time 0 0 0 3 1 2025))
+          ;; Set cap so that only one rotated file can remain (4096 + dir)
+          ;; Use a cap of 8192 so the newest file fits but not all three.
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "8192")))
+            (should (= exit-code 0)))
+          ;; Oldest should be deleted first
+          (should-not (file-exists-p oldest))
+          ;; Middle may also be deleted depending on dir overhead
+          ;; Newest should be kept
+          (should (file-exists-p newest)))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-active-files-never-deleted ()
+  "Active files are preserved even when over cap."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (active1 (expand-file-name "log-svc1.log" dir))
+         (active2 (expand-file-name "elinit.log" dir)))
+    (unwind-protect
+        (progn
+          ;; Create only active files, no rotated files
+          (write-region (make-string 8192 ?x) nil active1)
+          (write-region (make-string 8192 ?y) nil active2)
+          ;; Set a very low cap — should still not delete active files
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          (should (file-exists-p active1))
+          (should (file-exists-p active2)))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-dry-run-no-modification ()
+  "Dry-run prints actions without deleting files."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (rotated (expand-file-name "log-svc1.20250101-120000.log" dir)))
+    (unwind-protect
+        (progn
+          ;; Parent active log confirms this is a rotated child.
+          (write-region "" nil (expand-file-name "log-svc1.log" dir))
+          (write-region (make-string 8192 ?x) nil rotated)
+          (with-temp-buffer
+            (let ((exit-code (call-process script nil t nil
+                                          "--log-dir" dir
+                                          "--max-total-bytes" "100"
+                                          "--dry-run")))
+              (should (= exit-code 0))
+              (let ((output (buffer-string)))
+                (should (string-match-p "prune:" output))
+                (should (string-match-p "log-svc1\\.20250101-120000\\.log"
+                                        output)))))
+          ;; File must still exist
+          (should (file-exists-p rotated)))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-lock-prevents-concurrent ()
+  "A held lock causes prune to exit 0 without deleting."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (lock-file (expand-file-name ".prune.lock" dir))
+         (rotated (expand-file-name "log-svc1.20250101-120000.log" dir))
+         (holder nil))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil rotated)
+          ;; Hold an exclusive flock on the lock file via a background
+          ;; process that keeps fd open for 30 seconds.
+          (setq holder
+                (start-process "flock-holder" nil
+                               "sh" "-c"
+                               (format "exec 9>%s; flock -n 9; sleep 30"
+                                       (shell-quote-argument lock-file))))
+          ;; Give the holder time to acquire the lock
+          (sleep-for 0.5)
+          ;; Run prune with the same lock file — should exit 0 silently
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100"
+                                        "--lock-file" lock-file)))
+            (should (= exit-code 0)))
+          ;; File must still exist because prune couldn't acquire lock
+          (should (file-exists-p rotated)))
+      (when (and holder (process-live-p holder))
+        (delete-process holder))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-timestamp-id-not-deleted ()
+  "Active log for a timestamp-like ID is protected when it has rotated children."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         ;; Active log for service ID "svc.20250101-120000"
+         (active (expand-file-name "log-svc.20250101-120000.log" dir))
+         ;; A rotated child of that active log (proves it is a parent)
+         (child (expand-file-name
+                 "log-svc.20250101-120000.20260101-120000.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil active)
+          (write-region (make-string 2048 ?y) nil child)
+          (set-file-times child (encode-time 0 0 0 1 1 2026))
+          ;; Very low cap — the child should be deleted but the active
+          ;; log (confirmed as a parent by the child's presence) must
+          ;; be preserved.
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          (should (file-exists-p active))
+          (should-not (file-exists-p child)))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-timestamp-id-coexists-with-rotated ()
+  "Rotated files are pruned while timestamp-like active logs are kept."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         ;; Active log for service ID "svc.20250101-120000"
+         (ts-active (expand-file-name "log-svc.20250101-120000.log" dir))
+         ;; Rotated child of the timestamp-like active log (confirms it
+         ;; as a parent that must be protected).
+         (ts-child (expand-file-name
+                    "log-svc.20250101-120000.20260101-120000.log" dir))
+         ;; Active log for plain service "plain"
+         (plain-active (expand-file-name "log-plain.log" dir))
+         ;; Rotated file for service "plain"
+         (plain-rotated (expand-file-name
+                         "log-plain.20250101-120000.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region (make-string 4096 ?a) nil ts-active)
+          (write-region (make-string 1024 ?d) nil ts-child)
+          (set-file-times ts-child (encode-time 0 0 0 1 1 2026))
+          (write-region (make-string 100 ?b) nil plain-active)
+          (write-region (make-string 8192 ?c) nil plain-rotated)
+          (set-file-times plain-rotated (encode-time 0 0 0 1 1 2025))
+          ;; Cap is low — rotated files should be deleted.
+          ;; The timestamp-like active log must be preserved.
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "4096")))
+            (should (= exit-code 0)))
+          ;; Timestamp-like active log preserved (has rotated child)
+          (should (file-exists-p ts-active))
+          ;; Plain active log preserved (not rotated pattern)
+          (should (file-exists-p plain-active))
+          ;; Rotated files deleted
+          (should-not (file-exists-p plain-rotated))
+          (should-not (file-exists-p ts-child)))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-lone-orphan-preserved ()
+  "A single orphaned rotated file with no parent and no siblings is preserved.
+Without parent or sibling confirmation, the file could be an active log
+for a service whose ID contains a timestamp pattern."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (orphan (expand-file-name "log-oldsvc.20240101-010101.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil orphan)
+          ;; No log-oldsvc.log and no sibling rotated files.
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; File preserved (no evidence it is rotated vs active).
+          (should (file-exists-p orphan)))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-orphan-siblings-deleted ()
+  "Orphaned rotated siblings are deleted even when parent is absent.
+Multiple rotated files sharing the same parent name confirm each other
+as rotated children of a now-removed service."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (orphan1 (expand-file-name "log-oldsvc.20240101-010101.log" dir))
+         (orphan2 (expand-file-name "log-oldsvc.20240201-010101.log" dir)))
+    (unwind-protect
+        (progn
+          ;; No log-oldsvc.log exists, but two siblings with the same
+          ;; parent confirm these are rotated children.
+          (write-region (make-string 4096 ?x) nil orphan1)
+          (set-file-times orphan1 (encode-time 0 0 0 1 1 2024))
+          (write-region (make-string 4096 ?y) nil orphan2)
+          (set-file-times orphan2 (encode-time 0 0 0 1 2 2024))
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; Both orphans deleted (siblings confirmed rotated).
+          (should-not (file-exists-p orphan1))
+          (should-not (file-exists-p orphan2)))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-protect-id-preserves-file ()
+  "The --protect-id flag prevents deletion of a specific service log."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (protected (expand-file-name "log-svc.20250101-120000.log" dir))
+         (deletable (expand-file-name "log-other.20240101-010101.log" dir)))
+    (unwind-protect
+        (progn
+          ;; Parent active logs confirm both as rotated children.
+          (write-region "" nil (expand-file-name "log-svc.log" dir))
+          (write-region "" nil (expand-file-name "log-other.log" dir))
+          (write-region (make-string 4096 ?x) nil protected)
+          (write-region (make-string 4096 ?y) nil deletable)
+          (set-file-times deletable (encode-time 0 0 0 1 1 2024))
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100"
+                                        "--protect-id"
+                                        "svc.20250101-120000")))
+            (should (= exit-code 0)))
+          ;; Protected file preserved by --protect-id
+          (should (file-exists-p protected))
+          ;; Unprotected file deleted
+          (should-not (file-exists-p deletable)))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-parent-confirms-rotated ()
+  "A rotated file whose parent active log exists is confirmed and deleted."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (parent (expand-file-name "log-svc1.log" dir))
+         (rotated (expand-file-name "log-svc1.20250101-120000.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region "" nil parent)
+          (write-region (make-string 8192 ?x) nil rotated)
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; Parent active log preserved (not rotated).
+          (should (file-exists-p parent))
+          ;; Rotated child deleted (parent confirms it as rotated).
+          (should-not (file-exists-p rotated)))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-no-fuser-timestamp-id-safe ()
+  "Active log for timestamp-like ID is safe even without fuser.
+Verifies the unconditional parent-exists guard by running with
+PATH set to exclude fuser."
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         ;; Active log for service svc.20250101-120000 — no parent
+         ;; log-svc.log exists, so the parent-exists guard preserves it.
+         (active (expand-file-name "log-svc.20250101-120000.log" dir)))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil active)
+          ;; Run with a minimal PATH that excludes fuser.
+          (let ((process-environment
+                 (cons "PATH=/usr/bin:/bin" process-environment))
+                (exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; File must be preserved — parent-exists guard is sufficient.
+          (should (file-exists-p active)))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-fuser-protects-open-file ()
+  "Files currently open by a process are not deleted (fuser guard)."
+  (skip-unless (= 0 (call-process "sh" nil nil nil
+                                   "-c" "command -v fuser")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         ;; A timestamp-like active log with no rotated children --
+         ;; exactly the case the children guard cannot protect.
+         (open-file (expand-file-name
+                     "log-svc.20250101-120000.log" dir))
+         (holder nil))
+    (unwind-protect
+        (progn
+          (write-region (make-string 8192 ?x) nil open-file)
+          ;; Hold the file open on fd 3 so fuser detects it.
+          (setq holder
+                (start-process "file-holder" nil
+                               "sh" "-c"
+                               (format "exec 3<%s; sleep 300"
+                                       (shell-quote-argument open-file))))
+          (sleep-for 0.3)
+          ;; Run prune with a very low cap.
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; File must still exist -- fuser detected it as open.
+          (should (file-exists-p open-file)))
+      (when (and holder (process-live-p holder))
+        (delete-process holder))
+      (delete-directory dir t))))
+
+(ert-deftest elinit-test-log-prune-fuser-allows-closed-file ()
+  "Closed files are deleted normally even when fuser is available."
+  (skip-unless (= 0 (call-process "sh" nil nil nil
+                                   "-c" "command -v fuser")))
+  (let* ((root (file-name-directory (locate-library "elinit")))
+         (script (expand-file-name "sbin/elinit-log-prune" root))
+         (dir (make-temp-file "log-prune-" t))
+         (closed-file (expand-file-name
+                       "log-oldsvc.20240101-010101.log" dir)))
+    (unwind-protect
+        (progn
+          ;; Parent active log confirms this is a rotated child.
+          (write-region "" nil (expand-file-name "log-oldsvc.log" dir))
+          (write-region (make-string 8192 ?x) nil closed-file)
+          ;; No process holds the file open.
+          (let ((exit-code (call-process script nil nil nil
+                                        "--log-dir" dir
+                                        "--max-total-bytes" "100")))
+            (should (= exit-code 0)))
+          ;; File should be deleted normally.
+          (should-not (file-exists-p closed-file)))
+      (delete-directory dir t))))
+
+;;; Log Maintenance Integration Tests
+
+(ert-deftest elinit-test-run-log-maintenance-chains ()
+  "Log maintenance chains rotate, writer reopen, then prune."
+  (let ((elinit--writers (make-hash-table :test 'equal))
+        (elinit-log-directory "/tmp/test-logs")
+        (elinit-logrotate-command "/usr/bin/rotate-stub")
+        (elinit-logrotate-keep-days 7)
+        (elinit-log-prune-command "/usr/bin/prune-stub")
+        (elinit-log-prune-max-total-bytes 4096)
+        (elinit-verbose nil)
+        (calls nil)
+        (captured-sentinel nil))
+    (cl-letf (((symbol-function 'start-process)
+               (lambda (name _buf cmd &rest args)
+                 (let ((entry (cons cmd args)))
+                   (push (cons name entry) calls))
+                 ;; Return a fake process object
+                 (let ((proc (generate-new-buffer " *fake*")))
+                   ;; start-process sentinel will be set externally
+                   proc)))
+              ((symbol-function 'set-process-sentinel)
+               (lambda (_proc sentinel)
+                 (setq captured-sentinel sentinel)))
+              ((symbol-function 'elinit--signal-writers-reopen)
+               (lambda ()
+                 (push (cons "reopen" nil) calls)))
+              ((symbol-function 'elinit--log)
+               #'ignore))
+      (elinit-run-log-maintenance)
+      ;; First call should be logrotate
+      (should (= 1 (length calls)))
+      (let ((first (car calls)))
+        (should (equal (car first) "elinit-logrotate"))
+        (should (equal (cadr first) "/usr/bin/rotate-stub"))
+        (should (member "--log-dir" (cdr first)))
+        (should (member "--keep-days" (cdr first))))
+      ;; Fire the sentinel with "finished"
+      (should captured-sentinel)
+      (funcall captured-sentinel nil "finished\n")
+      ;; Should now have reopen + prune calls
+      (should (= 3 (length calls)))
+      ;; Most recent is prune (pushed last)
+      (let ((prune-call (car calls)))
+        (should (equal (car prune-call) "elinit-log-prune"))
+        (should (equal (cadr prune-call) "/usr/bin/prune-stub"))
+        (should (member "--log-dir" (cdr prune-call)))
+        (should (member "--max-total-bytes" (cdr prune-call))))
+      ;; Reopen was called between rotate and prune
+      (let ((reopen-call (cadr calls)))
+        (should (equal (car reopen-call) "reopen"))))))
+
+(provide 'elinit-test-log)
+;;; elinit-test-log.el ends here

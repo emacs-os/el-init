@@ -73,7 +73,7 @@
 (defvar elinit--invalid-timers)
 (defvar elinit-timer-retry-intervals)
 ;; Forward declaration for tabulated-list internals
-(defvar tabulated-list-header-string nil)
+(defvar tabulated-list-header-string)
 
 ;;; Dashboard Faces
 

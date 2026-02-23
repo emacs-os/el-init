@@ -24,7 +24,7 @@
  *   114  exec failed
  *
  * Copyright (C) 2026 elinit contributors
- * License: GPL-3.0-or-later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #define _GNU_SOURCE

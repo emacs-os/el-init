@@ -3,6 +3,7 @@
 ;; Copyright (C) 2025-2026 telecommuter <telecommuter@riseup.net>
 ;;
 ;; Author: telecommuter <telecommuter@riseup.net>
+;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Version: 1.0.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: processes, unix

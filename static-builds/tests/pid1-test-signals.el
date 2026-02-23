@@ -1,4 +1,5 @@
 ;;; pid1-test-signals.el --- PID1 signal-hook test helper  -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; Writes marker files to PID1_TEST_MARKER_DIR when PID1 hooks fire
 ;; in response to signals (SIGTERM, SIGUSR1, SIGUSR2).
