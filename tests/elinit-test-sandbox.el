@@ -447,7 +447,8 @@ and absent are indistinguishable) and correctly does not apply sandbox."
     (should (member "--unshare-pid" args))
     (should (member "--ro-bind" args))
     ;; Desktop binds X11 socket for graphical access
-    (should (member "/tmp/.X11-unix" args))
+    (should (member (expand-file-name ".X11-unix" (temporary-file-directory))
+                    args))
     ;; Desktop does NOT unshare-all (unlike strict)
     (should-not (member "--unshare-all" args))))
 
@@ -532,7 +533,8 @@ and includes X11 and XDG runtime dir binds."
         ;; Desktop has shared network by default -- no unshare-net
         (should-not (member "--unshare-net" argv))
         ;; X11 socket bind
-        (should (member "/tmp/.X11-unix" argv))
+        (should (member (expand-file-name ".X11-unix" (temporary-file-directory))
+                        argv))
         ;; Separator at end
         (should (equal "--" (car (last argv))))))))
 
