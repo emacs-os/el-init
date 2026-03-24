@@ -8,6 +8,8 @@
 
 A statically compiled Emacs init (PID 1) patchset, Emacs Lisp-based service supervisor and core component of *[[https://github.com/emacs-os][Emacs-OS]]*.
 
+[[file:assets/Screencast_20260324_122402.gif]]
+
 *el-init* is an Emacs Lisp-based, systemd-inspired init and
 service-management solution.  Whether you are building a full-send Emacs-OS, or
 simply want to orchestrate your desktop session services from within EXWM,
